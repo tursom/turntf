@@ -1,0 +1,7 @@
+/data/
+/notifier
+/config.toml
+*.db
+*.sqlite
+*.sqlite3
+.codex

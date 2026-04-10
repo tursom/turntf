@@ -1,0 +1,3 @@
+addr = ":8080"
+db_path = "./data/notifier.db"
+user_session_ttl_hours = 24

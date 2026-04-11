@@ -583,6 +583,189 @@ func TestLateJoiningNodeCatchesUpAcrossMultiplePullBatches(t *testing.T) {
 	}
 }
 
+func TestThreeNodeFieldLevelConvergence(t *testing.T) {
+	t.Parallel()
+
+	clusterLnA := mustListen(t)
+	clusterLnB := mustListen(t)
+	clusterLnC := mustListen(t)
+	apiLnA := mustListen(t)
+	apiLnB := mustListen(t)
+	apiLnC := mustListen(t)
+
+	clusterURLA := wsURL(clusterLnA)
+	clusterURLB := wsURL(clusterLnB)
+	clusterURLC := wsURL(clusterLnC)
+
+	nodeA := newClusterTestNode(t, "node-a", 1, clusterLnA, apiLnA, clusterURLA, []Peer{
+		{NodeID: "node-b", URL: clusterURLB},
+		{NodeID: "node-c", URL: clusterURLC},
+	})
+	nodeB := newClusterTestNode(t, "node-b", 2, clusterLnB, apiLnB, clusterURLB, []Peer{
+		{NodeID: "node-a", URL: clusterURLA},
+		{NodeID: "node-c", URL: clusterURLC},
+	})
+	nodeC := newClusterTestNode(t, "node-c", 3, clusterLnC, apiLnC, clusterURLC, []Peer{
+		{NodeID: "node-a", URL: clusterURLA},
+		{NodeID: "node-b", URL: clusterURLB},
+	})
+
+	nodeA.start(t)
+	nodeB.start(t)
+	nodeC.start(t)
+
+	waitFor(t, 5*time.Second, func() bool {
+		return nodeA.activePeer("node-b") && nodeA.activePeer("node-c") &&
+			nodeB.activePeer("node-a") && nodeB.activePeer("node-c") &&
+			nodeC.activePeer("node-a") && nodeC.activePeer("node-b")
+	})
+
+	var createdUser struct {
+		ID int64 `json:"id"`
+	}
+	mustJSON(t, doJSON(t, nodeA.apiBaseURL, http.MethodPost, "/users", map[string]any{
+		"username":      "cluster-user",
+		"password_hash": "hash-1",
+		"profile": map[string]any{
+			"display_name": "Before Merge",
+		},
+	}, http.StatusCreated), &createdUser)
+
+	waitFor(t, 5*time.Second, func() bool {
+		_, errB := nodeB.store.GetUser(context.Background(), createdUser.ID)
+		_, errC := nodeC.store.GetUser(context.Background(), createdUser.ID)
+		return errB == nil && errC == nil
+	})
+
+	errCh := make(chan error, 2)
+	start := make(chan struct{})
+
+	go func() {
+		<-start
+		_, err := doJSONRequest(nodeB.apiBaseURL, http.MethodPatch, "/users/"+strconv.FormatInt(createdUser.ID, 10), map[string]any{
+			"username": "cluster-user-renamed",
+		}, http.StatusOK)
+		errCh <- err
+	}()
+
+	go func() {
+		<-start
+		_, err := doJSONRequest(nodeC.apiBaseURL, http.MethodPatch, "/users/"+strconv.FormatInt(createdUser.ID, 10), map[string]any{
+			"profile": map[string]any{
+				"display_name": "Merged Profile",
+			},
+		}, http.StatusOK)
+		errCh <- err
+	}()
+
+	close(start)
+	for range 2 {
+		if err := <-errCh; err != nil {
+			t.Fatalf("concurrent patch request failed: %v", err)
+		}
+	}
+
+	waitFor(t, 5*time.Second, func() bool {
+		for _, node := range []*testNode{nodeA, nodeB, nodeC} {
+			user, err := node.store.GetUser(context.Background(), createdUser.ID)
+			if err != nil {
+				return false
+			}
+			if user.Username != "cluster-user-renamed" || user.Profile != `{"display_name":"Merged Profile"}` {
+				return false
+			}
+		}
+		return true
+	})
+}
+
+func TestThreeNodeDeleteWinsOverConcurrentUpdate(t *testing.T) {
+	t.Parallel()
+
+	clusterLnA := mustListen(t)
+	clusterLnB := mustListen(t)
+	clusterLnC := mustListen(t)
+	apiLnA := mustListen(t)
+	apiLnB := mustListen(t)
+	apiLnC := mustListen(t)
+
+	clusterURLA := wsURL(clusterLnA)
+	clusterURLB := wsURL(clusterLnB)
+	clusterURLC := wsURL(clusterLnC)
+
+	nodeA := newClusterTestNode(t, "node-a", 1, clusterLnA, apiLnA, clusterURLA, []Peer{
+		{NodeID: "node-b", URL: clusterURLB},
+		{NodeID: "node-c", URL: clusterURLC},
+	})
+	nodeB := newClusterTestNode(t, "node-b", 2, clusterLnB, apiLnB, clusterURLB, []Peer{
+		{NodeID: "node-a", URL: clusterURLA},
+		{NodeID: "node-c", URL: clusterURLC},
+	})
+	nodeC := newClusterTestNode(t, "node-c", 3, clusterLnC, apiLnC, clusterURLC, []Peer{
+		{NodeID: "node-a", URL: clusterURLA},
+		{NodeID: "node-b", URL: clusterURLB},
+	})
+
+	nodeA.start(t)
+	nodeB.start(t)
+	nodeC.start(t)
+
+	waitFor(t, 5*time.Second, func() bool {
+		return nodeA.activePeer("node-b") && nodeA.activePeer("node-c") &&
+			nodeB.activePeer("node-a") && nodeB.activePeer("node-c") &&
+			nodeC.activePeer("node-a") && nodeC.activePeer("node-b")
+	})
+
+	var createdUser struct {
+		ID int64 `json:"id"`
+	}
+	mustJSON(t, doJSON(t, nodeA.apiBaseURL, http.MethodPost, "/users", map[string]any{
+		"username":      "delete-user",
+		"password_hash": "hash-1",
+	}, http.StatusCreated), &createdUser)
+
+	waitFor(t, 5*time.Second, func() bool {
+		_, errB := nodeB.store.GetUser(context.Background(), createdUser.ID)
+		_, errC := nodeC.store.GetUser(context.Background(), createdUser.ID)
+		return errB == nil && errC == nil
+	})
+
+	errCh := make(chan error, 2)
+	start := make(chan struct{})
+
+	go func() {
+		<-start
+		_, err := doJSONRequest(nodeB.apiBaseURL, http.MethodPatch, "/users/"+strconv.FormatInt(createdUser.ID, 10), map[string]any{
+			"profile": map[string]any{
+				"display_name": "Should Lose To Delete",
+			},
+		}, http.StatusOK)
+		errCh <- err
+	}()
+
+	go func() {
+		<-start
+		_, err := doJSONRequest(nodeC.apiBaseURL, http.MethodDelete, "/users/"+strconv.FormatInt(createdUser.ID, 10), nil, http.StatusOK)
+		errCh <- err
+	}()
+
+	close(start)
+	for range 2 {
+		if err := <-errCh; err != nil {
+			t.Fatalf("concurrent delete/update request failed: %v", err)
+		}
+	}
+
+	waitFor(t, 5*time.Second, func() bool {
+		for _, node := range []*testNode{nodeA, nodeB, nodeC} {
+			if _, err := node.store.GetUser(context.Background(), createdUser.ID); err != store.ErrNotFound {
+				return false
+			}
+		}
+		return true
+	})
+}
+
 type testNode struct {
 	id            string
 	store         *store.Store
@@ -722,20 +905,28 @@ func waitFor(t *testing.T, timeout time.Duration, fn func() bool) {
 func doJSON(t *testing.T, baseURL, method, path string, body any, wantStatus int) []byte {
 	t.Helper()
 
+	data, err := doJSONRequest(baseURL, method, path, body, wantStatus)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	return data
+}
+
+func doJSONRequest(baseURL, method, path string, body any, wantStatus int) ([]byte, error) {
 	var requestBody *bytes.Reader
 	if body == nil {
 		requestBody = bytes.NewReader(nil)
 	} else {
 		payload, err := json.Marshal(body)
 		if err != nil {
-			t.Fatalf("marshal body: %v", err)
+			return nil, err
 		}
 		requestBody = bytes.NewReader(payload)
 	}
 
 	req, err := http.NewRequest(method, baseURL+path, requestBody)
 	if err != nil {
-		t.Fatalf("new request: %v", err)
+		return nil, err
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
@@ -743,19 +934,19 @@ func doJSON(t *testing.T, baseURL, method, path string, body any, wantStatus int
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		t.Fatalf("do request: %v", err)
+		return nil, err
 	}
 	defer resp.Body.Close()
 
 	data := new(bytes.Buffer)
 	if _, err := data.ReadFrom(resp.Body); err != nil {
-		t.Fatalf("read response: %v", err)
+		return nil, err
 	}
 
 	if resp.StatusCode != wantStatus {
-		t.Fatalf("unexpected status for %s %s: got=%d want=%d body=%s", method, path, resp.StatusCode, wantStatus, data.String())
+		return nil, errors.New("unexpected status for " + method + " " + path + ": got=" + strconv.Itoa(resp.StatusCode) + " want=" + strconv.Itoa(wantStatus) + " body=" + data.String())
 	}
-	return data.Bytes()
+	return data.Bytes(), nil
 }
 
 func mustJSON(t *testing.T, data []byte, dst any) {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -217,81 +218,11 @@ VALUES(?, ?, ?)
 }
 
 func (s *Store) applyReplicatedUserCreated(ctx context.Context, tx *sql.Tx, event *clusterproto.ReplicatedEvent) error {
-	var payload replicatedUserEnvelope
-	if err := json.Unmarshal(event.Payload, &payload); err != nil {
-		return fmt.Errorf("decode user.created payload: %w", err)
-	}
-
-	user := payload.User
-	if user.ID == 0 {
-		return fmt.Errorf("%w: user id cannot be empty", ErrInvalidInput)
-	}
-
-	_, err := s.getUserByIDTx(ctx, tx, user.ID, true)
-	if err != nil && err != ErrNotFound {
-		return err
-	}
-	if err == nil {
-		return nil
-	}
-
-	exists, err := activeUsernameExists(ctx, tx, user.Username, user.ID)
-	if err != nil {
-		return err
-	}
-	if exists {
-		return ErrConflict
-	}
-
-	if _, err := tx.ExecContext(ctx, `
-INSERT INTO users(
-    user_id, username, password_hash, profile, created_at_hlc, updated_at_hlc,
-    deleted_at_hlc, version_username, version_password_hash, version_profile,
-    version_deleted, origin_node_id
-)
-VALUES(?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, NULL, ?)
-`, user.ID, user.Username, user.PasswordHash, defaultJSON(user.Profile),
-		user.CreatedAt, user.UpdatedAt, user.VersionUsername, user.VersionPasswordHash,
-		user.VersionProfile, user.OriginNodeID); err != nil {
-		return fmt.Errorf("insert replicated user: %w", err)
-	}
-	return nil
+	return s.applyReplicatedUserUpsert(ctx, tx, event, "user.created")
 }
 
 func (s *Store) applyReplicatedUserUpdated(ctx context.Context, tx *sql.Tx, event *clusterproto.ReplicatedEvent) error {
-	var payload replicatedUserEnvelope
-	if err := json.Unmarshal(event.Payload, &payload); err != nil {
-		return fmt.Errorf("decode user.updated payload: %w", err)
-	}
-	user := payload.User
-	if user.ID == 0 {
-		return fmt.Errorf("%w: user id cannot be empty", ErrInvalidInput)
-	}
-
-	if _, err := s.getUserByIDTx(ctx, tx, user.ID, false); err != nil {
-		return err
-	}
-
-	exists, err := activeUsernameExists(ctx, tx, user.Username, user.ID)
-	if err != nil {
-		return err
-	}
-	if exists {
-		return ErrConflict
-	}
-
-	if _, err := tx.ExecContext(ctx, `
-UPDATE users
-SET username = ?, password_hash = ?, profile = ?, updated_at_hlc = ?,
-    version_username = ?, version_password_hash = ?, version_profile = ?,
-    origin_node_id = ?
-WHERE user_id = ? AND deleted_at_hlc IS NULL
-`, user.Username, user.PasswordHash, defaultJSON(user.Profile), user.UpdatedAt,
-		user.VersionUsername, user.VersionPasswordHash, user.VersionProfile,
-		user.OriginNodeID, user.ID); err != nil {
-		return fmt.Errorf("update replicated user: %w", err)
-	}
-	return nil
+	return s.applyReplicatedUserUpsert(ctx, tx, event, "user.updated")
 }
 
 func (s *Store) applyReplicatedUserDeleted(ctx context.Context, tx *sql.Tx, event *clusterproto.ReplicatedEvent) error {
@@ -303,28 +234,11 @@ func (s *Store) applyReplicatedUserDeleted(ctx context.Context, tx *sql.Tx, even
 		return fmt.Errorf("%w: user id cannot be empty", ErrInvalidInput)
 	}
 
-	if _, err := s.getUserByIDTx(ctx, tx, payload.UserID, false); err != nil {
+	deletedAt, err := parseRequiredTimestamp(payload.DeletedAtHLC, "deleted_at_hlc")
+	if err != nil {
 		return err
 	}
-
-	if _, err := tx.ExecContext(ctx, `
-UPDATE users
-SET deleted_at_hlc = ?, updated_at_hlc = ?, version_deleted = ?
-WHERE user_id = ? AND deleted_at_hlc IS NULL
-`, payload.DeletedAtHLC, payload.DeletedAtHLC, payload.DeletedAtHLC, payload.UserID); err != nil {
-		return fmt.Errorf("delete replicated user: %w", err)
-	}
-
-	if _, err := tx.ExecContext(ctx, `
-INSERT INTO tombstones(entity_type, entity_id, deleted_at_hlc, expires_at_hlc, origin_node_id)
-VALUES('user', ?, ?, NULL, ?)
-ON CONFLICT(entity_type, entity_id) DO UPDATE SET
-    deleted_at_hlc = excluded.deleted_at_hlc,
-    origin_node_id = excluded.origin_node_id
-`, payload.UserID, payload.DeletedAtHLC, event.OriginNodeId); err != nil {
-		return fmt.Errorf("insert replicated tombstone: %w", err)
-	}
-	return nil
+	return s.applyUserDeleteTx(ctx, tx, payload.UserID, deletedAt, event.OriginNodeId, false)
 }
 
 func (s *Store) applyReplicatedMessageCreated(ctx context.Context, tx *sql.Tx, event *clusterproto.ReplicatedEvent) error {
@@ -397,4 +311,160 @@ func defaultJSON(value string) string {
 
 func isUniqueConstraint(err error) bool {
 	return strings.Contains(strings.ToLower(err.Error()), "unique")
+}
+
+func decodeReplicatedUser(userPayload []byte, kind string) (User, error) {
+	var envelope replicatedUserEnvelope
+	if err := json.Unmarshal(userPayload, &envelope); err != nil {
+		return User{}, fmt.Errorf("decode %s payload: %w", kind, err)
+	}
+
+	payload := envelope.User
+	if payload.ID == 0 {
+		return User{}, fmt.Errorf("%w: user id cannot be empty", ErrInvalidInput)
+	}
+
+	createdAt, err := parseRequiredTimestamp(payload.CreatedAt, "user created_at")
+	if err != nil {
+		return User{}, err
+	}
+	updatedAt, err := parseRequiredTimestamp(payload.UpdatedAt, "user updated_at")
+	if err != nil {
+		return User{}, err
+	}
+	versionUsername, err := parseRequiredTimestamp(payload.VersionUsername, "user version_username")
+	if err != nil {
+		return User{}, err
+	}
+	versionPasswordHash, err := parseRequiredTimestamp(payload.VersionPasswordHash, "user version_password_hash")
+	if err != nil {
+		return User{}, err
+	}
+	versionProfile, err := parseRequiredTimestamp(payload.VersionProfile, "user version_profile")
+	if err != nil {
+		return User{}, err
+	}
+
+	user := User{
+		ID:                  payload.ID,
+		Username:            payload.Username,
+		PasswordHash:        payload.PasswordHash,
+		Profile:             defaultJSON(payload.Profile),
+		CreatedAt:           createdAt,
+		UpdatedAt:           updatedAt,
+		VersionUsername:     versionUsername,
+		VersionPasswordHash: versionPasswordHash,
+		VersionProfile:      versionProfile,
+		OriginNodeID:        payload.OriginNodeID,
+	}
+
+	if strings.TrimSpace(payload.VersionDeleted) != "" {
+		parsed, err := parseRequiredTimestamp(payload.VersionDeleted, "user version_deleted")
+		if err != nil {
+			return User{}, err
+		}
+		user.VersionDeleted = &parsed
+	}
+	if strings.TrimSpace(payload.DeletedAt) != "" {
+		parsed, err := parseRequiredTimestamp(payload.DeletedAt, "user deleted_at")
+		if err != nil {
+			return User{}, err
+		}
+		user.DeletedAt = &parsed
+	}
+	return user, nil
+}
+
+func (s *Store) applyReplicatedUserUpsert(ctx context.Context, tx *sql.Tx, event *clusterproto.ReplicatedEvent, kind string) error {
+	incoming, err := decodeReplicatedUser(event.Payload, kind)
+	if err != nil {
+		return err
+	}
+
+	if _, exists, err := s.getTombstoneTx(ctx, tx, "user", incoming.ID); err != nil {
+		return err
+	} else if exists {
+		return nil
+	}
+
+	current, err := s.getUserByIDTx(ctx, tx, incoming.ID, true)
+	switch {
+	case err == nil:
+	case errors.Is(err, ErrNotFound):
+		incoming.UpdatedAt = latestUserVersion(incoming)
+		if _, err := tx.ExecContext(ctx, `
+INSERT INTO users(
+    user_id, username, password_hash, profile, created_at_hlc, updated_at_hlc,
+    deleted_at_hlc, version_username, version_password_hash, version_profile,
+    version_deleted, origin_node_id
+)
+VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`, incoming.ID, incoming.Username, incoming.PasswordHash, defaultJSON(incoming.Profile),
+			incoming.CreatedAt.String(), incoming.UpdatedAt.String(), nullableTimestampString(incoming.DeletedAt),
+			incoming.VersionUsername.String(), incoming.VersionPasswordHash.String(), incoming.VersionProfile.String(),
+			nullableTimestampString(incoming.VersionDeleted), incoming.OriginNodeID); err != nil {
+			return fmt.Errorf("insert replicated user: %w", err)
+		}
+		return nil
+	default:
+		return err
+	}
+
+	if current.DeletedAt != nil || current.VersionDeleted != nil {
+		return nil
+	}
+
+	merged := mergeReplicatedUser(current, incoming)
+	if _, err := tx.ExecContext(ctx, `
+UPDATE users
+SET username = ?, password_hash = ?, profile = ?, updated_at_hlc = ?,
+    version_username = ?, version_password_hash = ?, version_profile = ?
+WHERE user_id = ?
+`, merged.Username, merged.PasswordHash, defaultJSON(merged.Profile), merged.UpdatedAt.String(),
+		merged.VersionUsername.String(), merged.VersionPasswordHash.String(),
+		merged.VersionProfile.String(), merged.ID); err != nil {
+		return fmt.Errorf("update replicated user: %w", err)
+	}
+	return nil
+}
+
+func mergeReplicatedUser(current, incoming User) User {
+	merged := current
+
+	if incoming.VersionUsername.Compare(current.VersionUsername) > 0 {
+		merged.Username = incoming.Username
+		merged.VersionUsername = incoming.VersionUsername
+	}
+	if incoming.VersionPasswordHash.Compare(current.VersionPasswordHash) > 0 {
+		merged.PasswordHash = incoming.PasswordHash
+		merged.VersionPasswordHash = incoming.VersionPasswordHash
+	}
+	if incoming.VersionProfile.Compare(current.VersionProfile) > 0 {
+		merged.Profile = defaultJSON(incoming.Profile)
+		merged.VersionProfile = incoming.VersionProfile
+	}
+
+	merged.UpdatedAt = latestUserVersion(merged)
+	return merged
+}
+
+func latestUserVersion(user User) clock.Timestamp {
+	latest := user.VersionUsername
+	if user.VersionPasswordHash.Compare(latest) > 0 {
+		latest = user.VersionPasswordHash
+	}
+	if user.VersionProfile.Compare(latest) > 0 {
+		latest = user.VersionProfile
+	}
+	if user.VersionDeleted != nil && user.VersionDeleted.Compare(latest) > 0 {
+		latest = *user.VersionDeleted
+	}
+	return latest
+}
+
+func nullableTimestampString(ts *clock.Timestamp) any {
+	if ts == nil {
+		return nil
+	}
+	return ts.String()
 }

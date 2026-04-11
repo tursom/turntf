@@ -245,14 +245,6 @@ func (s *Store) CreateUser(ctx context.Context, params CreateUserParams) (User, 
 	}
 	defer tx.Rollback()
 
-	exists, err := activeUsernameExists(ctx, tx, username, 0)
-	if err != nil {
-		return User{}, Event{}, err
-	}
-	if exists {
-		return User{}, Event{}, ErrConflict
-	}
-
 	now := s.clock.Now()
 	user := User{
 		ID:                  s.ids.Next(),
@@ -324,13 +316,6 @@ func (s *Store) UpdateUser(ctx context.Context, params UpdateUserParams) (User, 
 			return User{}, Event{}, fmt.Errorf("%w: username cannot be empty", ErrInvalidInput)
 		}
 		if nextUsername != current.Username {
-			exists, err := activeUsernameExists(ctx, tx, nextUsername, current.ID)
-			if err != nil {
-				return User{}, Event{}, err
-			}
-			if exists {
-				return User{}, Event{}, ErrConflict
-			}
 			current.Username = nextUsername
 			current.VersionUsername = now
 			changed = true
@@ -404,36 +389,21 @@ func (s *Store) DeleteUser(ctx context.Context, userID int64) (Event, error) {
 	}
 	defer tx.Rollback()
 
-	user, err := s.getUserTx(ctx, tx, userID, false)
-	if err != nil {
+	if _, err := s.getUserTx(ctx, tx, userID, false); err != nil {
 		return Event{}, err
 	}
 
 	now := s.clock.Now()
-	if _, err := tx.ExecContext(ctx, `
-UPDATE users
-SET deleted_at_hlc = ?, updated_at_hlc = ?, version_deleted = ?
-WHERE user_id = ? AND deleted_at_hlc IS NULL
-`, now.String(), now.String(), now.String(), user.ID); err != nil {
-		return Event{}, fmt.Errorf("delete user: %w", err)
+	if err := s.applyUserDeleteTx(ctx, tx, userID, now, s.nodeID, true); err != nil {
+		return Event{}, err
 	}
 
-	if _, err := tx.ExecContext(ctx, `
-INSERT INTO tombstones(entity_type, entity_id, deleted_at_hlc, expires_at_hlc, origin_node_id)
-VALUES('user', ?, ?, NULL, ?)
-ON CONFLICT(entity_type, entity_id) DO UPDATE SET
-    deleted_at_hlc = excluded.deleted_at_hlc,
-    origin_node_id = excluded.origin_node_id
-`, user.ID, now.String(), s.nodeID); err != nil {
-		return Event{}, fmt.Errorf("insert tombstone: %w", err)
-	}
-
-	payload, err := encodeDeleteUserPayload(user.ID, now.String())
+	payload, err := encodeDeleteUserPayload(userID, now.String())
 	if err != nil {
 		return Event{}, fmt.Errorf("marshal delete user event: %w", err)
 	}
 
-	event, err := s.insertEvent(ctx, tx, "user.deleted", "user", user.ID, now, string(payload))
+	event, err := s.insertEvent(ctx, tx, "user.deleted", "user", userID, now, string(payload))
 	if err != nil {
 		return Event{}, err
 	}
@@ -675,6 +645,99 @@ WHERE username = ? AND deleted_at_hlc IS NULL AND user_id != ?
 		return false, fmt.Errorf("check active username: %w", err)
 	}
 	return count > 0, nil
+}
+
+type tombstoneRecord struct {
+	EntityType   string
+	EntityID     int64
+	DeletedAt    clock.Timestamp
+	OriginNodeID string
+}
+
+func (s *Store) getTombstoneTx(ctx context.Context, tx *sql.Tx, entityType string, entityID int64) (tombstoneRecord, bool, error) {
+	row := tx.QueryRowContext(ctx, `
+SELECT entity_type, entity_id, deleted_at_hlc, origin_node_id
+FROM tombstones
+WHERE entity_type = ? AND entity_id = ?
+`, entityType, entityID)
+
+	var record tombstoneRecord
+	var deletedAtRaw string
+	if err := row.Scan(&record.EntityType, &record.EntityID, &deletedAtRaw, &record.OriginNodeID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return tombstoneRecord{}, false, nil
+		}
+		return tombstoneRecord{}, false, fmt.Errorf("get tombstone: %w", err)
+	}
+
+	deletedAt, err := clock.ParseTimestamp(deletedAtRaw)
+	if err != nil {
+		return tombstoneRecord{}, false, fmt.Errorf("parse tombstone deleted_at: %w", err)
+	}
+	record.DeletedAt = deletedAt
+	return record, true, nil
+}
+
+func (s *Store) upsertTombstoneTx(ctx context.Context, tx *sql.Tx, entityType string, entityID int64, deletedAt clock.Timestamp, originNodeID string) error {
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO tombstones(entity_type, entity_id, deleted_at_hlc, expires_at_hlc, origin_node_id)
+VALUES(?, ?, ?, NULL, ?)
+ON CONFLICT(entity_type, entity_id) DO UPDATE SET
+    deleted_at_hlc = CASE
+        WHEN excluded.deleted_at_hlc > tombstones.deleted_at_hlc THEN excluded.deleted_at_hlc
+        ELSE tombstones.deleted_at_hlc
+    END,
+    origin_node_id = CASE
+        WHEN excluded.deleted_at_hlc > tombstones.deleted_at_hlc THEN excluded.origin_node_id
+        ELSE tombstones.origin_node_id
+    END
+`, entityType, entityID, deletedAt.String(), originNodeID); err != nil {
+		return fmt.Errorf("upsert tombstone: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) applyUserDeleteTx(ctx context.Context, tx *sql.Tx, userID int64, deletedAt clock.Timestamp, originNodeID string, requireActive bool) error {
+	user, err := s.getUserByIDTx(ctx, tx, userID, true)
+	switch {
+	case err == nil:
+	case errors.Is(err, ErrNotFound):
+		if requireActive {
+			return ErrNotFound
+		}
+	default:
+		return err
+	}
+
+	if err == nil {
+		if requireActive && user.DeletedAt != nil {
+			return ErrNotFound
+		}
+
+		shouldUpdateRow := user.DeletedAt == nil
+		if !shouldUpdateRow && user.VersionDeleted != nil && deletedAt.Compare(*user.VersionDeleted) > 0 {
+			shouldUpdateRow = true
+		}
+
+		if shouldUpdateRow {
+			updatedAt := user.UpdatedAt
+			if deletedAt.Compare(updatedAt) > 0 {
+				updatedAt = deletedAt
+			}
+			if _, err := tx.ExecContext(ctx, `
+UPDATE users
+SET deleted_at_hlc = ?, updated_at_hlc = ?, version_deleted = ?
+WHERE user_id = ?
+`, deletedAt.String(), updatedAt.String(), deletedAt.String(), userID); err != nil {
+				return fmt.Errorf("delete user: %w", err)
+			}
+		}
+	}
+
+	if err := s.upsertTombstoneTx(ctx, tx, "user", userID, deletedAt, originNodeID); err != nil {
+		return err
+	}
+	return nil
 }
 
 func scanUser(scanner interface {

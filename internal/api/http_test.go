@@ -118,7 +118,7 @@ func TestUserAndMessageHTTPAPI(t *testing.T) {
 	doJSON(t, handler, http.MethodGet, "/users/"+strconv.FormatInt(createdUser.ID, 10), nil, http.StatusNotFound)
 }
 
-func TestCreateUserConflictReturns409(t *testing.T) {
+func TestCreateUserAllowsDuplicateUsername(t *testing.T) {
 	t.Parallel()
 
 	handler := newTestHandler(t)
@@ -128,7 +128,33 @@ func TestCreateUserConflictReturns409(t *testing.T) {
 		"password_hash": "hash-1",
 	}
 	doJSON(t, handler, http.MethodPost, "/users", createUserBody, http.StatusCreated)
-	doJSON(t, handler, http.MethodPost, "/users", createUserBody, http.StatusConflict)
+	doJSON(t, handler, http.MethodPost, "/users", createUserBody, http.StatusCreated)
+}
+
+func TestUpdateUserAllowsDuplicateUsername(t *testing.T) {
+	t.Parallel()
+
+	handler := newTestHandler(t)
+
+	var first struct {
+		ID int64 `json:"id"`
+	}
+	var second struct {
+		ID int64 `json:"id"`
+	}
+
+	mustJSON(t, doJSON(t, handler, http.MethodPost, "/users", map[string]any{
+		"username":      "alice",
+		"password_hash": "hash-1",
+	}, http.StatusCreated), &first)
+	mustJSON(t, doJSON(t, handler, http.MethodPost, "/users", map[string]any{
+		"username":      "bob",
+		"password_hash": "hash-2",
+	}, http.StatusCreated), &second)
+
+	doJSON(t, handler, http.MethodPatch, "/users/"+strconv.FormatInt(second.ID, 10), map[string]any{
+		"username": "alice",
+	}, http.StatusOK)
 }
 
 func newTestHandler(t *testing.T) http.Handler {

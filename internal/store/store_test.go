@@ -4,6 +4,8 @@ import (
 	"context"
 	"path/filepath"
 	"testing"
+
+	"notifier/internal/clock"
 )
 
 func TestLocalUserCRUDAndEventLog(t *testing.T) {
@@ -141,7 +143,7 @@ func TestLocalMessageWriteAndQuery(t *testing.T) {
 	}
 }
 
-func TestDuplicateActiveUsernameRejected(t *testing.T) {
+func TestDuplicateActiveUsernameAllowed(t *testing.T) {
 	t.Parallel()
 
 	st := openTestStore(t)
@@ -155,11 +157,58 @@ func TestDuplicateActiveUsernameRejected(t *testing.T) {
 		t.Fatalf("create user: %v", err)
 	}
 
-	if _, _, err := st.CreateUser(ctx, CreateUserParams{
+	second, _, err := st.CreateUser(ctx, CreateUserParams{
 		Username:     "carol",
 		PasswordHash: "hash-2",
-	}); err != ErrConflict {
-		t.Fatalf("expected conflict, got %v", err)
+	})
+	if err != nil {
+		t.Fatalf("create duplicate username: %v", err)
+	}
+	if second.ID == 0 {
+		t.Fatalf("expected second user id")
+	}
+
+	users, err := st.ListUsers(ctx)
+	if err != nil {
+		t.Fatalf("list users: %v", err)
+	}
+	if len(users) != 2 {
+		t.Fatalf("expected 2 users, got %d", len(users))
+	}
+}
+
+func TestRenameUserToDuplicateUsernameAllowed(t *testing.T) {
+	t.Parallel()
+
+	st := openTestStore(t)
+	defer st.Close()
+
+	ctx := context.Background()
+	first, _, err := st.CreateUser(ctx, CreateUserParams{
+		Username:     "carol",
+		PasswordHash: "hash-1",
+	})
+	if err != nil {
+		t.Fatalf("create first user: %v", err)
+	}
+	second, _, err := st.CreateUser(ctx, CreateUserParams{
+		Username:     "dave",
+		PasswordHash: "hash-2",
+	})
+	if err != nil {
+		t.Fatalf("create second user: %v", err)
+	}
+
+	duplicate := first.Username
+	updated, _, err := st.UpdateUser(ctx, UpdateUserParams{
+		UserID:   second.ID,
+		Username: &duplicate,
+	})
+	if err != nil {
+		t.Fatalf("rename to duplicate username: %v", err)
+	}
+	if updated.Username != first.Username {
+		t.Fatalf("unexpected updated username: %+v", updated)
 	}
 }
 
@@ -293,6 +342,236 @@ func TestApplyReplicatedMessageIsIdempotent(t *testing.T) {
 	}
 	if len(messages) != 1 || messages[0].ID != message.ID {
 		t.Fatalf("unexpected replicated messages: %+v", messages)
+	}
+}
+
+func TestReplicatedUserUpdatesMergeDifferentFields(t *testing.T) {
+	t.Parallel()
+
+	source := openNamedTestStore(t, "node-a", 1)
+	defer source.Close()
+
+	target := openNamedTestStore(t, "node-b", 2)
+	defer target.Close()
+
+	ctx := context.Background()
+	user, createEvent, err := source.CreateUser(ctx, CreateUserParams{
+		Username:     "merge-user",
+		PasswordHash: "hash-1",
+		Profile:      `{"display_name":"Alice"}`,
+	})
+	if err != nil {
+		t.Fatalf("create source user: %v", err)
+	}
+	if err := target.ApplyReplicatedEvent(ctx, ToReplicatedEvent(createEvent)); err != nil {
+		t.Fatalf("replicate create event: %v", err)
+	}
+
+	nextUsername := "merge-user-renamed"
+	sourceUpdated, updateUsernameEvent, err := source.UpdateUser(ctx, UpdateUserParams{
+		UserID:   user.ID,
+		Username: &nextUsername,
+	})
+	if err != nil {
+		t.Fatalf("update source username: %v", err)
+	}
+
+	nextProfile := `{"display_name":"Merged On Target"}`
+	targetUpdated, updateProfileEvent, err := target.UpdateUser(ctx, UpdateUserParams{
+		UserID:  user.ID,
+		Profile: &nextProfile,
+	})
+	if err != nil {
+		t.Fatalf("update target profile: %v", err)
+	}
+
+	if err := source.ApplyReplicatedEvent(ctx, ToReplicatedEvent(updateProfileEvent)); err != nil {
+		t.Fatalf("apply target profile update to source: %v", err)
+	}
+	if err := target.ApplyReplicatedEvent(ctx, ToReplicatedEvent(updateUsernameEvent)); err != nil {
+		t.Fatalf("apply source username update to target: %v", err)
+	}
+
+	sourceMerged, err := source.GetUser(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("get merged source user: %v", err)
+	}
+	targetMerged, err := target.GetUser(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("get merged target user: %v", err)
+	}
+
+	if sourceMerged.Username != sourceUpdated.Username || targetMerged.Username != sourceUpdated.Username {
+		t.Fatalf("expected merged username %q, source=%+v target=%+v", sourceUpdated.Username, sourceMerged, targetMerged)
+	}
+	if sourceMerged.Profile != targetUpdated.Profile || targetMerged.Profile != targetUpdated.Profile {
+		t.Fatalf("expected merged profile %q, source=%+v target=%+v", targetUpdated.Profile, sourceMerged, targetMerged)
+	}
+}
+
+func TestReplicatedUserUpdatesLatestFieldWins(t *testing.T) {
+	t.Parallel()
+
+	source := openNamedTestStore(t, "node-a", 1)
+	defer source.Close()
+
+	target := openNamedTestStore(t, "node-b", 2)
+	defer target.Close()
+
+	ctx := context.Background()
+	user, createEvent, err := source.CreateUser(ctx, CreateUserParams{
+		Username:     "winner-base",
+		PasswordHash: "hash-1",
+	})
+	if err != nil {
+		t.Fatalf("create source user: %v", err)
+	}
+	if err := target.ApplyReplicatedEvent(ctx, ToReplicatedEvent(createEvent)); err != nil {
+		t.Fatalf("replicate create event: %v", err)
+	}
+
+	firstName := "winner-from-source"
+	_, firstUpdateEvent, err := source.UpdateUser(ctx, UpdateUserParams{
+		UserID:   user.ID,
+		Username: &firstName,
+	})
+	if err != nil {
+		t.Fatalf("update source username: %v", err)
+	}
+
+	target.clock.Observe(clock.Timestamp{
+		WallTimeMs: source.clock.Now().WallTimeMs + 100,
+		Logical:    0,
+		NodeID:     1,
+	})
+
+	secondName := "winner-from-target"
+	targetUpdated, secondUpdateEvent, err := target.UpdateUser(ctx, UpdateUserParams{
+		UserID:   user.ID,
+		Username: &secondName,
+	})
+	if err != nil {
+		t.Fatalf("update target username: %v", err)
+	}
+
+	if err := source.ApplyReplicatedEvent(ctx, ToReplicatedEvent(secondUpdateEvent)); err != nil {
+		t.Fatalf("apply later target update to source: %v", err)
+	}
+	if err := target.ApplyReplicatedEvent(ctx, ToReplicatedEvent(firstUpdateEvent)); err != nil {
+		t.Fatalf("apply earlier source update to target: %v", err)
+	}
+
+	sourceMerged, err := source.GetUser(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("get merged source user: %v", err)
+	}
+	targetMerged, err := target.GetUser(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("get merged target user: %v", err)
+	}
+
+	if sourceMerged.Username != targetUpdated.Username || targetMerged.Username != targetUpdated.Username {
+		t.Fatalf("expected latest username %q, source=%+v target=%+v", targetUpdated.Username, sourceMerged, targetMerged)
+	}
+}
+
+func TestReplicatedDeletePreventsResurrection(t *testing.T) {
+	t.Parallel()
+
+	source := openNamedTestStore(t, "node-a", 1)
+	defer source.Close()
+
+	replica := openNamedTestStore(t, "node-b", 2)
+	defer replica.Close()
+
+	observer := openNamedTestStore(t, "node-c", 3)
+	defer observer.Close()
+
+	ctx := context.Background()
+	user, createEvent, err := source.CreateUser(ctx, CreateUserParams{
+		Username:     "tombstone-user",
+		PasswordHash: "hash-1",
+		Profile:      `{"display_name":"Before Delete"}`,
+	})
+	if err != nil {
+		t.Fatalf("create source user: %v", err)
+	}
+
+	for _, st := range []*Store{replica, observer} {
+		if err := st.ApplyReplicatedEvent(ctx, ToReplicatedEvent(createEvent)); err != nil {
+			t.Fatalf("replicate create event: %v", err)
+		}
+	}
+
+	newProfile := `{"display_name":"Stale Update"}`
+	_, staleUpdateEvent, err := replica.UpdateUser(ctx, UpdateUserParams{
+		UserID:  user.ID,
+		Profile: &newProfile,
+	})
+	if err != nil {
+		t.Fatalf("create stale update event: %v", err)
+	}
+
+	deleteEvent, err := source.DeleteUser(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("delete source user: %v", err)
+	}
+
+	if err := observer.ApplyReplicatedEvent(ctx, ToReplicatedEvent(deleteEvent)); err != nil {
+		t.Fatalf("apply delete event: %v", err)
+	}
+	if err := observer.ApplyReplicatedEvent(ctx, ToReplicatedEvent(staleUpdateEvent)); err != nil {
+		t.Fatalf("apply stale update event after delete: %v", err)
+	}
+
+	if _, err := observer.GetUser(ctx, user.ID); err != ErrNotFound {
+		t.Fatalf("expected deleted user to stay hidden, got %v", err)
+	}
+}
+
+func TestReplicatedUpdateUpsertsWithoutRegressingOnOlderCreate(t *testing.T) {
+	t.Parallel()
+
+	source := openNamedTestStore(t, "node-a", 1)
+	defer source.Close()
+
+	target := openNamedTestStore(t, "node-b", 2)
+	defer target.Close()
+
+	ctx := context.Background()
+	user, createEvent, err := source.CreateUser(ctx, CreateUserParams{
+		Username:     "upsert-base",
+		PasswordHash: "hash-1",
+		Profile:      `{"display_name":"Initial"}`,
+	})
+	if err != nil {
+		t.Fatalf("create source user: %v", err)
+	}
+
+	updatedName := "upsert-updated"
+	updatedProfile := `{"display_name":"Updated"}`
+	updatedUser, updateEvent, err := source.UpdateUser(ctx, UpdateUserParams{
+		UserID:   user.ID,
+		Username: &updatedName,
+		Profile:  &updatedProfile,
+	})
+	if err != nil {
+		t.Fatalf("update source user: %v", err)
+	}
+
+	if err := target.ApplyReplicatedEvent(ctx, ToReplicatedEvent(updateEvent)); err != nil {
+		t.Fatalf("apply update before create: %v", err)
+	}
+	if err := target.ApplyReplicatedEvent(ctx, ToReplicatedEvent(createEvent)); err != nil {
+		t.Fatalf("apply older create after update: %v", err)
+	}
+
+	loaded, err := target.GetUser(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("get upserted user: %v", err)
+	}
+	if loaded.Username != updatedUser.Username || loaded.Profile != updatedUser.Profile {
+		t.Fatalf("expected updated user to remain after older create, got %+v", loaded)
 	}
 }
 

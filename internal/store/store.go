@@ -8,77 +8,99 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
-	"github.com/google/uuid"
 	_ "github.com/mattn/go-sqlite3"
-)
 
-const (
-	UserRoleAdmin = "admin"
-	UserRoleUser  = "user"
-
-	currentDBVersion = 2
+	"notifier/internal/clock"
 )
 
 var (
-	ErrConflict            = errors.New("conflict")
-	ErrNotFound            = errors.New("not found")
-	ErrInvalidCredentials  = errors.New("invalid credentials")
-	ErrUnauthorizedService = errors.New("unauthorized service")
-	ErrInvalidRole         = errors.New("invalid role")
-	ErrRegistrationClosed  = errors.New("registration closed")
+	ErrConflict     = errors.New("conflict")
+	ErrNotFound     = errors.New("not found")
+	ErrInvalidInput = errors.New("invalid input")
 )
 
+type Options struct {
+	NodeID   string
+	NodeSlot uint16
+}
+
 type Store struct {
-	db *sql.DB
+	db       *sql.DB
+	nodeID   string
+	clock    *clock.Clock
+	ids      *clock.IDGenerator
+	nodeSlot uint16
 }
 
 type User struct {
-	ID        int64     `json:"id"`
-	Username  string    `json:"username"`
-	PushID    string    `json:"push_id"`
-	Role      string    `json:"role"`
-	CreatedAt time.Time `json:"created_at"`
+	ID                  int64            `json:"id"`
+	Username            string           `json:"username"`
+	PasswordHash        string           `json:"password_hash"`
+	Profile             string           `json:"profile"`
+	CreatedAt           clock.Timestamp  `json:"created_at"`
+	UpdatedAt           clock.Timestamp  `json:"updated_at"`
+	DeletedAt           *clock.Timestamp `json:"deleted_at,omitempty"`
+	VersionUsername     clock.Timestamp  `json:"version_username"`
+	VersionPasswordHash clock.Timestamp  `json:"version_password_hash"`
+	VersionProfile      clock.Timestamp  `json:"version_profile"`
+	VersionDeleted      *clock.Timestamp `json:"version_deleted,omitempty"`
+	OriginNodeID        string           `json:"origin_node_id"`
 }
 
-type UserCredentials struct {
-	User
+type Message struct {
+	ID           int64           `json:"id"`
+	UserID       int64           `json:"user_id"`
+	Sender       string          `json:"sender"`
+	Body         string          `json:"body"`
+	Metadata     string          `json:"metadata,omitempty"`
+	CreatedAt    clock.Timestamp `json:"created_at"`
+	OriginNodeID string          `json:"origin_node_id"`
+}
+
+type Event struct {
+	Sequence     int64           `json:"sequence"`
+	EventID      int64           `json:"event_id"`
+	Kind         string          `json:"kind"`
+	Aggregate    string          `json:"aggregate"`
+	AggregateID  int64           `json:"aggregate_id"`
+	HLC          clock.Timestamp `json:"hlc"`
+	OriginNodeID string          `json:"origin_node_id"`
+	Payload      string          `json:"payload"`
+}
+
+type CreateUserParams struct {
+	Username     string
 	PasswordHash string
+	Profile      string
 }
 
-type Notification struct {
-	ID        int64     `json:"id"`
-	PushID    string    `json:"push_id"`
-	Sender    string    `json:"sender"`
-	Title     string    `json:"title"`
-	Body      string    `json:"body"`
-	Metadata  string    `json:"metadata,omitempty"`
-	CreatedAt time.Time `json:"created_at"`
+type UpdateUserParams struct {
+	UserID       int64
+	Username     *string
+	PasswordHash *string
+	Profile      *string
 }
 
-type ServiceKey struct {
-	ID         int64      `json:"id"`
-	Name       string     `json:"name"`
-	Prefix     string     `json:"prefix"`
-	CreatedAt  time.Time  `json:"created_at"`
-	LastUsedAt *time.Time `json:"last_used_at,omitempty"`
+type CreateMessageParams struct {
+	UserID   int64
+	Sender   string
+	Body     string
+	Metadata string
 }
 
-type resultExecer interface {
-	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
-}
-
-func Open(dbPath string) (*Store, error) {
+func Open(dbPath string, opts Options) (*Store, error) {
+	if strings.TrimSpace(opts.NodeID) == "" {
+		return nil, fmt.Errorf("node id cannot be empty")
+	}
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
 		return nil, fmt.Errorf("create db dir: %w", err)
 	}
 
 	db, err := sql.Open("sqlite3", dbPath)
 	if err != nil {
-		return nil, fmt.Errorf("open sqlite3: %w", err)
+		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
-
 	db.SetMaxOpenConns(1)
 
 	if _, err := db.Exec(`PRAGMA foreign_keys = ON;`); err != nil {
@@ -86,7 +108,19 @@ func Open(dbPath string) (*Store, error) {
 		return nil, fmt.Errorf("enable foreign keys: %w", err)
 	}
 
-	return &Store{db: db}, nil
+	ids, err := clock.NewIDGenerator(opts.NodeSlot)
+	if err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+
+	return &Store{
+		db:       db,
+		nodeID:   opts.NodeID,
+		nodeSlot: opts.NodeSlot,
+		clock:    clock.NewClock(opts.NodeSlot),
+		ids:      ids,
+	}, nil
 }
 
 func (s *Store) Close() error {
@@ -94,237 +128,326 @@ func (s *Store) Close() error {
 }
 
 func (s *Store) Init(ctx context.Context) error {
-	if err := s.ensureKVTable(ctx); err != nil {
-		return fmt.Errorf("init kv table: %w", err)
-	}
-
-	version, err := s.schemaVersion(ctx)
-	if err != nil {
-		return fmt.Errorf("load schema version: %w", err)
-	}
-
-	for version < currentDBVersion {
-		nextVersion := version + 1
-		switch nextVersion {
-		case 1:
-			err = s.migrateToV1(ctx)
-		case 2:
-			err = s.migrateToV2(ctx)
-		default:
-			return fmt.Errorf("unsupported migration target version %d", nextVersion)
-		}
-		if err != nil {
-			return fmt.Errorf("migrate to version %d: %w", nextVersion, err)
-		}
-		if err := s.setSchemaVersion(ctx, nextVersion); err != nil {
-			return fmt.Errorf("persist schema version %d: %w", nextVersion, err)
-		}
-		version = nextVersion
-	}
-
-	if err := s.setSchemaVersion(ctx, version); err != nil {
-		return fmt.Errorf("finalize schema version %d: %w", version, err)
-	}
-
-	return nil
-}
-
-func (s *Store) migrateToV1(ctx context.Context) error {
 	const schema = `
+CREATE TABLE IF NOT EXISTS schema_meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS users (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    username TEXT NOT NULL UNIQUE,
+    user_id INTEGER PRIMARY KEY,
+    username TEXT NOT NULL,
     password_hash TEXT NOT NULL,
-    push_id TEXT NOT NULL UNIQUE,
-    created_at TEXT NOT NULL
+    profile TEXT NOT NULL DEFAULT '{}',
+    created_at_hlc TEXT NOT NULL,
+    updated_at_hlc TEXT NOT NULL,
+    deleted_at_hlc TEXT,
+    version_username TEXT NOT NULL,
+    version_password_hash TEXT NOT NULL,
+    version_profile TEXT NOT NULL,
+    version_deleted TEXT,
+    origin_node_id TEXT NOT NULL
 );
+CREATE INDEX IF NOT EXISTS idx_users_username_deleted ON users(username, deleted_at_hlc);
 
-CREATE TABLE IF NOT EXISTS user_sessions (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+CREATE TABLE IF NOT EXISTS messages (
+    message_id INTEGER PRIMARY KEY,
     user_id INTEGER NOT NULL,
-    token_hash TEXT NOT NULL UNIQUE,
-    expires_at TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
-);
-CREATE INDEX IF NOT EXISTS idx_user_sessions_expires_at ON user_sessions(expires_at);
-
-CREATE TABLE IF NOT EXISTS service_api_keys (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL UNIQUE,
-    token_hash TEXT NOT NULL UNIQUE,
-    token_prefix TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    last_used_at TEXT
-);
-
-CREATE TABLE IF NOT EXISTS notifications (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER NOT NULL,
-    push_id TEXT NOT NULL,
     sender TEXT NOT NULL,
-    title TEXT NOT NULL,
     body TEXT NOT NULL,
     metadata TEXT,
-    created_at TEXT NOT NULL,
-    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+    created_at_hlc TEXT NOT NULL,
+    origin_node_id TEXT NOT NULL,
+    FOREIGN KEY(user_id) REFERENCES users(user_id)
 );
-CREATE INDEX IF NOT EXISTS idx_notifications_user_id_created_at ON notifications(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_messages_user_created ON messages(user_id, created_at_hlc DESC, message_id DESC);
+
+CREATE TABLE IF NOT EXISTS event_log (
+    sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id INTEGER NOT NULL UNIQUE,
+    kind TEXT NOT NULL,
+    aggregate_type TEXT NOT NULL,
+    aggregate_id INTEGER NOT NULL,
+    hlc TEXT NOT NULL,
+    origin_node_id TEXT NOT NULL,
+    payload TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS peer_cursors (
+    peer_node_id TEXT PRIMARY KEY,
+    acked_sequence INTEGER NOT NULL DEFAULT 0,
+    updated_at_hlc TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS applied_events (
+    event_id INTEGER PRIMARY KEY,
+    source_node_id TEXT NOT NULL,
+    applied_at_hlc TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS user_conflicts (
+    conflict_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    loser_user_id INTEGER NOT NULL,
+    winner_user_id INTEGER NOT NULL,
+    username TEXT NOT NULL,
+    detected_at_hlc TEXT NOT NULL,
+    resolved_by_event_id INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS tombstones (
+    entity_type TEXT NOT NULL,
+    entity_id INTEGER NOT NULL,
+    deleted_at_hlc TEXT NOT NULL,
+    expires_at_hlc TEXT,
+    origin_node_id TEXT NOT NULL,
+    PRIMARY KEY(entity_type, entity_id)
+);
 `
 	if _, err := s.db.ExecContext(ctx, schema); err != nil {
-		return fmt.Errorf("init v1 schema: %w", err)
-	}
-	return nil
-}
-
-func (s *Store) migrateToV2(ctx context.Context) error {
-	hasRole, err := s.columnExists(ctx, "users", "role")
-	if err != nil {
-		return err
-	}
-	if !hasRole {
-		if _, err := s.db.ExecContext(ctx, `ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'`); err != nil {
-			return fmt.Errorf("add users.role column: %w", err)
-		}
-	}
-
-	if _, err := s.db.ExecContext(ctx, `UPDATE users SET role = ? WHERE role IS NULL OR TRIM(role) = ''`, UserRoleUser); err != nil {
-		return fmt.Errorf("backfill user roles: %w", err)
-	}
-
-	adminCount, err := s.CountAdmins(ctx)
-	if err != nil {
-		return err
-	}
-	if adminCount > 0 {
-		return nil
-	}
-
-	totalUsers, err := s.CountUsers(ctx)
-	if err != nil {
-		return err
-	}
-	if totalUsers == 0 {
-		return nil
+		return fmt.Errorf("init schema: %w", err)
 	}
 
 	if _, err := s.db.ExecContext(ctx, `
-UPDATE users
-SET role = ?
-WHERE id = (SELECT id FROM users ORDER BY id ASC LIMIT 1)
-`, UserRoleAdmin); err != nil {
-		return fmt.Errorf("promote bootstrap admin: %w", err)
+INSERT INTO schema_meta(key, value)
+VALUES('schema_version', '1')
+ON CONFLICT(key) DO UPDATE SET value = excluded.value
+`); err != nil {
+		return fmt.Errorf("store schema version: %w", err)
 	}
 	return nil
 }
 
-func NormalizeUserRole(role string) string {
-	return strings.ToLower(strings.TrimSpace(role))
-}
-
-func IsValidUserRole(role string) bool {
-	switch NormalizeUserRole(role) {
-	case UserRoleAdmin, UserRoleUser:
-		return true
-	default:
-		return false
+func (s *Store) CreateUser(ctx context.Context, params CreateUserParams) (User, Event, error) {
+	username := strings.TrimSpace(params.Username)
+	if username == "" {
+		return User{}, Event{}, fmt.Errorf("%w: username cannot be empty", ErrInvalidInput)
 	}
-}
-
-func (s *Store) CountUsers(ctx context.Context) (int, error) {
-	var count int
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM users`).Scan(&count); err != nil {
-		return 0, fmt.Errorf("count users: %w", err)
+	if strings.TrimSpace(params.PasswordHash) == "" {
+		return User{}, Event{}, fmt.Errorf("%w: password hash cannot be empty", ErrInvalidInput)
 	}
-	return count, nil
-}
 
-func (s *Store) CountAdmins(ctx context.Context) (int, error) {
-	var count int
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM users WHERE role = ?`, UserRoleAdmin).Scan(&count); err != nil {
-		return 0, fmt.Errorf("count admins: %w", err)
+	profile := strings.TrimSpace(params.Profile)
+	if profile == "" {
+		profile = "{}"
 	}
-	return count, nil
-}
 
-func (s *Store) CreateInitialAdmin(ctx context.Context, username, passwordHash string) (User, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return User{}, fmt.Errorf("begin bootstrap admin transaction: %w", err)
+		return User{}, Event{}, fmt.Errorf("begin create user: %w", err)
 	}
 	defer tx.Rollback()
 
-	var count int
-	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM users`).Scan(&count); err != nil {
-		return User{}, fmt.Errorf("count users for bootstrap admin: %w", err)
+	exists, err := activeUsernameExists(ctx, tx, username, 0)
+	if err != nil {
+		return User{}, Event{}, err
 	}
-	if count > 0 {
-		return User{}, ErrRegistrationClosed
+	if exists {
+		return User{}, Event{}, ErrConflict
 	}
 
-	user, err := insertUser(ctx, tx, username, passwordHash, UserRoleAdmin, time.Now().UTC())
-	if err != nil {
-		return User{}, err
+	now := s.clock.Now()
+	user := User{
+		ID:                  s.ids.Next(),
+		Username:            username,
+		PasswordHash:        params.PasswordHash,
+		Profile:             profile,
+		CreatedAt:           now,
+		UpdatedAt:           now,
+		VersionUsername:     now,
+		VersionPasswordHash: now,
+		VersionProfile:      now,
+		OriginNodeID:        s.nodeID,
 	}
+
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO users(
+    user_id, username, password_hash, profile, created_at_hlc, updated_at_hlc,
+    deleted_at_hlc, version_username, version_password_hash, version_profile,
+    version_deleted, origin_node_id
+)
+VALUES(?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, NULL, ?)
+`, user.ID, user.Username, user.PasswordHash, user.Profile, user.CreatedAt.String(),
+		user.UpdatedAt.String(), user.VersionUsername.String(), user.VersionPasswordHash.String(),
+		user.VersionProfile.String(), user.OriginNodeID); err != nil {
+		return User{}, Event{}, fmt.Errorf("insert user: %w", err)
+	}
+
+	payload, err := encodeCreateUserPayload(user)
+	if err != nil {
+		return User{}, Event{}, fmt.Errorf("marshal create user event: %w", err)
+	}
+
+	event, err := s.insertEvent(ctx, tx, "user.created", "user", user.ID, now, string(payload))
+	if err != nil {
+		return User{}, Event{}, err
+	}
+
 	if err := tx.Commit(); err != nil {
-		return User{}, fmt.Errorf("commit bootstrap admin transaction: %w", err)
+		return User{}, Event{}, fmt.Errorf("commit create user: %w", err)
 	}
-	return user, nil
+	return user, event, nil
 }
 
-func (s *Store) CreateUser(ctx context.Context, username, passwordHash, role string) (User, error) {
-	return insertUser(ctx, s.db, username, passwordHash, role, time.Now().UTC())
-}
+func (s *Store) UpdateUser(ctx context.Context, params UpdateUserParams) (User, Event, error) {
+	if params.UserID == 0 {
+		return User{}, Event{}, fmt.Errorf("%w: user id cannot be empty", ErrInvalidInput)
+	}
+	if params.Username == nil && params.PasswordHash == nil && params.Profile == nil {
+		return User{}, Event{}, fmt.Errorf("%w: at least one field must be updated", ErrInvalidInput)
+	}
 
-func (s *Store) GetUserByUsername(ctx context.Context, username string) (UserCredentials, error) {
-	var rec UserCredentials
-	var createdAt string
-	err := s.db.QueryRowContext(ctx, `
-SELECT id, username, push_id, role, password_hash, created_at
-FROM users
-WHERE username = ?
-`, strings.TrimSpace(username)).Scan(&rec.ID, &rec.Username, &rec.PushID, &rec.Role, &rec.PasswordHash, &createdAt)
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return UserCredentials{}, ErrNotFound
+		return User{}, Event{}, fmt.Errorf("begin update user: %w", err)
+	}
+	defer tx.Rollback()
+
+	current, err := s.getUserTx(ctx, tx, params.UserID, false)
+	if err != nil {
+		return User{}, Event{}, err
+	}
+
+	now := s.clock.Now()
+	changed := false
+
+	if params.Username != nil {
+		nextUsername := strings.TrimSpace(*params.Username)
+		if nextUsername == "" {
+			return User{}, Event{}, fmt.Errorf("%w: username cannot be empty", ErrInvalidInput)
 		}
-		return UserCredentials{}, fmt.Errorf("get user by username: %w", err)
+		if nextUsername != current.Username {
+			exists, err := activeUsernameExists(ctx, tx, nextUsername, current.ID)
+			if err != nil {
+				return User{}, Event{}, err
+			}
+			if exists {
+				return User{}, Event{}, ErrConflict
+			}
+			current.Username = nextUsername
+			current.VersionUsername = now
+			changed = true
+		}
 	}
 
-	rec.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt)
-	if err != nil {
-		return UserCredentials{}, fmt.Errorf("parse user created_at: %w", err)
+	if params.PasswordHash != nil {
+		nextHash := strings.TrimSpace(*params.PasswordHash)
+		if nextHash == "" {
+			return User{}, Event{}, fmt.Errorf("%w: password hash cannot be empty", ErrInvalidInput)
+		}
+		if nextHash != current.PasswordHash {
+			current.PasswordHash = nextHash
+			current.VersionPasswordHash = now
+			changed = true
+		}
 	}
-	return rec, nil
+
+	if params.Profile != nil {
+		nextProfile := strings.TrimSpace(*params.Profile)
+		if nextProfile == "" {
+			nextProfile = "{}"
+		}
+		if nextProfile != current.Profile {
+			current.Profile = nextProfile
+			current.VersionProfile = now
+			changed = true
+		}
+	}
+
+	if !changed {
+		return current, Event{}, fmt.Errorf("%w: no changes detected", ErrInvalidInput)
+	}
+	current.UpdatedAt = now
+
+	if _, err := tx.ExecContext(ctx, `
+UPDATE users
+SET username = ?, password_hash = ?, profile = ?, updated_at_hlc = ?,
+    version_username = ?, version_password_hash = ?, version_profile = ?
+WHERE user_id = ? AND deleted_at_hlc IS NULL
+`, current.Username, current.PasswordHash, current.Profile, current.UpdatedAt.String(),
+		current.VersionUsername.String(), current.VersionPasswordHash.String(),
+		current.VersionProfile.String(), current.ID); err != nil {
+		return User{}, Event{}, fmt.Errorf("update user: %w", err)
+	}
+
+	payload, err := encodeUpdateUserPayload(current)
+	if err != nil {
+		return User{}, Event{}, fmt.Errorf("marshal update user event: %w", err)
+	}
+
+	event, err := s.insertEvent(ctx, tx, "user.updated", "user", current.ID, now, string(payload))
+	if err != nil {
+		return User{}, Event{}, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return User{}, Event{}, fmt.Errorf("commit update user: %w", err)
+	}
+	return current, event, nil
 }
 
-func (s *Store) GetUserByID(ctx context.Context, userID int64) (User, error) {
-	var user User
-	var createdAt string
-	err := s.db.QueryRowContext(ctx, `
-SELECT id, username, push_id, role, created_at
-FROM users
-WHERE id = ?
-`, userID).Scan(&user.ID, &user.Username, &user.PushID, &user.Role, &createdAt)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return User{}, ErrNotFound
-		}
-		return User{}, fmt.Errorf("get user by id: %w", err)
+func (s *Store) DeleteUser(ctx context.Context, userID int64) (Event, error) {
+	if userID == 0 {
+		return Event{}, fmt.Errorf("%w: user id cannot be empty", ErrInvalidInput)
 	}
 
-	user.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt)
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return User{}, fmt.Errorf("parse user created_at: %w", err)
+		return Event{}, fmt.Errorf("begin delete user: %w", err)
 	}
-	return user, nil
+	defer tx.Rollback()
+
+	user, err := s.getUserTx(ctx, tx, userID, false)
+	if err != nil {
+		return Event{}, err
+	}
+
+	now := s.clock.Now()
+	if _, err := tx.ExecContext(ctx, `
+UPDATE users
+SET deleted_at_hlc = ?, updated_at_hlc = ?, version_deleted = ?
+WHERE user_id = ? AND deleted_at_hlc IS NULL
+`, now.String(), now.String(), now.String(), user.ID); err != nil {
+		return Event{}, fmt.Errorf("delete user: %w", err)
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO tombstones(entity_type, entity_id, deleted_at_hlc, expires_at_hlc, origin_node_id)
+VALUES('user', ?, ?, NULL, ?)
+ON CONFLICT(entity_type, entity_id) DO UPDATE SET
+    deleted_at_hlc = excluded.deleted_at_hlc,
+    origin_node_id = excluded.origin_node_id
+`, user.ID, now.String(), s.nodeID); err != nil {
+		return Event{}, fmt.Errorf("insert tombstone: %w", err)
+	}
+
+	payload, err := encodeDeleteUserPayload(user.ID, now.String())
+	if err != nil {
+		return Event{}, fmt.Errorf("marshal delete user event: %w", err)
+	}
+
+	event, err := s.insertEvent(ctx, tx, "user.deleted", "user", user.ID, now, string(payload))
+	if err != nil {
+		return Event{}, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return Event{}, fmt.Errorf("commit delete user: %w", err)
+	}
+	return event, nil
+}
+
+func (s *Store) GetUser(ctx context.Context, userID int64) (User, error) {
+	return s.getUser(ctx, userID, false)
 }
 
 func (s *Store) ListUsers(ctx context.Context) ([]User, error) {
 	rows, err := s.db.QueryContext(ctx, `
-SELECT id, username, push_id, role, created_at
+SELECT user_id, username, password_hash, profile, created_at_hlc, updated_at_hlc,
+       deleted_at_hlc, version_username, version_password_hash, version_profile,
+       version_deleted, origin_node_id
 FROM users
-ORDER BY id ASC
+WHERE deleted_at_hlc IS NULL
+ORDER BY user_id ASC
 `)
 	if err != nil {
 		return nil, fmt.Errorf("list users: %w", err)
@@ -333,14 +456,9 @@ ORDER BY id ASC
 
 	var users []User
 	for rows.Next() {
-		var user User
-		var createdAt string
-		if err := rows.Scan(&user.ID, &user.Username, &user.PushID, &user.Role, &createdAt); err != nil {
-			return nil, fmt.Errorf("scan user: %w", err)
-		}
-		user.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt)
+		user, err := scanUser(rows)
 		if err != nil {
-			return nil, fmt.Errorf("parse user created_at: %w", err)
+			return nil, err
 		}
 		users = append(users, user)
 	}
@@ -350,383 +468,325 @@ ORDER BY id ASC
 	return users, nil
 }
 
-func (s *Store) GetUserByPushID(ctx context.Context, pushID string) (User, error) {
-	var user User
-	var createdAt string
-	err := s.db.QueryRowContext(ctx, `
-SELECT id, username, push_id, role, created_at
-FROM users
-WHERE push_id = ?
-`, pushID).Scan(&user.ID, &user.Username, &user.PushID, &user.Role, &createdAt)
+func (s *Store) CreateMessage(ctx context.Context, params CreateMessageParams) (Message, Event, error) {
+	if params.UserID == 0 {
+		return Message{}, Event{}, fmt.Errorf("%w: user id cannot be empty", ErrInvalidInput)
+	}
+	if strings.TrimSpace(params.Sender) == "" {
+		return Message{}, Event{}, fmt.Errorf("%w: sender cannot be empty", ErrInvalidInput)
+	}
+	if strings.TrimSpace(params.Body) == "" {
+		return Message{}, Event{}, fmt.Errorf("%w: body cannot be empty", ErrInvalidInput)
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return User{}, ErrNotFound
-		}
-		return User{}, fmt.Errorf("get user by push id: %w", err)
+		return Message{}, Event{}, fmt.Errorf("begin create message: %w", err)
+	}
+	defer tx.Rollback()
+
+	if _, err := s.getUserTx(ctx, tx, params.UserID, false); err != nil {
+		return Message{}, Event{}, err
 	}
 
-	user.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt)
-	if err != nil {
-		return User{}, fmt.Errorf("parse user created_at: %w", err)
-	}
-	return user, nil
-}
-
-func (s *Store) UpdateUserRole(ctx context.Context, userID int64, role string) error {
-	normalizedRole, err := normalizeUserRole(role)
-	if err != nil {
-		return err
+	now := s.clock.Now()
+	message := Message{
+		ID:           s.ids.Next(),
+		UserID:       params.UserID,
+		Sender:       strings.TrimSpace(params.Sender),
+		Body:         strings.TrimSpace(params.Body),
+		Metadata:     strings.TrimSpace(params.Metadata),
+		CreatedAt:    now,
+		OriginNodeID: s.nodeID,
 	}
 
-	result, err := s.db.ExecContext(ctx, `UPDATE users SET role = ? WHERE id = ?`, normalizedRole, userID)
-	if err != nil {
-		return fmt.Errorf("update user role: %w", err)
-	}
-	return assertRowsAffected(result, "update user role")
-}
-
-func (s *Store) UpdateUserPasswordHash(ctx context.Context, userID int64, passwordHash string) error {
-	result, err := s.db.ExecContext(ctx, `UPDATE users SET password_hash = ? WHERE id = ?`, passwordHash, userID)
-	if err != nil {
-		return fmt.Errorf("update user password hash: %w", err)
-	}
-	return assertRowsAffected(result, "update user password hash")
-}
-
-func (s *Store) DeleteUser(ctx context.Context, userID int64) error {
-	result, err := s.db.ExecContext(ctx, `DELETE FROM users WHERE id = ?`, userID)
-	if err != nil {
-		return fmt.Errorf("delete user: %w", err)
-	}
-	return assertRowsAffected(result, "delete user")
-}
-
-func (s *Store) CreateSession(ctx context.Context, userID int64, tokenHash string, expiresAt time.Time) error {
-	_, err := s.db.ExecContext(ctx, `
-INSERT INTO user_sessions(user_id, token_hash, expires_at, created_at)
-VALUES(?, ?, ?, ?)
-`, userID, tokenHash, expiresAt.UTC().Format(time.RFC3339Nano), time.Now().UTC().Format(time.RFC3339Nano))
-	if err != nil {
-		return fmt.Errorf("create session: %w", err)
-	}
-	return nil
-}
-
-func (s *Store) GetUserBySessionTokenHash(ctx context.Context, tokenHash string) (User, error) {
-	var user User
-	var createdAt string
-	var expiresAt string
-	err := s.db.QueryRowContext(ctx, `
-SELECT u.id, u.username, u.push_id, u.role, u.created_at, us.expires_at
-FROM user_sessions us
-JOIN users u ON u.id = us.user_id
-WHERE us.token_hash = ?
-`, tokenHash).Scan(&user.ID, &user.Username, &user.PushID, &user.Role, &createdAt, &expiresAt)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return User{}, ErrNotFound
-		}
-		return User{}, fmt.Errorf("get user by session token: %w", err)
-	}
-
-	user.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt)
-	if err != nil {
-		return User{}, fmt.Errorf("parse user created_at: %w", err)
-	}
-
-	expiresTime, err := time.Parse(time.RFC3339Nano, expiresAt)
-	if err != nil {
-		return User{}, fmt.Errorf("parse session expires_at: %w", err)
-	}
-	if time.Now().UTC().After(expiresTime) {
-		return User{}, ErrNotFound
-	}
-
-	return user, nil
-}
-
-func (s *Store) DeleteExpiredSessions(ctx context.Context) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM user_sessions WHERE expires_at <= ?`, time.Now().UTC().Format(time.RFC3339Nano))
-	if err != nil {
-		return fmt.Errorf("delete expired sessions: %w", err)
-	}
-	return nil
-}
-
-func (s *Store) CreateServiceKey(ctx context.Context, name, tokenHash, prefix string) (ServiceKey, error) {
-	now := time.Now().UTC()
-	result, err := s.db.ExecContext(ctx, `
-INSERT INTO service_api_keys(name, token_hash, token_prefix, created_at)
-VALUES(?, ?, ?, ?)
-`, name, tokenHash, prefix, now.Format(time.RFC3339Nano))
-	if err != nil {
-		if isUniqueErr(err) {
-			return ServiceKey{}, ErrConflict
-		}
-		return ServiceKey{}, fmt.Errorf("create service key: %w", err)
-	}
-
-	id, _ := result.LastInsertId()
-	return ServiceKey{ID: id, Name: name, Prefix: prefix, CreatedAt: now}, nil
-}
-
-func (s *Store) GetServiceKeyByTokenHash(ctx context.Context, tokenHash string) (ServiceKey, error) {
-	var key ServiceKey
-	var createdAt string
-	var lastUsed sql.NullString
-	err := s.db.QueryRowContext(ctx, `
-SELECT id, name, token_prefix, created_at, last_used_at
-FROM service_api_keys
-WHERE token_hash = ?
-`, tokenHash).Scan(&key.ID, &key.Name, &key.Prefix, &createdAt, &lastUsed)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return ServiceKey{}, ErrUnauthorizedService
-		}
-		return ServiceKey{}, fmt.Errorf("get service key: %w", err)
-	}
-
-	key.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt)
-	if err != nil {
-		return ServiceKey{}, fmt.Errorf("parse service key created_at: %w", err)
-	}
-	if lastUsed.Valid {
-		parsed, err := time.Parse(time.RFC3339Nano, lastUsed.String)
-		if err != nil {
-			return ServiceKey{}, fmt.Errorf("parse service key last_used_at: %w", err)
-		}
-		key.LastUsedAt = &parsed
-	}
-	return key, nil
-}
-
-func (s *Store) TouchServiceKeyUsage(ctx context.Context, keyID int64) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE service_api_keys SET last_used_at = ? WHERE id = ?`, time.Now().UTC().Format(time.RFC3339Nano), keyID)
-	if err != nil {
-		return fmt.Errorf("touch service key usage: %w", err)
-	}
-	return nil
-}
-
-func (s *Store) ListServiceKeys(ctx context.Context) ([]ServiceKey, error) {
-	rows, err := s.db.QueryContext(ctx, `
-SELECT id, name, token_prefix, created_at, last_used_at
-FROM service_api_keys
-ORDER BY id ASC
-`)
-	if err != nil {
-		return nil, fmt.Errorf("list service keys: %w", err)
-	}
-	defer rows.Close()
-
-	var keys []ServiceKey
-	for rows.Next() {
-		var key ServiceKey
-		var createdAt string
-		var lastUsed sql.NullString
-		if err := rows.Scan(&key.ID, &key.Name, &key.Prefix, &createdAt, &lastUsed); err != nil {
-			return nil, fmt.Errorf("scan service key: %w", err)
-		}
-		key.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt)
-		if err != nil {
-			return nil, fmt.Errorf("parse service key created_at: %w", err)
-		}
-		if lastUsed.Valid {
-			parsed, err := time.Parse(time.RFC3339Nano, lastUsed.String)
-			if err != nil {
-				return nil, fmt.Errorf("parse service key last_used_at: %w", err)
-			}
-			key.LastUsedAt = &parsed
-		}
-		keys = append(keys, key)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate service keys: %w", err)
-	}
-	return keys, nil
-}
-
-func (s *Store) CreateNotification(ctx context.Context, userID int64, pushID, sender, title, body, metadata string) (Notification, error) {
-	now := time.Now().UTC()
-	result, err := s.db.ExecContext(ctx, `
-INSERT INTO notifications(user_id, push_id, sender, title, body, metadata, created_at)
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO messages(message_id, user_id, sender, body, metadata, created_at_hlc, origin_node_id)
 VALUES(?, ?, ?, ?, ?, ?, ?)
-`, userID, pushID, sender, title, body, nullIfEmpty(metadata), now.Format(time.RFC3339Nano))
-	if err != nil {
-		return Notification{}, fmt.Errorf("create notification: %w", err)
+`, message.ID, message.UserID, message.Sender, message.Body, nullIfEmpty(message.Metadata),
+		message.CreatedAt.String(), message.OriginNodeID); err != nil {
+		return Message{}, Event{}, fmt.Errorf("insert message: %w", err)
 	}
 
-	id, _ := result.LastInsertId()
-	return Notification{
-		ID:        id,
-		PushID:    pushID,
-		Sender:    sender,
-		Title:     title,
-		Body:      body,
-		Metadata:  metadata,
-		CreatedAt: now,
-	}, nil
+	payload, err := encodeCreateMessagePayload(message)
+	if err != nil {
+		return Message{}, Event{}, fmt.Errorf("marshal create message event: %w", err)
+	}
+
+	event, err := s.insertEvent(ctx, tx, "message.created", "message", message.ID, now, string(payload))
+	if err != nil {
+		return Message{}, Event{}, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return Message{}, Event{}, fmt.Errorf("commit create message: %w", err)
+	}
+	return message, event, nil
 }
 
-func (s *Store) ListNotificationsByUser(ctx context.Context, userID int64, limit int) ([]Notification, error) {
-	if limit <= 0 || limit > 100 {
-		limit = 20
+func (s *Store) ListMessagesByUser(ctx context.Context, userID int64, limit int) ([]Message, error) {
+	if limit <= 0 || limit > 1000 {
+		limit = 100
 	}
 
 	rows, err := s.db.QueryContext(ctx, `
-SELECT id, push_id, sender, title, body, COALESCE(metadata, ''), created_at
-FROM notifications
+SELECT message_id, user_id, sender, body, COALESCE(metadata, ''), created_at_hlc, origin_node_id
+FROM messages
 WHERE user_id = ?
-ORDER BY created_at DESC
+ORDER BY created_at_hlc DESC, message_id DESC
 LIMIT ?
 `, userID, limit)
 	if err != nil {
-		return nil, fmt.Errorf("list notifications: %w", err)
+		return nil, fmt.Errorf("list messages: %w", err)
 	}
 	defer rows.Close()
 
-	var notifications []Notification
+	var messages []Message
 	for rows.Next() {
-		var item Notification
-		var createdAt string
-		if err := rows.Scan(&item.ID, &item.PushID, &item.Sender, &item.Title, &item.Body, &item.Metadata, &createdAt); err != nil {
-			return nil, fmt.Errorf("scan notification: %w", err)
-		}
-		item.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt)
+		message, err := scanMessage(rows)
 		if err != nil {
-			return nil, fmt.Errorf("parse notification created_at: %w", err)
+			return nil, err
 		}
-		notifications = append(notifications, item)
+		messages = append(messages, message)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate notifications: %w", err)
+		return nil, fmt.Errorf("iterate messages: %w", err)
 	}
-	return notifications, nil
+	return messages, nil
 }
 
-func insertUser(ctx context.Context, execer resultExecer, username, passwordHash, role string, now time.Time) (User, error) {
-	normalizedRole, err := normalizeUserRole(role)
+func (s *Store) ListEvents(ctx context.Context, afterSequence int64, limit int) ([]Event, error) {
+	if limit <= 0 || limit > 1000 {
+		limit = 100
+	}
+
+	rows, err := s.db.QueryContext(ctx, `
+SELECT sequence, event_id, kind, aggregate_type, aggregate_id, hlc, origin_node_id, payload
+FROM event_log
+WHERE sequence > ?
+ORDER BY sequence ASC
+LIMIT ?
+`, afterSequence, limit)
 	if err != nil {
+		return nil, fmt.Errorf("list events: %w", err)
+	}
+	defer rows.Close()
+
+	var events []Event
+	for rows.Next() {
+		event, err := scanEvent(rows)
+		if err != nil {
+			return nil, err
+		}
+		events = append(events, event)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate events: %w", err)
+	}
+	return events, nil
+}
+
+func (s *Store) getUser(ctx context.Context, userID int64, includeDeleted bool) (User, error) {
+	query := `
+SELECT user_id, username, password_hash, profile, created_at_hlc, updated_at_hlc,
+       deleted_at_hlc, version_username, version_password_hash, version_profile,
+       version_deleted, origin_node_id
+FROM users
+WHERE user_id = ?`
+	if !includeDeleted {
+		query += ` AND deleted_at_hlc IS NULL`
+	}
+
+	row := s.db.QueryRowContext(ctx, query, userID)
+	user, err := scanUser(row)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return User{}, ErrNotFound
+		}
 		return User{}, err
 	}
-
-	user := User{
-		Username:  strings.TrimSpace(username),
-		PushID:    "push_" + uuid.NewString(),
-		Role:      normalizedRole,
-		CreatedAt: now,
-	}
-
-	result, err := execer.ExecContext(ctx, `
-INSERT INTO users(username, password_hash, push_id, role, created_at)
-VALUES(?, ?, ?, ?, ?)
-`, user.Username, passwordHash, user.PushID, user.Role, now.Format(time.RFC3339Nano))
-	if err != nil {
-		if isUniqueErr(err) {
-			return User{}, ErrConflict
-		}
-		return User{}, fmt.Errorf("create user: %w", err)
-	}
-
-	user.ID, _ = result.LastInsertId()
 	return user, nil
 }
 
-func normalizeUserRole(role string) (string, error) {
-	normalized := NormalizeUserRole(role)
-	if !IsValidUserRole(normalized) {
-		return "", ErrInvalidRole
+func (s *Store) getUserTx(ctx context.Context, tx *sql.Tx, userID int64, includeDeleted bool) (User, error) {
+	query := `
+SELECT user_id, username, password_hash, profile, created_at_hlc, updated_at_hlc,
+       deleted_at_hlc, version_username, version_password_hash, version_profile,
+       version_deleted, origin_node_id
+FROM users
+WHERE user_id = ?`
+	if !includeDeleted {
+		query += ` AND deleted_at_hlc IS NULL`
 	}
-	return normalized, nil
-}
 
-func assertRowsAffected(result sql.Result, action string) error {
-	rowsAffected, err := result.RowsAffected()
+	row := tx.QueryRowContext(ctx, query, userID)
+	user, err := scanUser(row)
 	if err != nil {
-		return fmt.Errorf("%s rows affected: %w", action, err)
-	}
-	if rowsAffected == 0 {
-		return ErrNotFound
-	}
-	return nil
-}
-
-func (s *Store) schemaVersion(ctx context.Context) (int, error) {
-	value, ok, err := s.getKV(ctx, dbVersionKey)
-	if err != nil {
-		return 0, err
-	}
-	if ok {
-		version, err := parseSchemaVersion(value)
-		if err != nil {
-			return 0, err
+		if errors.Is(err, sql.ErrNoRows) {
+			return User{}, ErrNotFound
 		}
-		return version, nil
+		return User{}, err
 	}
-	return s.detectLegacySchemaVersion(ctx)
+	return user, nil
 }
 
-func (s *Store) detectLegacySchemaVersion(ctx context.Context) (int, error) {
-	hasUsersTable, err := s.tableExists(ctx, "users")
-	if err != nil {
-		return 0, err
-	}
-	if !hasUsersTable {
-		return 0, nil
+func (s *Store) insertEvent(ctx context.Context, tx *sql.Tx, kind, aggregate string, aggregateID int64, hlc clock.Timestamp, payload string) (Event, error) {
+	event := Event{
+		EventID:      s.ids.Next(),
+		Kind:         kind,
+		Aggregate:    aggregate,
+		AggregateID:  aggregateID,
+		HLC:          hlc,
+		OriginNodeID: s.nodeID,
+		Payload:      payload,
 	}
 
-	hasRole, err := s.columnExists(ctx, "users", "role")
+	result, err := tx.ExecContext(ctx, `
+INSERT INTO event_log(event_id, kind, aggregate_type, aggregate_id, hlc, origin_node_id, payload)
+VALUES(?, ?, ?, ?, ?, ?, ?)
+`, event.EventID, event.Kind, event.Aggregate, event.AggregateID, event.HLC.String(),
+		event.OriginNodeID, event.Payload)
 	if err != nil {
-		return 0, err
+		return Event{}, fmt.Errorf("insert event: %w", err)
 	}
-	if hasRole {
-		return currentDBVersion, nil
+
+	event.Sequence, err = result.LastInsertId()
+	if err != nil {
+		return Event{}, fmt.Errorf("read event sequence: %w", err)
 	}
-	return 1, nil
+	return event, nil
 }
 
-func (s *Store) tableExists(ctx context.Context, tableName string) (bool, error) {
+func activeUsernameExists(ctx context.Context, tx *sql.Tx, username string, excludeUserID int64) (bool, error) {
 	var count int
-	err := s.db.QueryRowContext(ctx, `
+	if err := tx.QueryRowContext(ctx, `
 SELECT COUNT(*)
-FROM sqlite_master
-WHERE type = 'table' AND name = ?
-`, tableName).Scan(&count)
-	if err != nil {
-		return false, fmt.Errorf("check table %s exists: %w", tableName, err)
+FROM users
+WHERE username = ? AND deleted_at_hlc IS NULL AND user_id != ?
+`, username, excludeUserID).Scan(&count); err != nil {
+		return false, fmt.Errorf("check active username: %w", err)
 	}
 	return count > 0, nil
 }
 
-func (s *Store) columnExists(ctx context.Context, tableName, columnName string) (bool, error) {
-	rows, err := s.db.QueryContext(ctx, fmt.Sprintf(`PRAGMA table_info(%s)`, tableName))
-	if err != nil {
-		return false, fmt.Errorf("query table info for %s: %w", tableName, err)
-	}
-	defer rows.Close()
+func scanUser(scanner interface {
+	Scan(dest ...any) error
+}) (User, error) {
+	var user User
+	var createdAtRaw string
+	var updatedAtRaw string
+	var deletedAtRaw sql.NullString
+	var versionUsernameRaw string
+	var versionPasswordRaw string
+	var versionProfileRaw string
+	var versionDeletedRaw sql.NullString
 
-	for rows.Next() {
-		var cid int
-		var name string
-		var dataType string
-		var notNull int
-		var defaultValue sql.NullString
-		var pk int
-		if err := rows.Scan(&cid, &name, &dataType, &notNull, &defaultValue, &pk); err != nil {
-			return false, fmt.Errorf("scan table info for %s: %w", tableName, err)
-		}
-		if name == columnName {
-			return true, nil
-		}
+	if err := scanner.Scan(
+		&user.ID,
+		&user.Username,
+		&user.PasswordHash,
+		&user.Profile,
+		&createdAtRaw,
+		&updatedAtRaw,
+		&deletedAtRaw,
+		&versionUsernameRaw,
+		&versionPasswordRaw,
+		&versionProfileRaw,
+		&versionDeletedRaw,
+		&user.OriginNodeID,
+	); err != nil {
+		return User{}, err
 	}
-	if err := rows.Err(); err != nil {
-		return false, fmt.Errorf("iterate table info for %s: %w", tableName, err)
+
+	var err error
+	user.CreatedAt, err = clock.ParseTimestamp(createdAtRaw)
+	if err != nil {
+		return User{}, fmt.Errorf("parse user created_at: %w", err)
 	}
-	return false, nil
+	user.UpdatedAt, err = clock.ParseTimestamp(updatedAtRaw)
+	if err != nil {
+		return User{}, fmt.Errorf("parse user updated_at: %w", err)
+	}
+	user.VersionUsername, err = clock.ParseTimestamp(versionUsernameRaw)
+	if err != nil {
+		return User{}, fmt.Errorf("parse user version_username: %w", err)
+	}
+	user.VersionPasswordHash, err = clock.ParseTimestamp(versionPasswordRaw)
+	if err != nil {
+		return User{}, fmt.Errorf("parse user version_password_hash: %w", err)
+	}
+	user.VersionProfile, err = clock.ParseTimestamp(versionProfileRaw)
+	if err != nil {
+		return User{}, fmt.Errorf("parse user version_profile: %w", err)
+	}
+	if deletedAtRaw.Valid {
+		parsed, err := clock.ParseTimestamp(deletedAtRaw.String)
+		if err != nil {
+			return User{}, fmt.Errorf("parse user deleted_at: %w", err)
+		}
+		user.DeletedAt = &parsed
+	}
+	if versionDeletedRaw.Valid {
+		parsed, err := clock.ParseTimestamp(versionDeletedRaw.String)
+		if err != nil {
+			return User{}, fmt.Errorf("parse user version_deleted: %w", err)
+		}
+		user.VersionDeleted = &parsed
+	}
+	return user, nil
 }
 
-func isUniqueErr(err error) bool {
-	return strings.Contains(strings.ToLower(err.Error()), "unique")
+func scanMessage(scanner interface {
+	Scan(dest ...any) error
+}) (Message, error) {
+	var message Message
+	var createdAtRaw string
+
+	if err := scanner.Scan(
+		&message.ID,
+		&message.UserID,
+		&message.Sender,
+		&message.Body,
+		&message.Metadata,
+		&createdAtRaw,
+		&message.OriginNodeID,
+	); err != nil {
+		return Message{}, err
+	}
+
+	createdAt, err := clock.ParseTimestamp(createdAtRaw)
+	if err != nil {
+		return Message{}, fmt.Errorf("parse message created_at: %w", err)
+	}
+	message.CreatedAt = createdAt
+	return message, nil
+}
+
+func scanEvent(scanner interface {
+	Scan(dest ...any) error
+}) (Event, error) {
+	var event Event
+	var hlcRaw string
+
+	if err := scanner.Scan(
+		&event.Sequence,
+		&event.EventID,
+		&event.Kind,
+		&event.Aggregate,
+		&event.AggregateID,
+		&hlcRaw,
+		&event.OriginNodeID,
+		&event.Payload,
+	); err != nil {
+		return Event{}, err
+	}
+
+	hlc, err := clock.ParseTimestamp(hlcRaw)
+	if err != nil {
+		return Event{}, fmt.Errorf("parse event hlc: %w", err)
+	}
+	event.HLC = hlc
+	return event, nil
 }
 
 func nullIfEmpty(value string) any {

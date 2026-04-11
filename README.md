@@ -1,393 +1,136 @@
-# Go 通知服务
+# 分布式通知服务
 
-一个基于 Go + SQLite 的简单通知服务，支持：
+一个全新的分布式通知服务项目，目标是支持：
 
-- 用户登录查看自己的通知
-- 首次公开注册自动创建管理员账号
-- 管理员创建普通用户或其他管理员
-- 管理员管理用户角色、密码和删除用户
-- 为每个账号生成唯一 `push_id`
-- 其他服务通过 `push_id` 向指定用户推送通知
-- 推送接口使用服务 API Key 鉴权
-- 提供 Web UI 登录页与用户 Dashboard
+- 任意节点可写
+- 节点间通过 WebSocket 长连接互联
+- 节点同步协议使用 Protobuf
+- 用户数据最终完全一致
+- 消息数据按每用户最近 N 条最终一致
+
+当前仓库已经完成实施计划的前 3 步：本地存储内核、单节点 HTTP/JSON API，以及 WebSocket + Protobuf 的最小集群同步链路。
 
 ## 技术栈
 
 - Go 1.26
-- SQLite（本地文件数据库）
+- SQLite 作为每节点本地数据库
+- `github.com/gorilla/websocket`
 - `github.com/mattn/go-sqlite3`
-- 标准库 `net/http`
+- `google.golang.org/protobuf`
+- 标准库
 
 ## 项目结构
 
 ```text
 .
-├── cmd/notifier/main.go         # 启动入口与 CLI
-├── internal/config              # 配置读取
-├── internal/httpapi             # HTTP 路由与处理器
-├── internal/security            # 密码与 token 工具
-├── internal/store               # SQLite 数据访问与迁移
+├── cmd/notifier/main.go            # 当前 CLI 入口
+├── docs/distributed-system-plan.md # 分布式实施计划
+├── internal/api                    # 应用服务层
+├── internal/auth                   # token 与鉴权
+├── internal/clock                  # HLC 和全局 ID
+├── internal/cluster                # 集群配置与同步骨架
+├── internal/proto                  # 集群协议类型
+├── internal/store                  # SQLite 本地存储内核
+├── proto/cluster.proto             # Protobuf 协议定义
 └── README.md
 ```
 
-## 启动
+## 当前状态
+
+当前仓库不再承载旧的单机通知服务实现，默认目标就是新的分布式项目。
+
+实施计划见 [docs/distributed-system-plan.md](/root/dev/sys/turntf/docs/distributed-system-plan.md)。
+
+当前第三步已经收紧到以下边界：
+
+- 集群模式必须同时提供 `cluster-listen-addr`、`cluster-advertise-addr`、`cluster-secret`
+- 节点间只启用 `Envelope`、`Hello`、`Ack`、`EventBatch`
+- `Hello` 用于交换节点身份、协议版本、广播地址和当前本地 `last_sequence`
+- `EventBatch` 目前按“一个本地事件一批”广播
+- `Ack` 只表示当前在线链路上某个 `EventBatch` 已成功应用
+- WebSocket 连接具备握手校验、心跳保活、自动重连和单连接方向裁决
+
+当前还没有实现：
+
+- 断线后的游标增量拉取和未确认事件补发
+- `cluster_secret` 的 HMAC 鉴权
+- 快照修复和反熵同步
+
+## 启动 API 服务
 
 ```bash
-cp config.example.toml config.toml
-go run ./cmd/notifier serve
+go run ./cmd/notifier serve -addr :8080 -db ./data/notifier.db -node-id node-a -node-slot 1
 ```
 
-启动后可直接访问：
-
-- `http://localhost:8080/login`：登录页
-- `http://localhost:8080/dashboard`：登录后的 Dashboard
-
-默认配置：
-
-- 服务地址：`127.0.0.1:8080`（实际监听 `:8080`）
-- SQLite 文件：`./data/notifier.db`
-- 用户登录态有效期：24 小时
-
-示例配置文件：
-
-```toml
-addr = ":8080"
-db_path = "./data/notifier.db"
-user_session_ttl_hours = 24
-```
-
-也可以指定配置文件路径：
+启动双节点最小集群时，可增加 cluster 参数：
 
 ```bash
-go run ./cmd/notifier serve -config ./config.toml
+go run ./cmd/notifier serve \
+  -addr :8080 \
+  -db ./data/node-a.db \
+  -node-id node-a \
+  -node-slot 1 \
+  -cluster-listen-addr :9080 \
+  -cluster-advertise-addr ws://127.0.0.1:9080/internal/cluster/ws \
+  -cluster-secret secret \
+  -peer node-b=ws://127.0.0.1:9081/internal/cluster/ws
 ```
 
-## 数据库迁移
-
-服务启动时会自动执行数据库迁移：
-
-- 使用 `kv` 表保存 `db_version`
-- 新库会按版本依次建表
-- 旧库会自动补齐 `users.role`
-- 如果旧库存在用户但没有管理员，会把 `id` 最小的用户提升为管理员
-
-## 用户与角色
-
-系统固定支持两种角色：
-
-- `admin`：管理员
-- `user`：普通用户
-
-注册规则：
-
-- `POST /api/v1/users/register` 只允许在系统还没有任何用户时调用
-- 第一个注册成功的用户会自动成为 `admin`
-- 之后公开注册关闭，后续用户必须由管理员创建
-
-## 创建服务 API Key
-
-其他业务系统在调用推送接口前，需要先创建一个服务 API Key：
+第二个节点可用对应参数启动：
 
 ```bash
-go run ./cmd/notifier apikey create orders-service
-```
-
-会输出类似：
-
-```text
-service api key created
-name: orders-service
-created_at: 2026-03-20T00:00:00Z
-api_key: ntfsk_xxx
-use header: X-API-Key: ntfsk_xxx
-```
-
-查看已有 key：
-
-```bash
-go run ./cmd/notifier apikey list
-```
-
-## API
-
-### 1. 首次注册管理员
-
-`POST /api/v1/users/register`
-
-请求：
-
-```json
-{
-  "username": "alice",
-  "password": "password123"
-}
-```
-
-返回：
-
-```json
-{
-  "id": 1,
-  "username": "alice",
-  "push_id": "push_xxx",
-  "role": "admin",
-  "created_at": "2026-03-20T00:00:00Z"
-}
+go run ./cmd/notifier serve \
+  -addr :8081 \
+  -db ./data/node-b.db \
+  -node-id node-b \
+  -node-slot 2 \
+  -cluster-listen-addr :9081 \
+  -cluster-advertise-addr ws://127.0.0.1:9081/internal/cluster/ws \
+  -cluster-secret secret \
+  -peer node-a=ws://127.0.0.1:9080/internal/cluster/ws
 ```
 
 说明：
 
-- 当系统已有用户时，此接口返回 `403`
-- 错误信息：`public registration is closed`
+- 只要传入任意 cluster 参数，就应把三项必填参数一起传全：`-cluster-listen-addr`、`-cluster-advertise-addr`、`-cluster-secret`
+- `-peer` 可以重复传入多个 peer，但 `node-id` 不能和本节点相同
+- 当前实现不会在断线后自动补历史事件，只有连接恢复后的新写入会继续同步
 
-### 2. 用户登录
+当前已提供：
 
-`POST /api/v1/users/login`
+- `POST /users`
+- `GET /users/{id}`
+- `PATCH /users/{id}`
+- `DELETE /users/{id}`
+- `POST /messages`
+- `GET /users/{id}/messages?limit=N`
+- `GET /events?after=0&limit=100`
+- `GET /healthz`
+- `GET /internal/cluster/ws` 作为节点间 WebSocket 同步端点
 
-请求：
+当前集群同步行为：
 
-```json
-{
-  "username": "alice",
-  "password": "password123"
-}
-```
+- 本地 `POST /users`、`PATCH /users/{id}`、`DELETE /users/{id}`、`POST /messages` 成功后，会异步广播对应事件
+- 对端节点成功应用事件后返回 `Ack`
+- 两节点在线时，创建用户和写消息可以自动同步
+- 这一步不承诺断线补发、幂等重放追赶或跨节点鉴权
 
-返回：
-
-```json
-{
-  "token": "ntfus_xxx",
-  "expires_at": "2026-03-21T00:00:00Z",
-  "user": {
-    "id": 1,
-    "username": "alice",
-    "push_id": "push_xxx",
-    "role": "admin",
-    "created_at": "2026-03-20T00:00:00Z"
-  }
-}
-```
-
-### 3. 查看当前用户信息
-
-`GET /api/v1/users/me`
-
-请求头：
-
-```text
-Authorization: Bearer ntfus_xxx
-```
-
-返回体包含当前用户的 `role`。
-
-### 4. 管理员查看用户列表
-
-`GET /api/v1/admin/users`
-
-请求头：
-
-```text
-Authorization: Bearer ntfus_xxx
-```
-
-返回：
-
-```json
-{
-  "count": 2,
-  "items": [
-    {
-      "id": 1,
-      "username": "alice",
-      "push_id": "push_xxx",
-      "role": "admin",
-      "created_at": "2026-03-20T00:00:00Z"
-    }
-  ]
-}
-```
-
-### 5. 管理员创建用户
-
-`POST /api/v1/admin/users`
-
-请求头：
-
-```text
-Authorization: Bearer ntfus_xxx
-Content-Type: application/json
-```
-
-请求体：
-
-```json
-{
-  "username": "bob",
-  "password": "password456",
-  "role": "user"
-}
-```
-
-`role` 只允许：
-
-- `admin`
-- `user`
-
-### 6. 管理员修改用户角色或密码
-
-`PATCH /api/v1/admin/users/{id}`
-
-请求体可以包含以下任意字段：
-
-```json
-{
-  "role": "admin",
-  "password": "newpassword456"
-}
-```
-
-说明：
-
-- 至少要传 `role` 或 `password` 其中一个
-- 如果目标用户是最后一个管理员，降级会返回 `409`
-
-### 7. 管理员删除用户
-
-`DELETE /api/v1/admin/users/{id}`
-
-说明：
-
-- 如果目标用户是最后一个管理员，删除会返回 `409`
-
-### 8. 推送通知
-
-`POST /api/v1/push`
-
-请求头：
-
-```text
-X-API-Key: ntfsk_xxx
-Content-Type: application/json
-```
-
-请求体：
-
-```json
-{
-  "push_id": "push_xxx",
-  "sender": "orders-service",
-  "title": "订单更新",
-  "body": "您的订单已发货",
-  "metadata": {
-    "order_id": "A1001"
-  }
-}
-```
-
-返回：
-
-```json
-{
-  "status": "accepted",
-  "notification_id": 1,
-  "push_id": "push_xxx",
-  "created_at": "2026-03-20T00:00:00Z"
-}
-```
-
-### 9. 查看通知列表
-
-`GET /api/v1/notifications?limit=20`
-
-请求头：
-
-```text
-Authorization: Bearer ntfus_xxx
-```
-
-## Web UI
-
-### 登录页
-
-- `GET /login`
-- 表单提交到 `POST /login`
-
-### Dashboard
-
-- `GET /dashboard`
-- 登录成功后，服务会写入 Cookie
-- 页面会展示：
-  - 当前用户名
-  - 当前角色
-  - 用户 `push_id`
-  - 最近通知列表
-
-### 退出登录
-
-- `POST /logout`
-
-## curl 示例
-
-### 首次注册管理员
+## 初始化本地存储
 
 ```bash
-curl -X POST http://localhost:8080/api/v1/users/register \
-  -H 'Content-Type: application/json' \
-  -d '{"username":"alice","password":"password123"}'
+go run ./cmd/notifier init-store -db ./data/notifier.db -node-id node-a -node-slot 1
 ```
 
-### 登录
+该命令会初始化第 1 步需要的本地 SQLite schema，包括：
 
-```bash
-curl -X POST http://localhost:8080/api/v1/users/login \
-  -H 'Content-Type: application/json' \
-  -d '{"username":"alice","password":"password123"}'
-```
+- `users`
+- `messages`
+- `event_log`
+- `peer_cursors`
+- `applied_events`
+- `user_conflicts`
+- `tombstones`
 
-### 管理员创建普通用户
+## 下一步
 
-```bash
-curl -X POST http://localhost:8080/api/v1/admin/users \
-  -H 'Content-Type: application/json' \
-  -H 'Authorization: Bearer ntfus_xxx' \
-  -d '{"username":"bob","password":"password456","role":"user"}'
-```
-
-### 管理员提升用户为管理员
-
-```bash
-curl -X PATCH http://localhost:8080/api/v1/admin/users/2 \
-  -H 'Content-Type: application/json' \
-  -H 'Authorization: Bearer ntfus_xxx' \
-  -d '{"role":"admin"}'
-```
-
-### 推送
-
-```bash
-curl -X POST http://localhost:8080/api/v1/push \
-  -H 'Content-Type: application/json' \
-  -H 'X-API-Key: ntfsk_xxx' \
-  -d '{
-    "push_id":"push_xxx",
-    "sender":"orders-service",
-    "title":"订单更新",
-    "body":"您的订单已发货",
-    "metadata":{"order_id":"A1001"}
-  }'
-```
-
-### 拉取通知
-
-```bash
-curl http://localhost:8080/api/v1/notifications \
-  -H 'Authorization: Bearer ntfus_xxx'
-```
-
-## 后续可扩展方向
-
-- 接入真实推送通道（APNs / FCM / WebSocket / 短信 / 邮件）
-- 增加服务 API Key 的吊销能力
-- 增加消息状态机（queued / delivered / failed）
-- 增加管理员 Web 管理后台
+- 第 4 步：实现断线后的事件日志补发与游标持久化

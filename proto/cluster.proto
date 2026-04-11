@@ -1,0 +1,73 @@
+syntax = "proto3";
+
+package notifier.cluster.v1;
+
+option go_package = "notifier/internal/proto;proto";
+
+message Envelope {
+  string node_id = 1;
+  uint64 sequence = 2;
+  string sent_at_hlc = 3;
+  string message_type = 4;
+  bytes payload = 5;
+  bytes hmac = 6;
+}
+
+message Hello {
+  string node_id = 1;
+  string advertise_addr = 2;
+  string protocol_version = 3;
+  uint64 last_sequence = 4;
+  string snapshot_version = 5;
+}
+
+message Ack {
+  string node_id = 1;
+  uint64 acked_sequence = 2;
+}
+
+message EventBatch {
+  repeated ReplicatedEvent events = 1;
+}
+
+message ReplicatedEvent {
+  int64 event_id = 1;
+  string kind = 2;
+  string aggregate_type = 3;
+  int64 aggregate_id = 4;
+  string hlc = 5;
+  string origin_node_id = 6;
+  bytes payload = 7;
+}
+
+message PullEvents {
+  uint64 after_sequence = 1;
+  uint32 limit = 2;
+}
+
+message SnapshotDigest {
+  string snapshot_version = 1;
+  repeated bytes partitions = 2;
+}
+
+message SnapshotChunk {
+  string partition = 1;
+  repeated bytes rows = 2;
+}
+
+message UserEvent {
+  int64 event_id = 1;
+  string kind = 2;
+  int64 user_id = 3;
+  string hlc = 4;
+  bytes payload = 5;
+}
+
+message MessageEvent {
+  int64 event_id = 1;
+  string kind = 2;
+  int64 message_id = 3;
+  int64 user_id = 4;
+  string hlc = 5;
+  bytes payload = 6;
+}

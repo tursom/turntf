@@ -52,6 +52,38 @@ func TestClockObserveRemote(t *testing.T) {
 	}
 }
 
+func TestClockNowAppliesOffset(t *testing.T) {
+	t.Parallel()
+
+	nowMs := int64(1740000000000)
+	clock := NewClockWithSource(5, func() int64 {
+		return nowMs
+	})
+	clock.SetOffsetMs(250)
+
+	ts := clock.Now()
+	if ts.WallTimeMs != nowMs+250 {
+		t.Fatalf("unexpected wall time: got=%d want=%d", ts.WallTimeMs, nowMs+250)
+	}
+}
+
+func TestClockRemainsMonotonicWhenOffsetMovesBackward(t *testing.T) {
+	t.Parallel()
+
+	nowMs := int64(1740000000000)
+	clock := NewClockWithSource(6, func() int64 {
+		return nowMs
+	})
+	clock.SetOffsetMs(400)
+	first := clock.Now()
+
+	clock.SetOffsetMs(-200)
+	second := clock.Now()
+	if second.Compare(first) <= 0 {
+		t.Fatalf("expected monotonic clock after offset change, first=%s second=%s", first, second)
+	}
+}
+
 func TestIDGeneratorMonotonicAndUnique(t *testing.T) {
 	t.Parallel()
 

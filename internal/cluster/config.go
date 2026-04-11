@@ -13,12 +13,19 @@ type Peer struct {
 }
 
 type Config struct {
-	NodeID        string
-	NodeSlot      uint16
-	ListenAddr    string
-	AdvertiseAddr string
-	ClusterSecret string
-	Peers         []Peer
+	NodeID            string
+	NodeSlot          uint16
+	AdvertisePath     string
+	ClusterSecret     string
+	Peers             []Peer
+	MessageWindowSize int
+	MaxClockSkewMs    int64
+}
+
+const DefaultMaxClockSkewMs int64 = 1000
+
+func (c Config) Enabled() bool {
+	return strings.TrimSpace(c.AdvertisePath) != "" || strings.TrimSpace(c.ClusterSecret) != "" || len(c.Peers) > 0
 }
 
 func (c Config) Validate() error {
@@ -28,17 +35,19 @@ func (c Config) Validate() error {
 	if c.NodeSlot > clock.MaxNodeID {
 		return fmt.Errorf("node slot %d exceeds max %d", c.NodeSlot, clock.MaxNodeID)
 	}
+	if c.MaxClockSkewMs < 0 {
+		return fmt.Errorf("cluster max clock skew must be non-negative")
+	}
 
-	enabled := strings.TrimSpace(c.ListenAddr) != "" || strings.TrimSpace(c.AdvertiseAddr) != "" || len(c.Peers) > 0
-	if enabled {
+	if c.Enabled() {
 		if strings.TrimSpace(c.ClusterSecret) == "" {
 			return fmt.Errorf("cluster secret cannot be empty")
 		}
-		if strings.TrimSpace(c.ListenAddr) == "" {
-			return fmt.Errorf("cluster listen addr cannot be empty when cluster mode is enabled")
+		if strings.TrimSpace(c.AdvertisePath) == "" {
+			return fmt.Errorf("cluster advertise path cannot be empty when cluster mode is enabled")
 		}
-		if strings.TrimSpace(c.AdvertiseAddr) == "" {
-			return fmt.Errorf("cluster advertise addr cannot be empty when cluster mode is enabled")
+		if !strings.HasPrefix(strings.TrimSpace(c.AdvertisePath), "/") {
+			return fmt.Errorf("cluster advertise path must start with /")
 		}
 	}
 

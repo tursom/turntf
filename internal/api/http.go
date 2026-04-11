@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"notifier/internal/app"
 	"notifier/internal/store"
 )
 
@@ -351,6 +352,8 @@ func writeError(w http.ResponseWriter, status int, message string) {
 
 func writeStoreError(w http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, app.ErrClockNotSynchronized):
+		writeError(w, http.StatusServiceUnavailable, app.ErrClockNotSynchronized.Error())
 	case errors.Is(err, store.ErrInvalidInput):
 		writeError(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, store.ErrConflict):

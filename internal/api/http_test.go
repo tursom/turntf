@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"testing"
 
+	"notifier/internal/app"
 	"notifier/internal/store"
 )
 
@@ -155,6 +156,92 @@ func TestUpdateUserAllowsDuplicateUsername(t *testing.T) {
 	doJSON(t, handler, http.MethodPatch, "/users/"+strconv.FormatInt(second.ID, 10), map[string]any{
 		"username": "alice",
 	}, http.StatusOK)
+}
+
+type gatingSink struct {
+	allow bool
+}
+
+func (s gatingSink) Publish(store.Event) {}
+
+func (s gatingSink) AllowWrite(context.Context) error {
+	if s.allow {
+		return nil
+	}
+	return app.ErrClockNotSynchronized
+}
+
+func TestWriteEndpointsReturn503WhenClockIsNotSynchronized(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "api-gated.db")
+	st, err := store.Open(dbPath, store.Options{
+		NodeID:   "node-a",
+		NodeSlot: 1,
+	})
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = st.Close()
+	})
+	if err := st.Init(context.Background()); err != nil {
+		t.Fatalf("init store: %v", err)
+	}
+	user, _, err := st.CreateUser(context.Background(), store.CreateUserParams{
+		Username:     "existing-user",
+		PasswordHash: "hash-1",
+	})
+	if err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+
+	handler := NewHTTP(New(st, gatingSink{})).Handler()
+
+	for _, tc := range []struct {
+		method string
+		path   string
+		body   any
+	}{
+		{
+			method: http.MethodPost,
+			path:   "/users",
+			body: map[string]any{
+				"username":      "alice",
+				"password_hash": "hash-1",
+			},
+		},
+		{
+			method: http.MethodPost,
+			path:   "/messages",
+			body: map[string]any{
+				"user_id": user.ID,
+				"sender":  "orders",
+				"body":    "package shipped",
+			},
+		},
+		{
+			method: http.MethodPatch,
+			path:   "/users/" + strconv.FormatInt(user.ID, 10),
+			body: map[string]any{
+				"username": "renamed-user",
+			},
+		},
+		{
+			method: http.MethodDelete,
+			path:   "/users/" + strconv.FormatInt(user.ID, 10),
+			body:   nil,
+		},
+	} {
+		t.Run(tc.method+" "+tc.path, func(t *testing.T) {
+			data := doJSON(t, handler, tc.method, tc.path, tc.body, http.StatusServiceUnavailable)
+			var payload map[string]string
+			mustJSON(t, data, &payload)
+			if payload["error"] != app.ErrClockNotSynchronized.Error() {
+				t.Fatalf("unexpected error payload: %+v", payload)
+			}
+		})
+	}
 }
 
 func newTestHandler(t *testing.T) http.Handler {

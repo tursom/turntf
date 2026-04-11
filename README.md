@@ -6,9 +6,9 @@
 - 节点间通过 WebSocket 长连接互联
 - 节点同步协议使用 Protobuf
 - 用户数据最终完全一致
-- 消息数据按每用户最近 N 条最终一致
+- 消息数据按每节点配置的每用户最近 N 条最终一致；当各节点 N 相同，窗口内容也一致
 
-当前仓库已经完成实施计划的前 5 步：本地存储内核、单节点 HTTP/JSON API、WebSocket + Protobuf 的最小集群同步链路、断线后的事件日志补发，以及基于 `user_id` 的用户多主冲突收敛。
+当前仓库已经完成实施计划的前 6 步：本地存储内核、单节点 HTTP/JSON API、WebSocket + Protobuf 的最小集群同步链路、断线后的事件日志补发、基于 `user_id` 的用户多主冲突收敛，以及消息窗口扩散与按节点 N 收敛。
 
 ## 技术栈
 
@@ -35,21 +35,40 @@
 └── README.md
 ```
 
+## 术语速览
+
+- `slot`：节点的数值编号，用于参与本节点生成全局唯一 ID 和 HLC 时间戳。它不是对外展示名称，而是写进 ID 的机器编号位；同一集群内必须唯一。
+- `HLC`：Hybrid Logical Clock，混合逻辑时钟。它把物理时间和逻辑计数结合起来，既尽量贴近真实时间，又能在并发写入、时钟轻微漂移时提供稳定排序。
+- `最终一致`：写入不会要求所有节点同步成功后才返回，而是先在本地提交，再异步复制到其他节点；网络恢复后，数据应最终收敛到预期状态。
+- `收敛`：不同节点经过复制、重放、冲突处理后，最终得到相同或规则允许范围内一致的结果。这个项目里，用户数据追求完全收敛，消息数据按每节点窗口大小收敛。
+- `LWW`：Last Write Wins，最后写入获胜。这里是字段级 LWW，不是整行覆盖；例如用户名和资料字段会分别比较版本时间，较新的值覆盖较旧的值。
+- `幂等`：同一事件重复投递多次，最终效果仍只生效一次。集群复制必须具备幂等性，否则断线重连或重放时会产生重复数据。
+- `反熵`：anti-entropy，同步双方定期比对摘要并修补差异的机制。它用于补偿“实时广播 + 增量补拉”仍可能遗漏的边角情况，目前尚未实现。
+- `快照修复`：当事件补拉不足以修复状态差异时，直接按分片传输当前数据快照并重建本地状态的机制，目前尚未实现。
+- `peer`：当前节点已知的其他节点配置项。每个 peer 至少包含一个逻辑身份 `node_id` 和一个可拨号的 `url`。
+
 ## 当前状态
 
 当前仓库不再承载旧的单机通知服务实现，默认目标就是新的分布式项目。
 
 实施计划见 [docs/distributed-system-plan.md](/root/dev/sys/turntf/docs/distributed-system-plan.md)。
 
-当前第四步已经收紧到以下边界：
+当前同步实现已经收紧到以下边界：
 
-- 集群模式必须同时提供 `cluster-listen-addr`、`cluster-advertise-addr`、`cluster-secret`
+- 集群模式必须同时提供 `cluster.advertise_path`、`cluster.secret`
 - 节点间启用 `Envelope`、`Hello`、`Ack`、`EventBatch`、`PullEvents`
-- `Hello` 用于交换节点身份、协议版本、广播地址和当前本地 `last_sequence`
-- `EventBatch` 既用于在线广播，也用于断线后的增量补发
-- `Ack` 和 `peer_cursors` 一起记录每个 peer 的确认进度与已应用进度
+- `Envelope`：集群协议的统一外层消息，里面再装握手、确认、事件批次或补拉请求
+- `Hello`：连接建立后的第一条握手消息，用于交换节点身份、协议版本、广播路径、当前本地 `last_sequence` 和 `message_window_size`
+- `TimeSyncRequest` / `TimeSyncResponse`：握手后的校时消息，用来估算节点时钟偏移并决定是否允许该 peer 进入可信复制状态
+- `EventBatch`：事件批次消息，既用于在线广播，也用于断线后的增量补发
+- `Ack`：确认消息，表示“我已经应用到了你的哪条 sequence”；它会和 `peer_cursors` 一起记录每个 peer 的确认进度与已应用进度
+- `peer_cursors`：本地持久化的“对每个 peer 的复制进度表”，至少记录 acked/applied sequence，供重连后继续追平
 - WebSocket 连接具备握手校验、心跳保活、自动重连和单连接方向裁决
+- 集群模式下，节点首次成功校时前会拒绝本地写请求，避免未校准时钟污染字段级 LWW
 - 节点重连后会按持久化游标自动补拉缺失事件，并通过 `applied_events` 做幂等去重
+- `applied_events`：本地已应用复制事件的去重表，用来避免同一事件在广播和补拉重叠时被重复执行
+- 消息在本地写入和复制应用时都会按每用户最近 N 条裁剪，默认 `N=500`
+- 若 peer 的 `message_window_size` 不一致，连接会继续建立并记录告警；各节点最终按自己的 N 收敛
 
 当前还没有实现：
 
@@ -59,42 +78,66 @@
 ## 启动 API 服务
 
 ```bash
-go run ./cmd/notifier serve -addr :8080 -db ./data/notifier.db -node-id node-a -node-slot 1
+cp ./config.example.toml ./config.toml
+go run ./cmd/notifier serve
 ```
 
-启动双节点最小集群时，可增加 cluster 参数：
+也可以显式指定配置文件路径：
 
 ```bash
-go run ./cmd/notifier serve \
-  -addr :8080 \
-  -db ./data/node-a.db \
-  -node-id node-a \
-  -node-slot 1 \
-  -cluster-listen-addr :9080 \
-  -cluster-advertise-addr ws://127.0.0.1:9080/internal/cluster/ws \
-  -cluster-secret secret \
-  -peer node-b=ws://127.0.0.1:9081/internal/cluster/ws
+go run ./cmd/notifier serve -config ./config.toml
 ```
 
-第二个节点可用对应参数启动：
+当前 `serve` 只接受一个运行时参数：
+
+- `-config`：TOML 配置文件路径；缺省时读取 `./config.toml`
+
+## 配置文件示例
 
 ```bash
-go run ./cmd/notifier serve \
-  -addr :8081 \
-  -db ./data/node-b.db \
-  -node-id node-b \
-  -node-slot 2 \
-  -cluster-listen-addr :9081 \
-  -cluster-advertise-addr ws://127.0.0.1:9081/internal/cluster/ws \
-  -cluster-secret secret \
-  -peer node-a=ws://127.0.0.1:9080/internal/cluster/ws
+cp ./config.example.toml ./config.toml
 ```
 
-说明：
+`config.example.toml` 结构如下：
 
-- 只要传入任意 cluster 参数，就应把三项必填参数一起传全：`-cluster-listen-addr`、`-cluster-advertise-addr`、`-cluster-secret`
-- `-peer` 可以重复传入多个 peer，但 `node-id` 不能和本节点相同
-- 当前第 4 步只支持新初始化的 SQLite 库，不包含旧第 3 步库的自动迁移
+```toml
+[node]
+id = "node-a"
+slot = 1
+
+[api]
+listen_addr = ":8080"
+
+[store]
+db_path = "./data/node-a.db"
+message_window_size = 500
+
+[cluster]
+advertise_path = "/internal/cluster/ws"
+secret = "secret"
+max_clock_skew_ms = 1000
+
+[[cluster.peers]]
+node_id = "node-b"
+url = "ws://127.0.0.1:9081/internal/cluster/ws"
+```
+
+字段说明：
+
+- `node.id`：节点的稳定字符串身份，用于复制协议中的节点识别，例如 `node-a`
+- `node.slot`：节点的数值编号，用于生成全局唯一 ID 和 HLC；必须在集群内唯一，当前上限是 `1023`
+- `api.listen_addr`：外部 HTTP API 监听地址，同时承载内部 `GET /internal/cluster/ws`
+- `store.db_path`：本地 SQLite 数据库路径。每个节点各自维护本地库，复制链路负责把状态传播到别的节点
+- `store.message_window_size`：每节点每用户本地保留的消息窗口，默认 `500`。超过窗口的旧消息会在本地写入或复制应用时被裁剪
+- `cluster` 整段可省略；省略时按单节点模式运行
+- 配置了 `cluster` 后，需要同时提供 `cluster.advertise_path`、`cluster.secret`
+- `cluster.advertise_path`：节点对外暴露的集群 WebSocket 路径，必须以 `/` 开头；peer 的 `url` 需要带上这个路径
+- `cluster.secret`：预留给集群内部 HMAC 鉴权的共享密钥。当前实现还未真正验签，但已经把它作为启用集群模式的必填项
+- `cluster.max_clock_skew_ms`：允许的最大时钟偏差，默认 `1000` 毫秒；正数启用超限拒绝，`0` 表示关闭“超限拒绝”，但节点仍会在首次成功校时前拒绝本地写入
+- `[[cluster.peers]]`：静态 peer 列表，可重复出现多个条目，但 `node_id` 不能和本节点相同
+- `cluster.peers.node_id`：远端节点的稳定字符串身份
+- `cluster.peers.url`：当前节点主动拨号到远端时使用的完整 WebSocket URL，例如 `ws://127.0.0.1:9081/internal/cluster/ws`
+- 当前第 6 步不支持和第 5 步旧节点混跑；升级后需整集群使用新协议版本
 
 当前已提供：
 
@@ -106,35 +149,24 @@ go run ./cmd/notifier serve \
 - `GET /users/{id}/messages?limit=N`
 - `GET /events?after=0&limit=100`
 - `GET /healthz`
-- `GET /internal/cluster/ws` 作为节点间 WebSocket 同步端点
+- `GET /internal/cluster/ws` 作为节点间 WebSocket 同步端点，仅在启用集群模式时挂载到 API 监听器
 
 当前集群同步行为：
 
 - 本地 `POST /users`、`PATCH /users/{id}`、`DELETE /users/{id}`、`POST /messages` 成功后，会异步广播对应事件
 - 对端节点成功应用事件后返回 `Ack`
 - 两节点在线时，创建用户和写消息可以自动同步
+- 集群模式下，节点只有在首次成功校时后才接受本地写入；未校时时写接口会返回 `503`
 - 节点短时离线后重连，会基于 `peer_cursors` 自动补拉未追平的事件
 - 拉取重放与实时广播重叠时，重复事件会被 `applied_events` 幂等吸收
 - 用户复制按 `user_id` 做字段级 LWW 合并，用户名允许重复
 - 删除通过 `tombstones` 传播，旧的创建/更新事件不会把已删除用户重新复活
+- 启用了 `cluster.max_clock_skew_ms` 时，时钟偏差超限或未来时间戳事件会导致该 peer 被拒绝/断开，避免污染 LWW
+- `tombstones`：删除墓碑表，用来记录“这个对象已经被删过”，避免旧事件在延迟到达时把数据错误复活
+- 消息复制按 `message_id` 幂等去重，并在本地和复制应用时都裁剪到最近 N 条
+- 当集群所有节点使用相同的 `message_window_size` 时，同一用户的最近 N 条消息会收敛到相同结果
 - 这一步仍不承诺跨节点鉴权或快照修复
-
-## 初始化本地存储
-
-```bash
-go run ./cmd/notifier init-store -db ./data/notifier.db -node-id node-a -node-slot 1
-```
-
-该命令会初始化第 1 步需要的本地 SQLite schema，包括：
-
-- `users`
-- `messages`
-- `event_log`
-- `peer_cursors`
-- `applied_events`
-- `user_conflicts`
-- `tombstones`
 
 ## 下一步
 
-- 第 6 步：实现消息扩散与最近 N 条一致
+- 第 7 步：实现反熵同步与快照修复

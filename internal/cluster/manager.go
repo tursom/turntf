@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -13,6 +14,8 @@ import (
 	"github.com/gorilla/websocket"
 	"google.golang.org/protobuf/proto"
 
+	"notifier/internal/app"
+	"notifier/internal/clock"
 	internalproto "notifier/internal/proto"
 	"notifier/internal/store"
 )
@@ -25,11 +28,18 @@ const (
 	outboundQueueSize   = 128
 	managerPublishQueue = 256
 	pullBatchSize       = 128
+	timeSyncSampleCount = 5
+	timeSyncInterval    = 30 * time.Second
+	timeSyncTimeout     = 3 * time.Second
+	writeGateGrace      = 90 * time.Second
 )
+
+var errSessionClosed = errors.New("session closed")
 
 type Manager struct {
 	cfg      Config
 	store    *store.Store
+	clock    *clock.Clock
 	upgrader websocket.Upgrader
 
 	mux       *http.ServeMux
@@ -43,12 +53,18 @@ type Manager struct {
 
 	mu    sync.Mutex
 	peers map[string]*peerState
+
+	lastSuccessfulClockSync time.Time
+	timeSyncer              func(*session) (timeSyncSample, error)
 }
 
 type peerState struct {
-	cfg     Peer
-	active  *session
-	lastAck uint64
+	cfg            Peer
+	active         *session
+	lastAck        uint64
+	trustedSession *session
+	clockOffsetMs  int64
+	lastClockSync  time.Time
 }
 
 type session struct {
@@ -66,9 +82,27 @@ type session struct {
 	remoteLastSequence uint64
 	catchupInFlight    bool
 	pendingPullAfter   uint64
+	replicationReady   bool
+	bootstrapStarted   bool
+	syncLoopStarted    bool
+	nextTimeSyncID     uint64
+	pendingTimeSync    map[uint64]chan timeSyncResult
+	clockOffsetMs      int64
+}
+
+type timeSyncResult struct {
+	response     *internalproto.TimeSyncResponse
+	receivedAtMs int64
+	err          error
+}
+
+type timeSyncSample struct {
+	offsetMs int64
+	rttMs    int64
 }
 
 func NewManager(cfg Config, st *store.Store) (*Manager, error) {
+	cfg.MessageWindowSize = normalizedMessageWindowSize(cfg.MessageWindowSize)
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
@@ -78,9 +112,15 @@ func NewManager(cfg Config, st *store.Store) (*Manager, error) {
 		peers[peer.NodeID] = &peerState{cfg: peer}
 	}
 
+	clockRef := clock.NewClock(cfg.NodeSlot)
+	if st != nil && st.Clock() != nil {
+		clockRef = st.Clock()
+	}
+
 	mgr := &Manager{
 		cfg:   cfg,
 		store: st,
+		clock: clockRef,
 		upgrader: websocket.Upgrader{
 			CheckOrigin: func(*http.Request) bool { return true },
 		},
@@ -89,12 +129,16 @@ func NewManager(cfg Config, st *store.Store) (*Manager, error) {
 		dialer:    websocket.DefaultDialer,
 		peers:     peers,
 	}
-	mgr.mux.HandleFunc("GET "+websocketPath, mgr.handleWebSocket)
+	mgr.mux.HandleFunc("GET "+cfg.AdvertisePath, mgr.handleWebSocket)
 	return mgr, nil
 }
 
 func (m *Manager) Handler() http.Handler {
 	return m.mux
+}
+
+func (m *Manager) AdvertisePath() string {
+	return m.cfg.AdvertisePath
 }
 
 func (m *Manager) Start(parent context.Context) {
@@ -269,6 +313,7 @@ func (m *Manager) newSession(conn *websocket.Conn, outbound bool, configuredPeer
 		outbound:         outbound,
 		configuredPeerID: configuredPeerID,
 		send:             make(chan *internalproto.Envelope, outboundQueueSize),
+		pendingTimeSync:  make(map[uint64]chan timeSyncResult),
 	}
 }
 
@@ -309,10 +354,11 @@ func (m *Manager) buildHelloEnvelope() (*internalproto.Envelope, error) {
 		NodeId: m.cfg.NodeID,
 		Body: &internalproto.Envelope_Hello{
 			Hello: &internalproto.Hello{
-				NodeId:          m.cfg.NodeID,
-				AdvertiseAddr:   m.cfg.AdvertiseAddr,
-				ProtocolVersion: internalproto.ProtocolVersion,
-				LastSequence:    uint64(lastSequence),
+				NodeId:            m.cfg.NodeID,
+				AdvertiseAddr:     m.cfg.AdvertisePath,
+				ProtocolVersion:   internalproto.ProtocolVersion,
+				LastSequence:      uint64(lastSequence),
+				MessageWindowSize: uint32(m.cfg.MessageWindowSize),
 			},
 		},
 	}, nil
@@ -373,6 +419,14 @@ func (m *Manager) readLoop(sess *session) {
 			if err := m.handleHello(sess, &envelope); err != nil {
 				return
 			}
+		case *internalproto.Envelope_TimeSyncRequest:
+			if err := m.handleTimeSyncRequest(sess, &envelope); err != nil {
+				return
+			}
+		case *internalproto.Envelope_TimeSyncResponse:
+			if err := m.handleTimeSyncResponse(sess, &envelope); err != nil {
+				return
+			}
 		case *internalproto.Envelope_Ack:
 			if err := m.handleAck(sess, &envelope); err != nil {
 				return
@@ -415,11 +469,25 @@ func (m *Manager) handleHello(sess *session, envelope *internalproto.Envelope) e
 	if hello.ProtocolVersion != internalproto.ProtocolVersion {
 		return fmt.Errorf("unsupported protocol version %q", hello.ProtocolVersion)
 	}
+	if hello.MessageWindowSize == 0 {
+		return errors.New("hello message window size must be positive")
+	}
 	if strings.TrimSpace(hello.AdvertiseAddr) == "" {
-		return errors.New("hello advertise addr cannot be empty")
+		return errors.New("hello advertise path cannot be empty")
+	}
+	if !strings.HasPrefix(strings.TrimSpace(hello.AdvertiseAddr), "/") {
+		return errors.New("hello advertise path must start with /")
 	}
 	if sess.outbound && sess.configuredPeerID != "" && sess.configuredPeerID != peerID {
 		return fmt.Errorf("peer mismatch: expected %s got %s", sess.configuredPeerID, peerID)
+	}
+	if int(hello.MessageWindowSize) != m.cfg.MessageWindowSize {
+		log.Printf(
+			"warn: peer %s message window mismatch: local=%d remote=%d; continuing with per-node windows",
+			peerID,
+			m.cfg.MessageWindowSize,
+			hello.MessageWindowSize,
+		)
 	}
 
 	sess.peerID = peerID
@@ -428,13 +496,86 @@ func (m *Manager) handleHello(sess *session, envelope *internalproto.Envelope) e
 		return fmt.Errorf("peer %s is not configured", peerID)
 	}
 
-	if !m.activateSession(sess) {
-		return errors.New("duplicate session rejected")
+	if !sess.beginBootstrap() {
+		return errors.New("duplicate bootstrap rejected")
 	}
+	go m.bootstrapSession(sess)
+	return nil
+}
+
+func (m *Manager) bootstrapSession(sess *session) {
+	if err := m.performTimeSync(sess); err != nil {
+		log.Printf("warn: peer %s time sync failed: %v", sess.peerID, err)
+		sess.close()
+		return
+	}
+	if !m.activateSession(sess) {
+		log.Printf("warn: duplicate session rejected after time sync for peer %s", sess.peerID)
+		sess.close()
+		return
+	}
+
+	sess.markReplicationReady()
+	m.markPeerClockSynced(sess, sess.clockOffset())
+	sess.startSyncLoop(func() {
+		m.timeSyncLoop(sess)
+	})
+
 	if m.store != nil {
 		if err := m.requestCatchupIfNeeded(sess); err != nil {
-			return err
+			log.Printf("warn: request catchup for peer %s: %v", sess.peerID, err)
+			sess.close()
 		}
+	}
+}
+
+func (m *Manager) handleTimeSyncRequest(sess *session, envelope *internalproto.Envelope) error {
+	if err := validatePeerEnvelope(sess, envelope); err != nil {
+		return err
+	}
+
+	req := envelope.GetTimeSyncRequest()
+	if req == nil {
+		return errors.New("time sync request body cannot be empty")
+	}
+	if req.RequestId == 0 {
+		return errors.New("time sync request id cannot be empty")
+	}
+
+	receivedAtMs := m.clock.PhysicalTimeMs()
+	sentAtMs := m.clock.PhysicalTimeMs()
+	sess.enqueue(&internalproto.Envelope{
+		NodeId: m.cfg.NodeID,
+		Body: &internalproto.Envelope_TimeSyncResponse{
+			TimeSyncResponse: &internalproto.TimeSyncResponse{
+				RequestId:           req.RequestId,
+				ClientSendTimeMs:    req.ClientSendTimeMs,
+				ServerReceiveTimeMs: receivedAtMs,
+				ServerSendTimeMs:    sentAtMs,
+			},
+		},
+	})
+	return nil
+}
+
+func (m *Manager) handleTimeSyncResponse(sess *session, envelope *internalproto.Envelope) error {
+	if err := validatePeerEnvelope(sess, envelope); err != nil {
+		return err
+	}
+
+	resp := envelope.GetTimeSyncResponse()
+	if resp == nil {
+		return errors.New("time sync response body cannot be empty")
+	}
+	if resp.RequestId == 0 {
+		return errors.New("time sync response id cannot be empty")
+	}
+
+	if !sess.resolveTimeSync(resp.RequestId, timeSyncResult{
+		response:     resp,
+		receivedAtMs: m.clock.PhysicalTimeMs(),
+	}) {
+		return nil
 	}
 	return nil
 }
@@ -473,6 +614,9 @@ func (m *Manager) handleAck(sess *session, envelope *internalproto.Envelope) err
 }
 
 func (m *Manager) handleEventBatch(sess *session, envelope *internalproto.Envelope) error {
+	if !sess.isReplicationReady() {
+		return errors.New("event batch received before replication was ready")
+	}
 	if err := validatePeerEnvelope(sess, envelope); err != nil {
 		return err
 	}
@@ -493,6 +637,10 @@ func (m *Manager) handleEventBatch(sess *session, envelope *internalproto.Envelo
 
 	batchStart, err := batchStartSequence(envelope.Sequence, len(batch.GetEvents()))
 	if err != nil {
+		return err
+	}
+
+	if err := m.validateBatchHLC(batch.GetEvents()); err != nil {
 		return err
 	}
 	sess.noteRemoteLastSequence(envelope.Sequence)
@@ -539,6 +687,9 @@ func (m *Manager) handleEventBatch(sess *session, envelope *internalproto.Envelo
 }
 
 func (m *Manager) handlePullEvents(sess *session, envelope *internalproto.Envelope) error {
+	if !sess.isReplicationReady() {
+		return errors.New("pull events received before replication was ready")
+	}
 	if err := validatePeerEnvelope(sess, envelope); err != nil {
 		return err
 	}
@@ -620,6 +771,242 @@ func (m *Manager) buildPullEventsEnvelope(afterSequence uint64) (*internalproto.
 	}, nil
 }
 
+func (m *Manager) AllowWrite(context.Context) error {
+	if m == nil || len(m.peers) == 0 {
+		return nil
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.hasWritableClockSyncLocked() {
+		return nil
+	}
+	return app.ErrClockNotSynchronized
+}
+
+func (m *Manager) hasWritableClockSyncLocked() bool {
+	if len(m.peers) == 0 {
+		return true
+	}
+	for _, peer := range m.peers {
+		if peer.trustedSession != nil {
+			return true
+		}
+	}
+	if !m.lastSuccessfulClockSync.IsZero() && time.Since(m.lastSuccessfulClockSync) <= writeGateGrace {
+		return true
+	}
+	return false
+}
+
+func (m *Manager) performTimeSync(sess *session) error {
+	var (
+		best timeSyncSample
+		err  error
+	)
+	if m.timeSyncer != nil {
+		best, err = m.timeSyncer(sess)
+	} else {
+		best, err = m.collectTimeSyncSample(sess)
+	}
+	if err != nil {
+		return err
+	}
+
+	sess.setClockOffset(best.offsetMs)
+	if m.cfg.MaxClockSkewMs > 0 && absInt64(best.offsetMs) > m.cfg.MaxClockSkewMs {
+		return fmt.Errorf("clock offset %dms exceeds max skew %dms", best.offsetMs, m.cfg.MaxClockSkewMs)
+	}
+
+	warnThreshold := m.cfg.MaxClockSkewMs
+	if warnThreshold == 0 {
+		warnThreshold = DefaultMaxClockSkewMs
+	}
+	if warnThreshold > 0 && absInt64(best.offsetMs) > warnThreshold {
+		log.Printf("warn: peer %s clock offset %dms exceeds warning threshold %dms", sess.peerID, best.offsetMs, warnThreshold)
+	}
+	return nil
+}
+
+func (m *Manager) collectTimeSyncSample(sess *session) (timeSyncSample, error) {
+	var (
+		best    timeSyncSample
+		found   bool
+		lastErr error
+	)
+
+	for range timeSyncSampleCount {
+		sample, err := m.timeSyncRoundTrip(sess)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if !found || sample.rttMs < best.rttMs {
+			best = sample
+			found = true
+		}
+	}
+	if found {
+		return best, nil
+	}
+	if lastErr == nil {
+		lastErr = errors.New("time sync failed without successful samples")
+	}
+	return timeSyncSample{}, lastErr
+}
+
+func (m *Manager) timeSyncRoundTrip(sess *session) (timeSyncSample, error) {
+	requestID, resultCh := sess.beginTimeSync()
+	clientSendTimeMs := m.clock.PhysicalTimeMs()
+	ctx := m.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	sess.enqueue(&internalproto.Envelope{
+		NodeId: m.cfg.NodeID,
+		Body: &internalproto.Envelope_TimeSyncRequest{
+			TimeSyncRequest: &internalproto.TimeSyncRequest{
+				RequestId:        requestID,
+				ClientSendTimeMs: clientSendTimeMs,
+			},
+		},
+	})
+
+	timer := time.NewTimer(timeSyncTimeout)
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+		sess.cancelTimeSync(requestID, context.Canceled)
+		return timeSyncSample{}, ctx.Err()
+	case result := <-resultCh:
+		if result.err != nil {
+			return timeSyncSample{}, result.err
+		}
+		if result.response == nil {
+			return timeSyncSample{}, errors.New("time sync response was empty")
+		}
+
+		serverReceiveMs := result.response.ServerReceiveTimeMs
+		serverSendMs := result.response.ServerSendTimeMs
+		clientReceiveMs := result.receivedAtMs
+		offsetMs := ((serverReceiveMs - clientSendTimeMs) + (serverSendMs - clientReceiveMs)) / 2
+		rttMs := clientReceiveMs - clientSendTimeMs - (serverSendMs - serverReceiveMs)
+		if rttMs < 0 {
+			rttMs = 0
+		}
+		return timeSyncSample{offsetMs: offsetMs, rttMs: rttMs}, nil
+	case <-timer.C:
+		sess.cancelTimeSync(requestID, context.DeadlineExceeded)
+		return timeSyncSample{}, fmt.Errorf("time sync with peer %s timed out", sess.peerID)
+	}
+}
+
+func (m *Manager) timeSyncLoop(sess *session) {
+	if m.ctx == nil {
+		return
+	}
+	ticker := time.NewTicker(timeSyncInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-m.ctx.Done():
+			return
+		case <-ticker.C:
+			if sess.isClosed() {
+				return
+			}
+			if err := m.performTimeSync(sess); err != nil {
+				log.Printf("warn: peer %s periodic time sync failed: %v", sess.peerID, err)
+				sess.close()
+				return
+			}
+			m.markPeerClockSynced(sess, sess.clockOffset())
+		}
+	}
+}
+
+func (m *Manager) markPeerClockSynced(sess *session, offsetMs int64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	peer, ok := m.peers[sess.peerID]
+	if !ok {
+		return
+	}
+	if peer.active != sess {
+		return
+	}
+
+	peer.trustedSession = sess
+	peer.clockOffsetMs = offsetMs
+	peer.lastClockSync = time.Now()
+	m.lastSuccessfulClockSync = peer.lastClockSync
+	m.recomputeClockOffsetLocked()
+}
+
+func (m *Manager) clearPeerClockSync(sess *session) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	peer, ok := m.peers[sess.peerID]
+	if !ok {
+		return
+	}
+	if peer.trustedSession == sess {
+		peer.trustedSession = nil
+		peer.clockOffsetMs = 0
+		peer.lastClockSync = time.Time{}
+	}
+	m.recomputeClockOffsetLocked()
+}
+
+func (m *Manager) recomputeClockOffsetLocked() {
+	offsets := make([]int64, 0, len(m.peers))
+	for _, peer := range m.peers {
+		if peer.trustedSession != nil {
+			offsets = append(offsets, peer.clockOffsetMs)
+		}
+	}
+	if len(offsets) == 0 {
+		return
+	}
+	sort.Slice(offsets, func(i, j int) bool {
+		return offsets[i] < offsets[j]
+	})
+	m.clock.SetOffsetMs(offsets[len(offsets)/2])
+}
+
+func (m *Manager) validateBatchHLC(events []*internalproto.ReplicatedEvent) error {
+	if m.cfg.MaxClockSkewMs == 0 {
+		return nil
+	}
+
+	maxAllowedWallTime := m.clock.WallTimeMs() + m.cfg.MaxClockSkewMs
+	for _, event := range events {
+		if event == nil {
+			continue
+		}
+		hlc, err := clock.ParseTimestamp(strings.TrimSpace(event.Hlc))
+		if err != nil {
+			return fmt.Errorf("parse replicated event hlc: %w", err)
+		}
+		if hlc.WallTimeMs > maxAllowedWallTime {
+			return fmt.Errorf("replicated event hlc %s exceeds local wall time %d by more than %dms", hlc, m.clock.WallTimeMs(), m.cfg.MaxClockSkewMs)
+		}
+	}
+	return nil
+}
+
+func normalizedMessageWindowSize(size int) int {
+	if size <= 0 {
+		return store.DefaultMessageWindowSize
+	}
+	return size
+}
+
 func validatePeerEnvelope(sess *session, envelope *internalproto.Envelope) error {
 	envelopeNodeID := strings.TrimSpace(envelope.NodeId)
 	if envelopeNodeID == "" {
@@ -676,21 +1063,31 @@ func (m *Manager) deactivateSession(sess *session) {
 	}
 
 	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	peer, ok := m.peers[sess.peerID]
-	if !ok {
-		return
-	}
-	if peer.active == sess {
+	if ok && peer.active == sess {
 		peer.active = nil
 	}
+	if ok && peer.trustedSession == sess {
+		peer.trustedSession = nil
+		peer.clockOffsetMs = 0
+		peer.lastClockSync = time.Time{}
+	}
+	m.recomputeClockOffsetLocked()
+	m.mu.Unlock()
 }
 
 func (s *session) enqueue(envelope *internalproto.Envelope) {
 	defer func() {
 		_ = recover()
 	}()
+
+	if s.manager == nil || s.manager.ctx == nil {
+		select {
+		case s.send <- envelope:
+		default:
+		}
+		return
+	}
 
 	select {
 	case s.send <- envelope:
@@ -705,12 +1102,31 @@ func (s *session) close() {
 		return
 	}
 	s.closed = true
+	pending := make([]chan timeSyncResult, 0, len(s.pendingTimeSync))
+	for requestID, ch := range s.pendingTimeSync {
+		delete(s.pendingTimeSync, requestID)
+		pending = append(pending, ch)
+	}
 	close(s.send)
 	s.mu.Unlock()
+
+	for _, ch := range pending {
+		select {
+		case ch <- timeSyncResult{err: errSessionClosed}:
+		default:
+		}
+		close(ch)
+	}
 
 	if s.conn != nil {
 		_ = s.conn.Close()
 	}
+}
+
+func (s *session) isClosed() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.closed
 }
 
 func (s *session) noteRemoteLastSequence(sequence uint64) {
@@ -760,6 +1176,99 @@ func (s *session) completePendingPull(batchStart uint64) {
 	}
 }
 
+func (s *session) beginBootstrap() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.bootstrapStarted {
+		return false
+	}
+	s.bootstrapStarted = true
+	return true
+}
+
+func (s *session) markReplicationReady() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.replicationReady = true
+}
+
+func (s *session) isReplicationReady() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.replicationReady
+}
+
+func (s *session) startSyncLoop(run func()) {
+	s.mu.Lock()
+	if s.syncLoopStarted {
+		s.mu.Unlock()
+		return
+	}
+	s.syncLoopStarted = true
+	s.mu.Unlock()
+
+	go run()
+}
+
+func (s *session) beginTimeSync() (uint64, chan timeSyncResult) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.pendingTimeSync == nil {
+		s.pendingTimeSync = make(map[uint64]chan timeSyncResult)
+	}
+	s.nextTimeSyncID++
+	requestID := s.nextTimeSyncID
+	ch := make(chan timeSyncResult, 1)
+	s.pendingTimeSync[requestID] = ch
+	return requestID, ch
+}
+
+func (s *session) cancelTimeSync(requestID uint64, err error) {
+	s.mu.Lock()
+	ch, ok := s.pendingTimeSync[requestID]
+	if ok {
+		delete(s.pendingTimeSync, requestID)
+	}
+	s.mu.Unlock()
+
+	if !ok {
+		return
+	}
+	select {
+	case ch <- timeSyncResult{err: err}:
+	default:
+	}
+	close(ch)
+}
+
+func (s *session) resolveTimeSync(requestID uint64, result timeSyncResult) bool {
+	s.mu.Lock()
+	ch, ok := s.pendingTimeSync[requestID]
+	if ok {
+		delete(s.pendingTimeSync, requestID)
+	}
+	s.mu.Unlock()
+
+	if !ok {
+		return false
+	}
+	ch <- result
+	close(ch)
+	return true
+}
+
+func (s *session) setClockOffset(offsetMs int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.clockOffsetMs = offsetMs
+}
+
+func (s *session) clockOffset() int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.clockOffsetMs
+}
+
 func batchStartSequence(endSequence uint64, batchLen int) (uint64, error) {
 	if batchLen <= 0 {
 		return 0, errors.New("event batch cannot be empty")
@@ -785,6 +1294,13 @@ func minInt(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func absInt64(value int64) int64 {
+	if value < 0 {
+		return -value
+	}
+	return value
 }
 
 func (m *Manager) hasActivePeer(peerID string) bool {

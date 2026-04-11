@@ -65,27 +65,39 @@ func (t Timestamp) Compare(other Timestamp) int {
 }
 
 type Clock struct {
-	mu     sync.Mutex
-	nodeID uint16
-	last   Timestamp
+	mu        sync.Mutex
+	nodeID    uint16
+	last      Timestamp
+	wallClock func() int64
+	offsetMs  int64
 }
 
 func NewClock(nodeID uint16) *Clock {
-	return &Clock{nodeID: nodeID}
+	return NewClockWithSource(nodeID, currentWallTimeMs)
+}
+
+func NewClockWithSource(nodeID uint16, wallClock func() int64) *Clock {
+	if wallClock == nil {
+		wallClock = currentWallTimeMs
+	}
+	return &Clock{
+		nodeID:    nodeID,
+		wallClock: wallClock,
+	}
 }
 
 func (c *Clock) Now() Timestamp {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	return c.nextLocked(currentWallTimeMs())
+	return c.nextLocked(c.adjustedWallTimeLocked())
 }
 
 func (c *Clock) Observe(remote Timestamp) Timestamp {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	nowMs := currentWallTimeMs()
+	nowMs := c.adjustedWallTimeLocked()
 	maxWall := maxInt64(nowMs, c.last.WallTimeMs, remote.WallTimeMs)
 
 	switch {
@@ -104,6 +116,30 @@ func (c *Clock) Observe(remote Timestamp) Timestamp {
 	return c.last
 }
 
+func (c *Clock) SetOffsetMs(offsetMs int64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.offsetMs = offsetMs
+}
+
+func (c *Clock) OffsetMs() int64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.offsetMs
+}
+
+func (c *Clock) WallTimeMs() int64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.adjustedWallTimeLocked()
+}
+
+func (c *Clock) PhysicalTimeMs() int64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.wallClock()
+}
+
 func (c *Clock) nextLocked(nowMs int64) Timestamp {
 	if nowMs > c.last.WallTimeMs {
 		c.last.WallTimeMs = nowMs
@@ -114,6 +150,10 @@ func (c *Clock) nextLocked(nowMs int64) Timestamp {
 
 	c.last.NodeID = c.nodeID
 	return c.last
+}
+
+func (c *Clock) adjustedWallTimeLocked() int64 {
+	return c.wallClock() + c.offsetMs
 }
 
 func currentWallTimeMs() int64 {

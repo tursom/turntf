@@ -1,0 +1,19 @@
+[node]
+id = "node-a"
+slot = 1
+
+[api]
+listen_addr = ":8080"
+
+[store]
+db_path = "./data/node-a.db"
+message_window_size = 500
+
+[cluster]
+advertise_path = "/internal/cluster/ws"
+secret = "secret"
+max_clock_skew_ms = 1000
+
+[[cluster.peers]]
+node_id = "node-b"
+url = "ws://127.0.0.1:9081/internal/cluster/ws"

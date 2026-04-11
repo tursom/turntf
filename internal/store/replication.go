@@ -265,6 +265,9 @@ VALUES(?, ?, ?, ?, ?, ?, ?)
 		}
 		return fmt.Errorf("insert replicated message: %w", err)
 	}
+	if err := s.trimMessagesForUserTx(ctx, tx, message.UserID); err != nil {
+		return err
+	}
 	return nil
 }
 

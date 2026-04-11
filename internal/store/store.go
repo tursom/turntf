@@ -20,17 +20,22 @@ var (
 	ErrInvalidInput = errors.New("invalid input")
 )
 
+const DefaultMessageWindowSize = 500
+
 type Options struct {
-	NodeID   string
-	NodeSlot uint16
+	NodeID            string
+	NodeSlot          uint16
+	MessageWindowSize int
+	Clock             *clock.Clock
 }
 
 type Store struct {
-	db       *sql.DB
-	nodeID   string
-	clock    *clock.Clock
-	ids      *clock.IDGenerator
-	nodeSlot uint16
+	db                *sql.DB
+	nodeID            string
+	clock             *clock.Clock
+	ids               *clock.IDGenerator
+	nodeSlot          uint16
+	messageWindowSize int
 }
 
 type User struct {
@@ -122,12 +127,24 @@ func Open(dbPath string, opts Options) (*Store, error) {
 	}
 
 	return &Store{
-		db:       db,
-		nodeID:   opts.NodeID,
-		nodeSlot: opts.NodeSlot,
-		clock:    clock.NewClock(opts.NodeSlot),
-		ids:      ids,
+		db:                db,
+		nodeID:            opts.NodeID,
+		nodeSlot:          opts.NodeSlot,
+		clock:             resolvedClock(opts),
+		ids:               ids,
+		messageWindowSize: normalizeMessageWindowSize(opts.MessageWindowSize),
 	}, nil
+}
+
+func resolvedClock(opts Options) *clock.Clock {
+	if opts.Clock != nil {
+		return opts.Clock
+	}
+	return clock.NewClock(opts.NodeSlot)
+}
+
+func (s *Store) Clock() *clock.Clock {
+	return s.clock
 }
 
 func (s *Store) Close() error {
@@ -493,6 +510,10 @@ VALUES(?, ?, ?, ?, ?, ?, ?)
 
 	event, err := s.insertEvent(ctx, tx, "message.created", "message", message.ID, now, string(payload))
 	if err != nil {
+		return Message{}, Event{}, err
+	}
+
+	if err := s.trimMessagesForUserTx(ctx, tx, message.UserID); err != nil {
 		return Message{}, Event{}, err
 	}
 
@@ -865,4 +886,29 @@ func nullIfEmpty(value string) any {
 		return nil
 	}
 	return value
+}
+
+func normalizeMessageWindowSize(size int) int {
+	if size <= 0 {
+		return DefaultMessageWindowSize
+	}
+	return size
+}
+
+func (s *Store) trimMessagesForUserTx(ctx context.Context, tx *sql.Tx, userID int64) error {
+	windowSize := normalizeMessageWindowSize(s.messageWindowSize)
+	if _, err := tx.ExecContext(ctx, `
+DELETE FROM messages
+WHERE user_id = ?
+  AND message_id IN (
+    SELECT message_id
+    FROM messages
+    WHERE user_id = ?
+    ORDER BY created_at_hlc DESC, message_id DESC
+    LIMIT -1 OFFSET ?
+  )
+`, userID, userID, windowSize); err != nil {
+		return fmt.Errorf("trim messages for user %d: %w", userID, err)
+	}
+	return nil
 }

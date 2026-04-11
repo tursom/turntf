@@ -34,8 +34,10 @@ type Envelope struct {
 	//	*Envelope_PullEvents
 	//	*Envelope_SnapshotDigest
 	//	*Envelope_SnapshotChunk
+	//	*Envelope_TimeSyncRequest
+	//	*Envelope_TimeSyncResponse
 	Body          isEnvelope_Body `protobuf_oneof:"body"`
-	Hmac          []byte          `protobuf:"bytes,10,opt,name=hmac,proto3" json:"hmac,omitempty"`
+	Hmac          []byte          `protobuf:"bytes,12,opt,name=hmac,proto3" json:"hmac,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -152,6 +154,24 @@ func (x *Envelope) GetSnapshotChunk() *SnapshotChunk {
 	return nil
 }
 
+func (x *Envelope) GetTimeSyncRequest() *TimeSyncRequest {
+	if x != nil {
+		if x, ok := x.Body.(*Envelope_TimeSyncRequest); ok {
+			return x.TimeSyncRequest
+		}
+	}
+	return nil
+}
+
+func (x *Envelope) GetTimeSyncResponse() *TimeSyncResponse {
+	if x != nil {
+		if x, ok := x.Body.(*Envelope_TimeSyncResponse); ok {
+			return x.TimeSyncResponse
+		}
+	}
+	return nil
+}
+
 func (x *Envelope) GetHmac() []byte {
 	if x != nil {
 		return x.Hmac
@@ -187,6 +207,14 @@ type Envelope_SnapshotChunk struct {
 	SnapshotChunk *SnapshotChunk `protobuf:"bytes,9,opt,name=snapshot_chunk,json=snapshotChunk,proto3,oneof"`
 }
 
+type Envelope_TimeSyncRequest struct {
+	TimeSyncRequest *TimeSyncRequest `protobuf:"bytes,10,opt,name=time_sync_request,json=timeSyncRequest,proto3,oneof"`
+}
+
+type Envelope_TimeSyncResponse struct {
+	TimeSyncResponse *TimeSyncResponse `protobuf:"bytes,11,opt,name=time_sync_response,json=timeSyncResponse,proto3,oneof"`
+}
+
 func (*Envelope_Hello) isEnvelope_Body() {}
 
 func (*Envelope_Ack) isEnvelope_Body() {}
@@ -199,15 +227,20 @@ func (*Envelope_SnapshotDigest) isEnvelope_Body() {}
 
 func (*Envelope_SnapshotChunk) isEnvelope_Body() {}
 
+func (*Envelope_TimeSyncRequest) isEnvelope_Body() {}
+
+func (*Envelope_TimeSyncResponse) isEnvelope_Body() {}
+
 type Hello struct {
-	state           protoimpl.MessageState `protogen:"open.v1"`
-	NodeId          string                 `protobuf:"bytes,1,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
-	AdvertiseAddr   string                 `protobuf:"bytes,2,opt,name=advertise_addr,json=advertiseAddr,proto3" json:"advertise_addr,omitempty"`
-	ProtocolVersion string                 `protobuf:"bytes,3,opt,name=protocol_version,json=protocolVersion,proto3" json:"protocol_version,omitempty"`
-	LastSequence    uint64                 `protobuf:"varint,4,opt,name=last_sequence,json=lastSequence,proto3" json:"last_sequence,omitempty"`
-	SnapshotVersion string                 `protobuf:"bytes,5,opt,name=snapshot_version,json=snapshotVersion,proto3" json:"snapshot_version,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	state             protoimpl.MessageState `protogen:"open.v1"`
+	NodeId            string                 `protobuf:"bytes,1,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
+	AdvertiseAddr     string                 `protobuf:"bytes,2,opt,name=advertise_addr,json=advertiseAddr,proto3" json:"advertise_addr,omitempty"`
+	ProtocolVersion   string                 `protobuf:"bytes,3,opt,name=protocol_version,json=protocolVersion,proto3" json:"protocol_version,omitempty"`
+	LastSequence      uint64                 `protobuf:"varint,4,opt,name=last_sequence,json=lastSequence,proto3" json:"last_sequence,omitempty"`
+	SnapshotVersion   string                 `protobuf:"bytes,5,opt,name=snapshot_version,json=snapshotVersion,proto3" json:"snapshot_version,omitempty"`
+	MessageWindowSize uint32                 `protobuf:"varint,6,opt,name=message_window_size,json=messageWindowSize,proto3" json:"message_window_size,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *Hello) Reset() {
@@ -273,6 +306,13 @@ func (x *Hello) GetSnapshotVersion() string {
 		return x.SnapshotVersion
 	}
 	return ""
+}
+
+func (x *Hello) GetMessageWindowSize() uint32 {
+	if x != nil {
+		return x.MessageWindowSize
+	}
+	return 0
 }
 
 type Ack struct {
@@ -619,6 +659,126 @@ func (x *SnapshotChunk) GetRows() [][]byte {
 	return nil
 }
 
+type TimeSyncRequest struct {
+	state            protoimpl.MessageState `protogen:"open.v1"`
+	RequestId        uint64                 `protobuf:"varint,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
+	ClientSendTimeMs int64                  `protobuf:"varint,2,opt,name=client_send_time_ms,json=clientSendTimeMs,proto3" json:"client_send_time_ms,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
+}
+
+func (x *TimeSyncRequest) Reset() {
+	*x = TimeSyncRequest{}
+	mi := &file_proto_cluster_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TimeSyncRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TimeSyncRequest) ProtoMessage() {}
+
+func (x *TimeSyncRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_cluster_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TimeSyncRequest.ProtoReflect.Descriptor instead.
+func (*TimeSyncRequest) Descriptor() ([]byte, []int) {
+	return file_proto_cluster_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *TimeSyncRequest) GetRequestId() uint64 {
+	if x != nil {
+		return x.RequestId
+	}
+	return 0
+}
+
+func (x *TimeSyncRequest) GetClientSendTimeMs() int64 {
+	if x != nil {
+		return x.ClientSendTimeMs
+	}
+	return 0
+}
+
+type TimeSyncResponse struct {
+	state               protoimpl.MessageState `protogen:"open.v1"`
+	RequestId           uint64                 `protobuf:"varint,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
+	ClientSendTimeMs    int64                  `protobuf:"varint,2,opt,name=client_send_time_ms,json=clientSendTimeMs,proto3" json:"client_send_time_ms,omitempty"`
+	ServerReceiveTimeMs int64                  `protobuf:"varint,3,opt,name=server_receive_time_ms,json=serverReceiveTimeMs,proto3" json:"server_receive_time_ms,omitempty"`
+	ServerSendTimeMs    int64                  `protobuf:"varint,4,opt,name=server_send_time_ms,json=serverSendTimeMs,proto3" json:"server_send_time_ms,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
+}
+
+func (x *TimeSyncResponse) Reset() {
+	*x = TimeSyncResponse{}
+	mi := &file_proto_cluster_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TimeSyncResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TimeSyncResponse) ProtoMessage() {}
+
+func (x *TimeSyncResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_cluster_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TimeSyncResponse.ProtoReflect.Descriptor instead.
+func (*TimeSyncResponse) Descriptor() ([]byte, []int) {
+	return file_proto_cluster_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *TimeSyncResponse) GetRequestId() uint64 {
+	if x != nil {
+		return x.RequestId
+	}
+	return 0
+}
+
+func (x *TimeSyncResponse) GetClientSendTimeMs() int64 {
+	if x != nil {
+		return x.ClientSendTimeMs
+	}
+	return 0
+}
+
+func (x *TimeSyncResponse) GetServerReceiveTimeMs() int64 {
+	if x != nil {
+		return x.ServerReceiveTimeMs
+	}
+	return 0
+}
+
+func (x *TimeSyncResponse) GetServerSendTimeMs() int64 {
+	if x != nil {
+		return x.ServerSendTimeMs
+	}
+	return 0
+}
+
 type UserEvent struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	EventId       int64                  `protobuf:"varint,1,opt,name=event_id,json=eventId,proto3" json:"event_id,omitempty"`
@@ -632,7 +792,7 @@ type UserEvent struct {
 
 func (x *UserEvent) Reset() {
 	*x = UserEvent{}
-	mi := &file_proto_cluster_proto_msgTypes[8]
+	mi := &file_proto_cluster_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -644,7 +804,7 @@ func (x *UserEvent) String() string {
 func (*UserEvent) ProtoMessage() {}
 
 func (x *UserEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_cluster_proto_msgTypes[8]
+	mi := &file_proto_cluster_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -657,7 +817,7 @@ func (x *UserEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UserEvent.ProtoReflect.Descriptor instead.
 func (*UserEvent) Descriptor() ([]byte, []int) {
-	return file_proto_cluster_proto_rawDescGZIP(), []int{8}
+	return file_proto_cluster_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *UserEvent) GetEventId() int64 {
@@ -709,7 +869,7 @@ type MessageEvent struct {
 
 func (x *MessageEvent) Reset() {
 	*x = MessageEvent{}
-	mi := &file_proto_cluster_proto_msgTypes[9]
+	mi := &file_proto_cluster_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -721,7 +881,7 @@ func (x *MessageEvent) String() string {
 func (*MessageEvent) ProtoMessage() {}
 
 func (x *MessageEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_cluster_proto_msgTypes[9]
+	mi := &file_proto_cluster_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -734,7 +894,7 @@ func (x *MessageEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MessageEvent.ProtoReflect.Descriptor instead.
 func (*MessageEvent) Descriptor() ([]byte, []int) {
-	return file_proto_cluster_proto_rawDescGZIP(), []int{9}
+	return file_proto_cluster_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *MessageEvent) GetEventId() int64 {
@@ -783,7 +943,7 @@ var File_proto_cluster_proto protoreflect.FileDescriptor
 
 const file_proto_cluster_proto_rawDesc = "" +
 	"\n" +
-	"\x13proto/cluster.proto\x12\x13notifier.cluster.v1\"\x82\x04\n" +
+	"\x13proto/cluster.proto\x12\x13notifier.cluster.v1\"\xad\x05\n" +
 	"\bEnvelope\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\tR\x06nodeId\x12\x1a\n" +
 	"\bsequence\x18\x02 \x01(\x04R\bsequence\x12\x1e\n" +
@@ -795,16 +955,19 @@ const file_proto_cluster_proto_rawDesc = "" +
 	"\vpull_events\x18\a \x01(\v2\x1f.notifier.cluster.v1.PullEventsH\x00R\n" +
 	"pullEvents\x12N\n" +
 	"\x0fsnapshot_digest\x18\b \x01(\v2#.notifier.cluster.v1.SnapshotDigestH\x00R\x0esnapshotDigest\x12K\n" +
-	"\x0esnapshot_chunk\x18\t \x01(\v2\".notifier.cluster.v1.SnapshotChunkH\x00R\rsnapshotChunk\x12\x12\n" +
-	"\x04hmac\x18\n" +
-	" \x01(\fR\x04hmacB\x06\n" +
-	"\x04body\"\xc2\x01\n" +
+	"\x0esnapshot_chunk\x18\t \x01(\v2\".notifier.cluster.v1.SnapshotChunkH\x00R\rsnapshotChunk\x12R\n" +
+	"\x11time_sync_request\x18\n" +
+	" \x01(\v2$.notifier.cluster.v1.TimeSyncRequestH\x00R\x0ftimeSyncRequest\x12U\n" +
+	"\x12time_sync_response\x18\v \x01(\v2%.notifier.cluster.v1.TimeSyncResponseH\x00R\x10timeSyncResponse\x12\x12\n" +
+	"\x04hmac\x18\f \x01(\fR\x04hmacB\x06\n" +
+	"\x04body\"\xf2\x01\n" +
 	"\x05Hello\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\tR\x06nodeId\x12%\n" +
 	"\x0eadvertise_addr\x18\x02 \x01(\tR\radvertiseAddr\x12)\n" +
 	"\x10protocol_version\x18\x03 \x01(\tR\x0fprotocolVersion\x12#\n" +
 	"\rlast_sequence\x18\x04 \x01(\x04R\flastSequence\x12)\n" +
-	"\x10snapshot_version\x18\x05 \x01(\tR\x0fsnapshotVersion\"E\n" +
+	"\x10snapshot_version\x18\x05 \x01(\tR\x0fsnapshotVersion\x12.\n" +
+	"\x13message_window_size\x18\x06 \x01(\rR\x11messageWindowSize\"E\n" +
 	"\x03Ack\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\tR\x06nodeId\x12%\n" +
 	"\x0eacked_sequence\x18\x02 \x01(\x04R\rackedSequence\"J\n" +
@@ -830,7 +993,17 @@ const file_proto_cluster_proto_rawDesc = "" +
 	"partitions\"A\n" +
 	"\rSnapshotChunk\x12\x1c\n" +
 	"\tpartition\x18\x01 \x01(\tR\tpartition\x12\x12\n" +
-	"\x04rows\x18\x02 \x03(\fR\x04rows\"\x7f\n" +
+	"\x04rows\x18\x02 \x03(\fR\x04rows\"_\n" +
+	"\x0fTimeSyncRequest\x12\x1d\n" +
+	"\n" +
+	"request_id\x18\x01 \x01(\x04R\trequestId\x12-\n" +
+	"\x13client_send_time_ms\x18\x02 \x01(\x03R\x10clientSendTimeMs\"\xc4\x01\n" +
+	"\x10TimeSyncResponse\x12\x1d\n" +
+	"\n" +
+	"request_id\x18\x01 \x01(\x04R\trequestId\x12-\n" +
+	"\x13client_send_time_ms\x18\x02 \x01(\x03R\x10clientSendTimeMs\x123\n" +
+	"\x16server_receive_time_ms\x18\x03 \x01(\x03R\x13serverReceiveTimeMs\x12-\n" +
+	"\x13server_send_time_ms\x18\x04 \x01(\x03R\x10serverSendTimeMs\"\x7f\n" +
 	"\tUserEvent\x12\x19\n" +
 	"\bevent_id\x18\x01 \x01(\x03R\aeventId\x12\x12\n" +
 	"\x04kind\x18\x02 \x01(\tR\x04kind\x12\x17\n" +
@@ -858,18 +1031,20 @@ func file_proto_cluster_proto_rawDescGZIP() []byte {
 	return file_proto_cluster_proto_rawDescData
 }
 
-var file_proto_cluster_proto_msgTypes = make([]protoimpl.MessageInfo, 10)
+var file_proto_cluster_proto_msgTypes = make([]protoimpl.MessageInfo, 12)
 var file_proto_cluster_proto_goTypes = []any{
-	(*Envelope)(nil),        // 0: notifier.cluster.v1.Envelope
-	(*Hello)(nil),           // 1: notifier.cluster.v1.Hello
-	(*Ack)(nil),             // 2: notifier.cluster.v1.Ack
-	(*EventBatch)(nil),      // 3: notifier.cluster.v1.EventBatch
-	(*ReplicatedEvent)(nil), // 4: notifier.cluster.v1.ReplicatedEvent
-	(*PullEvents)(nil),      // 5: notifier.cluster.v1.PullEvents
-	(*SnapshotDigest)(nil),  // 6: notifier.cluster.v1.SnapshotDigest
-	(*SnapshotChunk)(nil),   // 7: notifier.cluster.v1.SnapshotChunk
-	(*UserEvent)(nil),       // 8: notifier.cluster.v1.UserEvent
-	(*MessageEvent)(nil),    // 9: notifier.cluster.v1.MessageEvent
+	(*Envelope)(nil),         // 0: notifier.cluster.v1.Envelope
+	(*Hello)(nil),            // 1: notifier.cluster.v1.Hello
+	(*Ack)(nil),              // 2: notifier.cluster.v1.Ack
+	(*EventBatch)(nil),       // 3: notifier.cluster.v1.EventBatch
+	(*ReplicatedEvent)(nil),  // 4: notifier.cluster.v1.ReplicatedEvent
+	(*PullEvents)(nil),       // 5: notifier.cluster.v1.PullEvents
+	(*SnapshotDigest)(nil),   // 6: notifier.cluster.v1.SnapshotDigest
+	(*SnapshotChunk)(nil),    // 7: notifier.cluster.v1.SnapshotChunk
+	(*TimeSyncRequest)(nil),  // 8: notifier.cluster.v1.TimeSyncRequest
+	(*TimeSyncResponse)(nil), // 9: notifier.cluster.v1.TimeSyncResponse
+	(*UserEvent)(nil),        // 10: notifier.cluster.v1.UserEvent
+	(*MessageEvent)(nil),     // 11: notifier.cluster.v1.MessageEvent
 }
 var file_proto_cluster_proto_depIdxs = []int32{
 	1, // 0: notifier.cluster.v1.Envelope.hello:type_name -> notifier.cluster.v1.Hello
@@ -878,12 +1053,14 @@ var file_proto_cluster_proto_depIdxs = []int32{
 	5, // 3: notifier.cluster.v1.Envelope.pull_events:type_name -> notifier.cluster.v1.PullEvents
 	6, // 4: notifier.cluster.v1.Envelope.snapshot_digest:type_name -> notifier.cluster.v1.SnapshotDigest
 	7, // 5: notifier.cluster.v1.Envelope.snapshot_chunk:type_name -> notifier.cluster.v1.SnapshotChunk
-	4, // 6: notifier.cluster.v1.EventBatch.events:type_name -> notifier.cluster.v1.ReplicatedEvent
-	7, // [7:7] is the sub-list for method output_type
-	7, // [7:7] is the sub-list for method input_type
-	7, // [7:7] is the sub-list for extension type_name
-	7, // [7:7] is the sub-list for extension extendee
-	0, // [0:7] is the sub-list for field type_name
+	8, // 6: notifier.cluster.v1.Envelope.time_sync_request:type_name -> notifier.cluster.v1.TimeSyncRequest
+	9, // 7: notifier.cluster.v1.Envelope.time_sync_response:type_name -> notifier.cluster.v1.TimeSyncResponse
+	4, // 8: notifier.cluster.v1.EventBatch.events:type_name -> notifier.cluster.v1.ReplicatedEvent
+	9, // [9:9] is the sub-list for method output_type
+	9, // [9:9] is the sub-list for method input_type
+	9, // [9:9] is the sub-list for extension type_name
+	9, // [9:9] is the sub-list for extension extendee
+	0, // [0:9] is the sub-list for field type_name
 }
 
 func init() { file_proto_cluster_proto_init() }
@@ -898,6 +1075,8 @@ func file_proto_cluster_proto_init() {
 		(*Envelope_PullEvents)(nil),
 		(*Envelope_SnapshotDigest)(nil),
 		(*Envelope_SnapshotChunk)(nil),
+		(*Envelope_TimeSyncRequest)(nil),
+		(*Envelope_TimeSyncResponse)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
@@ -905,7 +1084,7 @@ func file_proto_cluster_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proto_cluster_proto_rawDesc), len(file_proto_cluster_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   10,
+			NumMessages:   12,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

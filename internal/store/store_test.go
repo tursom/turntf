@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"path/filepath"
+	"strconv"
 	"testing"
 
 	"notifier/internal/clock"
@@ -140,6 +141,51 @@ func TestLocalMessageWriteAndQuery(t *testing.T) {
 	}
 	if len(events) != 3 {
 		t.Fatalf("expected 3 events (user + 2 message), got %d", len(events))
+	}
+}
+
+func TestLocalMessagesTrimToConfiguredWindow(t *testing.T) {
+	t.Parallel()
+
+	st := openNamedTestStoreWithWindow(t, "node-a", 1, 2)
+	defer st.Close()
+
+	ctx := context.Background()
+	user, _, err := st.CreateUser(ctx, CreateUserParams{
+		Username:     "trim-local",
+		PasswordHash: "hash-1",
+	})
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	for i := 1; i <= 3; i++ {
+		if _, _, err := st.CreateMessage(ctx, CreateMessageParams{
+			UserID: user.ID,
+			Sender: "orders",
+			Body:   "message-" + strconv.Itoa(i),
+		}); err != nil {
+			t.Fatalf("create message %d: %v", i, err)
+		}
+	}
+
+	messages, err := st.ListMessagesByUser(ctx, user.ID, 10)
+	if err != nil {
+		t.Fatalf("list messages: %v", err)
+	}
+	if len(messages) != 2 {
+		t.Fatalf("expected 2 messages after trim, got %d", len(messages))
+	}
+	if messages[0].Body != "message-3" || messages[1].Body != "message-2" {
+		t.Fatalf("unexpected trimmed messages: %+v", messages)
+	}
+
+	events, err := st.ListEvents(ctx, 0, 10)
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	if len(events) != 4 {
+		t.Fatalf("expected 4 events retained in log, got %d", len(events))
 	}
 }
 
@@ -342,6 +388,136 @@ func TestApplyReplicatedMessageIsIdempotent(t *testing.T) {
 	}
 	if len(messages) != 1 || messages[0].ID != message.ID {
 		t.Fatalf("unexpected replicated messages: %+v", messages)
+	}
+}
+
+func TestReplicatedMessagesTrimToConfiguredWindow(t *testing.T) {
+	t.Parallel()
+
+	source := openNamedTestStore(t, "node-a", 1)
+	defer source.Close()
+
+	target := openNamedTestStoreWithWindow(t, "node-b", 2, 2)
+	defer target.Close()
+
+	ctx := context.Background()
+	user, userEvent, err := source.CreateUser(ctx, CreateUserParams{
+		Username:     "replicated-trim-user",
+		PasswordHash: "hash-1",
+	})
+	if err != nil {
+		t.Fatalf("create source user: %v", err)
+	}
+	if err := target.ApplyReplicatedEvent(ctx, ToReplicatedEvent(userEvent)); err != nil {
+		t.Fatalf("apply user event: %v", err)
+	}
+
+	for i := 1; i <= 3; i++ {
+		_, messageEvent, err := source.CreateMessage(ctx, CreateMessageParams{
+			UserID: user.ID,
+			Sender: "orders",
+			Body:   "message-" + strconv.Itoa(i),
+		})
+		if err != nil {
+			t.Fatalf("create source message %d: %v", i, err)
+		}
+		if err := target.ApplyReplicatedEvent(ctx, ToReplicatedEvent(messageEvent)); err != nil {
+			t.Fatalf("apply message event %d: %v", i, err)
+		}
+	}
+
+	messages, err := target.ListMessagesByUser(ctx, user.ID, 10)
+	if err != nil {
+		t.Fatalf("list replicated messages: %v", err)
+	}
+	if len(messages) != 2 {
+		t.Fatalf("expected 2 messages after replicated trim, got %d", len(messages))
+	}
+	if messages[0].Body != "message-3" || messages[1].Body != "message-2" {
+		t.Fatalf("unexpected trimmed replicated messages: %+v", messages)
+	}
+}
+
+func TestReplicatedMessageTrimUsesMessageIDForSameTimestamp(t *testing.T) {
+	t.Parallel()
+
+	target := openNamedTestStoreWithWindow(t, "node-b", 2, 1)
+	defer target.Close()
+
+	ctx := context.Background()
+	user, _, err := target.CreateUser(ctx, CreateUserParams{
+		Username:     "same-ts-user",
+		PasswordHash: "hash-1",
+	})
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	sharedHLC := clock.Timestamp{WallTimeMs: 1700000000000, Logical: 7, NodeID: 1}
+	firstEventID := target.ids.Next()
+	secondEventID := target.ids.Next()
+	olderMessageID := target.ids.Next()
+	newerMessageID := target.ids.Next()
+
+	firstPayload, err := marshalPayload(replicatedMessageEnvelope{
+		Message: replicatedMessagePayload{
+			ID:           olderMessageID,
+			UserID:       user.ID,
+			Sender:       "orders",
+			Body:         "older-id",
+			CreatedAt:    sharedHLC.String(),
+			OriginNodeID: "node-a",
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal first payload: %v", err)
+	}
+	secondPayload, err := marshalPayload(replicatedMessageEnvelope{
+		Message: replicatedMessagePayload{
+			ID:           newerMessageID,
+			UserID:       user.ID,
+			Sender:       "orders",
+			Body:         "newer-id",
+			CreatedAt:    sharedHLC.String(),
+			OriginNodeID: "node-a",
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal second payload: %v", err)
+	}
+
+	if err := target.ApplyReplicatedEvent(ctx, ToReplicatedEvent(Event{
+		EventID:      firstEventID,
+		Kind:         "message.created",
+		Aggregate:    "message",
+		AggregateID:  olderMessageID,
+		HLC:          sharedHLC,
+		OriginNodeID: "node-a",
+		Payload:      firstPayload,
+	})); err != nil {
+		t.Fatalf("apply first replicated event: %v", err)
+	}
+	if err := target.ApplyReplicatedEvent(ctx, ToReplicatedEvent(Event{
+		EventID:      secondEventID,
+		Kind:         "message.created",
+		Aggregate:    "message",
+		AggregateID:  newerMessageID,
+		HLC:          sharedHLC,
+		OriginNodeID: "node-a",
+		Payload:      secondPayload,
+	})); err != nil {
+		t.Fatalf("apply second replicated event: %v", err)
+	}
+
+	messages, err := target.ListMessagesByUser(ctx, user.ID, 10)
+	if err != nil {
+		t.Fatalf("list messages: %v", err)
+	}
+	if len(messages) != 1 {
+		t.Fatalf("expected 1 message after trim, got %d", len(messages))
+	}
+	if messages[0].ID != newerMessageID || messages[0].Body != "newer-id" {
+		t.Fatalf("expected higher message id to win tie, got %+v", messages[0])
 	}
 }
 
@@ -583,11 +759,17 @@ func openTestStore(t *testing.T) *Store {
 
 func openNamedTestStore(t *testing.T, nodeID string, nodeSlot uint16) *Store {
 	t.Helper()
+	return openNamedTestStoreWithWindow(t, nodeID, nodeSlot, DefaultMessageWindowSize)
+}
+
+func openNamedTestStoreWithWindow(t *testing.T, nodeID string, nodeSlot uint16, messageWindowSize int) *Store {
+	t.Helper()
 
 	dbPath := filepath.Join(t.TempDir(), "distributed.db")
 	st, err := Open(dbPath, Options{
-		NodeID:   nodeID,
-		NodeSlot: nodeSlot,
+		NodeID:            nodeID,
+		NodeSlot:          nodeSlot,
+		MessageWindowSize: messageWindowSize,
 	})
 	if err != nil {
 		t.Fatalf("open store: %v", err)

@@ -1,3 +1,3 @@
 package proto
 
-const ProtocolVersion = "v1alpha1"
+const ProtocolVersion = "v1alpha3"

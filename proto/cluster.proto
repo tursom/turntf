@@ -15,8 +15,10 @@ message Envelope {
     PullEvents pull_events = 7;
     SnapshotDigest snapshot_digest = 8;
     SnapshotChunk snapshot_chunk = 9;
+    TimeSyncRequest time_sync_request = 10;
+    TimeSyncResponse time_sync_response = 11;
   }
-  bytes hmac = 10;
+  bytes hmac = 12;
 }
 
 message Hello {
@@ -25,6 +27,7 @@ message Hello {
   string protocol_version = 3;
   uint64 last_sequence = 4;
   string snapshot_version = 5;
+  uint32 message_window_size = 6;
 }
 
 message Ack {
@@ -59,6 +62,18 @@ message SnapshotDigest {
 message SnapshotChunk {
   string partition = 1;
   repeated bytes rows = 2;
+}
+
+message TimeSyncRequest {
+  uint64 request_id = 1;
+  int64 client_send_time_ms = 2;
+}
+
+message TimeSyncResponse {
+  uint64 request_id = 1;
+  int64 client_send_time_ms = 2;
+  int64 server_receive_time_ms = 3;
+  int64 server_send_time_ms = 4;
 }
 
 message UserEvent {

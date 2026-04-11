@@ -21,17 +21,19 @@ import (
 )
 
 const (
-	websocketPath       = "/internal/cluster/ws"
-	writeWait           = 10 * time.Second
-	pingInterval        = 15 * time.Second
-	readTimeout         = 45 * time.Second
-	outboundQueueSize   = 128
-	managerPublishQueue = 256
-	pullBatchSize       = 128
-	timeSyncSampleCount = 5
-	timeSyncInterval    = 30 * time.Second
-	timeSyncTimeout     = 3 * time.Second
-	writeGateGrace      = 90 * time.Second
+	websocketPath        = "/internal/cluster/ws"
+	writeWait            = 10 * time.Second
+	pingInterval         = 15 * time.Second
+	readTimeout          = 45 * time.Second
+	outboundQueueSize    = 128
+	managerPublishQueue  = 256
+	pullBatchSize        = 128
+	timeSyncSampleCount  = 5
+	timeSyncInterval     = 30 * time.Second
+	timeSyncTimeout      = 3 * time.Second
+	catchupRetryInterval = time.Second
+	antiEntropyInterval  = 60 * time.Second
+	writeGateGrace       = 90 * time.Second
 )
 
 var errSessionClosed = errors.New("session closed")
@@ -77,17 +79,20 @@ type session struct {
 
 	send chan *internalproto.Envelope
 
-	mu                 sync.Mutex
-	closed             bool
-	remoteLastSequence uint64
-	catchupInFlight    bool
-	pendingPullAfter   uint64
-	replicationReady   bool
-	bootstrapStarted   bool
-	syncLoopStarted    bool
-	nextTimeSyncID     uint64
-	pendingTimeSync    map[uint64]chan timeSyncResult
-	clockOffsetMs      int64
+	mu                      sync.Mutex
+	closed                  bool
+	remoteLastSequence      uint64
+	catchupInFlight         bool
+	pendingPullAfter        uint64
+	replicationReady        bool
+	bootstrapStarted        bool
+	syncLoopStarted         bool
+	remoteSnapshotVersion   string
+	remoteMessageWindowSize int
+	pendingSnapshotParts    map[string]struct{}
+	nextTimeSyncID          uint64
+	pendingTimeSync         map[uint64]chan timeSyncResult
+	clockOffsetMs           int64
 }
 
 type timeSyncResult struct {
@@ -358,6 +363,7 @@ func (m *Manager) buildHelloEnvelope() (*internalproto.Envelope, error) {
 				AdvertiseAddr:     m.cfg.AdvertisePath,
 				ProtocolVersion:   internalproto.ProtocolVersion,
 				LastSequence:      uint64(lastSequence),
+				SnapshotVersion:   internalproto.SnapshotVersion,
 				MessageWindowSize: uint32(m.cfg.MessageWindowSize),
 			},
 		},
@@ -439,6 +445,14 @@ func (m *Manager) readLoop(sess *session) {
 			if err := m.handlePullEvents(sess, &envelope); err != nil {
 				return
 			}
+		case *internalproto.Envelope_SnapshotDigest:
+			if err := m.handleSnapshotDigest(sess, &envelope); err != nil {
+				return
+			}
+		case *internalproto.Envelope_SnapshotChunk:
+			if err := m.handleSnapshotChunk(sess, &envelope); err != nil {
+				return
+			}
 		default:
 			return
 		}
@@ -469,6 +483,9 @@ func (m *Manager) handleHello(sess *session, envelope *internalproto.Envelope) e
 	if hello.ProtocolVersion != internalproto.ProtocolVersion {
 		return fmt.Errorf("unsupported protocol version %q", hello.ProtocolVersion)
 	}
+	if hello.SnapshotVersion != internalproto.SnapshotVersion {
+		return fmt.Errorf("unsupported snapshot version %q", hello.SnapshotVersion)
+	}
 	if hello.MessageWindowSize == 0 {
 		return errors.New("hello message window size must be positive")
 	}
@@ -491,6 +508,8 @@ func (m *Manager) handleHello(sess *session, envelope *internalproto.Envelope) e
 	}
 
 	sess.peerID = peerID
+	sess.remoteSnapshotVersion = hello.SnapshotVersion
+	sess.remoteMessageWindowSize = int(hello.MessageWindowSize)
 	sess.noteRemoteLastSequence(hello.LastSequence)
 	if !m.isConfiguredPeer(peerID) {
 		return fmt.Errorf("peer %s is not configured", peerID)
@@ -518,13 +537,18 @@ func (m *Manager) bootstrapSession(sess *session) {
 	sess.markReplicationReady()
 	m.markPeerClockSynced(sess, sess.clockOffset())
 	sess.startSyncLoop(func() {
-		m.timeSyncLoop(sess)
+		m.sessionSyncLoop(sess)
 	})
 
 	if m.store != nil {
-		if err := m.requestCatchupIfNeeded(sess); err != nil {
+		requested, err := m.requestCatchupIfNeeded(sess)
+		if err != nil {
 			log.Printf("warn: request catchup for peer %s: %v", sess.peerID, err)
 			sess.close()
+			return
+		}
+		if !requested {
+			m.sendSnapshotDigest(sess)
 		}
 	}
 }
@@ -679,8 +703,12 @@ func (m *Manager) handleEventBatch(sess *session, envelope *internalproto.Envelo
 		},
 	})
 	if m.store != nil {
-		if err := m.requestCatchupIfNeeded(sess); err != nil {
+		requested, err := m.requestCatchupIfNeeded(sess)
+		if err != nil {
 			return err
+		}
+		if !requested {
+			m.sendSnapshotDigest(sess)
 		}
 	}
 	return nil
@@ -731,32 +759,32 @@ func (m *Manager) handlePullEvents(sess *session, envelope *internalproto.Envelo
 	return nil
 }
 
-func (m *Manager) requestCatchupIfNeeded(sess *session) error {
+func (m *Manager) requestCatchupIfNeeded(sess *session) (bool, error) {
 	if m.store == nil || sess.peerID == "" {
-		return nil
+		return false, nil
 	}
 
 	cursor, err := m.store.GetPeerCursor(context.Background(), sess.peerID)
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	remoteLastSequence := sess.remoteSequence()
 	appliedSequence := uint64(cursor.AppliedSequence)
 	if appliedSequence >= remoteLastSequence {
-		return nil
+		return false, nil
 	}
 	if !sess.beginPendingPull(appliedSequence) {
-		return nil
+		return true, nil
 	}
 
 	envelope, err := m.buildPullEventsEnvelope(appliedSequence)
 	if err != nil {
 		sess.cancelPendingPull(appliedSequence)
-		return err
+		return false, err
 	}
 	sess.enqueue(envelope)
-	return nil
+	return true, nil
 }
 
 func (m *Manager) buildPullEventsEnvelope(afterSequence uint64) (*internalproto.Envelope, error) {
@@ -903,18 +931,22 @@ func (m *Manager) timeSyncRoundTrip(sess *session) (timeSyncSample, error) {
 	}
 }
 
-func (m *Manager) timeSyncLoop(sess *session) {
+func (m *Manager) sessionSyncLoop(sess *session) {
 	if m.ctx == nil {
 		return
 	}
-	ticker := time.NewTicker(timeSyncInterval)
-	defer ticker.Stop()
+	timeSyncTicker := time.NewTicker(timeSyncInterval)
+	defer timeSyncTicker.Stop()
+	catchupTicker := time.NewTicker(catchupRetryInterval)
+	defer catchupTicker.Stop()
+	antiEntropyTicker := time.NewTicker(antiEntropyInterval)
+	defer antiEntropyTicker.Stop()
 
 	for {
 		select {
 		case <-m.ctx.Done():
 			return
-		case <-ticker.C:
+		case <-timeSyncTicker.C:
 			if sess.isClosed() {
 				return
 			}
@@ -924,6 +956,20 @@ func (m *Manager) timeSyncLoop(sess *session) {
 				return
 			}
 			m.markPeerClockSynced(sess, sess.clockOffset())
+		case <-catchupTicker.C:
+			if sess.isClosed() {
+				return
+			}
+			if _, err := m.requestCatchupIfNeeded(sess); err != nil {
+				log.Printf("warn: peer %s periodic catchup failed: %v", sess.peerID, err)
+				sess.close()
+				return
+			}
+		case <-antiEntropyTicker.C:
+			if sess.isClosed() {
+				return
+			}
+			m.sendSnapshotDigest(sess)
 		}
 	}
 }
@@ -1154,6 +1200,12 @@ func (s *session) beginPendingPull(afterSequence uint64) bool {
 	return true
 }
 
+func (s *session) hasPendingPull() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.catchupInFlight
+}
+
 func (s *session) cancelPendingPull(afterSequence uint64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1267,6 +1319,25 @@ func (s *session) clockOffset() int64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.clockOffsetMs
+}
+
+func (s *session) beginSnapshotRequest(partition string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.pendingSnapshotParts == nil {
+		s.pendingSnapshotParts = make(map[string]struct{})
+	}
+	if _, ok := s.pendingSnapshotParts[partition]; ok {
+		return false
+	}
+	s.pendingSnapshotParts[partition] = struct{}{}
+	return true
+}
+
+func (s *session) completeSnapshotRequest(partition string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.pendingSnapshotParts, partition)
 }
 
 func batchStartSequence(endSequence uint64, batchLen int) (uint64, error) {

@@ -268,13 +268,13 @@ type userResponse struct {
 }
 
 type messageResponse struct {
-	ID           int64           `json:"id"`
-	UserID       int64           `json:"user_id"`
-	Sender       string          `json:"sender"`
-	Body         string          `json:"body"`
-	Metadata     json.RawMessage `json:"metadata,omitempty"`
-	CreatedAt    string          `json:"created_at"`
-	OriginNodeID string          `json:"origin_node_id"`
+	UserID    int64           `json:"user_id"`
+	NodeID    string          `json:"node_id"`
+	Seq       int64           `json:"seq"`
+	Sender    string          `json:"sender"`
+	Body      string          `json:"body"`
+	Metadata  json.RawMessage `json:"metadata,omitempty"`
+	CreatedAt string          `json:"created_at"`
 }
 
 type eventResponse struct {
@@ -305,13 +305,13 @@ func messageResponseFromStore(message store.Message) messageResponse {
 		metadata = json.RawMessage(message.Metadata)
 	}
 	return messageResponse{
-		ID:           message.ID,
-		UserID:       message.UserID,
-		Sender:       message.Sender,
-		Body:         message.Body,
-		Metadata:     metadata,
-		CreatedAt:    message.CreatedAt.String(),
-		OriginNodeID: message.OriginNodeID,
+		UserID:    message.UserID,
+		NodeID:    message.NodeID,
+		Seq:       message.Seq,
+		Sender:    message.Sender,
+		Body:      message.Body,
+		Metadata:  metadata,
+		CreatedAt: message.CreatedAt.String(),
 	}
 }
 

@@ -75,24 +75,31 @@ func TestUserAndMessageHTTPAPI(t *testing.T) {
 		},
 	}
 	var createdMessage struct {
-		ID       int64             `json:"id"`
 		UserID   int64             `json:"user_id"`
+		NodeID   string            `json:"node_id"`
+		Seq      int64             `json:"seq"`
 		Metadata map[string]string `json:"metadata"`
 	}
 	mustJSON(t, doJSON(t, handler, http.MethodPost, "/messages", createMessageBody, http.StatusCreated), &createdMessage)
-	if createdMessage.ID == 0 || createdMessage.UserID != createdUser.ID {
+	if createdMessage.UserID != createdUser.ID || createdMessage.NodeID != "node-a" || createdMessage.Seq != 1 {
 		t.Fatalf("unexpected created message: %+v", createdMessage)
 	}
 
 	var listMessages struct {
 		Count int `json:"count"`
 		Items []struct {
-			ID   int64  `json:"id"`
-			Body string `json:"body"`
+			UserID int64  `json:"user_id"`
+			NodeID string `json:"node_id"`
+			Seq    int64  `json:"seq"`
+			Body   string `json:"body"`
 		} `json:"items"`
 	}
 	mustJSON(t, doJSON(t, handler, http.MethodGet, "/users/"+strconv.FormatInt(createdUser.ID, 10)+"/messages?limit=10", nil, http.StatusOK), &listMessages)
-	if listMessages.Count != 1 || len(listMessages.Items) != 1 || listMessages.Items[0].Body != "package shipped" {
+	if listMessages.Count != 1 || len(listMessages.Items) != 1 ||
+		listMessages.Items[0].UserID != createdUser.ID ||
+		listMessages.Items[0].NodeID != "node-a" ||
+		listMessages.Items[0].Seq != 1 ||
+		listMessages.Items[0].Body != "package shipped" {
 		t.Fatalf("unexpected messages: %+v", listMessages)
 	}
 

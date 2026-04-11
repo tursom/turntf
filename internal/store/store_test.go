@@ -131,7 +131,10 @@ func TestLocalMessageWriteAndQuery(t *testing.T) {
 	if len(messages) != 2 {
 		t.Fatalf("expected 2 messages, got %d", len(messages))
 	}
-	if messages[0].ID != second.ID || messages[1].ID != first.ID {
+	if first.NodeID != "node-a" || first.Seq != 1 || second.NodeID != "node-a" || second.Seq != 2 {
+		t.Fatalf("unexpected message identities: first=%+v second=%+v", first, second)
+	}
+	if messages[0].Seq != second.Seq || messages[1].Seq != first.Seq {
 		t.Fatalf("messages not ordered newest-first: %+v", messages)
 	}
 
@@ -386,7 +389,7 @@ func TestApplyReplicatedMessageIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list replicated messages: %v", err)
 	}
-	if len(messages) != 1 || messages[0].ID != message.ID {
+	if len(messages) != 1 || messages[0].NodeID != message.NodeID || messages[0].Seq != message.Seq {
 		t.Fatalf("unexpected replicated messages: %+v", messages)
 	}
 }
@@ -438,7 +441,7 @@ func TestReplicatedMessagesTrimToConfiguredWindow(t *testing.T) {
 	}
 }
 
-func TestReplicatedMessageTrimUsesMessageIDForSameTimestamp(t *testing.T) {
+func TestReplicatedMessageTrimUsesNodeAndSeqForSameTimestamp(t *testing.T) {
 	t.Parallel()
 
 	target := openNamedTestStoreWithWindow(t, "node-b", 2, 1)
@@ -456,17 +459,15 @@ func TestReplicatedMessageTrimUsesMessageIDForSameTimestamp(t *testing.T) {
 	sharedHLC := clock.Timestamp{WallTimeMs: 1700000000000, Logical: 7, NodeID: 1}
 	firstEventID := target.ids.Next()
 	secondEventID := target.ids.Next()
-	olderMessageID := target.ids.Next()
-	newerMessageID := target.ids.Next()
 
 	firstPayload, err := marshalPayload(replicatedMessageEnvelope{
 		Message: replicatedMessagePayload{
-			ID:           olderMessageID,
-			UserID:       user.ID,
-			Sender:       "orders",
-			Body:         "older-id",
-			CreatedAt:    sharedHLC.String(),
-			OriginNodeID: "node-a",
+			UserID:    user.ID,
+			NodeID:    "node-a",
+			Seq:       1,
+			Sender:    "orders",
+			Body:      "older-seq",
+			CreatedAt: sharedHLC.String(),
 		},
 	})
 	if err != nil {
@@ -474,12 +475,12 @@ func TestReplicatedMessageTrimUsesMessageIDForSameTimestamp(t *testing.T) {
 	}
 	secondPayload, err := marshalPayload(replicatedMessageEnvelope{
 		Message: replicatedMessagePayload{
-			ID:           newerMessageID,
-			UserID:       user.ID,
-			Sender:       "orders",
-			Body:         "newer-id",
-			CreatedAt:    sharedHLC.String(),
-			OriginNodeID: "node-a",
+			UserID:    user.ID,
+			NodeID:    "node-a",
+			Seq:       2,
+			Sender:    "orders",
+			Body:      "newer-seq",
+			CreatedAt: sharedHLC.String(),
 		},
 	})
 	if err != nil {
@@ -490,7 +491,7 @@ func TestReplicatedMessageTrimUsesMessageIDForSameTimestamp(t *testing.T) {
 		EventID:      firstEventID,
 		Kind:         "message.created",
 		Aggregate:    "message",
-		AggregateID:  olderMessageID,
+		AggregateID:  1,
 		HLC:          sharedHLC,
 		OriginNodeID: "node-a",
 		Payload:      firstPayload,
@@ -501,7 +502,7 @@ func TestReplicatedMessageTrimUsesMessageIDForSameTimestamp(t *testing.T) {
 		EventID:      secondEventID,
 		Kind:         "message.created",
 		Aggregate:    "message",
-		AggregateID:  newerMessageID,
+		AggregateID:  2,
 		HLC:          sharedHLC,
 		OriginNodeID: "node-a",
 		Payload:      secondPayload,
@@ -516,8 +517,8 @@ func TestReplicatedMessageTrimUsesMessageIDForSameTimestamp(t *testing.T) {
 	if len(messages) != 1 {
 		t.Fatalf("expected 1 message after trim, got %d", len(messages))
 	}
-	if messages[0].ID != newerMessageID || messages[0].Body != "newer-id" {
-		t.Fatalf("expected higher message id to win tie, got %+v", messages[0])
+	if messages[0].NodeID != "node-a" || messages[0].Seq != 2 || messages[0].Body != "newer-seq" {
+		t.Fatalf("expected higher seq to win tie, got %+v", messages[0])
 	}
 }
 
@@ -748,6 +749,101 @@ func TestReplicatedUpdateUpsertsWithoutRegressingOnOlderCreate(t *testing.T) {
 	}
 	if loaded.Username != updatedUser.Username || loaded.Profile != updatedUser.Profile {
 		t.Fatalf("expected updated user to remain after older create, got %+v", loaded)
+	}
+}
+
+func TestSnapshotUsersChunkRepairsDeletedUser(t *testing.T) {
+	t.Parallel()
+
+	source := openNamedTestStore(t, "node-a", 1)
+	defer source.Close()
+
+	target := openNamedTestStore(t, "node-b", 2)
+	defer target.Close()
+
+	ctx := context.Background()
+	user, createEvent, err := source.CreateUser(ctx, CreateUserParams{
+		Username:     "snapshot-deleted",
+		PasswordHash: "hash-1",
+	})
+	if err != nil {
+		t.Fatalf("create source user: %v", err)
+	}
+	if err := target.ApplyReplicatedEvent(ctx, ToReplicatedEvent(createEvent)); err != nil {
+		t.Fatalf("apply create to target: %v", err)
+	}
+	if _, err := source.DeleteUser(ctx, user.ID); err != nil {
+		t.Fatalf("delete source user: %v", err)
+	}
+
+	chunk, err := source.BuildSnapshotChunk(ctx, SnapshotUsersPartition)
+	if err != nil {
+		t.Fatalf("build users snapshot chunk: %v", err)
+	}
+	if err := target.ApplySnapshotChunk(ctx, chunk); err != nil {
+		t.Fatalf("apply users snapshot chunk: %v", err)
+	}
+
+	if _, err := target.GetUser(ctx, user.ID); err != ErrNotFound {
+		t.Fatalf("expected snapshot tombstone to hide user, got %v", err)
+	}
+}
+
+func TestSnapshotMessagesChunkIsIdempotentAndTrimsToLocalWindow(t *testing.T) {
+	t.Parallel()
+
+	source := openNamedTestStore(t, "node-a", 1)
+	defer source.Close()
+
+	target := openNamedTestStoreWithWindow(t, "node-b", 2, 2)
+	defer target.Close()
+
+	ctx := context.Background()
+	user, _, err := source.CreateUser(ctx, CreateUserParams{
+		Username:     "snapshot-message-user",
+		PasswordHash: "hash-1",
+	})
+	if err != nil {
+		t.Fatalf("create source user: %v", err)
+	}
+	for i := 1; i <= 3; i++ {
+		if _, _, err := source.CreateMessage(ctx, CreateMessageParams{
+			UserID: user.ID,
+			Sender: "orders",
+			Body:   "message-" + strconv.Itoa(i),
+		}); err != nil {
+			t.Fatalf("create source message %d: %v", i, err)
+		}
+	}
+
+	userChunk, err := source.BuildSnapshotChunk(ctx, SnapshotUsersPartition)
+	if err != nil {
+		t.Fatalf("build users snapshot chunk: %v", err)
+	}
+	if err := target.ApplySnapshotChunk(ctx, userChunk); err != nil {
+		t.Fatalf("apply users snapshot chunk: %v", err)
+	}
+
+	messageChunk, err := source.BuildSnapshotChunk(ctx, MessageSnapshotPartition("node-a"))
+	if err != nil {
+		t.Fatalf("build messages snapshot chunk: %v", err)
+	}
+	if err := target.ApplySnapshotChunk(ctx, messageChunk); err != nil {
+		t.Fatalf("apply messages snapshot chunk: %v", err)
+	}
+	if err := target.ApplySnapshotChunk(ctx, messageChunk); err != nil {
+		t.Fatalf("apply messages snapshot chunk second time: %v", err)
+	}
+
+	messages, err := target.ListMessagesByUser(ctx, user.ID, 10)
+	if err != nil {
+		t.Fatalf("list target messages: %v", err)
+	}
+	if len(messages) != 2 {
+		t.Fatalf("expected 2 messages after snapshot trim, got %d", len(messages))
+	}
+	if messages[0].Body != "message-3" || messages[1].Body != "message-2" {
+		t.Fatalf("unexpected snapshot messages: %+v", messages)
 	}
 }
 

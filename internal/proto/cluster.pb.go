@@ -21,6 +21,55 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+type SnapshotPartitionKind int32
+
+const (
+	SnapshotPartitionKind_SNAPSHOT_PARTITION_KIND_UNSPECIFIED SnapshotPartitionKind = 0
+	SnapshotPartitionKind_SNAPSHOT_PARTITION_KIND_USERS       SnapshotPartitionKind = 1
+	SnapshotPartitionKind_SNAPSHOT_PARTITION_KIND_MESSAGES    SnapshotPartitionKind = 2
+)
+
+// Enum value maps for SnapshotPartitionKind.
+var (
+	SnapshotPartitionKind_name = map[int32]string{
+		0: "SNAPSHOT_PARTITION_KIND_UNSPECIFIED",
+		1: "SNAPSHOT_PARTITION_KIND_USERS",
+		2: "SNAPSHOT_PARTITION_KIND_MESSAGES",
+	}
+	SnapshotPartitionKind_value = map[string]int32{
+		"SNAPSHOT_PARTITION_KIND_UNSPECIFIED": 0,
+		"SNAPSHOT_PARTITION_KIND_USERS":       1,
+		"SNAPSHOT_PARTITION_KIND_MESSAGES":    2,
+	}
+)
+
+func (x SnapshotPartitionKind) Enum() *SnapshotPartitionKind {
+	p := new(SnapshotPartitionKind)
+	*p = x
+	return p
+}
+
+func (x SnapshotPartitionKind) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (SnapshotPartitionKind) Descriptor() protoreflect.EnumDescriptor {
+	return file_proto_cluster_proto_enumTypes[0].Descriptor()
+}
+
+func (SnapshotPartitionKind) Type() protoreflect.EnumType {
+	return &file_proto_cluster_proto_enumTypes[0]
+}
+
+func (x SnapshotPartitionKind) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use SnapshotPartitionKind.Descriptor instead.
+func (SnapshotPartitionKind) EnumDescriptor() ([]byte, []int) {
+	return file_proto_cluster_proto_rawDescGZIP(), []int{0}
+}
+
 type Envelope struct {
 	state     protoimpl.MessageState `protogen:"open.v1"`
 	NodeId    string                 `protobuf:"bytes,1,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
@@ -556,9 +605,9 @@ func (x *PullEvents) GetLimit() uint32 {
 }
 
 type SnapshotDigest struct {
-	state           protoimpl.MessageState `protogen:"open.v1"`
-	SnapshotVersion string                 `protobuf:"bytes,1,opt,name=snapshot_version,json=snapshotVersion,proto3" json:"snapshot_version,omitempty"`
-	Partitions      [][]byte               `protobuf:"bytes,2,rep,name=partitions,proto3" json:"partitions,omitempty"`
+	state           protoimpl.MessageState     `protogen:"open.v1"`
+	SnapshotVersion string                     `protobuf:"bytes,1,opt,name=snapshot_version,json=snapshotVersion,proto3" json:"snapshot_version,omitempty"`
+	Partitions      []*SnapshotPartitionDigest `protobuf:"bytes,2,rep,name=partitions,proto3" json:"partitions,omitempty"`
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache
 }
@@ -600,7 +649,7 @@ func (x *SnapshotDigest) GetSnapshotVersion() string {
 	return ""
 }
 
-func (x *SnapshotDigest) GetPartitions() [][]byte {
+func (x *SnapshotDigest) GetPartitions() []*SnapshotPartitionDigest {
 	if x != nil {
 		return x.Partitions
 	}
@@ -608,11 +657,14 @@ func (x *SnapshotDigest) GetPartitions() [][]byte {
 }
 
 type SnapshotChunk struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Partition     string                 `protobuf:"bytes,1,opt,name=partition,proto3" json:"partition,omitempty"`
-	Rows          [][]byte               `protobuf:"bytes,2,rep,name=rows,proto3" json:"rows,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	Partition       string                 `protobuf:"bytes,1,opt,name=partition,proto3" json:"partition,omitempty"`
+	Rows            []*SnapshotRow         `protobuf:"bytes,2,rep,name=rows,proto3" json:"rows,omitempty"`
+	SnapshotVersion string                 `protobuf:"bytes,3,opt,name=snapshot_version,json=snapshotVersion,proto3" json:"snapshot_version,omitempty"`
+	Kind            SnapshotPartitionKind  `protobuf:"varint,4,opt,name=kind,proto3,enum=notifier.cluster.v1.SnapshotPartitionKind" json:"kind,omitempty"`
+	Request         bool                   `protobuf:"varint,5,opt,name=request,proto3" json:"request,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *SnapshotChunk) Reset() {
@@ -652,11 +704,490 @@ func (x *SnapshotChunk) GetPartition() string {
 	return ""
 }
 
-func (x *SnapshotChunk) GetRows() [][]byte {
+func (x *SnapshotChunk) GetRows() []*SnapshotRow {
 	if x != nil {
 		return x.Rows
 	}
 	return nil
+}
+
+func (x *SnapshotChunk) GetSnapshotVersion() string {
+	if x != nil {
+		return x.SnapshotVersion
+	}
+	return ""
+}
+
+func (x *SnapshotChunk) GetKind() SnapshotPartitionKind {
+	if x != nil {
+		return x.Kind
+	}
+	return SnapshotPartitionKind_SNAPSHOT_PARTITION_KIND_UNSPECIFIED
+}
+
+func (x *SnapshotChunk) GetRequest() bool {
+	if x != nil {
+		return x.Request
+	}
+	return false
+}
+
+type SnapshotPartitionDigest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Partition     string                 `protobuf:"bytes,1,opt,name=partition,proto3" json:"partition,omitempty"`
+	Kind          SnapshotPartitionKind  `protobuf:"varint,2,opt,name=kind,proto3,enum=notifier.cluster.v1.SnapshotPartitionKind" json:"kind,omitempty"`
+	RowCount      uint64                 `protobuf:"varint,3,opt,name=row_count,json=rowCount,proto3" json:"row_count,omitempty"`
+	Hash          []byte                 `protobuf:"bytes,4,opt,name=hash,proto3" json:"hash,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SnapshotPartitionDigest) Reset() {
+	*x = SnapshotPartitionDigest{}
+	mi := &file_proto_cluster_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SnapshotPartitionDigest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SnapshotPartitionDigest) ProtoMessage() {}
+
+func (x *SnapshotPartitionDigest) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_cluster_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SnapshotPartitionDigest.ProtoReflect.Descriptor instead.
+func (*SnapshotPartitionDigest) Descriptor() ([]byte, []int) {
+	return file_proto_cluster_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *SnapshotPartitionDigest) GetPartition() string {
+	if x != nil {
+		return x.Partition
+	}
+	return ""
+}
+
+func (x *SnapshotPartitionDigest) GetKind() SnapshotPartitionKind {
+	if x != nil {
+		return x.Kind
+	}
+	return SnapshotPartitionKind_SNAPSHOT_PARTITION_KIND_UNSPECIFIED
+}
+
+func (x *SnapshotPartitionDigest) GetRowCount() uint64 {
+	if x != nil {
+		return x.RowCount
+	}
+	return 0
+}
+
+func (x *SnapshotPartitionDigest) GetHash() []byte {
+	if x != nil {
+		return x.Hash
+	}
+	return nil
+}
+
+type SnapshotRow struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Types that are valid to be assigned to Body:
+	//
+	//	*SnapshotRow_User
+	//	*SnapshotRow_Tombstone
+	//	*SnapshotRow_Message
+	Body          isSnapshotRow_Body `protobuf_oneof:"body"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SnapshotRow) Reset() {
+	*x = SnapshotRow{}
+	mi := &file_proto_cluster_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SnapshotRow) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SnapshotRow) ProtoMessage() {}
+
+func (x *SnapshotRow) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_cluster_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SnapshotRow.ProtoReflect.Descriptor instead.
+func (*SnapshotRow) Descriptor() ([]byte, []int) {
+	return file_proto_cluster_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *SnapshotRow) GetBody() isSnapshotRow_Body {
+	if x != nil {
+		return x.Body
+	}
+	return nil
+}
+
+func (x *SnapshotRow) GetUser() *SnapshotUserRow {
+	if x != nil {
+		if x, ok := x.Body.(*SnapshotRow_User); ok {
+			return x.User
+		}
+	}
+	return nil
+}
+
+func (x *SnapshotRow) GetTombstone() *SnapshotTombstoneRow {
+	if x != nil {
+		if x, ok := x.Body.(*SnapshotRow_Tombstone); ok {
+			return x.Tombstone
+		}
+	}
+	return nil
+}
+
+func (x *SnapshotRow) GetMessage() *SnapshotMessageRow {
+	if x != nil {
+		if x, ok := x.Body.(*SnapshotRow_Message); ok {
+			return x.Message
+		}
+	}
+	return nil
+}
+
+type isSnapshotRow_Body interface {
+	isSnapshotRow_Body()
+}
+
+type SnapshotRow_User struct {
+	User *SnapshotUserRow `protobuf:"bytes,1,opt,name=user,proto3,oneof"`
+}
+
+type SnapshotRow_Tombstone struct {
+	Tombstone *SnapshotTombstoneRow `protobuf:"bytes,2,opt,name=tombstone,proto3,oneof"`
+}
+
+type SnapshotRow_Message struct {
+	Message *SnapshotMessageRow `protobuf:"bytes,3,opt,name=message,proto3,oneof"`
+}
+
+func (*SnapshotRow_User) isSnapshotRow_Body() {}
+
+func (*SnapshotRow_Tombstone) isSnapshotRow_Body() {}
+
+func (*SnapshotRow_Message) isSnapshotRow_Body() {}
+
+type SnapshotUserRow struct {
+	state               protoimpl.MessageState `protogen:"open.v1"`
+	UserId              int64                  `protobuf:"varint,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	Username            string                 `protobuf:"bytes,2,opt,name=username,proto3" json:"username,omitempty"`
+	PasswordHash        string                 `protobuf:"bytes,3,opt,name=password_hash,json=passwordHash,proto3" json:"password_hash,omitempty"`
+	Profile             string                 `protobuf:"bytes,4,opt,name=profile,proto3" json:"profile,omitempty"`
+	CreatedAtHlc        string                 `protobuf:"bytes,5,opt,name=created_at_hlc,json=createdAtHlc,proto3" json:"created_at_hlc,omitempty"`
+	UpdatedAtHlc        string                 `protobuf:"bytes,6,opt,name=updated_at_hlc,json=updatedAtHlc,proto3" json:"updated_at_hlc,omitempty"`
+	DeletedAtHlc        string                 `protobuf:"bytes,7,opt,name=deleted_at_hlc,json=deletedAtHlc,proto3" json:"deleted_at_hlc,omitempty"`
+	VersionUsername     string                 `protobuf:"bytes,8,opt,name=version_username,json=versionUsername,proto3" json:"version_username,omitempty"`
+	VersionPasswordHash string                 `protobuf:"bytes,9,opt,name=version_password_hash,json=versionPasswordHash,proto3" json:"version_password_hash,omitempty"`
+	VersionProfile      string                 `protobuf:"bytes,10,opt,name=version_profile,json=versionProfile,proto3" json:"version_profile,omitempty"`
+	VersionDeleted      string                 `protobuf:"bytes,11,opt,name=version_deleted,json=versionDeleted,proto3" json:"version_deleted,omitempty"`
+	OriginNodeId        string                 `protobuf:"bytes,12,opt,name=origin_node_id,json=originNodeId,proto3" json:"origin_node_id,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
+}
+
+func (x *SnapshotUserRow) Reset() {
+	*x = SnapshotUserRow{}
+	mi := &file_proto_cluster_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SnapshotUserRow) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SnapshotUserRow) ProtoMessage() {}
+
+func (x *SnapshotUserRow) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_cluster_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SnapshotUserRow.ProtoReflect.Descriptor instead.
+func (*SnapshotUserRow) Descriptor() ([]byte, []int) {
+	return file_proto_cluster_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *SnapshotUserRow) GetUserId() int64 {
+	if x != nil {
+		return x.UserId
+	}
+	return 0
+}
+
+func (x *SnapshotUserRow) GetUsername() string {
+	if x != nil {
+		return x.Username
+	}
+	return ""
+}
+
+func (x *SnapshotUserRow) GetPasswordHash() string {
+	if x != nil {
+		return x.PasswordHash
+	}
+	return ""
+}
+
+func (x *SnapshotUserRow) GetProfile() string {
+	if x != nil {
+		return x.Profile
+	}
+	return ""
+}
+
+func (x *SnapshotUserRow) GetCreatedAtHlc() string {
+	if x != nil {
+		return x.CreatedAtHlc
+	}
+	return ""
+}
+
+func (x *SnapshotUserRow) GetUpdatedAtHlc() string {
+	if x != nil {
+		return x.UpdatedAtHlc
+	}
+	return ""
+}
+
+func (x *SnapshotUserRow) GetDeletedAtHlc() string {
+	if x != nil {
+		return x.DeletedAtHlc
+	}
+	return ""
+}
+
+func (x *SnapshotUserRow) GetVersionUsername() string {
+	if x != nil {
+		return x.VersionUsername
+	}
+	return ""
+}
+
+func (x *SnapshotUserRow) GetVersionPasswordHash() string {
+	if x != nil {
+		return x.VersionPasswordHash
+	}
+	return ""
+}
+
+func (x *SnapshotUserRow) GetVersionProfile() string {
+	if x != nil {
+		return x.VersionProfile
+	}
+	return ""
+}
+
+func (x *SnapshotUserRow) GetVersionDeleted() string {
+	if x != nil {
+		return x.VersionDeleted
+	}
+	return ""
+}
+
+func (x *SnapshotUserRow) GetOriginNodeId() string {
+	if x != nil {
+		return x.OriginNodeId
+	}
+	return ""
+}
+
+type SnapshotTombstoneRow struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	EntityType    string                 `protobuf:"bytes,1,opt,name=entity_type,json=entityType,proto3" json:"entity_type,omitempty"`
+	EntityId      int64                  `protobuf:"varint,2,opt,name=entity_id,json=entityId,proto3" json:"entity_id,omitempty"`
+	DeletedAtHlc  string                 `protobuf:"bytes,3,opt,name=deleted_at_hlc,json=deletedAtHlc,proto3" json:"deleted_at_hlc,omitempty"`
+	OriginNodeId  string                 `protobuf:"bytes,4,opt,name=origin_node_id,json=originNodeId,proto3" json:"origin_node_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SnapshotTombstoneRow) Reset() {
+	*x = SnapshotTombstoneRow{}
+	mi := &file_proto_cluster_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SnapshotTombstoneRow) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SnapshotTombstoneRow) ProtoMessage() {}
+
+func (x *SnapshotTombstoneRow) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_cluster_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SnapshotTombstoneRow.ProtoReflect.Descriptor instead.
+func (*SnapshotTombstoneRow) Descriptor() ([]byte, []int) {
+	return file_proto_cluster_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *SnapshotTombstoneRow) GetEntityType() string {
+	if x != nil {
+		return x.EntityType
+	}
+	return ""
+}
+
+func (x *SnapshotTombstoneRow) GetEntityId() int64 {
+	if x != nil {
+		return x.EntityId
+	}
+	return 0
+}
+
+func (x *SnapshotTombstoneRow) GetDeletedAtHlc() string {
+	if x != nil {
+		return x.DeletedAtHlc
+	}
+	return ""
+}
+
+func (x *SnapshotTombstoneRow) GetOriginNodeId() string {
+	if x != nil {
+		return x.OriginNodeId
+	}
+	return ""
+}
+
+type SnapshotMessageRow struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	UserId        int64                  `protobuf:"varint,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	NodeId        string                 `protobuf:"bytes,2,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
+	Sender        string                 `protobuf:"bytes,3,opt,name=sender,proto3" json:"sender,omitempty"`
+	Body          string                 `protobuf:"bytes,4,opt,name=body,proto3" json:"body,omitempty"`
+	Metadata      string                 `protobuf:"bytes,5,opt,name=metadata,proto3" json:"metadata,omitempty"`
+	CreatedAtHlc  string                 `protobuf:"bytes,6,opt,name=created_at_hlc,json=createdAtHlc,proto3" json:"created_at_hlc,omitempty"`
+	Seq           int64                  `protobuf:"varint,7,opt,name=seq,proto3" json:"seq,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SnapshotMessageRow) Reset() {
+	*x = SnapshotMessageRow{}
+	mi := &file_proto_cluster_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SnapshotMessageRow) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SnapshotMessageRow) ProtoMessage() {}
+
+func (x *SnapshotMessageRow) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_cluster_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SnapshotMessageRow.ProtoReflect.Descriptor instead.
+func (*SnapshotMessageRow) Descriptor() ([]byte, []int) {
+	return file_proto_cluster_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *SnapshotMessageRow) GetUserId() int64 {
+	if x != nil {
+		return x.UserId
+	}
+	return 0
+}
+
+func (x *SnapshotMessageRow) GetNodeId() string {
+	if x != nil {
+		return x.NodeId
+	}
+	return ""
+}
+
+func (x *SnapshotMessageRow) GetSender() string {
+	if x != nil {
+		return x.Sender
+	}
+	return ""
+}
+
+func (x *SnapshotMessageRow) GetBody() string {
+	if x != nil {
+		return x.Body
+	}
+	return ""
+}
+
+func (x *SnapshotMessageRow) GetMetadata() string {
+	if x != nil {
+		return x.Metadata
+	}
+	return ""
+}
+
+func (x *SnapshotMessageRow) GetCreatedAtHlc() string {
+	if x != nil {
+		return x.CreatedAtHlc
+	}
+	return ""
+}
+
+func (x *SnapshotMessageRow) GetSeq() int64 {
+	if x != nil {
+		return x.Seq
+	}
+	return 0
 }
 
 type TimeSyncRequest struct {
@@ -669,7 +1200,7 @@ type TimeSyncRequest struct {
 
 func (x *TimeSyncRequest) Reset() {
 	*x = TimeSyncRequest{}
-	mi := &file_proto_cluster_proto_msgTypes[8]
+	mi := &file_proto_cluster_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -681,7 +1212,7 @@ func (x *TimeSyncRequest) String() string {
 func (*TimeSyncRequest) ProtoMessage() {}
 
 func (x *TimeSyncRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_cluster_proto_msgTypes[8]
+	mi := &file_proto_cluster_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -694,7 +1225,7 @@ func (x *TimeSyncRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TimeSyncRequest.ProtoReflect.Descriptor instead.
 func (*TimeSyncRequest) Descriptor() ([]byte, []int) {
-	return file_proto_cluster_proto_rawDescGZIP(), []int{8}
+	return file_proto_cluster_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *TimeSyncRequest) GetRequestId() uint64 {
@@ -723,7 +1254,7 @@ type TimeSyncResponse struct {
 
 func (x *TimeSyncResponse) Reset() {
 	*x = TimeSyncResponse{}
-	mi := &file_proto_cluster_proto_msgTypes[9]
+	mi := &file_proto_cluster_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -735,7 +1266,7 @@ func (x *TimeSyncResponse) String() string {
 func (*TimeSyncResponse) ProtoMessage() {}
 
 func (x *TimeSyncResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_cluster_proto_msgTypes[9]
+	mi := &file_proto_cluster_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -748,7 +1279,7 @@ func (x *TimeSyncResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TimeSyncResponse.ProtoReflect.Descriptor instead.
 func (*TimeSyncResponse) Descriptor() ([]byte, []int) {
-	return file_proto_cluster_proto_rawDescGZIP(), []int{9}
+	return file_proto_cluster_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *TimeSyncResponse) GetRequestId() uint64 {
@@ -792,7 +1323,7 @@ type UserEvent struct {
 
 func (x *UserEvent) Reset() {
 	*x = UserEvent{}
-	mi := &file_proto_cluster_proto_msgTypes[10]
+	mi := &file_proto_cluster_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -804,7 +1335,7 @@ func (x *UserEvent) String() string {
 func (*UserEvent) ProtoMessage() {}
 
 func (x *UserEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_cluster_proto_msgTypes[10]
+	mi := &file_proto_cluster_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -817,7 +1348,7 @@ func (x *UserEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UserEvent.ProtoReflect.Descriptor instead.
 func (*UserEvent) Descriptor() ([]byte, []int) {
-	return file_proto_cluster_proto_rawDescGZIP(), []int{10}
+	return file_proto_cluster_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *UserEvent) GetEventId() int64 {
@@ -859,17 +1390,18 @@ type MessageEvent struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	EventId       int64                  `protobuf:"varint,1,opt,name=event_id,json=eventId,proto3" json:"event_id,omitempty"`
 	Kind          string                 `protobuf:"bytes,2,opt,name=kind,proto3" json:"kind,omitempty"`
-	MessageId     int64                  `protobuf:"varint,3,opt,name=message_id,json=messageId,proto3" json:"message_id,omitempty"`
-	UserId        int64                  `protobuf:"varint,4,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	UserId        int64                  `protobuf:"varint,3,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	NodeId        string                 `protobuf:"bytes,4,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
 	Hlc           string                 `protobuf:"bytes,5,opt,name=hlc,proto3" json:"hlc,omitempty"`
 	Payload       []byte                 `protobuf:"bytes,6,opt,name=payload,proto3" json:"payload,omitempty"`
+	Seq           int64                  `protobuf:"varint,7,opt,name=seq,proto3" json:"seq,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *MessageEvent) Reset() {
 	*x = MessageEvent{}
-	mi := &file_proto_cluster_proto_msgTypes[11]
+	mi := &file_proto_cluster_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -881,7 +1413,7 @@ func (x *MessageEvent) String() string {
 func (*MessageEvent) ProtoMessage() {}
 
 func (x *MessageEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_cluster_proto_msgTypes[11]
+	mi := &file_proto_cluster_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -894,7 +1426,7 @@ func (x *MessageEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MessageEvent.ProtoReflect.Descriptor instead.
 func (*MessageEvent) Descriptor() ([]byte, []int) {
-	return file_proto_cluster_proto_rawDescGZIP(), []int{11}
+	return file_proto_cluster_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *MessageEvent) GetEventId() int64 {
@@ -911,18 +1443,18 @@ func (x *MessageEvent) GetKind() string {
 	return ""
 }
 
-func (x *MessageEvent) GetMessageId() int64 {
-	if x != nil {
-		return x.MessageId
-	}
-	return 0
-}
-
 func (x *MessageEvent) GetUserId() int64 {
 	if x != nil {
 		return x.UserId
 	}
 	return 0
+}
+
+func (x *MessageEvent) GetNodeId() string {
+	if x != nil {
+		return x.NodeId
+	}
+	return ""
 }
 
 func (x *MessageEvent) GetHlc() string {
@@ -937,6 +1469,13 @@ func (x *MessageEvent) GetPayload() []byte {
 		return x.Payload
 	}
 	return nil
+}
+
+func (x *MessageEvent) GetSeq() int64 {
+	if x != nil {
+		return x.Seq
+	}
+	return 0
 }
 
 var File_proto_cluster_proto protoreflect.FileDescriptor
@@ -985,15 +1524,56 @@ const file_proto_cluster_proto_rawDesc = "" +
 	"\n" +
 	"PullEvents\x12%\n" +
 	"\x0eafter_sequence\x18\x01 \x01(\x04R\rafterSequence\x12\x14\n" +
-	"\x05limit\x18\x02 \x01(\rR\x05limit\"[\n" +
+	"\x05limit\x18\x02 \x01(\rR\x05limit\"\x89\x01\n" +
 	"\x0eSnapshotDigest\x12)\n" +
-	"\x10snapshot_version\x18\x01 \x01(\tR\x0fsnapshotVersion\x12\x1e\n" +
+	"\x10snapshot_version\x18\x01 \x01(\tR\x0fsnapshotVersion\x12L\n" +
 	"\n" +
-	"partitions\x18\x02 \x03(\fR\n" +
-	"partitions\"A\n" +
+	"partitions\x18\x02 \x03(\v2,.notifier.cluster.v1.SnapshotPartitionDigestR\n" +
+	"partitions\"\xe8\x01\n" +
 	"\rSnapshotChunk\x12\x1c\n" +
-	"\tpartition\x18\x01 \x01(\tR\tpartition\x12\x12\n" +
-	"\x04rows\x18\x02 \x03(\fR\x04rows\"_\n" +
+	"\tpartition\x18\x01 \x01(\tR\tpartition\x124\n" +
+	"\x04rows\x18\x02 \x03(\v2 .notifier.cluster.v1.SnapshotRowR\x04rows\x12)\n" +
+	"\x10snapshot_version\x18\x03 \x01(\tR\x0fsnapshotVersion\x12>\n" +
+	"\x04kind\x18\x04 \x01(\x0e2*.notifier.cluster.v1.SnapshotPartitionKindR\x04kind\x12\x18\n" +
+	"\arequest\x18\x05 \x01(\bR\arequest\"\xa8\x01\n" +
+	"\x17SnapshotPartitionDigest\x12\x1c\n" +
+	"\tpartition\x18\x01 \x01(\tR\tpartition\x12>\n" +
+	"\x04kind\x18\x02 \x01(\x0e2*.notifier.cluster.v1.SnapshotPartitionKindR\x04kind\x12\x1b\n" +
+	"\trow_count\x18\x03 \x01(\x04R\browCount\x12\x12\n" +
+	"\x04hash\x18\x04 \x01(\fR\x04hash\"\xe1\x01\n" +
+	"\vSnapshotRow\x12:\n" +
+	"\x04user\x18\x01 \x01(\v2$.notifier.cluster.v1.SnapshotUserRowH\x00R\x04user\x12I\n" +
+	"\ttombstone\x18\x02 \x01(\v2).notifier.cluster.v1.SnapshotTombstoneRowH\x00R\ttombstone\x12C\n" +
+	"\amessage\x18\x03 \x01(\v2'.notifier.cluster.v1.SnapshotMessageRowH\x00R\amessageB\x06\n" +
+	"\x04body\"\xce\x03\n" +
+	"\x0fSnapshotUserRow\x12\x17\n" +
+	"\auser_id\x18\x01 \x01(\x03R\x06userId\x12\x1a\n" +
+	"\busername\x18\x02 \x01(\tR\busername\x12#\n" +
+	"\rpassword_hash\x18\x03 \x01(\tR\fpasswordHash\x12\x18\n" +
+	"\aprofile\x18\x04 \x01(\tR\aprofile\x12$\n" +
+	"\x0ecreated_at_hlc\x18\x05 \x01(\tR\fcreatedAtHlc\x12$\n" +
+	"\x0eupdated_at_hlc\x18\x06 \x01(\tR\fupdatedAtHlc\x12$\n" +
+	"\x0edeleted_at_hlc\x18\a \x01(\tR\fdeletedAtHlc\x12)\n" +
+	"\x10version_username\x18\b \x01(\tR\x0fversionUsername\x122\n" +
+	"\x15version_password_hash\x18\t \x01(\tR\x13versionPasswordHash\x12'\n" +
+	"\x0fversion_profile\x18\n" +
+	" \x01(\tR\x0eversionProfile\x12'\n" +
+	"\x0fversion_deleted\x18\v \x01(\tR\x0eversionDeleted\x12$\n" +
+	"\x0eorigin_node_id\x18\f \x01(\tR\foriginNodeId\"\xa0\x01\n" +
+	"\x14SnapshotTombstoneRow\x12\x1f\n" +
+	"\ventity_type\x18\x01 \x01(\tR\n" +
+	"entityType\x12\x1b\n" +
+	"\tentity_id\x18\x02 \x01(\x03R\bentityId\x12$\n" +
+	"\x0edeleted_at_hlc\x18\x03 \x01(\tR\fdeletedAtHlc\x12$\n" +
+	"\x0eorigin_node_id\x18\x04 \x01(\tR\foriginNodeId\"\xc6\x01\n" +
+	"\x12SnapshotMessageRow\x12\x17\n" +
+	"\auser_id\x18\x01 \x01(\x03R\x06userId\x12\x17\n" +
+	"\anode_id\x18\x02 \x01(\tR\x06nodeId\x12\x16\n" +
+	"\x06sender\x18\x03 \x01(\tR\x06sender\x12\x12\n" +
+	"\x04body\x18\x04 \x01(\tR\x04body\x12\x1a\n" +
+	"\bmetadata\x18\x05 \x01(\tR\bmetadata\x12$\n" +
+	"\x0ecreated_at_hlc\x18\x06 \x01(\tR\fcreatedAtHlc\x12\x10\n" +
+	"\x03seq\x18\a \x01(\x03R\x03seq\"_\n" +
 	"\x0fTimeSyncRequest\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\x04R\trequestId\x12-\n" +
@@ -1009,15 +1589,19 @@ const file_proto_cluster_proto_rawDesc = "" +
 	"\x04kind\x18\x02 \x01(\tR\x04kind\x12\x17\n" +
 	"\auser_id\x18\x03 \x01(\x03R\x06userId\x12\x10\n" +
 	"\x03hlc\x18\x04 \x01(\tR\x03hlc\x12\x18\n" +
-	"\apayload\x18\x05 \x01(\fR\apayload\"\xa1\x01\n" +
+	"\apayload\x18\x05 \x01(\fR\apayload\"\xad\x01\n" +
 	"\fMessageEvent\x12\x19\n" +
 	"\bevent_id\x18\x01 \x01(\x03R\aeventId\x12\x12\n" +
-	"\x04kind\x18\x02 \x01(\tR\x04kind\x12\x1d\n" +
-	"\n" +
-	"message_id\x18\x03 \x01(\x03R\tmessageId\x12\x17\n" +
-	"\auser_id\x18\x04 \x01(\x03R\x06userId\x12\x10\n" +
+	"\x04kind\x18\x02 \x01(\tR\x04kind\x12\x17\n" +
+	"\auser_id\x18\x03 \x01(\x03R\x06userId\x12\x17\n" +
+	"\anode_id\x18\x04 \x01(\tR\x06nodeId\x12\x10\n" +
 	"\x03hlc\x18\x05 \x01(\tR\x03hlc\x12\x18\n" +
-	"\apayload\x18\x06 \x01(\fR\apayloadB\x1fZ\x1dnotifier/internal/proto;protob\x06proto3"
+	"\apayload\x18\x06 \x01(\fR\apayload\x12\x10\n" +
+	"\x03seq\x18\a \x01(\x03R\x03seq*\x89\x01\n" +
+	"\x15SnapshotPartitionKind\x12'\n" +
+	"#SNAPSHOT_PARTITION_KIND_UNSPECIFIED\x10\x00\x12!\n" +
+	"\x1dSNAPSHOT_PARTITION_KIND_USERS\x10\x01\x12$\n" +
+	" SNAPSHOT_PARTITION_KIND_MESSAGES\x10\x02B\x1fZ\x1dnotifier/internal/proto;protob\x06proto3"
 
 var (
 	file_proto_cluster_proto_rawDescOnce sync.Once
@@ -1031,36 +1615,50 @@ func file_proto_cluster_proto_rawDescGZIP() []byte {
 	return file_proto_cluster_proto_rawDescData
 }
 
-var file_proto_cluster_proto_msgTypes = make([]protoimpl.MessageInfo, 12)
+var file_proto_cluster_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
+var file_proto_cluster_proto_msgTypes = make([]protoimpl.MessageInfo, 17)
 var file_proto_cluster_proto_goTypes = []any{
-	(*Envelope)(nil),         // 0: notifier.cluster.v1.Envelope
-	(*Hello)(nil),            // 1: notifier.cluster.v1.Hello
-	(*Ack)(nil),              // 2: notifier.cluster.v1.Ack
-	(*EventBatch)(nil),       // 3: notifier.cluster.v1.EventBatch
-	(*ReplicatedEvent)(nil),  // 4: notifier.cluster.v1.ReplicatedEvent
-	(*PullEvents)(nil),       // 5: notifier.cluster.v1.PullEvents
-	(*SnapshotDigest)(nil),   // 6: notifier.cluster.v1.SnapshotDigest
-	(*SnapshotChunk)(nil),    // 7: notifier.cluster.v1.SnapshotChunk
-	(*TimeSyncRequest)(nil),  // 8: notifier.cluster.v1.TimeSyncRequest
-	(*TimeSyncResponse)(nil), // 9: notifier.cluster.v1.TimeSyncResponse
-	(*UserEvent)(nil),        // 10: notifier.cluster.v1.UserEvent
-	(*MessageEvent)(nil),     // 11: notifier.cluster.v1.MessageEvent
+	(SnapshotPartitionKind)(0),      // 0: notifier.cluster.v1.SnapshotPartitionKind
+	(*Envelope)(nil),                // 1: notifier.cluster.v1.Envelope
+	(*Hello)(nil),                   // 2: notifier.cluster.v1.Hello
+	(*Ack)(nil),                     // 3: notifier.cluster.v1.Ack
+	(*EventBatch)(nil),              // 4: notifier.cluster.v1.EventBatch
+	(*ReplicatedEvent)(nil),         // 5: notifier.cluster.v1.ReplicatedEvent
+	(*PullEvents)(nil),              // 6: notifier.cluster.v1.PullEvents
+	(*SnapshotDigest)(nil),          // 7: notifier.cluster.v1.SnapshotDigest
+	(*SnapshotChunk)(nil),           // 8: notifier.cluster.v1.SnapshotChunk
+	(*SnapshotPartitionDigest)(nil), // 9: notifier.cluster.v1.SnapshotPartitionDigest
+	(*SnapshotRow)(nil),             // 10: notifier.cluster.v1.SnapshotRow
+	(*SnapshotUserRow)(nil),         // 11: notifier.cluster.v1.SnapshotUserRow
+	(*SnapshotTombstoneRow)(nil),    // 12: notifier.cluster.v1.SnapshotTombstoneRow
+	(*SnapshotMessageRow)(nil),      // 13: notifier.cluster.v1.SnapshotMessageRow
+	(*TimeSyncRequest)(nil),         // 14: notifier.cluster.v1.TimeSyncRequest
+	(*TimeSyncResponse)(nil),        // 15: notifier.cluster.v1.TimeSyncResponse
+	(*UserEvent)(nil),               // 16: notifier.cluster.v1.UserEvent
+	(*MessageEvent)(nil),            // 17: notifier.cluster.v1.MessageEvent
 }
 var file_proto_cluster_proto_depIdxs = []int32{
-	1, // 0: notifier.cluster.v1.Envelope.hello:type_name -> notifier.cluster.v1.Hello
-	2, // 1: notifier.cluster.v1.Envelope.ack:type_name -> notifier.cluster.v1.Ack
-	3, // 2: notifier.cluster.v1.Envelope.event_batch:type_name -> notifier.cluster.v1.EventBatch
-	5, // 3: notifier.cluster.v1.Envelope.pull_events:type_name -> notifier.cluster.v1.PullEvents
-	6, // 4: notifier.cluster.v1.Envelope.snapshot_digest:type_name -> notifier.cluster.v1.SnapshotDigest
-	7, // 5: notifier.cluster.v1.Envelope.snapshot_chunk:type_name -> notifier.cluster.v1.SnapshotChunk
-	8, // 6: notifier.cluster.v1.Envelope.time_sync_request:type_name -> notifier.cluster.v1.TimeSyncRequest
-	9, // 7: notifier.cluster.v1.Envelope.time_sync_response:type_name -> notifier.cluster.v1.TimeSyncResponse
-	4, // 8: notifier.cluster.v1.EventBatch.events:type_name -> notifier.cluster.v1.ReplicatedEvent
-	9, // [9:9] is the sub-list for method output_type
-	9, // [9:9] is the sub-list for method input_type
-	9, // [9:9] is the sub-list for extension type_name
-	9, // [9:9] is the sub-list for extension extendee
-	0, // [0:9] is the sub-list for field type_name
+	2,  // 0: notifier.cluster.v1.Envelope.hello:type_name -> notifier.cluster.v1.Hello
+	3,  // 1: notifier.cluster.v1.Envelope.ack:type_name -> notifier.cluster.v1.Ack
+	4,  // 2: notifier.cluster.v1.Envelope.event_batch:type_name -> notifier.cluster.v1.EventBatch
+	6,  // 3: notifier.cluster.v1.Envelope.pull_events:type_name -> notifier.cluster.v1.PullEvents
+	7,  // 4: notifier.cluster.v1.Envelope.snapshot_digest:type_name -> notifier.cluster.v1.SnapshotDigest
+	8,  // 5: notifier.cluster.v1.Envelope.snapshot_chunk:type_name -> notifier.cluster.v1.SnapshotChunk
+	14, // 6: notifier.cluster.v1.Envelope.time_sync_request:type_name -> notifier.cluster.v1.TimeSyncRequest
+	15, // 7: notifier.cluster.v1.Envelope.time_sync_response:type_name -> notifier.cluster.v1.TimeSyncResponse
+	5,  // 8: notifier.cluster.v1.EventBatch.events:type_name -> notifier.cluster.v1.ReplicatedEvent
+	9,  // 9: notifier.cluster.v1.SnapshotDigest.partitions:type_name -> notifier.cluster.v1.SnapshotPartitionDigest
+	10, // 10: notifier.cluster.v1.SnapshotChunk.rows:type_name -> notifier.cluster.v1.SnapshotRow
+	0,  // 11: notifier.cluster.v1.SnapshotChunk.kind:type_name -> notifier.cluster.v1.SnapshotPartitionKind
+	0,  // 12: notifier.cluster.v1.SnapshotPartitionDigest.kind:type_name -> notifier.cluster.v1.SnapshotPartitionKind
+	11, // 13: notifier.cluster.v1.SnapshotRow.user:type_name -> notifier.cluster.v1.SnapshotUserRow
+	12, // 14: notifier.cluster.v1.SnapshotRow.tombstone:type_name -> notifier.cluster.v1.SnapshotTombstoneRow
+	13, // 15: notifier.cluster.v1.SnapshotRow.message:type_name -> notifier.cluster.v1.SnapshotMessageRow
+	16, // [16:16] is the sub-list for method output_type
+	16, // [16:16] is the sub-list for method input_type
+	16, // [16:16] is the sub-list for extension type_name
+	16, // [16:16] is the sub-list for extension extendee
+	0,  // [0:16] is the sub-list for field type_name
 }
 
 func init() { file_proto_cluster_proto_init() }
@@ -1078,18 +1676,24 @@ func file_proto_cluster_proto_init() {
 		(*Envelope_TimeSyncRequest)(nil),
 		(*Envelope_TimeSyncResponse)(nil),
 	}
+	file_proto_cluster_proto_msgTypes[9].OneofWrappers = []any{
+		(*SnapshotRow_User)(nil),
+		(*SnapshotRow_Tombstone)(nil),
+		(*SnapshotRow_Message)(nil),
+	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proto_cluster_proto_rawDesc), len(file_proto_cluster_proto_rawDesc)),
-			NumEnums:      0,
-			NumMessages:   12,
+			NumEnums:      1,
+			NumMessages:   17,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
 		GoTypes:           file_proto_cluster_proto_goTypes,
 		DependencyIndexes: file_proto_cluster_proto_depIdxs,
+		EnumInfos:         file_proto_cluster_proto_enumTypes,
 		MessageInfos:      file_proto_cluster_proto_msgTypes,
 	}.Build()
 	File_proto_cluster_proto = out.File

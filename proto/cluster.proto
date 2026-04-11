@@ -56,12 +56,68 @@ message PullEvents {
 
 message SnapshotDigest {
   string snapshot_version = 1;
-  repeated bytes partitions = 2;
+  repeated SnapshotPartitionDigest partitions = 2;
 }
 
 message SnapshotChunk {
   string partition = 1;
-  repeated bytes rows = 2;
+  repeated SnapshotRow rows = 2;
+  string snapshot_version = 3;
+  SnapshotPartitionKind kind = 4;
+  bool request = 5;
+}
+
+enum SnapshotPartitionKind {
+  SNAPSHOT_PARTITION_KIND_UNSPECIFIED = 0;
+  SNAPSHOT_PARTITION_KIND_USERS = 1;
+  SNAPSHOT_PARTITION_KIND_MESSAGES = 2;
+}
+
+message SnapshotPartitionDigest {
+  string partition = 1;
+  SnapshotPartitionKind kind = 2;
+  uint64 row_count = 3;
+  bytes hash = 4;
+}
+
+message SnapshotRow {
+  oneof body {
+    SnapshotUserRow user = 1;
+    SnapshotTombstoneRow tombstone = 2;
+    SnapshotMessageRow message = 3;
+  }
+}
+
+message SnapshotUserRow {
+  int64 user_id = 1;
+  string username = 2;
+  string password_hash = 3;
+  string profile = 4;
+  string created_at_hlc = 5;
+  string updated_at_hlc = 6;
+  string deleted_at_hlc = 7;
+  string version_username = 8;
+  string version_password_hash = 9;
+  string version_profile = 10;
+  string version_deleted = 11;
+  string origin_node_id = 12;
+}
+
+message SnapshotTombstoneRow {
+  string entity_type = 1;
+  int64 entity_id = 2;
+  string deleted_at_hlc = 3;
+  string origin_node_id = 4;
+}
+
+message SnapshotMessageRow {
+  int64 user_id = 1;
+  string node_id = 2;
+  string sender = 3;
+  string body = 4;
+  string metadata = 5;
+  string created_at_hlc = 6;
+  int64 seq = 7;
 }
 
 message TimeSyncRequest {
@@ -87,8 +143,9 @@ message UserEvent {
 message MessageEvent {
   int64 event_id = 1;
   string kind = 2;
-  int64 message_id = 3;
-  int64 user_id = 4;
+  int64 user_id = 3;
+  string node_id = 4;
   string hlc = 5;
   bytes payload = 6;
+  int64 seq = 7;
 }

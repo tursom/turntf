@@ -427,6 +427,96 @@ func TestHandlePullEventsReturnsRequestedRange(t *testing.T) {
 	}
 }
 
+func TestBuildHelloIncludesSnapshotVersion(t *testing.T) {
+	t.Parallel()
+
+	st := newReplicationTestStore(t, "node-b", 2)
+	mgr := newReplicationTestManager(t, st)
+
+	envelope, err := mgr.buildHelloEnvelope()
+	if err != nil {
+		t.Fatalf("build hello envelope: %v", err)
+	}
+	hello := envelope.GetHello()
+	if hello == nil {
+		t.Fatalf("expected hello body")
+	}
+	if hello.SnapshotVersion != internalproto.SnapshotVersion {
+		t.Fatalf("unexpected snapshot version: got=%q want=%q", hello.SnapshotVersion, internalproto.SnapshotVersion)
+	}
+}
+
+func TestHandleHelloRejectsMismatchedSnapshotVersion(t *testing.T) {
+	t.Parallel()
+
+	mgr := newHandshakeTestManager(t)
+	sess := &session{
+		manager: mgr,
+		send:    make(chan *internalproto.Envelope, 1),
+	}
+	hello := &internalproto.Hello{
+		NodeId:            "node-b",
+		AdvertiseAddr:     websocketPath,
+		ProtocolVersion:   internalproto.ProtocolVersion,
+		SnapshotVersion:   "snapshot-v0",
+		MessageWindowSize: store.DefaultMessageWindowSize,
+	}
+
+	if err := mgr.handleHello(sess, mustHelloEnvelope(t, "node-b", hello)); err == nil {
+		t.Fatalf("expected snapshot version mismatch to fail")
+	}
+}
+
+func TestHandleSnapshotDigestRequestsUsersBeforeMessages(t *testing.T) {
+	t.Parallel()
+
+	sourceStore := newReplicationTestStore(t, "node-a", 1)
+	targetStore := newReplicationTestStore(t, "node-b", 2)
+	mgr := newReplicationTestManager(t, targetStore)
+
+	ctx := context.Background()
+	user, _, err := sourceStore.CreateUser(ctx, store.CreateUserParams{
+		Username:     "snapshot-digest-user",
+		PasswordHash: "hash-1",
+	})
+	if err != nil {
+		t.Fatalf("create source user: %v", err)
+	}
+	if _, _, err := sourceStore.CreateMessage(ctx, store.CreateMessageParams{
+		UserID: user.ID,
+		Sender: "orders",
+		Body:   "snapshot message",
+	}); err != nil {
+		t.Fatalf("create source message: %v", err)
+	}
+
+	remoteDigest, err := sourceStore.BuildSnapshotDigest(ctx, []string{"node-a", "node-b"})
+	if err != nil {
+		t.Fatalf("build remote digest: %v", err)
+	}
+	remoteDigest.SnapshotVersion = internalproto.SnapshotVersion
+
+	sess := readySnapshotTestSession(mgr, "node-a", store.DefaultMessageWindowSize)
+	if err := mgr.handleSnapshotDigest(sess, snapshotDigestEnvelope("node-a", remoteDigest)); err != nil {
+		t.Fatalf("handle snapshot digest: %v", err)
+	}
+	assertSnapshotRequest(t, sess, store.SnapshotUsersPartition)
+
+	userChunk, err := sourceStore.BuildSnapshotChunk(ctx, store.SnapshotUsersPartition)
+	if err != nil {
+		t.Fatalf("build users chunk: %v", err)
+	}
+	if err := targetStore.ApplySnapshotChunk(ctx, userChunk); err != nil {
+		t.Fatalf("apply users chunk: %v", err)
+	}
+
+	sess = readySnapshotTestSession(mgr, "node-a", store.DefaultMessageWindowSize)
+	if err := mgr.handleSnapshotDigest(sess, snapshotDigestEnvelope("node-a", remoteDigest)); err != nil {
+		t.Fatalf("handle snapshot digest after user repair: %v", err)
+	}
+	assertSnapshotRequest(t, sess, store.MessageSnapshotPartition("node-a"))
+}
+
 func TestHandleAckPersistsPeerCursor(t *testing.T) {
 	t.Parallel()
 
@@ -514,8 +604,6 @@ func TestHandleEventBatchRejectsFutureTimestampWhenSkewCheckEnabled(t *testing.T
 }
 
 func TestWriteRequestsBlockedUntilInitialClockSync(t *testing.T) {
-	t.Parallel()
-
 	lnA := mustListen(t)
 	lnB := mustListen(t)
 
@@ -544,8 +632,6 @@ func TestWriteRequestsBlockedUntilInitialClockSync(t *testing.T) {
 }
 
 func TestSkewedPeerRejectedWhenMaxClockSkewExceeded(t *testing.T) {
-	t.Parallel()
-
 	lnA := mustListen(t)
 	lnB := mustListen(t)
 
@@ -569,8 +655,6 @@ func TestSkewedPeerRejectedWhenMaxClockSkewExceeded(t *testing.T) {
 }
 
 func TestSkewedPeerAllowedWhenMaxClockSkewDisabled(t *testing.T) {
-	t.Parallel()
-
 	lnA := mustListen(t)
 	lnB := mustListen(t)
 
@@ -590,8 +674,6 @@ func TestSkewedPeerAllowedWhenMaxClockSkewDisabled(t *testing.T) {
 }
 
 func TestTwoNodeReplicationOverWebSocket(t *testing.T) {
-	t.Parallel()
-
 	lnA := mustListen(t)
 	lnB := mustListen(t)
 
@@ -658,8 +740,6 @@ func TestTwoNodeReplicationOverWebSocket(t *testing.T) {
 }
 
 func TestTwoNodeMessageWindowConvergesWhenSizesMatch(t *testing.T) {
-	t.Parallel()
-
 	lnA := mustListen(t)
 	lnB := mustListen(t)
 
@@ -716,8 +796,6 @@ func TestTwoNodeMessageWindowConvergesWhenSizesMatch(t *testing.T) {
 }
 
 func TestTwoNodeMessageWindowMismatchKeepsPerNodeWindows(t *testing.T) {
-	t.Parallel()
-
 	lnA := mustListen(t)
 	lnB := mustListen(t)
 
@@ -774,8 +852,6 @@ func TestTwoNodeMessageWindowMismatchKeepsPerNodeWindows(t *testing.T) {
 }
 
 func TestLateJoiningNodeCatchesUpWithoutDuplicates(t *testing.T) {
-	t.Parallel()
-
 	lnA := mustListen(t)
 	lnB := mustListen(t)
 
@@ -824,8 +900,6 @@ func TestLateJoiningNodeCatchesUpWithoutDuplicates(t *testing.T) {
 }
 
 func TestLateJoiningNodeCatchesUpAcrossMultiplePullBatches(t *testing.T) {
-	t.Parallel()
-
 	lnA := mustListen(t)
 	lnB := mustListen(t)
 
@@ -877,8 +951,6 @@ func TestLateJoiningNodeCatchesUpAcrossMultiplePullBatches(t *testing.T) {
 }
 
 func TestLateJoiningNodeTrimsCatchupToLocalWindow(t *testing.T) {
-	t.Parallel()
-
 	lnA := mustListen(t)
 	lnB := mustListen(t)
 
@@ -920,8 +992,6 @@ func TestLateJoiningNodeTrimsCatchupToLocalWindow(t *testing.T) {
 }
 
 func TestThreeNodeFieldLevelConvergence(t *testing.T) {
-	t.Parallel()
-
 	lnA := mustListen(t)
 	lnB := mustListen(t)
 	lnC := mustListen(t)
@@ -1009,8 +1079,6 @@ func TestThreeNodeFieldLevelConvergence(t *testing.T) {
 }
 
 func TestThreeNodeDeleteWinsOverConcurrentUpdate(t *testing.T) {
-	t.Parallel()
-
 	lnA := mustListen(t)
 	lnB := mustListen(t)
 	lnC := mustListen(t)
@@ -1219,6 +1287,9 @@ func wsURL(ln net.Listener) string {
 
 func waitFor(t *testing.T, timeout time.Duration, fn func() bool) {
 	t.Helper()
+	if timeout < 10*time.Second {
+		timeout = 10 * time.Second
+	}
 
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
@@ -1367,8 +1438,52 @@ func newReplicationTestManagerWithWindow(t *testing.T, st *store.Store, messageW
 	return mgr
 }
 
+func readySnapshotTestSession(mgr *Manager, peerID string, remoteMessageWindowSize int) *session {
+	sess := &session{
+		manager:                 mgr,
+		peerID:                  peerID,
+		remoteSnapshotVersion:   internalproto.SnapshotVersion,
+		remoteMessageWindowSize: remoteMessageWindowSize,
+		send:                    make(chan *internalproto.Envelope, 4),
+	}
+	sess.markReplicationReady()
+	return sess
+}
+
+func snapshotDigestEnvelope(nodeID string, digest *internalproto.SnapshotDigest) *internalproto.Envelope {
+	return &internalproto.Envelope{
+		NodeId: nodeID,
+		Body: &internalproto.Envelope_SnapshotDigest{
+			SnapshotDigest: digest,
+		},
+	}
+}
+
+func assertSnapshotRequest(t *testing.T, sess *session, partition string) {
+	t.Helper()
+
+	select {
+	case envelope := <-sess.send:
+		chunk := envelope.GetSnapshotChunk()
+		if chunk == nil {
+			t.Fatalf("expected snapshot chunk request, got %+v", envelope)
+		}
+		if !chunk.Request {
+			t.Fatalf("expected snapshot chunk request flag")
+		}
+		if chunk.Partition != partition {
+			t.Fatalf("unexpected snapshot partition: got=%q want=%q", chunk.Partition, partition)
+		}
+	default:
+		t.Fatalf("expected snapshot chunk request for %s", partition)
+	}
+}
+
 func mustHelloEnvelope(t *testing.T, envelopeNodeID string, hello *internalproto.Hello) *internalproto.Envelope {
 	t.Helper()
+	if hello != nil && hello.SnapshotVersion == "" {
+		hello.SnapshotVersion = internalproto.SnapshotVersion
+	}
 	return &internalproto.Envelope{
 		NodeId: envelopeNodeID,
 		Body: &internalproto.Envelope_Hello{

@@ -1,0 +1,471 @@
+package store
+
+import (
+	"context"
+	"crypto/sha256"
+	"database/sql"
+	"encoding/binary"
+	"errors"
+	"fmt"
+	"sort"
+	"strings"
+
+	gproto "google.golang.org/protobuf/proto"
+
+	"notifier/internal/clock"
+	clusterproto "notifier/internal/proto"
+)
+
+const (
+	SnapshotUsersPartition       = "users/full"
+	SnapshotMessagesPrefix       = "messages/"
+	snapshotPartitionKindUsers   = clusterproto.SnapshotPartitionKind_SNAPSHOT_PARTITION_KIND_USERS
+	snapshotPartitionKindMessage = clusterproto.SnapshotPartitionKind_SNAPSHOT_PARTITION_KIND_MESSAGES
+)
+
+func MessageSnapshotPartition(originNodeID string) string {
+	return SnapshotMessagesPrefix + strings.TrimSpace(originNodeID)
+}
+
+func (s *Store) BuildSnapshotDigest(ctx context.Context, producerNodeIDs []string) (*clusterproto.SnapshotDigest, error) {
+	partitions := make([]*clusterproto.SnapshotPartitionDigest, 0, 1+len(producerNodeIDs))
+
+	userRows, err := s.buildUserSnapshotRows(ctx)
+	if err != nil {
+		return nil, err
+	}
+	userHash, err := hashSnapshotRows(userRows)
+	if err != nil {
+		return nil, err
+	}
+	partitions = append(partitions, &clusterproto.SnapshotPartitionDigest{
+		Partition: SnapshotUsersPartition,
+		Kind:      snapshotPartitionKindUsers,
+		RowCount:  uint64(len(userRows)),
+		Hash:      userHash,
+	})
+
+	for _, producer := range normalizeProducerNodeIDs(producerNodeIDs) {
+		rows, err := s.buildMessageSnapshotRows(ctx, producer)
+		if err != nil {
+			return nil, err
+		}
+		rowHash, err := hashSnapshotRows(rows)
+		if err != nil {
+			return nil, err
+		}
+		partitions = append(partitions, &clusterproto.SnapshotPartitionDigest{
+			Partition: MessageSnapshotPartition(producer),
+			Kind:      snapshotPartitionKindMessage,
+			RowCount:  uint64(len(rows)),
+			Hash:      rowHash,
+		})
+	}
+
+	return &clusterproto.SnapshotDigest{Partitions: partitions}, nil
+}
+
+func (s *Store) BuildSnapshotChunk(ctx context.Context, partition string) (*clusterproto.SnapshotChunk, error) {
+	partition = strings.TrimSpace(partition)
+	switch {
+	case partition == SnapshotUsersPartition:
+		rows, err := s.buildUserSnapshotRows(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return &clusterproto.SnapshotChunk{
+			Partition: partition,
+			Kind:      snapshotPartitionKindUsers,
+			Rows:      rows,
+		}, nil
+	case strings.HasPrefix(partition, SnapshotMessagesPrefix):
+		producer := strings.TrimSpace(strings.TrimPrefix(partition, SnapshotMessagesPrefix))
+		if producer == "" {
+			return nil, fmt.Errorf("%w: message snapshot partition missing producer", ErrInvalidInput)
+		}
+		rows, err := s.buildMessageSnapshotRows(ctx, producer)
+		if err != nil {
+			return nil, err
+		}
+		return &clusterproto.SnapshotChunk{
+			Partition: partition,
+			Kind:      snapshotPartitionKindMessage,
+			Rows:      rows,
+		}, nil
+	default:
+		return nil, fmt.Errorf("%w: unsupported snapshot partition %q", ErrInvalidInput, partition)
+	}
+}
+
+func (s *Store) ApplySnapshotChunk(ctx context.Context, chunk *clusterproto.SnapshotChunk) error {
+	if chunk == nil {
+		return fmt.Errorf("%w: snapshot chunk cannot be nil", ErrInvalidInput)
+	}
+	partition := strings.TrimSpace(chunk.Partition)
+	if partition == "" {
+		return fmt.Errorf("%w: snapshot partition cannot be empty", ErrInvalidInput)
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin apply snapshot chunk: %w", err)
+	}
+	defer tx.Rollback()
+
+	switch {
+	case partition == SnapshotUsersPartition:
+		if chunk.Kind != snapshotPartitionKindUsers {
+			return fmt.Errorf("%w: users snapshot chunk has kind %s", ErrInvalidInput, chunk.Kind)
+		}
+		for _, row := range chunk.Rows {
+			if err := s.applyUserSnapshotRowTx(ctx, tx, row); err != nil {
+				return err
+			}
+		}
+	case strings.HasPrefix(partition, SnapshotMessagesPrefix):
+		if chunk.Kind != snapshotPartitionKindMessage {
+			return fmt.Errorf("%w: messages snapshot chunk has kind %s", ErrInvalidInput, chunk.Kind)
+		}
+		producer := strings.TrimSpace(strings.TrimPrefix(partition, SnapshotMessagesPrefix))
+		if producer == "" {
+			return fmt.Errorf("%w: message snapshot partition missing producer", ErrInvalidInput)
+		}
+		affectedUsers := make(map[int64]struct{})
+		for _, row := range chunk.Rows {
+			userID, err := s.applyMessageSnapshotRowTx(ctx, tx, producer, row)
+			if err != nil {
+				return err
+			}
+			if userID != 0 {
+				affectedUsers[userID] = struct{}{}
+			}
+		}
+		for userID := range affectedUsers {
+			if err := s.trimMessagesForUserTx(ctx, tx, userID); err != nil {
+				return err
+			}
+		}
+	default:
+		return fmt.Errorf("%w: unsupported snapshot partition %q", ErrInvalidInput, partition)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit apply snapshot chunk: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) buildUserSnapshotRows(ctx context.Context) ([]*clusterproto.SnapshotRow, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT user_id, username, password_hash, profile, created_at_hlc, updated_at_hlc,
+       deleted_at_hlc, version_username, version_password_hash, version_profile,
+       version_deleted, origin_node_id
+FROM users
+ORDER BY user_id ASC
+`)
+	if err != nil {
+		return nil, fmt.Errorf("query snapshot users: %w", err)
+	}
+	defer rows.Close()
+
+	snapshotRows := make([]*clusterproto.SnapshotRow, 0)
+	for rows.Next() {
+		user, err := scanUser(rows)
+		if err != nil {
+			return nil, err
+		}
+		snapshotRows = append(snapshotRows, snapshotRowFromUser(user))
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate snapshot users: %w", err)
+	}
+
+	tombstoneRows, err := s.db.QueryContext(ctx, `
+SELECT entity_type, entity_id, deleted_at_hlc, origin_node_id
+FROM tombstones
+WHERE entity_type = 'user'
+ORDER BY entity_type ASC, entity_id ASC
+`)
+	if err != nil {
+		return nil, fmt.Errorf("query snapshot tombstones: %w", err)
+	}
+	defer tombstoneRows.Close()
+
+	for tombstoneRows.Next() {
+		var entityType, deletedAt, originNodeID string
+		var entityID int64
+		if err := tombstoneRows.Scan(&entityType, &entityID, &deletedAt, &originNodeID); err != nil {
+			return nil, fmt.Errorf("scan snapshot tombstone: %w", err)
+		}
+		snapshotRows = append(snapshotRows, &clusterproto.SnapshotRow{
+			Body: &clusterproto.SnapshotRow_Tombstone{
+				Tombstone: &clusterproto.SnapshotTombstoneRow{
+					EntityType:   entityType,
+					EntityId:     entityID,
+					DeletedAtHlc: deletedAt,
+					OriginNodeId: originNodeID,
+				},
+			},
+		})
+	}
+	if err := tombstoneRows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate snapshot tombstones: %w", err)
+	}
+	return snapshotRows, nil
+}
+
+func (s *Store) buildMessageSnapshotRows(ctx context.Context, producer string) ([]*clusterproto.SnapshotRow, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT user_id, node_id, seq, sender, body, COALESCE(metadata, ''), created_at_hlc
+FROM messages
+WHERE node_id = ?
+ORDER BY user_id ASC, created_at_hlc DESC, node_id ASC, seq DESC
+`, producer)
+	if err != nil {
+		return nil, fmt.Errorf("query snapshot messages: %w", err)
+	}
+	defer rows.Close()
+
+	snapshotRows := make([]*clusterproto.SnapshotRow, 0)
+	for rows.Next() {
+		message, err := scanMessage(rows)
+		if err != nil {
+			return nil, err
+		}
+		snapshotRows = append(snapshotRows, snapshotRowFromMessage(message))
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate snapshot messages: %w", err)
+	}
+	return snapshotRows, nil
+}
+
+func (s *Store) applyUserSnapshotRowTx(ctx context.Context, tx *sql.Tx, row *clusterproto.SnapshotRow) error {
+	if row == nil {
+		return fmt.Errorf("%w: snapshot row cannot be nil", ErrInvalidInput)
+	}
+	if tombstone := row.GetTombstone(); tombstone != nil {
+		return s.applySnapshotTombstoneTx(ctx, tx, tombstone)
+	}
+
+	userRow := row.GetUser()
+	if userRow == nil {
+		return fmt.Errorf("%w: users snapshot contains non-user row", ErrInvalidInput)
+	}
+	user, err := userFromSnapshotRow(userRow)
+	if err != nil {
+		return err
+	}
+	if user.DeletedAt != nil || user.VersionDeleted != nil {
+		deletedAt := user.DeletedAt
+		if deletedAt == nil {
+			deletedAt = user.VersionDeleted
+		}
+		return s.applyUserDeleteTx(ctx, tx, user.ID, *deletedAt, user.OriginNodeID, false)
+	}
+
+	payload, err := encodeUpdateUserPayload(user)
+	if err != nil {
+		return fmt.Errorf("marshal snapshot user payload: %w", err)
+	}
+	return s.applyReplicatedUserUpsert(ctx, tx, &clusterproto.ReplicatedEvent{
+		Kind:         "snapshot.user",
+		OriginNodeId: user.OriginNodeID,
+		Payload:      []byte(payload),
+	}, "snapshot.user")
+}
+
+func (s *Store) applySnapshotTombstoneTx(ctx context.Context, tx *sql.Tx, row *clusterproto.SnapshotTombstoneRow) error {
+	if row == nil {
+		return fmt.Errorf("%w: snapshot tombstone cannot be nil", ErrInvalidInput)
+	}
+	if row.EntityType != "user" {
+		return fmt.Errorf("%w: unsupported tombstone entity type %q", ErrInvalidInput, row.EntityType)
+	}
+	if row.EntityId == 0 {
+		return fmt.Errorf("%w: tombstone entity id cannot be empty", ErrInvalidInput)
+	}
+	deletedAt, err := parseRequiredTimestamp(row.DeletedAtHlc, "snapshot tombstone deleted_at")
+	if err != nil {
+		return err
+	}
+	return s.applyUserDeleteTx(ctx, tx, row.EntityId, deletedAt, row.OriginNodeId, false)
+}
+
+func (s *Store) applyMessageSnapshotRowTx(ctx context.Context, tx *sql.Tx, producer string, row *clusterproto.SnapshotRow) (int64, error) {
+	if row == nil {
+		return 0, fmt.Errorf("%w: snapshot row cannot be nil", ErrInvalidInput)
+	}
+	messageRow := row.GetMessage()
+	if messageRow == nil {
+		return 0, fmt.Errorf("%w: messages snapshot contains non-message row", ErrInvalidInput)
+	}
+	if messageRow.UserId == 0 || strings.TrimSpace(messageRow.NodeId) == "" || messageRow.Seq <= 0 {
+		return 0, fmt.Errorf("%w: message user id, node id, and seq are required", ErrInvalidInput)
+	}
+	if strings.TrimSpace(messageRow.NodeId) != producer {
+		return 0, fmt.Errorf("%w: message node id %q does not match partition producer %q", ErrInvalidInput, messageRow.NodeId, producer)
+	}
+	if _, err := parseRequiredTimestamp(messageRow.CreatedAtHlc, "snapshot message created_at"); err != nil {
+		return 0, err
+	}
+	if _, err := s.getUserByIDTx(ctx, tx, messageRow.UserId, false); err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return 0, nil
+		}
+		return 0, err
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO messages(user_id, node_id, seq, sender, body, metadata, created_at_hlc)
+VALUES(?, ?, ?, ?, ?, ?, ?)
+`, messageRow.UserId, messageRow.NodeId, messageRow.Seq, messageRow.Sender, messageRow.Body, nullIfEmpty(messageRow.Metadata),
+		messageRow.CreatedAtHlc); err != nil {
+		if isUniqueConstraint(err) {
+			if err := s.recordMessageSeqTx(ctx, tx, messageRow.UserId, messageRow.NodeId, messageRow.Seq); err != nil {
+				return 0, err
+			}
+			return messageRow.UserId, nil
+		}
+		return 0, fmt.Errorf("insert snapshot message: %w", err)
+	}
+	if err := s.recordMessageSeqTx(ctx, tx, messageRow.UserId, messageRow.NodeId, messageRow.Seq); err != nil {
+		return 0, err
+	}
+	return messageRow.UserId, nil
+}
+
+func snapshotRowFromUser(user User) *clusterproto.SnapshotRow {
+	return &clusterproto.SnapshotRow{
+		Body: &clusterproto.SnapshotRow_User{
+			User: &clusterproto.SnapshotUserRow{
+				UserId:              user.ID,
+				Username:            user.Username,
+				PasswordHash:        user.PasswordHash,
+				Profile:             user.Profile,
+				CreatedAtHlc:        user.CreatedAt.String(),
+				UpdatedAtHlc:        user.UpdatedAt.String(),
+				DeletedAtHlc:        timestampSnapshotString(user.DeletedAt),
+				VersionUsername:     user.VersionUsername.String(),
+				VersionPasswordHash: user.VersionPasswordHash.String(),
+				VersionProfile:      user.VersionProfile.String(),
+				VersionDeleted:      timestampSnapshotString(user.VersionDeleted),
+				OriginNodeId:        user.OriginNodeID,
+			},
+		},
+	}
+}
+
+func snapshotRowFromMessage(message Message) *clusterproto.SnapshotRow {
+	return &clusterproto.SnapshotRow{
+		Body: &clusterproto.SnapshotRow_Message{
+			Message: &clusterproto.SnapshotMessageRow{
+				UserId:       message.UserID,
+				NodeId:       message.NodeID,
+				Seq:          message.Seq,
+				Sender:       message.Sender,
+				Body:         message.Body,
+				Metadata:     message.Metadata,
+				CreatedAtHlc: message.CreatedAt.String(),
+			},
+		},
+	}
+}
+
+func userFromSnapshotRow(row *clusterproto.SnapshotUserRow) (User, error) {
+	if row.UserId == 0 {
+		return User{}, fmt.Errorf("%w: user id cannot be empty", ErrInvalidInput)
+	}
+	createdAt, err := parseRequiredTimestamp(row.CreatedAtHlc, "snapshot user created_at")
+	if err != nil {
+		return User{}, err
+	}
+	updatedAt, err := parseRequiredTimestamp(row.UpdatedAtHlc, "snapshot user updated_at")
+	if err != nil {
+		return User{}, err
+	}
+	versionUsername, err := parseRequiredTimestamp(row.VersionUsername, "snapshot user version_username")
+	if err != nil {
+		return User{}, err
+	}
+	versionPasswordHash, err := parseRequiredTimestamp(row.VersionPasswordHash, "snapshot user version_password_hash")
+	if err != nil {
+		return User{}, err
+	}
+	versionProfile, err := parseRequiredTimestamp(row.VersionProfile, "snapshot user version_profile")
+	if err != nil {
+		return User{}, err
+	}
+
+	user := User{
+		ID:                  row.UserId,
+		Username:            row.Username,
+		PasswordHash:        row.PasswordHash,
+		Profile:             defaultJSON(row.Profile),
+		CreatedAt:           createdAt,
+		UpdatedAt:           updatedAt,
+		VersionUsername:     versionUsername,
+		VersionPasswordHash: versionPasswordHash,
+		VersionProfile:      versionProfile,
+		OriginNodeID:        row.OriginNodeId,
+	}
+	if strings.TrimSpace(row.DeletedAtHlc) != "" {
+		deletedAt, err := parseRequiredTimestamp(row.DeletedAtHlc, "snapshot user deleted_at")
+		if err != nil {
+			return User{}, err
+		}
+		user.DeletedAt = &deletedAt
+	}
+	if strings.TrimSpace(row.VersionDeleted) != "" {
+		versionDeleted, err := parseRequiredTimestamp(row.VersionDeleted, "snapshot user version_deleted")
+		if err != nil {
+			return User{}, err
+		}
+		user.VersionDeleted = &versionDeleted
+	}
+	return user, nil
+}
+
+func timestampSnapshotString(ts *clock.Timestamp) string {
+	if ts == nil {
+		return ""
+	}
+	return ts.String()
+}
+
+func hashSnapshotRows(rows []*clusterproto.SnapshotRow) ([]byte, error) {
+	hasher := sha256.New()
+	var length [8]byte
+	marshalOptions := gproto.MarshalOptions{Deterministic: true}
+	for _, row := range rows {
+		data, err := marshalOptions.Marshal(row)
+		if err != nil {
+			return nil, fmt.Errorf("marshal snapshot row for hash: %w", err)
+		}
+		binary.BigEndian.PutUint64(length[:], uint64(len(data)))
+		if _, err := hasher.Write(length[:]); err != nil {
+			return nil, err
+		}
+		if _, err := hasher.Write(data); err != nil {
+			return nil, err
+		}
+	}
+	return hasher.Sum(nil), nil
+}
+
+func normalizeProducerNodeIDs(nodeIDs []string) []string {
+	seen := make(map[string]struct{}, len(nodeIDs))
+	for _, nodeID := range nodeIDs {
+		trimmed := strings.TrimSpace(nodeID)
+		if trimmed == "" {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+	}
+	normalized := make([]string, 0, len(seen))
+	for nodeID := range seen {
+		normalized = append(normalized, nodeID)
+	}
+	sort.Strings(normalized)
+	return normalized
+}

@@ -40,7 +40,7 @@
 ### 消息数据一致性
 
 - 消息采用广播扩散和幂等去重。
-- 每条消息拥有全局唯一 `message_id`。
+- 每条消息由 `(user_id, node_id, seq)` 三元组唯一定位。
 - 节点最终只保留每个用户最近 N 条消息，默认 N = 500。
 - 消息同步不追求全历史强一致，只保证每个节点本地窗口内消息最终收敛。
 
@@ -127,13 +127,13 @@
 
 消息表建议包含：
 
-- `message_id`
 - `user_id`
+- `node_id`
+- `seq`
 - `sender`
 - `body`
 - `metadata`
 - `created_at_hlc`
-- `origin_node_id`
 
 ## 分步实施
 

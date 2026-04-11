@@ -37,13 +37,13 @@ type replicatedDeletePayload struct {
 }
 
 type replicatedMessagePayload struct {
-	ID           int64  `json:"id"`
-	UserID       int64  `json:"user_id"`
-	Sender       string `json:"sender"`
-	Body         string `json:"body"`
-	Metadata     string `json:"metadata,omitempty"`
-	CreatedAt    string `json:"created_at"`
-	OriginNodeID string `json:"origin_node_id"`
+	UserID    int64  `json:"user_id"`
+	NodeID    string `json:"node_id"`
+	Seq       int64  `json:"seq"`
+	Sender    string `json:"sender"`
+	Body      string `json:"body"`
+	Metadata  string `json:"metadata,omitempty"`
+	CreatedAt string `json:"created_at"`
 }
 
 type replicatedMessageEnvelope struct {
@@ -99,13 +99,13 @@ func encodeDeleteUserPayload(userID int64, deletedAt string) (string, error) {
 func encodeCreateMessagePayload(message Message) (string, error) {
 	return marshalPayload(replicatedMessageEnvelope{
 		Message: replicatedMessagePayload{
-			ID:           message.ID,
-			UserID:       message.UserID,
-			Sender:       message.Sender,
-			Body:         message.Body,
-			Metadata:     message.Metadata,
-			CreatedAt:    message.CreatedAt.String(),
-			OriginNodeID: message.OriginNodeID,
+			UserID:    message.UserID,
+			NodeID:    message.NodeID,
+			Seq:       message.Seq,
+			Sender:    message.Sender,
+			Body:      message.Body,
+			Metadata:  message.Metadata,
+			CreatedAt: message.CreatedAt.String(),
 		},
 	})
 }
@@ -247,8 +247,11 @@ func (s *Store) applyReplicatedMessageCreated(ctx context.Context, tx *sql.Tx, e
 		return fmt.Errorf("decode message.created payload: %w", err)
 	}
 	message := payload.Message
-	if message.ID == 0 || message.UserID == 0 {
-		return fmt.Errorf("%w: message id and user id are required", ErrInvalidInput)
+	if message.UserID == 0 || strings.TrimSpace(message.NodeID) == "" || message.Seq <= 0 {
+		return fmt.Errorf("%w: message user id, node id, and seq are required", ErrInvalidInput)
+	}
+	if event.OriginNodeId != "" && event.OriginNodeId != message.NodeID {
+		return fmt.Errorf("%w: message node id %q does not match event origin %q", ErrInvalidInput, message.NodeID, event.OriginNodeId)
 	}
 
 	if _, err := s.getUserByIDTx(ctx, tx, message.UserID, false); err != nil {
@@ -256,14 +259,17 @@ func (s *Store) applyReplicatedMessageCreated(ctx context.Context, tx *sql.Tx, e
 	}
 
 	if _, err := tx.ExecContext(ctx, `
-INSERT INTO messages(message_id, user_id, sender, body, metadata, created_at_hlc, origin_node_id)
+INSERT INTO messages(user_id, node_id, seq, sender, body, metadata, created_at_hlc)
 VALUES(?, ?, ?, ?, ?, ?, ?)
-`, message.ID, message.UserID, message.Sender, message.Body, nullIfEmpty(message.Metadata),
-		message.CreatedAt, message.OriginNodeID); err != nil {
+`, message.UserID, message.NodeID, message.Seq, message.Sender, message.Body, nullIfEmpty(message.Metadata),
+		message.CreatedAt); err != nil {
 		if isUniqueConstraint(err) {
-			return nil
+			return s.recordMessageSeqTx(ctx, tx, message.UserID, message.NodeID, message.Seq)
 		}
 		return fmt.Errorf("insert replicated message: %w", err)
+	}
+	if err := s.recordMessageSeqTx(ctx, tx, message.UserID, message.NodeID, message.Seq); err != nil {
+		return err
 	}
 	if err := s.trimMessagesForUserTx(ctx, tx, message.UserID); err != nil {
 		return err

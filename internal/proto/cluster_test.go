@@ -54,3 +54,47 @@ func TestEnvelopeBatchRoundTrip(t *testing.T) {
 		t.Fatalf("unexpected event id: %+v", decodedBatch.GetEvents()[0])
 	}
 }
+
+func TestSnapshotMessageRowRoundTripUsesTripleIdentity(t *testing.T) {
+	t.Parallel()
+
+	envelope := &Envelope{
+		NodeId: "node-a",
+		Body: &Envelope_SnapshotChunk{
+			SnapshotChunk: &SnapshotChunk{
+				SnapshotVersion: SnapshotVersion,
+				Partition:       "messages/node-a",
+				Kind:            SnapshotPartitionKind_SNAPSHOT_PARTITION_KIND_MESSAGES,
+				Rows: []*SnapshotRow{
+					{
+						Body: &SnapshotRow_Message{
+							Message: &SnapshotMessageRow{
+								UserId:       42,
+								NodeId:       "node-a",
+								Seq:          7,
+								Sender:       "orders",
+								Body:         "hello",
+								CreatedAtHlc: "1740000000000-00001-00001",
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	data, err := gproto.Marshal(envelope)
+	if err != nil {
+		t.Fatalf("marshal envelope: %v", err)
+	}
+
+	var decoded Envelope
+	if err := gproto.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal envelope: %v", err)
+	}
+
+	message := decoded.GetSnapshotChunk().GetRows()[0].GetMessage()
+	if message.GetUserId() != 42 || message.GetNodeId() != "node-a" || message.GetSeq() != 7 {
+		t.Fatalf("unexpected snapshot message identity: %+v", message)
+	}
+}

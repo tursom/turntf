@@ -54,13 +54,13 @@ type User struct {
 }
 
 type Message struct {
-	ID           int64           `json:"id"`
-	UserID       int64           `json:"user_id"`
-	Sender       string          `json:"sender"`
-	Body         string          `json:"body"`
-	Metadata     string          `json:"metadata,omitempty"`
-	CreatedAt    clock.Timestamp `json:"created_at"`
-	OriginNodeID string          `json:"origin_node_id"`
+	UserID    int64           `json:"user_id"`
+	NodeID    string          `json:"node_id"`
+	Seq       int64           `json:"seq"`
+	Sender    string          `json:"sender"`
+	Body      string          `json:"body"`
+	Metadata  string          `json:"metadata,omitempty"`
+	CreatedAt clock.Timestamp `json:"created_at"`
 }
 
 type Event struct {
@@ -175,16 +175,23 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE INDEX IF NOT EXISTS idx_users_username_deleted ON users(username, deleted_at_hlc);
 
 CREATE TABLE IF NOT EXISTS messages (
-    message_id INTEGER PRIMARY KEY,
     user_id INTEGER NOT NULL,
+    node_id TEXT NOT NULL,
+    seq INTEGER NOT NULL,
     sender TEXT NOT NULL,
     body TEXT NOT NULL,
     metadata TEXT,
     created_at_hlc TEXT NOT NULL,
-    origin_node_id TEXT NOT NULL,
-    FOREIGN KEY(user_id) REFERENCES users(user_id)
+    FOREIGN KEY(user_id) REFERENCES users(user_id),
+    PRIMARY KEY(user_id, node_id, seq)
 );
-CREATE INDEX IF NOT EXISTS idx_messages_user_created ON messages(user_id, created_at_hlc DESC, message_id DESC);
+
+CREATE TABLE IF NOT EXISTS message_cursors (
+    user_id INTEGER NOT NULL,
+    node_id TEXT NOT NULL,
+    last_seq INTEGER NOT NULL,
+    PRIMARY KEY(user_id, node_id)
+);
 
 CREATE TABLE IF NOT EXISTS event_log (
     sequence INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -230,6 +237,13 @@ CREATE TABLE IF NOT EXISTS tombstones (
 `
 	if _, err := s.db.ExecContext(ctx, schema); err != nil {
 		return fmt.Errorf("init schema: %w", err)
+	}
+
+	if _, err := s.db.ExecContext(ctx, `
+CREATE INDEX IF NOT EXISTS idx_messages_user_created ON messages(user_id, created_at_hlc DESC, node_id ASC, seq DESC);
+CREATE INDEX IF NOT EXISTS idx_messages_node ON messages(node_id, user_id, seq);
+`); err != nil {
+		return fmt.Errorf("init message indexes: %w", err)
 	}
 
 	if _, err := s.db.ExecContext(ctx, `
@@ -485,21 +499,25 @@ func (s *Store) CreateMessage(ctx context.Context, params CreateMessageParams) (
 	}
 
 	now := s.clock.Now()
+	seq, err := s.nextMessageSeqTx(ctx, tx, params.UserID, s.nodeID)
+	if err != nil {
+		return Message{}, Event{}, err
+	}
 	message := Message{
-		ID:           s.ids.Next(),
-		UserID:       params.UserID,
-		Sender:       strings.TrimSpace(params.Sender),
-		Body:         strings.TrimSpace(params.Body),
-		Metadata:     strings.TrimSpace(params.Metadata),
-		CreatedAt:    now,
-		OriginNodeID: s.nodeID,
+		UserID:    params.UserID,
+		NodeID:    s.nodeID,
+		Seq:       seq,
+		Sender:    strings.TrimSpace(params.Sender),
+		Body:      strings.TrimSpace(params.Body),
+		Metadata:  strings.TrimSpace(params.Metadata),
+		CreatedAt: now,
 	}
 
 	if _, err := tx.ExecContext(ctx, `
-INSERT INTO messages(message_id, user_id, sender, body, metadata, created_at_hlc, origin_node_id)
+INSERT INTO messages(user_id, node_id, seq, sender, body, metadata, created_at_hlc)
 VALUES(?, ?, ?, ?, ?, ?, ?)
-`, message.ID, message.UserID, message.Sender, message.Body, nullIfEmpty(message.Metadata),
-		message.CreatedAt.String(), message.OriginNodeID); err != nil {
+`, message.UserID, message.NodeID, message.Seq, message.Sender, message.Body, nullIfEmpty(message.Metadata),
+		message.CreatedAt.String()); err != nil {
 		return Message{}, Event{}, fmt.Errorf("insert message: %w", err)
 	}
 
@@ -508,7 +526,7 @@ VALUES(?, ?, ?, ?, ?, ?, ?)
 		return Message{}, Event{}, fmt.Errorf("marshal create message event: %w", err)
 	}
 
-	event, err := s.insertEvent(ctx, tx, "message.created", "message", message.ID, now, string(payload))
+	event, err := s.insertEvent(ctx, tx, "message.created", "message", message.Seq, now, string(payload))
 	if err != nil {
 		return Message{}, Event{}, err
 	}
@@ -529,10 +547,10 @@ func (s *Store) ListMessagesByUser(ctx context.Context, userID int64, limit int)
 	}
 
 	rows, err := s.db.QueryContext(ctx, `
-SELECT message_id, user_id, sender, body, COALESCE(metadata, ''), created_at_hlc, origin_node_id
+SELECT user_id, node_id, seq, sender, body, COALESCE(metadata, ''), created_at_hlc
 FROM messages
 WHERE user_id = ?
-ORDER BY created_at_hlc DESC, message_id DESC
+ORDER BY created_at_hlc DESC, node_id ASC, seq DESC
 LIMIT ?
 `, userID, limit)
 	if err != nil {
@@ -654,6 +672,57 @@ VALUES(?, ?, ?, ?, ?, ?, ?)
 		return Event{}, fmt.Errorf("read event sequence: %w", err)
 	}
 	return event, nil
+}
+
+func (s *Store) nextMessageSeqTx(ctx context.Context, tx *sql.Tx, userID int64, nodeID string) (int64, error) {
+	nodeID = strings.TrimSpace(nodeID)
+	if userID == 0 || nodeID == "" {
+		return 0, fmt.Errorf("%w: user id and node id are required for message sequence", ErrInvalidInput)
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO message_cursors(user_id, node_id, last_seq)
+VALUES(?, ?, 0)
+ON CONFLICT(user_id, node_id) DO NOTHING
+`, userID, nodeID); err != nil {
+		return 0, fmt.Errorf("initialize message cursor: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+UPDATE message_cursors
+SET last_seq = last_seq + 1
+WHERE user_id = ? AND node_id = ?
+`, userID, nodeID); err != nil {
+		return 0, fmt.Errorf("advance message cursor: %w", err)
+	}
+
+	var seq int64
+	if err := tx.QueryRowContext(ctx, `
+SELECT last_seq
+FROM message_cursors
+WHERE user_id = ? AND node_id = ?
+`, userID, nodeID).Scan(&seq); err != nil {
+		return 0, fmt.Errorf("read message cursor: %w", err)
+	}
+	return seq, nil
+}
+
+func (s *Store) recordMessageSeqTx(ctx context.Context, tx *sql.Tx, userID int64, nodeID string, seq int64) error {
+	nodeID = strings.TrimSpace(nodeID)
+	if userID == 0 || nodeID == "" || seq <= 0 {
+		return fmt.Errorf("%w: user id, node id, and seq are required for message cursor", ErrInvalidInput)
+	}
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO message_cursors(user_id, node_id, last_seq)
+VALUES(?, ?, ?)
+ON CONFLICT(user_id, node_id) DO UPDATE SET
+    last_seq = CASE
+        WHEN excluded.last_seq > message_cursors.last_seq THEN excluded.last_seq
+        ELSE message_cursors.last_seq
+    END
+`, userID, nodeID, seq); err != nil {
+		return fmt.Errorf("record message cursor: %w", err)
+	}
+	return nil
 }
 
 func activeUsernameExists(ctx context.Context, tx *sql.Tx, username string, excludeUserID int64) (bool, error) {
@@ -835,13 +904,13 @@ func scanMessage(scanner interface {
 	var createdAtRaw string
 
 	if err := scanner.Scan(
-		&message.ID,
 		&message.UserID,
+		&message.NodeID,
+		&message.Seq,
 		&message.Sender,
 		&message.Body,
 		&message.Metadata,
 		&createdAtRaw,
-		&message.OriginNodeID,
 	); err != nil {
 		return Message{}, err
 	}
@@ -900,11 +969,11 @@ func (s *Store) trimMessagesForUserTx(ctx context.Context, tx *sql.Tx, userID in
 	if _, err := tx.ExecContext(ctx, `
 DELETE FROM messages
 WHERE user_id = ?
-  AND message_id IN (
-    SELECT message_id
+  AND (node_id, seq) IN (
+    SELECT node_id, seq
     FROM messages
     WHERE user_id = ?
-    ORDER BY created_at_hlc DESC, message_id DESC
+    ORDER BY created_at_hlc DESC, node_id ASC, seq DESC
     LIMIT -1 OFFSET ?
   )
 `, userID, userID, windowSize); err != nil {

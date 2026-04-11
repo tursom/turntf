@@ -157,9 +157,9 @@ func (s *Store) ApplySnapshotChunk(ctx context.Context, chunk *clusterproto.Snap
 
 func (s *Store) buildUserSnapshotRows(ctx context.Context) ([]*clusterproto.SnapshotRow, error) {
 	rows, err := s.db.QueryContext(ctx, `
-SELECT user_id, username, password_hash, profile, created_at_hlc, updated_at_hlc,
+SELECT user_id, username, password_hash, profile, role, system_reserved, created_at_hlc, updated_at_hlc,
        deleted_at_hlc, version_username, version_password_hash, version_profile,
-       version_deleted, origin_node_id
+       version_role, version_deleted, origin_node_id
 FROM users
 ORDER BY user_id ASC
 `)
@@ -343,12 +343,15 @@ func snapshotRowFromUser(user User) *clusterproto.SnapshotRow {
 				Username:            user.Username,
 				PasswordHash:        user.PasswordHash,
 				Profile:             user.Profile,
+				Role:                user.Role,
+				SystemReserved:      user.SystemReserved,
 				CreatedAtHlc:        user.CreatedAt.String(),
 				UpdatedAtHlc:        user.UpdatedAt.String(),
 				DeletedAtHlc:        timestampSnapshotString(user.DeletedAt),
 				VersionUsername:     user.VersionUsername.String(),
 				VersionPasswordHash: user.VersionPasswordHash.String(),
 				VersionProfile:      user.VersionProfile.String(),
+				VersionRole:         user.VersionRole.String(),
 				VersionDeleted:      timestampSnapshotString(user.VersionDeleted),
 				OriginNodeId:        user.OriginNodeID,
 			},
@@ -396,17 +399,28 @@ func userFromSnapshotRow(row *clusterproto.SnapshotUserRow) (User, error) {
 	if err != nil {
 		return User{}, err
 	}
+	versionRole, err := parseRequiredTimestamp(row.VersionRole, "snapshot user version_role")
+	if err != nil {
+		return User{}, err
+	}
+	role, err := normalizeAnyRole(row.Role)
+	if err != nil {
+		return User{}, err
+	}
 
 	user := User{
 		ID:                  row.UserId,
 		Username:            row.Username,
 		PasswordHash:        row.PasswordHash,
 		Profile:             defaultJSON(row.Profile),
+		Role:                role,
+		SystemReserved:      row.SystemReserved,
 		CreatedAt:           createdAt,
 		UpdatedAt:           updatedAt,
 		VersionUsername:     versionUsername,
 		VersionPasswordHash: versionPasswordHash,
 		VersionProfile:      versionProfile,
+		VersionRole:         versionRole,
 		OriginNodeID:        row.OriginNodeId,
 	}
 	if strings.TrimSpace(row.DeletedAtHlc) != "" {
@@ -423,7 +437,7 @@ func userFromSnapshotRow(row *clusterproto.SnapshotUserRow) (User, error) {
 		}
 		user.VersionDeleted = &versionDeleted
 	}
-	return user, nil
+	return applyReplicatedBootstrapInvariant(user), nil
 }
 
 func timestampSnapshotString(ts *clock.Timestamp) string {

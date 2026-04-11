@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"notifier/internal/auth"
 	"notifier/internal/cluster"
 	"notifier/internal/store"
 )
@@ -193,6 +194,163 @@ db_path = "./data/node-a.db"
 	}
 	if !strings.Contains(err.Error(), "api.listen_addr cannot be empty") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestLoadServeRuntimeConfigRejectsMissingAuthTokenSecret(t *testing.T) {
+	t.Parallel()
+
+	configPath := filepath.Join(t.TempDir(), "missing-auth.toml")
+	if err := os.WriteFile(configPath, []byte(strings.TrimSpace(`
+[node]
+id = "node-a"
+slot = 1
+
+[api]
+listen_addr = ":8080"
+
+[store]
+db_path = "./data/node-a.db"
+
+[auth.bootstrap_admin]
+username = "root"
+password_hash = "hash-root"
+`)+"\n"), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	_, err := loadServeRuntimeConfig(configPath)
+	if err == nil || !strings.Contains(err.Error(), "auth.token_secret cannot be empty") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestLoadServeRuntimeConfigRejectsMissingBootstrapAdminConfig(t *testing.T) {
+	t.Parallel()
+
+	configPath := filepath.Join(t.TempDir(), "missing-bootstrap.toml")
+	if err := os.WriteFile(configPath, []byte(strings.TrimSpace(`
+[node]
+id = "node-a"
+slot = 1
+
+[api]
+listen_addr = ":8080"
+
+[store]
+db_path = "./data/node-a.db"
+
+[auth]
+token_secret = "token-secret"
+`)+"\n"), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	_, err := loadServeRuntimeConfig(configPath)
+	if err == nil || !strings.Contains(err.Error(), "auth.bootstrap_admin.username cannot be empty") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestLoadServeRuntimeConfigRejectsMatchingAuthAndClusterSecrets(t *testing.T) {
+	t.Parallel()
+
+	configPath := filepath.Join(t.TempDir(), "matching-secrets.toml")
+	writeTestConfig(t, configPath, `
+[node]
+id = "node-a"
+slot = 1
+
+[api]
+listen_addr = ":8080"
+
+[store]
+db_path = "./data/node-a.db"
+
+[auth]
+token_secret = "shared-secret"
+
+[auth.bootstrap_admin]
+username = "root"
+password_hash = "hash-root"
+
+[cluster]
+advertise_path = "/internal/cluster/ws"
+secret = "shared-secret"
+`)
+
+	_, err := loadServeRuntimeConfig(configPath)
+	if err == nil || !strings.Contains(err.Error(), "auth.token_secret must differ from cluster.secret") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestHashCommandPrintsBCryptHashForPasswordFlag(t *testing.T) {
+	t.Parallel()
+
+	var stdout bytes.Buffer
+	if err := runHash([]string{"-password", "secret"}, &stdout, strings.NewReader("")); err != nil {
+		t.Fatalf("run hash: %v", err)
+	}
+
+	hash := strings.TrimSpace(stdout.String())
+	if hash == "" {
+		t.Fatalf("expected hash output")
+	}
+	if err := auth.VerifyPassword(hash, "secret"); err != nil {
+		t.Fatalf("verify printed hash: %v", err)
+	}
+}
+
+func TestHashCommandPrintsBCryptHashForStdin(t *testing.T) {
+	t.Parallel()
+
+	var stdout bytes.Buffer
+	if err := runHash([]string{"-stdin"}, &stdout, strings.NewReader("secret\n")); err != nil {
+		t.Fatalf("run hash stdin: %v", err)
+	}
+
+	hash := strings.TrimSpace(stdout.String())
+	if hash == "" {
+		t.Fatalf("expected hash output")
+	}
+	if err := auth.VerifyPassword(hash, "secret"); err != nil {
+		t.Fatalf("verify printed stdin hash: %v", err)
+	}
+}
+
+func TestHashCommandRejectsEmptyPassword(t *testing.T) {
+	t.Parallel()
+
+	var stdout bytes.Buffer
+	err := runHash([]string{"-stdin"}, &stdout, strings.NewReader("\n"))
+	if err == nil || !strings.Contains(err.Error(), "password cannot be empty") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestLoadServeRuntimeConfigUsesDefaultAuthTokenTTL(t *testing.T) {
+	t.Parallel()
+
+	configPath := filepath.Join(t.TempDir(), "default-auth-ttl.toml")
+	writeTestConfig(t, configPath, `
+[node]
+id = "node-a"
+slot = 1
+
+[api]
+listen_addr = ":8080"
+
+[store]
+db_path = "./data/node-a.db"
+`)
+
+	cfg, err := loadServeRuntimeConfig(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if cfg.Auth.TokenTTLMinutes != 1440 {
+		t.Fatalf("unexpected default auth ttl: %d", cfg.Auth.TokenTTLMinutes)
 	}
 }
 
@@ -435,7 +593,19 @@ func TestServeHandlerMountsClusterRouteOnAPIListener(t *testing.T) {
 
 func writeTestConfig(t *testing.T, path, body string) {
 	t.Helper()
-	if err := os.WriteFile(path, []byte(strings.TrimSpace(body)+"\n"), 0o644); err != nil {
+	config := strings.TrimSpace(body)
+	if !strings.Contains(config, "[auth]") {
+		config += `
+
+[auth]
+token_secret = "token-secret"
+
+[auth.bootstrap_admin]
+username = "root"
+password_hash = "hash-root"
+`
+	}
+	if err := os.WriteFile(path, []byte(config+"\n"), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 }

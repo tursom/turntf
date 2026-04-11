@@ -77,6 +77,10 @@ func (s *Service) GetUser(ctx context.Context, userID int64) (store.User, error)
 	return s.store.GetUser(ctx, userID)
 }
 
+func (s *Service) AuthenticateUser(ctx context.Context, userID int64, password string) (store.User, error) {
+	return s.store.AuthenticateUser(ctx, userID, password)
+}
+
 func (s *Service) ListUsers(ctx context.Context) ([]store.User, error) {
 	return s.store.ListUsers(ctx)
 }

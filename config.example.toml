@@ -9,6 +9,14 @@ listen_addr = ":8080"
 db_path = "./data/node-a.db"
 message_window_size = 500
 
+[auth]
+token_secret = "replace-me"
+token_ttl_minutes = 1440
+
+[auth.bootstrap_admin]
+username = "root"
+password_hash = "$2a$10$1gGoT/pdOu8vX1W28skBPOB7ICjISmVgt9lMyZf9c6re6cMHU6mAa"
+
 [cluster]
 advertise_path = "/internal/cluster/ws"
 secret = "secret"

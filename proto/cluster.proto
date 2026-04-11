@@ -93,12 +93,15 @@ message SnapshotUserRow {
   string username = 2;
   string password_hash = 3;
   string profile = 4;
+  string role = 13;
+  bool system_reserved = 14;
   string created_at_hlc = 5;
   string updated_at_hlc = 6;
   string deleted_at_hlc = 7;
   string version_username = 8;
   string version_password_hash = 9;
   string version_profile = 10;
+  string version_role = 15;
   string version_deleted = 11;
   string origin_node_id = 12;
 }

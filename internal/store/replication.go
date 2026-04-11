@@ -17,11 +17,14 @@ type replicatedUserPayload struct {
 	Username            string `json:"username"`
 	PasswordHash        string `json:"password_hash"`
 	Profile             string `json:"profile"`
+	Role                string `json:"role"`
+	SystemReserved      bool   `json:"system_reserved"`
 	CreatedAt           string `json:"created_at"`
 	UpdatedAt           string `json:"updated_at"`
 	VersionUsername     string `json:"version_username"`
 	VersionPasswordHash string `json:"version_password_hash"`
 	VersionProfile      string `json:"version_profile"`
+	VersionRole         string `json:"version_role"`
 	VersionDeleted      string `json:"version_deleted,omitempty"`
 	DeletedAt           string `json:"deleted_at,omitempty"`
 	OriginNodeID        string `json:"origin_node_id"`
@@ -57,11 +60,14 @@ func encodeCreateUserPayload(user User) (string, error) {
 			Username:            user.Username,
 			PasswordHash:        user.PasswordHash,
 			Profile:             user.Profile,
+			Role:                user.Role,
+			SystemReserved:      user.SystemReserved,
 			CreatedAt:           user.CreatedAt.String(),
 			UpdatedAt:           user.UpdatedAt.String(),
 			VersionUsername:     user.VersionUsername.String(),
 			VersionPasswordHash: user.VersionPasswordHash.String(),
 			VersionProfile:      user.VersionProfile.String(),
+			VersionRole:         user.VersionRole.String(),
 			OriginNodeID:        user.OriginNodeID,
 		},
 	})
@@ -73,11 +79,14 @@ func encodeUpdateUserPayload(user User) (string, error) {
 		Username:            user.Username,
 		PasswordHash:        user.PasswordHash,
 		Profile:             user.Profile,
+		Role:                user.Role,
+		SystemReserved:      user.SystemReserved,
 		CreatedAt:           user.CreatedAt.String(),
 		UpdatedAt:           user.UpdatedAt.String(),
 		VersionUsername:     user.VersionUsername.String(),
 		VersionPasswordHash: user.VersionPasswordHash.String(),
 		VersionProfile:      user.VersionProfile.String(),
+		VersionRole:         user.VersionRole.String(),
 		OriginNodeID:        user.OriginNodeID,
 	}
 	if user.VersionDeleted != nil {
@@ -287,9 +296,9 @@ func (s *Store) isEventAppliedTx(ctx context.Context, tx *sql.Tx, eventID int64)
 
 func (s *Store) getUserByIDTx(ctx context.Context, tx *sql.Tx, userID int64, includeDeleted bool) (User, error) {
 	query := `
-SELECT user_id, username, password_hash, profile, created_at_hlc, updated_at_hlc,
+SELECT user_id, username, password_hash, profile, role, system_reserved, created_at_hlc, updated_at_hlc,
        deleted_at_hlc, version_username, version_password_hash, version_profile,
-       version_deleted, origin_node_id
+       version_role, version_deleted, origin_node_id
 FROM users
 WHERE user_id = ?`
 	if !includeDeleted {
@@ -353,19 +362,31 @@ func decodeReplicatedUser(userPayload []byte, kind string) (User, error) {
 	if err != nil {
 		return User{}, err
 	}
+	versionRole, err := parseRequiredTimestamp(payload.VersionRole, "user version_role")
+	if err != nil {
+		return User{}, err
+	}
+	role, err := normalizeAnyRole(payload.Role)
+	if err != nil {
+		return User{}, err
+	}
 
 	user := User{
 		ID:                  payload.ID,
 		Username:            payload.Username,
 		PasswordHash:        payload.PasswordHash,
 		Profile:             defaultJSON(payload.Profile),
+		Role:                role,
+		SystemReserved:      payload.SystemReserved,
 		CreatedAt:           createdAt,
 		UpdatedAt:           updatedAt,
 		VersionUsername:     versionUsername,
 		VersionPasswordHash: versionPasswordHash,
 		VersionProfile:      versionProfile,
+		VersionRole:         versionRole,
 		OriginNodeID:        payload.OriginNodeID,
 	}
+	user = applyReplicatedBootstrapInvariant(user)
 
 	if strings.TrimSpace(payload.VersionDeleted) != "" {
 		parsed, err := parseRequiredTimestamp(payload.VersionDeleted, "user version_deleted")
@@ -403,15 +424,17 @@ func (s *Store) applyReplicatedUserUpsert(ctx context.Context, tx *sql.Tx, event
 		incoming.UpdatedAt = latestUserVersion(incoming)
 		if _, err := tx.ExecContext(ctx, `
 INSERT INTO users(
-    user_id, username, password_hash, profile, created_at_hlc, updated_at_hlc,
+    user_id, username, password_hash, profile, role, system_reserved, created_at_hlc, updated_at_hlc,
     deleted_at_hlc, version_username, version_password_hash, version_profile,
-    version_deleted, origin_node_id
+    version_role, version_deleted, origin_node_id
 )
-VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-`, incoming.ID, incoming.Username, incoming.PasswordHash, defaultJSON(incoming.Profile),
-			incoming.CreatedAt.String(), incoming.UpdatedAt.String(), nullableTimestampString(incoming.DeletedAt),
-			incoming.VersionUsername.String(), incoming.VersionPasswordHash.String(), incoming.VersionProfile.String(),
-			nullableTimestampString(incoming.VersionDeleted), incoming.OriginNodeID); err != nil {
+VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`, incoming.ID, incoming.Username, incoming.PasswordHash, defaultJSON(incoming.Profile), incoming.Role,
+			boolToInt(incoming.SystemReserved), incoming.CreatedAt.String(), incoming.UpdatedAt.String(),
+			nullableTimestampString(incoming.DeletedAt), incoming.VersionUsername.String(),
+			incoming.VersionPasswordHash.String(), incoming.VersionProfile.String(),
+			incoming.VersionRole.String(), nullableTimestampString(incoming.VersionDeleted),
+			incoming.OriginNodeID); err != nil {
 			return fmt.Errorf("insert replicated user: %w", err)
 		}
 		return nil
@@ -424,14 +447,15 @@ VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	}
 
 	merged := mergeReplicatedUser(current, incoming)
+	merged = s.applyReservedUserInvariants(merged)
 	if _, err := tx.ExecContext(ctx, `
 UPDATE users
-SET username = ?, password_hash = ?, profile = ?, updated_at_hlc = ?,
-    version_username = ?, version_password_hash = ?, version_profile = ?
+SET username = ?, password_hash = ?, profile = ?, role = ?, system_reserved = ?, updated_at_hlc = ?,
+    version_username = ?, version_password_hash = ?, version_profile = ?, version_role = ?
 WHERE user_id = ?
-`, merged.Username, merged.PasswordHash, defaultJSON(merged.Profile), merged.UpdatedAt.String(),
-		merged.VersionUsername.String(), merged.VersionPasswordHash.String(),
-		merged.VersionProfile.String(), merged.ID); err != nil {
+`, merged.Username, merged.PasswordHash, defaultJSON(merged.Profile), merged.Role, boolToInt(merged.SystemReserved),
+		merged.UpdatedAt.String(), merged.VersionUsername.String(), merged.VersionPasswordHash.String(),
+		merged.VersionProfile.String(), merged.VersionRole.String(), merged.ID); err != nil {
 		return fmt.Errorf("update replicated user: %w", err)
 	}
 	return nil
@@ -452,6 +476,13 @@ func mergeReplicatedUser(current, incoming User) User {
 		merged.Profile = defaultJSON(incoming.Profile)
 		merged.VersionProfile = incoming.VersionProfile
 	}
+	if incoming.VersionRole.Compare(current.VersionRole) > 0 {
+		merged.Role = incoming.Role
+		merged.VersionRole = incoming.VersionRole
+	}
+	if current.SystemReserved || incoming.SystemReserved {
+		merged.SystemReserved = true
+	}
 
 	merged.UpdatedAt = latestUserVersion(merged)
 	return merged
@@ -465,10 +496,23 @@ func latestUserVersion(user User) clock.Timestamp {
 	if user.VersionProfile.Compare(latest) > 0 {
 		latest = user.VersionProfile
 	}
+	if user.VersionRole.Compare(latest) > 0 {
+		latest = user.VersionRole
+	}
 	if user.VersionDeleted != nil && user.VersionDeleted.Compare(latest) > 0 {
 		latest = *user.VersionDeleted
 	}
 	return latest
+}
+
+func applyReplicatedBootstrapInvariant(user User) User {
+	if user.ID != BootstrapAdminUserID {
+		user.SystemReserved = false
+		return user
+	}
+	user.Role = RoleSuperAdmin
+	user.SystemReserved = true
+	return user
 }
 
 func nullableTimestampString(ts *clock.Timestamp) any {

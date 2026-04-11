@@ -11,16 +11,26 @@ import (
 
 	_ "github.com/mattn/go-sqlite3"
 
+	"notifier/internal/auth"
 	"notifier/internal/clock"
 )
 
 var (
 	ErrConflict     = errors.New("conflict")
+	ErrForbidden    = errors.New("forbidden")
 	ErrNotFound     = errors.New("not found")
 	ErrInvalidInput = errors.New("invalid input")
 )
 
 const DefaultMessageWindowSize = 500
+
+const (
+	RoleSuperAdmin       = "super_admin"
+	RoleAdmin            = "admin"
+	RoleUser             = "user"
+	BootstrapAdminUserID = int64(1)
+	defaultSchemaVersion = "2"
+)
 
 type Options struct {
 	NodeID            string
@@ -36,6 +46,7 @@ type Store struct {
 	ids               *clock.IDGenerator
 	nodeSlot          uint16
 	messageWindowSize int
+	bootstrapAdmin    BootstrapAdminConfig
 }
 
 type User struct {
@@ -43,12 +54,15 @@ type User struct {
 	Username            string           `json:"username"`
 	PasswordHash        string           `json:"password_hash"`
 	Profile             string           `json:"profile"`
+	Role                string           `json:"role"`
+	SystemReserved      bool             `json:"system_reserved"`
 	CreatedAt           clock.Timestamp  `json:"created_at"`
 	UpdatedAt           clock.Timestamp  `json:"updated_at"`
 	DeletedAt           *clock.Timestamp `json:"deleted_at,omitempty"`
 	VersionUsername     clock.Timestamp  `json:"version_username"`
 	VersionPasswordHash clock.Timestamp  `json:"version_password_hash"`
 	VersionProfile      clock.Timestamp  `json:"version_profile"`
+	VersionRole         clock.Timestamp  `json:"version_role"`
 	VersionDeleted      *clock.Timestamp `json:"version_deleted,omitempty"`
 	OriginNodeID        string           `json:"origin_node_id"`
 }
@@ -85,6 +99,7 @@ type CreateUserParams struct {
 	Username     string
 	PasswordHash string
 	Profile      string
+	Role         string
 }
 
 type UpdateUserParams struct {
@@ -92,6 +107,7 @@ type UpdateUserParams struct {
 	Username     *string
 	PasswordHash *string
 	Profile      *string
+	Role         *string
 }
 
 type CreateMessageParams struct {
@@ -99,6 +115,11 @@ type CreateMessageParams struct {
 	Sender   string
 	Body     string
 	Metadata string
+}
+
+type BootstrapAdminConfig struct {
+	Username     string
+	PasswordHash string
 }
 
 func Open(dbPath string, opts Options) (*Store, error) {
@@ -163,12 +184,15 @@ CREATE TABLE IF NOT EXISTS users (
     username TEXT NOT NULL,
     password_hash TEXT NOT NULL,
     profile TEXT NOT NULL DEFAULT '{}',
+    role TEXT NOT NULL DEFAULT 'user',
+    system_reserved INTEGER NOT NULL DEFAULT 0,
     created_at_hlc TEXT NOT NULL,
     updated_at_hlc TEXT NOT NULL,
     deleted_at_hlc TEXT,
     version_username TEXT NOT NULL,
     version_password_hash TEXT NOT NULL,
     version_profile TEXT NOT NULL,
+    version_role TEXT NOT NULL,
     version_deleted TEXT,
     origin_node_id TEXT NOT NULL
 );
@@ -248,9 +272,9 @@ CREATE INDEX IF NOT EXISTS idx_messages_node ON messages(node_id, user_id, seq);
 
 	if _, err := s.db.ExecContext(ctx, `
 INSERT INTO schema_meta(key, value)
-VALUES('schema_version', '1')
+VALUES('schema_version', ?)
 ON CONFLICT(key) DO UPDATE SET value = excluded.value
-`); err != nil {
+`, defaultSchemaVersion); err != nil {
 		return fmt.Errorf("store schema version: %w", err)
 	}
 	return nil
@@ -269,6 +293,10 @@ func (s *Store) CreateUser(ctx context.Context, params CreateUserParams) (User, 
 	if profile == "" {
 		profile = "{}"
 	}
+	role, err := normalizeMutableRole(params.Role)
+	if err != nil {
+		return User{}, Event{}, err
+	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -282,24 +310,28 @@ func (s *Store) CreateUser(ctx context.Context, params CreateUserParams) (User, 
 		Username:            username,
 		PasswordHash:        params.PasswordHash,
 		Profile:             profile,
+		Role:                role,
+		SystemReserved:      false,
 		CreatedAt:           now,
 		UpdatedAt:           now,
 		VersionUsername:     now,
 		VersionPasswordHash: now,
 		VersionProfile:      now,
+		VersionRole:         now,
 		OriginNodeID:        s.nodeID,
 	}
 
 	if _, err := tx.ExecContext(ctx, `
 INSERT INTO users(
-    user_id, username, password_hash, profile, created_at_hlc, updated_at_hlc,
+    user_id, username, password_hash, profile, role, system_reserved, created_at_hlc, updated_at_hlc,
     deleted_at_hlc, version_username, version_password_hash, version_profile,
-    version_deleted, origin_node_id
+    version_role, version_deleted, origin_node_id
 )
-VALUES(?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, NULL, ?)
-`, user.ID, user.Username, user.PasswordHash, user.Profile, user.CreatedAt.String(),
-		user.UpdatedAt.String(), user.VersionUsername.String(), user.VersionPasswordHash.String(),
-		user.VersionProfile.String(), user.OriginNodeID); err != nil {
+VALUES(?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, NULL, ?)
+`, user.ID, user.Username, user.PasswordHash, user.Profile, user.Role, boolToInt(user.SystemReserved),
+		user.CreatedAt.String(), user.UpdatedAt.String(), user.VersionUsername.String(),
+		user.VersionPasswordHash.String(), user.VersionProfile.String(), user.VersionRole.String(),
+		user.OriginNodeID); err != nil {
 		return User{}, Event{}, fmt.Errorf("insert user: %w", err)
 	}
 
@@ -323,7 +355,7 @@ func (s *Store) UpdateUser(ctx context.Context, params UpdateUserParams) (User, 
 	if params.UserID == 0 {
 		return User{}, Event{}, fmt.Errorf("%w: user id cannot be empty", ErrInvalidInput)
 	}
-	if params.Username == nil && params.PasswordHash == nil && params.Profile == nil {
+	if params.Username == nil && params.PasswordHash == nil && params.Profile == nil && params.Role == nil {
 		return User{}, Event{}, fmt.Errorf("%w: at least one field must be updated", ErrInvalidInput)
 	}
 
@@ -342,6 +374,9 @@ func (s *Store) UpdateUser(ctx context.Context, params UpdateUserParams) (User, 
 	changed := false
 
 	if params.Username != nil {
+		if current.isProtectedBootstrapAdmin() {
+			return User{}, Event{}, fmt.Errorf("%w: bootstrap admin username cannot be changed", ErrForbidden)
+		}
 		nextUsername := strings.TrimSpace(*params.Username)
 		if nextUsername == "" {
 			return User{}, Event{}, fmt.Errorf("%w: username cannot be empty", ErrInvalidInput)
@@ -376,20 +411,35 @@ func (s *Store) UpdateUser(ctx context.Context, params UpdateUserParams) (User, 
 			changed = true
 		}
 	}
+	if params.Role != nil {
+		if current.isProtectedBootstrapAdmin() {
+			return User{}, Event{}, fmt.Errorf("%w: bootstrap admin role cannot be changed", ErrForbidden)
+		}
+		nextRole, err := normalizeMutableRole(*params.Role)
+		if err != nil {
+			return User{}, Event{}, err
+		}
+		if nextRole != current.Role {
+			current.Role = nextRole
+			current.VersionRole = now
+			changed = true
+		}
+	}
 
 	if !changed {
 		return current, Event{}, fmt.Errorf("%w: no changes detected", ErrInvalidInput)
 	}
 	current.UpdatedAt = now
+	current = s.applyReservedUserInvariants(current)
 
 	if _, err := tx.ExecContext(ctx, `
 UPDATE users
-SET username = ?, password_hash = ?, profile = ?, updated_at_hlc = ?,
-    version_username = ?, version_password_hash = ?, version_profile = ?
+SET username = ?, password_hash = ?, profile = ?, role = ?, system_reserved = ?, updated_at_hlc = ?,
+    version_username = ?, version_password_hash = ?, version_profile = ?, version_role = ?
 WHERE user_id = ? AND deleted_at_hlc IS NULL
-`, current.Username, current.PasswordHash, current.Profile, current.UpdatedAt.String(),
-		current.VersionUsername.String(), current.VersionPasswordHash.String(),
-		current.VersionProfile.String(), current.ID); err != nil {
+`, current.Username, current.PasswordHash, current.Profile, current.Role, boolToInt(current.SystemReserved),
+		current.UpdatedAt.String(), current.VersionUsername.String(), current.VersionPasswordHash.String(),
+		current.VersionProfile.String(), current.VersionRole.String(), current.ID); err != nil {
 		return User{}, Event{}, fmt.Errorf("update user: %w", err)
 	}
 
@@ -420,8 +470,12 @@ func (s *Store) DeleteUser(ctx context.Context, userID int64) (Event, error) {
 	}
 	defer tx.Rollback()
 
-	if _, err := s.getUserTx(ctx, tx, userID, false); err != nil {
+	user, err := s.getUserTx(ctx, tx, userID, false)
+	if err != nil {
 		return Event{}, err
+	}
+	if user.isProtectedBootstrapAdmin() {
+		return Event{}, fmt.Errorf("%w: bootstrap admin cannot be deleted", ErrForbidden)
 	}
 
 	now := s.clock.Now()
@@ -451,9 +505,9 @@ func (s *Store) GetUser(ctx context.Context, userID int64) (User, error) {
 
 func (s *Store) ListUsers(ctx context.Context) ([]User, error) {
 	rows, err := s.db.QueryContext(ctx, `
-SELECT user_id, username, password_hash, profile, created_at_hlc, updated_at_hlc,
+SELECT user_id, username, password_hash, profile, role, system_reserved, created_at_hlc, updated_at_hlc,
        deleted_at_hlc, version_username, version_password_hash, version_profile,
-       version_deleted, origin_node_id
+       version_role, version_deleted, origin_node_id
 FROM users
 WHERE deleted_at_hlc IS NULL
 ORDER BY user_id ASC
@@ -605,9 +659,9 @@ LIMIT ?
 
 func (s *Store) getUser(ctx context.Context, userID int64, includeDeleted bool) (User, error) {
 	query := `
-SELECT user_id, username, password_hash, profile, created_at_hlc, updated_at_hlc,
+SELECT user_id, username, password_hash, profile, role, system_reserved, created_at_hlc, updated_at_hlc,
        deleted_at_hlc, version_username, version_password_hash, version_profile,
-       version_deleted, origin_node_id
+       version_role, version_deleted, origin_node_id
 FROM users
 WHERE user_id = ?`
 	if !includeDeleted {
@@ -627,9 +681,9 @@ WHERE user_id = ?`
 
 func (s *Store) getUserTx(ctx context.Context, tx *sql.Tx, userID int64, includeDeleted bool) (User, error) {
 	query := `
-SELECT user_id, username, password_hash, profile, created_at_hlc, updated_at_hlc,
+SELECT user_id, username, password_hash, profile, role, system_reserved, created_at_hlc, updated_at_hlc,
        deleted_at_hlc, version_username, version_password_hash, version_profile,
-       version_deleted, origin_node_id
+       version_role, version_deleted, origin_node_id
 FROM users
 WHERE user_id = ?`
 	if !includeDeleted {
@@ -800,6 +854,12 @@ func (s *Store) applyUserDeleteTx(ctx context.Context, tx *sql.Tx, userID int64,
 	}
 
 	if err == nil {
+		if user.isProtectedBootstrapAdmin() {
+			if requireActive {
+				return fmt.Errorf("%w: bootstrap admin cannot be deleted", ErrForbidden)
+			}
+			return nil
+		}
 		if requireActive && user.DeletedAt != nil {
 			return ErrNotFound
 		}
@@ -834,12 +894,14 @@ func scanUser(scanner interface {
 	Scan(dest ...any) error
 }) (User, error) {
 	var user User
+	var systemReserved int
 	var createdAtRaw string
 	var updatedAtRaw string
 	var deletedAtRaw sql.NullString
 	var versionUsernameRaw string
 	var versionPasswordRaw string
 	var versionProfileRaw string
+	var versionRoleRaw string
 	var versionDeletedRaw sql.NullString
 
 	if err := scanner.Scan(
@@ -847,12 +909,15 @@ func scanUser(scanner interface {
 		&user.Username,
 		&user.PasswordHash,
 		&user.Profile,
+		&user.Role,
+		&systemReserved,
 		&createdAtRaw,
 		&updatedAtRaw,
 		&deletedAtRaw,
 		&versionUsernameRaw,
 		&versionPasswordRaw,
 		&versionProfileRaw,
+		&versionRoleRaw,
 		&versionDeletedRaw,
 		&user.OriginNodeID,
 	); err != nil {
@@ -880,6 +945,10 @@ func scanUser(scanner interface {
 	if err != nil {
 		return User{}, fmt.Errorf("parse user version_profile: %w", err)
 	}
+	user.VersionRole, err = clock.ParseTimestamp(versionRoleRaw)
+	if err != nil {
+		return User{}, fmt.Errorf("parse user version_role: %w", err)
+	}
 	if deletedAtRaw.Valid {
 		parsed, err := clock.ParseTimestamp(deletedAtRaw.String)
 		if err != nil {
@@ -894,6 +963,7 @@ func scanUser(scanner interface {
 		}
 		user.VersionDeleted = &parsed
 	}
+	user.SystemReserved = systemReserved != 0
 	return user, nil
 }
 
@@ -962,6 +1032,185 @@ func normalizeMessageWindowSize(size int) int {
 		return DefaultMessageWindowSize
 	}
 	return size
+}
+
+func (s *Store) AuthenticateUser(ctx context.Context, userID int64, password string) (User, error) {
+	if userID == 0 {
+		return User{}, fmt.Errorf("%w: user id cannot be empty", ErrInvalidInput)
+	}
+	if strings.TrimSpace(password) == "" {
+		return User{}, fmt.Errorf("%w: password cannot be empty", ErrInvalidInput)
+	}
+	user, err := s.GetUser(ctx, userID)
+	if err != nil {
+		return User{}, err
+	}
+	if err := auth.VerifyPassword(user.PasswordHash, password); err != nil {
+		return User{}, ErrNotFound
+	}
+	return user, nil
+}
+
+func (s *Store) EnsureBootstrapAdmin(ctx context.Context, cfg BootstrapAdminConfig) error {
+	username := strings.TrimSpace(cfg.Username)
+	passwordHash := strings.TrimSpace(cfg.PasswordHash)
+	if username == "" {
+		return fmt.Errorf("%w: bootstrap admin username cannot be empty", ErrInvalidInput)
+	}
+	if passwordHash == "" {
+		return fmt.Errorf("%w: bootstrap admin password hash cannot be empty", ErrInvalidInput)
+	}
+	s.bootstrapAdmin = BootstrapAdminConfig{Username: username, PasswordHash: passwordHash}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin ensure bootstrap admin: %w", err)
+	}
+	defer tx.Rollback()
+
+	now := s.clock.Now()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM tombstones WHERE entity_type = 'user' AND entity_id = ?`, BootstrapAdminUserID); err != nil {
+		return fmt.Errorf("delete bootstrap admin tombstone: %w", err)
+	}
+
+	current, err := s.getUserTx(ctx, tx, BootstrapAdminUserID, true)
+	switch {
+	case errors.Is(err, ErrNotFound):
+		user := User{
+			ID:                  BootstrapAdminUserID,
+			Username:            username,
+			PasswordHash:        passwordHash,
+			Profile:             "{}",
+			Role:                RoleSuperAdmin,
+			SystemReserved:      true,
+			CreatedAt:           now,
+			UpdatedAt:           now,
+			VersionUsername:     now,
+			VersionPasswordHash: now,
+			VersionProfile:      now,
+			VersionRole:         now,
+			OriginNodeID:        s.nodeID,
+		}
+		if _, err := tx.ExecContext(ctx, `
+INSERT INTO users(
+    user_id, username, password_hash, profile, role, system_reserved, created_at_hlc, updated_at_hlc,
+    deleted_at_hlc, version_username, version_password_hash, version_profile,
+    version_role, version_deleted, origin_node_id
+)
+VALUES(?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, NULL, ?)
+`, user.ID, user.Username, user.PasswordHash, user.Profile, user.Role, boolToInt(user.SystemReserved),
+			user.CreatedAt.String(), user.UpdatedAt.String(), user.VersionUsername.String(),
+			user.VersionPasswordHash.String(), user.VersionProfile.String(), user.VersionRole.String(),
+			user.OriginNodeID); err != nil {
+			return fmt.Errorf("insert bootstrap admin: %w", err)
+		}
+		payload, err := encodeCreateUserPayload(user)
+		if err != nil {
+			return fmt.Errorf("marshal bootstrap admin create event: %w", err)
+		}
+		if _, err := s.insertEvent(ctx, tx, "user.created", "user", user.ID, now, payload); err != nil {
+			return err
+		}
+	case err != nil:
+		return err
+	default:
+		updated := current
+		changed := false
+		if updated.Username != username {
+			updated.Username = username
+			updated.VersionUsername = now
+			changed = true
+		}
+		if updated.DeletedAt != nil || updated.VersionDeleted != nil {
+			updated.DeletedAt = nil
+			updated.VersionDeleted = nil
+			changed = true
+		}
+		if updated.Role != RoleSuperAdmin {
+			updated.Role = RoleSuperAdmin
+			updated.VersionRole = now
+			changed = true
+		}
+		if !updated.SystemReserved {
+			updated.SystemReserved = true
+			changed = true
+		}
+		if changed {
+			updated.UpdatedAt = latestUserVersion(updated)
+			if _, err := tx.ExecContext(ctx, `
+UPDATE users
+SET username = ?, password_hash = ?, profile = ?, role = ?, system_reserved = ?, created_at_hlc = ?, updated_at_hlc = ?,
+    deleted_at_hlc = NULL, version_username = ?, version_password_hash = ?, version_profile = ?,
+    version_role = ?, version_deleted = NULL, origin_node_id = ?
+WHERE user_id = ?
+`, updated.Username, updated.PasswordHash, updated.Profile, updated.Role, boolToInt(updated.SystemReserved),
+				updated.CreatedAt.String(), updated.UpdatedAt.String(), updated.VersionUsername.String(),
+				updated.VersionPasswordHash.String(), updated.VersionProfile.String(), updated.VersionRole.String(),
+				updated.OriginNodeID, updated.ID); err != nil {
+				return fmt.Errorf("repair bootstrap admin: %w", err)
+			}
+			payload, err := encodeUpdateUserPayload(updated)
+			if err != nil {
+				return fmt.Errorf("marshal bootstrap admin update event: %w", err)
+			}
+			if _, err := s.insertEvent(ctx, tx, "user.updated", "user", updated.ID, updated.UpdatedAt, payload); err != nil {
+				return err
+			}
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit ensure bootstrap admin: %w", err)
+	}
+	return nil
+}
+
+func normalizeAnyRole(role string) (string, error) {
+	normalized := strings.TrimSpace(role)
+	if normalized == "" {
+		return RoleUser, nil
+	}
+	switch normalized {
+	case RoleSuperAdmin, RoleAdmin, RoleUser:
+		return normalized, nil
+	default:
+		return "", fmt.Errorf("%w: unsupported role %q", ErrInvalidInput, role)
+	}
+}
+
+func normalizeMutableRole(role string) (string, error) {
+	normalized, err := normalizeAnyRole(role)
+	if err != nil {
+		return "", err
+	}
+	if normalized == RoleSuperAdmin {
+		return "", fmt.Errorf("%w: role %q cannot be assigned through this API", ErrInvalidInput, role)
+	}
+	return normalized, nil
+}
+
+func (s *Store) applyReservedUserInvariants(user User) User {
+	if user.ID != BootstrapAdminUserID {
+		user.SystemReserved = false
+		return user
+	}
+	user.Role = RoleSuperAdmin
+	user.SystemReserved = true
+	if configured := strings.TrimSpace(s.bootstrapAdmin.Username); configured != "" {
+		user.Username = configured
+	}
+	return user
+}
+
+func (u User) isProtectedBootstrapAdmin() bool {
+	return u.ID == BootstrapAdminUserID && u.SystemReserved
+}
+
+func boolToInt(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
 }
 
 func (s *Store) trimMessagesForUserTx(ctx context.Context, tx *sql.Tx, userID int64) error {

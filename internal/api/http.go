@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,26 +10,39 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"notifier/internal/app"
+	"notifier/internal/auth"
 	"notifier/internal/store"
 )
 
 type HTTP struct {
-	service *Service
-	mux     *http.ServeMux
+	service  *Service
+	mux      *http.ServeMux
+	nodeID   string
+	signer   *auth.Signer
+	tokenTTL time.Duration
+}
+
+type HTTPOptions struct {
+	NodeID   string
+	Signer   *auth.Signer
+	TokenTTL time.Duration
 }
 
 type createUserRequest struct {
-	Username     string          `json:"username"`
-	PasswordHash string          `json:"password_hash"`
-	Profile      json.RawMessage `json:"profile,omitempty"`
+	Username string          `json:"username"`
+	Password string          `json:"password"`
+	Profile  json.RawMessage `json:"profile,omitempty"`
+	Role     string          `json:"role,omitempty"`
 }
 
 type updateUserRequest struct {
-	Username     *string          `json:"username,omitempty"`
-	PasswordHash *string          `json:"password_hash,omitempty"`
-	Profile      *json.RawMessage `json:"profile,omitempty"`
+	Username *string          `json:"username,omitempty"`
+	Password *string          `json:"password,omitempty"`
+	Profile  *json.RawMessage `json:"profile,omitempty"`
+	Role     *string          `json:"role,omitempty"`
 }
 
 type createMessageRequest struct {
@@ -38,10 +52,31 @@ type createMessageRequest struct {
 	Metadata json.RawMessage `json:"metadata,omitempty"`
 }
 
-func NewHTTP(service *Service) *HTTP {
+type loginRequest struct {
+	UserID   int64  `json:"user_id"`
+	Password string `json:"password"`
+}
+
+type requestPrincipal struct {
+	User   store.User
+	Claims auth.Claims
+}
+
+func NewHTTP(service *Service, opts ...HTTPOptions) *HTTP {
+	var resolved HTTPOptions
+	if len(opts) > 0 {
+		resolved = opts[0]
+	}
+	tokenTTL := resolved.TokenTTL
+	if tokenTTL <= 0 {
+		tokenTTL = 24 * time.Hour
+	}
 	h := &HTTP{
-		service: service,
-		mux:     http.NewServeMux(),
+		service:  service,
+		mux:      http.NewServeMux(),
+		nodeID:   strings.TrimSpace(resolved.NodeID),
+		signer:   resolved.Signer,
+		tokenTTL: tokenTTL,
 	}
 	h.routes()
 	return h
@@ -53,6 +88,7 @@ func (h *HTTP) Handler() http.Handler {
 
 func (h *HTTP) routes() {
 	h.mux.HandleFunc("GET /healthz", h.handleHealth)
+	h.mux.HandleFunc("POST /auth/login", h.handleLogin)
 	h.mux.HandleFunc("POST /users", h.handleCreateUser)
 	h.mux.HandleFunc("GET /users/{id}", h.handleGetUser)
 	h.mux.HandleFunc("PATCH /users/{id}", h.handleUpdateUser)
@@ -66,7 +102,56 @@ func (h *HTTP) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
+func (h *HTTP) handleLogin(w http.ResponseWriter, r *http.Request) {
+	if h.signer == nil {
+		writeError(w, http.StatusServiceUnavailable, "authentication is not configured")
+		return
+	}
+
+	var req loginRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	user, err := h.service.AuthenticateUser(r.Context(), req.UserID, req.Password)
+	if err != nil {
+		if errors.Is(err, store.ErrInvalidInput) {
+			writeStoreError(w, err)
+			return
+		}
+		writeError(w, http.StatusUnauthorized, "invalid credentials")
+		return
+	}
+
+	now := time.Now().UTC()
+	expiresAt := now.Add(h.tokenTTL)
+	token, err := h.signer.Sign(auth.Claims{
+		Subject:   strconv.FormatInt(user.ID, 10),
+		Issuer:    h.nodeID,
+		IssuedAt:  now.Unix(),
+		ExpiresAt: expiresAt.Unix(),
+		Metadata: map[string]string{
+			"role": user.Role,
+		},
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to sign token")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"token":      token,
+		"expires_at": expiresAt.Format(time.RFC3339),
+		"user":       userResponseFromStore(user),
+	})
+}
+
 func (h *HTTP) handleCreateUser(w http.ResponseWriter, r *http.Request) {
+	if _, ok := h.requireAdmin(w, r); !ok {
+		return
+	}
+
 	var req createUserRequest
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -78,11 +163,17 @@ func (h *HTTP) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "profile must be valid JSON")
 		return
 	}
+	passwordHash, err := auth.HashPassword(req.Password)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 
 	user, _, err := h.service.CreateUser(r.Context(), store.CreateUserParams{
 		Username:     req.Username,
-		PasswordHash: req.PasswordHash,
+		PasswordHash: passwordHash,
 		Profile:      profile,
+		Role:         req.Role,
 	})
 	if err != nil {
 		writeStoreError(w, err)
@@ -95,6 +186,9 @@ func (h *HTTP) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 func (h *HTTP) handleGetUser(w http.ResponseWriter, r *http.Request) {
 	userID, ok := parsePathID(w, r)
 	if !ok {
+		return
+	}
+	if _, ok := h.requireSelfOrAdmin(w, r, userID); !ok {
 		return
 	}
 
@@ -112,6 +206,9 @@ func (h *HTTP) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if _, ok := h.requireAdmin(w, r); !ok {
+		return
+	}
 
 	var req updateUserRequest
 	if err := decodeJSON(r, &req); err != nil {
@@ -120,6 +217,7 @@ func (h *HTTP) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var profile *string
+	var passwordHash *string
 	if req.Profile != nil {
 		normalized, err := normalizeJSONValue(*req.Profile, "{}")
 		if err != nil {
@@ -128,12 +226,21 @@ func (h *HTTP) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		}
 		profile = &normalized
 	}
+	if req.Password != nil {
+		hashed, err := auth.HashPassword(*req.Password)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		passwordHash = &hashed
+	}
 
 	user, _, err := h.service.UpdateUser(r.Context(), store.UpdateUserParams{
 		UserID:       userID,
 		Username:     req.Username,
-		PasswordHash: req.PasswordHash,
+		PasswordHash: passwordHash,
 		Profile:      profile,
+		Role:         req.Role,
 	})
 	if err != nil {
 		writeStoreError(w, err)
@@ -146,6 +253,9 @@ func (h *HTTP) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 func (h *HTTP) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 	userID, ok := parsePathID(w, r)
 	if !ok {
+		return
+	}
+	if _, ok := h.requireAdmin(w, r); !ok {
 		return
 	}
 
@@ -161,9 +271,18 @@ func (h *HTTP) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *HTTP) handleCreateMessage(w http.ResponseWriter, r *http.Request) {
+	principal, ok := h.requireAuthenticated(w, r)
+	if !ok {
+		return
+	}
+
 	var req createMessageRequest
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if principal != nil && !isAdminRole(principal.User.Role) && req.UserID != principal.User.ID {
+		writeError(w, http.StatusForbidden, "forbidden")
 		return
 	}
 
@@ -190,6 +309,9 @@ func (h *HTTP) handleCreateMessage(w http.ResponseWriter, r *http.Request) {
 func (h *HTTP) handleListMessagesByUser(w http.ResponseWriter, r *http.Request) {
 	userID, ok := parsePathID(w, r)
 	if !ok {
+		return
+	}
+	if _, ok := h.requireSelfOrAdmin(w, r, userID); !ok {
 		return
 	}
 
@@ -221,6 +343,10 @@ func (h *HTTP) handleListMessagesByUser(w http.ResponseWriter, r *http.Request) 
 }
 
 func (h *HTTP) handleListEvents(w http.ResponseWriter, r *http.Request) {
+	if _, ok := h.requireAdmin(w, r); !ok {
+		return
+	}
+
 	after := int64(0)
 	if raw := strings.TrimSpace(r.URL.Query().Get("after")); raw != "" {
 		parsed, err := strconv.ParseInt(raw, 10, 64)
@@ -259,12 +385,14 @@ func (h *HTTP) handleListEvents(w http.ResponseWriter, r *http.Request) {
 }
 
 type userResponse struct {
-	ID           int64           `json:"id"`
-	Username     string          `json:"username"`
-	Profile      json.RawMessage `json:"profile"`
-	CreatedAt    string          `json:"created_at"`
-	UpdatedAt    string          `json:"updated_at"`
-	OriginNodeID string          `json:"origin_node_id"`
+	ID             int64           `json:"id"`
+	Username       string          `json:"username"`
+	Profile        json.RawMessage `json:"profile"`
+	Role           string          `json:"role"`
+	SystemReserved bool            `json:"system_reserved"`
+	CreatedAt      string          `json:"created_at"`
+	UpdatedAt      string          `json:"updated_at"`
+	OriginNodeID   string          `json:"origin_node_id"`
 }
 
 type messageResponse struct {
@@ -290,12 +418,14 @@ type eventResponse struct {
 
 func userResponseFromStore(user store.User) userResponse {
 	return userResponse{
-		ID:           user.ID,
-		Username:     user.Username,
-		Profile:      json.RawMessage(user.Profile),
-		CreatedAt:    user.CreatedAt.String(),
-		UpdatedAt:    user.UpdatedAt.String(),
-		OriginNodeID: user.OriginNodeID,
+		ID:             user.ID,
+		Username:       user.Username,
+		Profile:        json.RawMessage(user.Profile),
+		Role:           user.Role,
+		SystemReserved: user.SystemReserved,
+		CreatedAt:      user.CreatedAt.String(),
+		UpdatedAt:      user.UpdatedAt.String(),
+		OriginNodeID:   user.OriginNodeID,
 	}
 }
 
@@ -354,6 +484,8 @@ func writeStoreError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, app.ErrClockNotSynchronized):
 		writeError(w, http.StatusServiceUnavailable, app.ErrClockNotSynchronized.Error())
+	case errors.Is(err, store.ErrForbidden):
+		writeError(w, http.StatusForbidden, "forbidden")
 	case errors.Is(err, store.ErrInvalidInput):
 		writeError(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, store.ErrConflict):
@@ -384,4 +516,81 @@ func normalizeJSONValue(raw json.RawMessage, defaultValue string) (string, error
 		return "", fmt.Errorf("invalid json payload")
 	}
 	return string(trimmed), nil
+}
+
+func (h *HTTP) requireAuthenticated(w http.ResponseWriter, r *http.Request) (*requestPrincipal, bool) {
+	if h.signer == nil {
+		return nil, true
+	}
+	principal, err := h.authenticateRequest(r.Context(), r)
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return nil, false
+	}
+	return principal, true
+}
+
+func (h *HTTP) requireAdmin(w http.ResponseWriter, r *http.Request) (*requestPrincipal, bool) {
+	if h.signer == nil {
+		return nil, true
+	}
+	principal, ok := h.requireAuthenticated(w, r)
+	if !ok {
+		return nil, false
+	}
+	if !isAdminRole(principal.User.Role) {
+		writeError(w, http.StatusForbidden, "forbidden")
+		return nil, false
+	}
+	return principal, true
+}
+
+func (h *HTTP) requireSelfOrAdmin(w http.ResponseWriter, r *http.Request, userID int64) (*requestPrincipal, bool) {
+	if h.signer == nil {
+		return nil, true
+	}
+	principal, ok := h.requireAuthenticated(w, r)
+	if !ok {
+		return nil, false
+	}
+	if isAdminRole(principal.User.Role) || principal.User.ID == userID {
+		return principal, true
+	}
+	writeError(w, http.StatusForbidden, "forbidden")
+	return nil, false
+}
+
+func (h *HTTP) authenticateRequest(ctx context.Context, r *http.Request) (*requestPrincipal, error) {
+	if h.signer == nil {
+		return nil, errors.New("auth disabled")
+	}
+	header := strings.TrimSpace(r.Header.Get("Authorization"))
+	if !strings.HasPrefix(header, "Bearer ") {
+		return nil, errors.New("missing bearer token")
+	}
+	token := strings.TrimSpace(strings.TrimPrefix(header, "Bearer "))
+	if token == "" {
+		return nil, errors.New("missing bearer token")
+	}
+	claims, err := h.signer.Verify(token)
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now().UTC().Unix()
+	if claims.ExpiresAt <= 0 || now >= claims.ExpiresAt {
+		return nil, errors.New("token expired")
+	}
+	userID, err := strconv.ParseInt(strings.TrimSpace(claims.Subject), 10, 64)
+	if err != nil || userID <= 0 {
+		return nil, errors.New("invalid subject")
+	}
+	user, err := h.service.GetUser(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	return &requestPrincipal{User: user, Claims: claims}, nil
+}
+
+func isAdminRole(role string) bool {
+	return role == store.RoleSuperAdmin || role == store.RoleAdmin
 }

@@ -7,12 +7,16 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strconv"
 	"testing"
 	"time"
 
+	"google.golang.org/protobuf/proto"
+
 	"notifier/internal/api"
+	"notifier/internal/auth"
 	"notifier/internal/clock"
 	internalproto "notifier/internal/proto"
 	"notifier/internal/store"
@@ -193,6 +197,129 @@ func TestHandleHelloAllowsMismatchedMessageWindowSizes(t *testing.T) {
 	waitFor(t, time.Second, func() bool {
 		return mgr.hasActivePeer("node-b")
 	})
+}
+
+func TestVerifyEnvelopeRejectsInvalidHMAC(t *testing.T) {
+	t.Parallel()
+
+	mgr := newHandshakeTestManager(t)
+	hello := mustHelloEnvelope(t, "node-b", &internalproto.Hello{
+		NodeId:            "node-b",
+		AdvertiseAddr:     websocketPath,
+		ProtocolVersion:   internalproto.ProtocolVersion,
+		SnapshotVersion:   internalproto.SnapshotVersion,
+		MessageWindowSize: store.DefaultMessageWindowSize,
+	})
+	if err := mgr.verifyEnvelope(hello); err == nil {
+		t.Fatalf("expected missing hmac to fail")
+	}
+
+	hello.Hmac = []byte("bad")
+	if err := mgr.verifyEnvelope(hello); err == nil {
+		t.Fatalf("expected invalid hello hmac to fail")
+	}
+
+	eventBatch := &internalproto.Envelope{
+		NodeId:    "node-b",
+		Sequence:  1,
+		SentAtHlc: clock.NewClock(2).Now().String(),
+		Body: &internalproto.Envelope_EventBatch{
+			EventBatch: &internalproto.EventBatch{
+				Events: []*internalproto.ReplicatedEvent{{
+					EventId:       1,
+					Kind:          "user.created",
+					AggregateType: "user",
+					AggregateId:   1,
+					Hlc:           clock.NewClock(2).Now().String(),
+					OriginNodeId:  "node-b",
+					Payload:       []byte(`{"user":{"id":1,"username":"root","password_hash":"hash-root","profile":"{}","role":"super_admin","system_reserved":true,"created_at":"1:0:1","updated_at":"1:0:1","version_username":"1:0:1","version_password_hash":"1:0:1","version_profile":"1:0:1","version_role":"1:0:1","origin_node_id":"node-b"}}`),
+				}},
+			},
+		},
+		Hmac: []byte("bad"),
+	}
+	if err := mgr.verifyEnvelope(eventBatch); err == nil {
+		t.Fatalf("expected invalid event batch hmac to fail")
+	}
+}
+
+func TestSignedEnvelopeVerifiesSuccessfully(t *testing.T) {
+	t.Parallel()
+
+	mgr := newHandshakeTestManager(t)
+	data, err := mgr.marshalSignedEnvelope(mustHelloEnvelope(t, "node-b", &internalproto.Hello{
+		NodeId:            "node-b",
+		AdvertiseAddr:     websocketPath,
+		ProtocolVersion:   internalproto.ProtocolVersion,
+		SnapshotVersion:   internalproto.SnapshotVersion,
+		MessageWindowSize: store.DefaultMessageWindowSize,
+	}))
+	if err != nil {
+		t.Fatalf("marshal signed envelope: %v", err)
+	}
+
+	var envelope internalproto.Envelope
+	if err := proto.Unmarshal(data, &envelope); err != nil {
+		t.Fatalf("unmarshal signed envelope: %v", err)
+	}
+	if err := mgr.verifyEnvelope(&envelope); err != nil {
+		t.Fatalf("verify signed envelope: %v", err)
+	}
+}
+
+func TestTokenSignedByNodeAIsAcceptedByNodeB(t *testing.T) {
+	t.Parallel()
+
+	storeA := newReplicationTestStore(t, "node-a", 1)
+	storeB := newReplicationTestStore(t, "node-b", 2)
+	for _, st := range []*store.Store{storeA, storeB} {
+		if err := st.EnsureBootstrapAdmin(context.Background(), store.BootstrapAdminConfig{
+			Username:     "root",
+			PasswordHash: mustHashPassword(t, "root-password"),
+		}); err != nil {
+			t.Fatalf("ensure bootstrap admin: %v", err)
+		}
+	}
+
+	signerA, err := auth.NewSigner("shared-token-secret")
+	if err != nil {
+		t.Fatalf("new signer A: %v", err)
+	}
+	signerB, err := auth.NewSigner("shared-token-secret")
+	if err != nil {
+		t.Fatalf("new signer B: %v", err)
+	}
+
+	serverA := httptest.NewServer(api.NewHTTP(api.New(storeA, nil), api.HTTPOptions{
+		NodeID:   "node-a",
+		Signer:   signerA,
+		TokenTTL: time.Hour,
+	}).Handler())
+	defer serverA.Close()
+	serverB := httptest.NewServer(api.NewHTTP(api.New(storeB, nil), api.HTTPOptions{
+		NodeID:   "node-b",
+		Signer:   signerB,
+		TokenTTL: time.Hour,
+	}).Handler())
+	defer serverB.Close()
+
+	var loginResp struct {
+		Token string `json:"token"`
+	}
+	mustJSON(t, doJSON(t, serverA.URL, http.MethodPost, "/auth/login", map[string]any{
+		"user_id":  store.BootstrapAdminUserID,
+		"password": "root-password",
+	}, http.StatusOK), &loginResp)
+	if loginResp.Token == "" {
+		t.Fatalf("expected login token from node A")
+	}
+
+	_, err = doJSONRequestWithHeaders(serverB.URL, http.MethodGet, "/users/1", nil, http.StatusOK, map[string]string{
+		"Authorization": "Bearer " + loginResp.Token,
+	})
+	if err != nil {
+		t.Fatalf("request node B with node A token: %v", err)
+	}
 }
 
 func TestHandleEventBatchSendsAckAfterSuccessfulApply(t *testing.T) {
@@ -616,8 +743,8 @@ func TestWriteRequestsBlockedUntilInitialClockSync(t *testing.T) {
 
 	nodeA.start(t)
 	doJSON(t, nodeA.apiBaseURL, http.MethodPost, "/users", map[string]any{
-		"username":      "gated-user",
-		"password_hash": "hash-1",
+		"username": "gated-user",
+		"password": "password-1",
 	}, http.StatusServiceUnavailable)
 
 	nodeB.start(t)
@@ -626,8 +753,8 @@ func TestWriteRequestsBlockedUntilInitialClockSync(t *testing.T) {
 	})
 
 	doJSON(t, nodeA.apiBaseURL, http.MethodPost, "/users", map[string]any{
-		"username":      "synced-user",
-		"password_hash": "hash-1",
+		"username": "synced-user",
+		"password": "password-1",
 	}, http.StatusCreated)
 }
 
@@ -692,8 +819,8 @@ func TestTwoNodeReplicationOverWebSocket(t *testing.T) {
 	})
 
 	createUserBody := map[string]any{
-		"username":      "alice",
-		"password_hash": "hash-1",
+		"username": "alice",
+		"password": "password-1",
 		"profile": map[string]any{
 			"display_name": "Alice",
 		},
@@ -761,8 +888,8 @@ func TestTwoNodeMessageWindowConvergesWhenSizesMatch(t *testing.T) {
 		ID int64 `json:"id"`
 	}
 	mustJSON(t, doJSON(t, nodeA.apiBaseURL, http.MethodPost, "/users", map[string]any{
-		"username":      "window-user",
-		"password_hash": "hash-1",
+		"username": "window-user",
+		"password": "password-1",
 	}, http.StatusCreated), &createdUser)
 
 	waitFor(t, 5*time.Second, func() bool {
@@ -817,8 +944,8 @@ func TestTwoNodeMessageWindowMismatchKeepsPerNodeWindows(t *testing.T) {
 		ID int64 `json:"id"`
 	}
 	mustJSON(t, doJSON(t, nodeA.apiBaseURL, http.MethodPost, "/users", map[string]any{
-		"username":      "window-mismatch-user",
-		"password_hash": "hash-1",
+		"username": "window-mismatch-user",
+		"password": "password-1",
 	}, http.StatusCreated), &createdUser)
 
 	waitFor(t, 5*time.Second, func() bool {
@@ -1023,8 +1150,8 @@ func TestThreeNodeFieldLevelConvergence(t *testing.T) {
 		ID int64 `json:"id"`
 	}
 	mustJSON(t, doJSON(t, nodeA.apiBaseURL, http.MethodPost, "/users", map[string]any{
-		"username":      "cluster-user",
-		"password_hash": "hash-1",
+		"username": "cluster-user",
+		"password": "password-1",
 		"profile": map[string]any{
 			"display_name": "Before Merge",
 		},
@@ -1110,8 +1237,8 @@ func TestThreeNodeDeleteWinsOverConcurrentUpdate(t *testing.T) {
 		ID int64 `json:"id"`
 	}
 	mustJSON(t, doJSON(t, nodeA.apiBaseURL, http.MethodPost, "/users", map[string]any{
-		"username":      "delete-user",
-		"password_hash": "hash-1",
+		"username": "delete-user",
+		"password": "password-1",
 	}, http.StatusCreated), &createdUser)
 
 	waitFor(t, 5*time.Second, func() bool {
@@ -1312,6 +1439,10 @@ func doJSON(t *testing.T, baseURL, method, path string, body any, wantStatus int
 }
 
 func doJSONRequest(baseURL, method, path string, body any, wantStatus int) ([]byte, error) {
+	return doJSONRequestWithHeaders(baseURL, method, path, body, wantStatus, nil)
+}
+
+func doJSONRequestWithHeaders(baseURL, method, path string, body any, wantStatus int, headers map[string]string) ([]byte, error) {
 	var requestBody *bytes.Reader
 	if body == nil {
 		requestBody = bytes.NewReader(nil)
@@ -1329,6 +1460,9 @@ func doJSONRequest(baseURL, method, path string, body any, wantStatus int) ([]by
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
+	}
+	for key, value := range headers {
+		req.Header.Set(key, value)
 	}
 
 	resp, err := http.DefaultClient.Do(req)
@@ -1407,6 +1541,16 @@ func newReplicationTestStoreWithWindow(t *testing.T, nodeID string, slot uint16,
 func newReplicationTestManager(t *testing.T, st *store.Store) *Manager {
 	t.Helper()
 	return newReplicationTestManagerWithWindow(t, st, store.DefaultMessageWindowSize)
+}
+
+func mustHashPassword(t *testing.T, password string) string {
+	t.Helper()
+
+	hash, err := auth.HashPassword(password)
+	if err != nil {
+		t.Fatalf("hash password: %v", err)
+	}
+	return hash
 }
 
 func newReplicationTestManagerWithWindow(t *testing.T, st *store.Store, messageWindowSize int) *Manager {

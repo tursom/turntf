@@ -8,7 +8,7 @@
 - 用户数据最终完全一致
 - 消息数据按每节点配置的每用户最近 N 条最终一致；当各节点 N 相同，窗口内容也一致
 
-当前仓库已经完成实施计划的前 7 步：本地存储内核、单节点 HTTP/JSON API、WebSocket + Protobuf 的最小集群同步链路、断线后的事件日志补发、基于 `user_id` 的用户多主冲突收敛、消息窗口扩散与按节点 N 收敛，以及反熵同步与快照修复。
+当前仓库已经完成实施计划的前 8 步：本地存储内核、单节点 HTTP/JSON API、WebSocket + Protobuf 的最小集群同步链路、断线后的事件日志补发、基于 `user_id` 的用户多主冲突收敛、消息窗口扩散与按节点 N 收敛、反熵同步与快照修复，以及认证、保底管理员与安全控制。
 
 ## 技术栈
 
@@ -70,10 +70,6 @@
 - 消息在本地写入和复制应用时都会按每用户最近 N 条裁剪，默认 `N=500`
 - 若 peer 的 `message_window_size` 不一致，连接会继续建立并记录告警；各节点最终按自己的 N 收敛
 
-当前还没有实现：
-
-- `cluster_secret` 的 HMAC 鉴权
-
 ## 启动 API 服务
 
 ```bash
@@ -90,6 +86,13 @@ go run ./cmd/notifier serve -config ./config.toml
 当前 `serve` 只接受一个运行时参数：
 
 - `-config`：TOML 配置文件路径；缺省时读取 `./config.toml`
+
+也可以直接生成 bcrypt 密码哈希：
+
+```bash
+go run ./cmd/notifier hash -password 'secret'
+printf 'secret' | go run ./cmd/notifier hash -stdin
+```
 
 ## 配置文件示例
 
@@ -111,6 +114,14 @@ listen_addr = ":8080"
 db_path = "./data/node-a.db"
 message_window_size = 500
 
+[auth]
+token_secret = "replace-me"
+token_ttl_minutes = 1440
+
+[auth.bootstrap_admin]
+username = "root"
+password_hash = "$2a$10$1gGoT/pdOu8vX1W28skBPOB7ICjISmVgt9lMyZf9c6re6cMHU6mAa"
+
 [cluster]
 advertise_path = "/internal/cluster/ws"
 secret = "secret"
@@ -128,10 +139,14 @@ url = "ws://127.0.0.1:9081/internal/cluster/ws"
 - `api.listen_addr`：外部 HTTP API 监听地址，同时承载内部 `GET /internal/cluster/ws`
 - `store.db_path`：本地 SQLite 数据库路径。每个节点各自维护本地库，复制链路负责把状态传播到别的节点
 - `store.message_window_size`：每节点每用户本地保留的消息窗口，默认 `500`。超过窗口的旧消息会在本地写入或复制应用时被裁剪
+- `auth.token_secret`：外部登录 token 的共享签名密钥；所有节点必须一致，任意节点签发的 token 才能被其他节点校验
+- `auth.token_ttl_minutes`：登录 token 的有效期，默认 `1440`
+- `auth.bootstrap_admin.username`：固定保底超级管理员用户名；启动时会修复到该值
+- `auth.bootstrap_admin.password_hash`：保底超级管理员的初始 bcrypt 密码哈希；仅首次创建时使用，后续不会在启动时强制覆盖。上面的示例值对应明文密码 `root`
 - `cluster` 整段可省略；省略时按单节点模式运行
 - 配置了 `cluster` 后，需要同时提供 `cluster.advertise_path`、`cluster.secret`
 - `cluster.advertise_path`：节点对外暴露的集群 WebSocket 路径，必须以 `/` 开头；peer 的 `url` 需要带上这个路径
-- `cluster.secret`：预留给集群内部 HMAC 鉴权的共享密钥。当前实现还未真正验签，但已经把它作为启用集群模式的必填项
+- `cluster.secret`：集群内部 `Envelope` 的共享 HMAC 密钥；节点间握手、广播、补拉和反熵消息都会验签
 - `cluster.max_clock_skew_ms`：允许的最大时钟偏差，默认 `1000` 毫秒；正数启用超限拒绝，`0` 表示关闭“超限拒绝”，但节点仍会在首次成功校时前拒绝本地写入
 - `[[cluster.peers]]`：静态 peer 列表，可重复出现多个条目，但 `node_id` 不能和本节点相同
 - `cluster.peers.node_id`：远端节点的稳定字符串身份
@@ -140,6 +155,7 @@ url = "ws://127.0.0.1:9081/internal/cluster/ws"
 
 当前已提供：
 
+- `POST /auth/login`
 - `POST /users`
 - `GET /users/{id}`
 - `PATCH /users/{id}`
@@ -149,6 +165,15 @@ url = "ws://127.0.0.1:9081/internal/cluster/ws"
 - `GET /events?after=0&limit=100`
 - `GET /healthz`
 - `GET /internal/cluster/ws` 作为节点间 WebSocket 同步端点，仅在启用集群模式时挂载到 API 监听器
+
+当前认证与授权边界：
+
+- `GET /healthz` 和 `POST /auth/login` 公开
+- `POST /users`、`PATCH /users/{id}`、`DELETE /users/{id}`、`GET /events` 需要管理员或保底超级管理员
+- `GET /users/{id}`、`GET /users/{id}/messages` 允许本人或管理员访问
+- `POST /messages` 需要登录；普通用户只能给自己的 `user_id` 写消息，管理员可给任意用户写消息
+- 登录请求固定使用 `user_id + password`
+- 保底超级管理员固定为 `user_id = 1`，不可删除、不可降权、不可改名，允许修改密码
 
 当前集群同步行为：
 
@@ -167,8 +192,9 @@ url = "ws://127.0.0.1:9081/internal/cluster/ws"
 - `tombstones`：删除墓碑表，用来记录“这个对象已经被删过”，避免旧事件在延迟到达时把数据错误复活
 - 消息复制按 `(user_id, node_id, seq)` 幂等去重，并在本地和复制应用时都裁剪到最近 N 条
 - 当集群所有节点使用相同的 `message_window_size` 时，同一用户的最近 N 条消息会收敛到相同结果
-- 这一步仍不承诺跨节点 HMAC 鉴权
+- 任意节点签发的登录 token 都可以在其他节点使用，只要它们共享同一 `auth.token_secret`
+- 所有集群 `Envelope` 在收发两端都使用 `cluster.secret` 做 HMAC 鉴权
 
 ## 下一步
 
-- 第 8 步：认证、保底管理员与安全控制
+- 第 9 步：测试体系与故障演练

@@ -20,8 +20,8 @@ func TestUserAndMessageHTTPAPI(t *testing.T) {
 	handler := newTestHandler(t)
 
 	createUserBody := map[string]any{
-		"username":      "alice",
-		"password_hash": "hash-1",
+		"username": "alice",
+		"password": "password-1",
 		"profile": map[string]any{
 			"display_name": "Alice",
 		},
@@ -51,8 +51,8 @@ func TestUserAndMessageHTTPAPI(t *testing.T) {
 	}
 
 	updateBody := map[string]any{
-		"username":      "alice-updated",
-		"password_hash": "hash-2",
+		"username": "alice-updated",
+		"password": "password-2",
 		"profile": map[string]any{
 			"display_name": "Alice Updated",
 		},
@@ -132,8 +132,8 @@ func TestCreateUserAllowsDuplicateUsername(t *testing.T) {
 	handler := newTestHandler(t)
 
 	createUserBody := map[string]any{
-		"username":      "alice",
-		"password_hash": "hash-1",
+		"username": "alice",
+		"password": "password-1",
 	}
 	doJSON(t, handler, http.MethodPost, "/users", createUserBody, http.StatusCreated)
 	doJSON(t, handler, http.MethodPost, "/users", createUserBody, http.StatusCreated)
@@ -152,12 +152,12 @@ func TestUpdateUserAllowsDuplicateUsername(t *testing.T) {
 	}
 
 	mustJSON(t, doJSON(t, handler, http.MethodPost, "/users", map[string]any{
-		"username":      "alice",
-		"password_hash": "hash-1",
+		"username": "alice",
+		"password": "password-1",
 	}, http.StatusCreated), &first)
 	mustJSON(t, doJSON(t, handler, http.MethodPost, "/users", map[string]any{
-		"username":      "bob",
-		"password_hash": "hash-2",
+		"username": "bob",
+		"password": "password-2",
 	}, http.StatusCreated), &second)
 
 	doJSON(t, handler, http.MethodPatch, "/users/"+strconv.FormatInt(second.ID, 10), map[string]any{
@@ -214,8 +214,8 @@ func TestWriteEndpointsReturn503WhenClockIsNotSynchronized(t *testing.T) {
 			method: http.MethodPost,
 			path:   "/users",
 			body: map[string]any{
-				"username":      "alice",
-				"password_hash": "hash-1",
+				"username": "alice",
+				"password": "password-1",
 			},
 		},
 		{

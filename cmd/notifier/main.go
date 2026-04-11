@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"flag"
@@ -9,9 +10,11 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"notifier/internal/api"
+	"notifier/internal/auth"
 	"notifier/internal/cluster"
 	"notifier/internal/store"
 )
@@ -37,8 +40,13 @@ func run(args []string, stdout io.Writer) error {
 		return nil
 	case "serve":
 		return runServe(args[1:], stdout)
+	case "hash":
+		return runHash(args[1:], stdout, os.Stdin)
 	default:
-		return fmt.Errorf("unknown command %q\n\n%s", args[0], usageText())
+		if !strings.HasPrefix(args[0], "-") {
+			return fmt.Errorf("unknown command %q\n\n%s", args[0], usageText())
+		}
+		return runServe(args, stdout)
 	}
 }
 
@@ -69,6 +77,14 @@ func runServe(args []string, stdout io.Writer) error {
 	if err := st.Init(context.Background()); err != nil {
 		return err
 	}
+	if err := st.EnsureBootstrapAdmin(context.Background(), cfg.Auth.BootstrapAdmin); err != nil {
+		return err
+	}
+
+	signer, err := auth.NewSigner(cfg.Auth.TokenSecret)
+	if err != nil {
+		return err
+	}
 
 	var manager *cluster.Manager
 	if cfg.Cluster.Enabled() {
@@ -81,7 +97,11 @@ func runServe(args []string, stdout io.Writer) error {
 	}
 
 	svc := api.New(st, manager)
-	httpAPI := api.NewHTTP(svc)
+	httpAPI := api.NewHTTP(svc, api.HTTPOptions{
+		NodeID:   cfg.StoreOptions.NodeID,
+		Signer:   signer,
+		TokenTTL: time.Duration(cfg.Auth.TokenTTLMinutes) * time.Minute,
+	})
 	apiServer := &http.Server{
 		Addr:              cfg.APIAddr,
 		Handler:           serveHandler(httpAPI.Handler(), manager, cfg.Cluster.AdvertisePath),
@@ -112,7 +132,7 @@ func printUsage(w io.Writer) {
 }
 
 func usageText() string {
-	return "usage:\n  notifier serve [-config ./config.toml]\n  notifier help"
+	return "usage:\n  notifier serve [-config ./config.toml]\n  notifier hash [-password xxx | -stdin]\n  notifier help"
 }
 
 func serveHandler(apiHandler http.Handler, manager *cluster.Manager, clusterPath string) http.Handler {
@@ -122,4 +142,62 @@ func serveHandler(apiHandler http.Handler, manager *cluster.Manager, clusterPath
 		rootMux.Handle(clusterPath, manager.Handler())
 	}
 	return rootMux
+}
+
+func runHash(args []string, stdout io.Writer, stdin io.Reader) error {
+	fs := flag.NewFlagSet("hash", flag.ContinueOnError)
+	fs.SetOutput(stdout)
+
+	password := fs.String("password", "", "password to hash")
+	readStdin := fs.Bool("stdin", false, "read password from stdin")
+
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 0 {
+		return fmt.Errorf("hash does not accept positional arguments")
+	}
+
+	plain, err := resolvePasswordInput(stdout, stdin, *password, *readStdin)
+	if err != nil {
+		return err
+	}
+	hash, err := auth.HashPassword(plain)
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintln(stdout, hash)
+	return err
+}
+
+func resolvePasswordInput(stdout io.Writer, stdin io.Reader, explicit string, readStdin bool) (string, error) {
+	if explicit != "" {
+		return explicit, nil
+	}
+	if readStdin {
+		data, err := io.ReadAll(stdin)
+		if err != nil {
+			return "", fmt.Errorf("read stdin: %w", err)
+		}
+		return strings.TrimRight(string(data), "\r\n"), nil
+	}
+
+	reader := bufio.NewReader(stdin)
+	fmt.Fprint(stdout, "Password: ")
+	password, err := reader.ReadString('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return "", fmt.Errorf("read password: %w", err)
+	}
+	fmt.Fprint(stdout, "Confirm password: ")
+	confirm, err := reader.ReadString('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return "", fmt.Errorf("read password confirmation: %w", err)
+	}
+
+	password = strings.TrimRight(password, "\r\n")
+	confirm = strings.TrimRight(confirm, "\r\n")
+	if password != confirm {
+		return "", fmt.Errorf("passwords do not match")
+	}
+	return password, nil
 }

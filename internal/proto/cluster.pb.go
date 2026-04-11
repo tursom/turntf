@@ -904,12 +904,15 @@ type SnapshotUserRow struct {
 	Username            string                 `protobuf:"bytes,2,opt,name=username,proto3" json:"username,omitempty"`
 	PasswordHash        string                 `protobuf:"bytes,3,opt,name=password_hash,json=passwordHash,proto3" json:"password_hash,omitempty"`
 	Profile             string                 `protobuf:"bytes,4,opt,name=profile,proto3" json:"profile,omitempty"`
+	Role                string                 `protobuf:"bytes,13,opt,name=role,proto3" json:"role,omitempty"`
+	SystemReserved      bool                   `protobuf:"varint,14,opt,name=system_reserved,json=systemReserved,proto3" json:"system_reserved,omitempty"`
 	CreatedAtHlc        string                 `protobuf:"bytes,5,opt,name=created_at_hlc,json=createdAtHlc,proto3" json:"created_at_hlc,omitempty"`
 	UpdatedAtHlc        string                 `protobuf:"bytes,6,opt,name=updated_at_hlc,json=updatedAtHlc,proto3" json:"updated_at_hlc,omitempty"`
 	DeletedAtHlc        string                 `protobuf:"bytes,7,opt,name=deleted_at_hlc,json=deletedAtHlc,proto3" json:"deleted_at_hlc,omitempty"`
 	VersionUsername     string                 `protobuf:"bytes,8,opt,name=version_username,json=versionUsername,proto3" json:"version_username,omitempty"`
 	VersionPasswordHash string                 `protobuf:"bytes,9,opt,name=version_password_hash,json=versionPasswordHash,proto3" json:"version_password_hash,omitempty"`
 	VersionProfile      string                 `protobuf:"bytes,10,opt,name=version_profile,json=versionProfile,proto3" json:"version_profile,omitempty"`
+	VersionRole         string                 `protobuf:"bytes,15,opt,name=version_role,json=versionRole,proto3" json:"version_role,omitempty"`
 	VersionDeleted      string                 `protobuf:"bytes,11,opt,name=version_deleted,json=versionDeleted,proto3" json:"version_deleted,omitempty"`
 	OriginNodeId        string                 `protobuf:"bytes,12,opt,name=origin_node_id,json=originNodeId,proto3" json:"origin_node_id,omitempty"`
 	unknownFields       protoimpl.UnknownFields
@@ -974,6 +977,20 @@ func (x *SnapshotUserRow) GetProfile() string {
 	return ""
 }
 
+func (x *SnapshotUserRow) GetRole() string {
+	if x != nil {
+		return x.Role
+	}
+	return ""
+}
+
+func (x *SnapshotUserRow) GetSystemReserved() bool {
+	if x != nil {
+		return x.SystemReserved
+	}
+	return false
+}
+
 func (x *SnapshotUserRow) GetCreatedAtHlc() string {
 	if x != nil {
 		return x.CreatedAtHlc
@@ -1012,6 +1029,13 @@ func (x *SnapshotUserRow) GetVersionPasswordHash() string {
 func (x *SnapshotUserRow) GetVersionProfile() string {
 	if x != nil {
 		return x.VersionProfile
+	}
+	return ""
+}
+
+func (x *SnapshotUserRow) GetVersionRole() string {
+	if x != nil {
+		return x.VersionRole
 	}
 	return ""
 }
@@ -1545,19 +1569,22 @@ const file_proto_cluster_proto_rawDesc = "" +
 	"\x04user\x18\x01 \x01(\v2$.notifier.cluster.v1.SnapshotUserRowH\x00R\x04user\x12I\n" +
 	"\ttombstone\x18\x02 \x01(\v2).notifier.cluster.v1.SnapshotTombstoneRowH\x00R\ttombstone\x12C\n" +
 	"\amessage\x18\x03 \x01(\v2'.notifier.cluster.v1.SnapshotMessageRowH\x00R\amessageB\x06\n" +
-	"\x04body\"\xce\x03\n" +
+	"\x04body\"\xae\x04\n" +
 	"\x0fSnapshotUserRow\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\x03R\x06userId\x12\x1a\n" +
 	"\busername\x18\x02 \x01(\tR\busername\x12#\n" +
 	"\rpassword_hash\x18\x03 \x01(\tR\fpasswordHash\x12\x18\n" +
-	"\aprofile\x18\x04 \x01(\tR\aprofile\x12$\n" +
+	"\aprofile\x18\x04 \x01(\tR\aprofile\x12\x12\n" +
+	"\x04role\x18\r \x01(\tR\x04role\x12'\n" +
+	"\x0fsystem_reserved\x18\x0e \x01(\bR\x0esystemReserved\x12$\n" +
 	"\x0ecreated_at_hlc\x18\x05 \x01(\tR\fcreatedAtHlc\x12$\n" +
 	"\x0eupdated_at_hlc\x18\x06 \x01(\tR\fupdatedAtHlc\x12$\n" +
 	"\x0edeleted_at_hlc\x18\a \x01(\tR\fdeletedAtHlc\x12)\n" +
 	"\x10version_username\x18\b \x01(\tR\x0fversionUsername\x122\n" +
 	"\x15version_password_hash\x18\t \x01(\tR\x13versionPasswordHash\x12'\n" +
 	"\x0fversion_profile\x18\n" +
-	" \x01(\tR\x0eversionProfile\x12'\n" +
+	" \x01(\tR\x0eversionProfile\x12!\n" +
+	"\fversion_role\x18\x0f \x01(\tR\vversionRole\x12'\n" +
 	"\x0fversion_deleted\x18\v \x01(\tR\x0eversionDeleted\x12$\n" +
 	"\x0eorigin_node_id\x18\f \x01(\tR\foriginNodeId\"\xa0\x01\n" +
 	"\x14SnapshotTombstoneRow\x12\x1f\n" +

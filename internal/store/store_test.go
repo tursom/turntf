@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"strconv"
 	"testing"
@@ -84,6 +85,121 @@ func TestLocalUserCRUDAndEventLog(t *testing.T) {
 	}
 	if events[0].Sequence >= events[1].Sequence || events[1].Sequence >= events[2].Sequence {
 		t.Fatalf("events not ordered by sequence: %+v", events)
+	}
+}
+
+func TestEnsureBootstrapAdminCreatesAndProtectsReservedUser(t *testing.T) {
+	t.Parallel()
+
+	st := openTestStore(t)
+	defer st.Close()
+
+	ctx := context.Background()
+	if err := st.EnsureBootstrapAdmin(ctx, BootstrapAdminConfig{
+		Username:     "root",
+		PasswordHash: "hash-root",
+	}); err != nil {
+		t.Fatalf("ensure bootstrap admin: %v", err)
+	}
+
+	user, err := st.GetUser(ctx, BootstrapAdminUserID)
+	if err != nil {
+		t.Fatalf("get bootstrap admin: %v", err)
+	}
+	if user.Username != "root" || user.Role != RoleSuperAdmin || !user.SystemReserved {
+		t.Fatalf("unexpected bootstrap admin: %+v", user)
+	}
+
+	newPasswordHash := "hash-root-2"
+	updated, _, err := st.UpdateUser(ctx, UpdateUserParams{
+		UserID:       BootstrapAdminUserID,
+		PasswordHash: &newPasswordHash,
+	})
+	if err != nil {
+		t.Fatalf("update bootstrap admin password: %v", err)
+	}
+	if updated.PasswordHash != newPasswordHash {
+		t.Fatalf("expected updated password hash, got %+v", updated)
+	}
+
+	newUsername := "renamed-root"
+	if _, _, err := st.UpdateUser(ctx, UpdateUserParams{
+		UserID:   BootstrapAdminUserID,
+		Username: &newUsername,
+	}); err == nil || !errors.Is(err, ErrForbidden) {
+		t.Fatalf("expected rename bootstrap admin to fail with forbidden, got %v", err)
+	}
+
+	newRole := RoleAdmin
+	if _, _, err := st.UpdateUser(ctx, UpdateUserParams{
+		UserID: BootstrapAdminUserID,
+		Role:   &newRole,
+	}); err == nil || !errors.Is(err, ErrForbidden) {
+		t.Fatalf("expected downgrade bootstrap admin to fail with forbidden, got %v", err)
+	}
+
+	if _, err := st.DeleteUser(ctx, BootstrapAdminUserID); err == nil || !errors.Is(err, ErrForbidden) {
+		t.Fatalf("expected delete bootstrap admin to fail with forbidden, got %v", err)
+	}
+}
+
+func TestEnsureBootstrapAdminRepairsReservedUserWithoutOverwritingPassword(t *testing.T) {
+	t.Parallel()
+
+	st := openTestStore(t)
+	defer st.Close()
+
+	ctx := context.Background()
+	if err := st.EnsureBootstrapAdmin(ctx, BootstrapAdminConfig{
+		Username:     "root",
+		PasswordHash: "hash-root",
+	}); err != nil {
+		t.Fatalf("ensure bootstrap admin: %v", err)
+	}
+
+	now := st.clock.Now()
+	if _, err := st.db.ExecContext(ctx, `
+UPDATE users
+SET username = ?, role = ?, system_reserved = 0, deleted_at_hlc = ?, version_deleted = ?, updated_at_hlc = ?, password_hash = ?
+WHERE user_id = ?
+`, "broken-root", RoleAdmin, now.String(), now.String(), now.String(), "preserve-hash", BootstrapAdminUserID); err != nil {
+		t.Fatalf("corrupt bootstrap admin: %v", err)
+	}
+	if _, err := st.db.ExecContext(ctx, `
+INSERT INTO tombstones(entity_type, entity_id, deleted_at_hlc, expires_at_hlc, origin_node_id)
+VALUES('user', ?, ?, NULL, ?)
+`, BootstrapAdminUserID, now.String(), "node-a"); err != nil {
+		t.Fatalf("insert bootstrap tombstone: %v", err)
+	}
+
+	if err := st.EnsureBootstrapAdmin(ctx, BootstrapAdminConfig{
+		Username:     "root-fixed",
+		PasswordHash: "ignored-hash",
+	}); err != nil {
+		t.Fatalf("repair bootstrap admin: %v", err)
+	}
+
+	user, err := st.GetUser(ctx, BootstrapAdminUserID)
+	if err != nil {
+		t.Fatalf("get repaired bootstrap admin: %v", err)
+	}
+	if user.Username != "root-fixed" || user.Role != RoleSuperAdmin || !user.SystemReserved {
+		t.Fatalf("unexpected repaired bootstrap admin: %+v", user)
+	}
+	if user.PasswordHash != "preserve-hash" {
+		t.Fatalf("expected password hash to be preserved, got %+v", user)
+	}
+
+	var tombstones int
+	if err := st.db.QueryRowContext(ctx, `
+SELECT COUNT(*)
+FROM tombstones
+WHERE entity_type = 'user' AND entity_id = ?
+`, BootstrapAdminUserID).Scan(&tombstones); err != nil {
+		t.Fatalf("count tombstones: %v", err)
+	}
+	if tombstones != 0 {
+		t.Fatalf("expected bootstrap tombstone to be cleared, got %d", tombstones)
 	}
 }
 

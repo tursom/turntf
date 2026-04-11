@@ -18,6 +18,7 @@ type serveConfig struct {
 	Node    nodeConfig        `toml:"node"`
 	API     apiConfig         `toml:"api"`
 	Store   storeConfig       `toml:"store"`
+	Auth    authConfig        `toml:"auth"`
 	Cluster clusterFileConfig `toml:"cluster"`
 }
 
@@ -33,6 +34,17 @@ type apiConfig struct {
 type storeConfig struct {
 	DBPath            string `toml:"db_path"`
 	MessageWindowSize int    `toml:"message_window_size"`
+}
+
+type authConfig struct {
+	TokenSecret     string               `toml:"token_secret"`
+	TokenTTLMinutes int                  `toml:"token_ttl_minutes"`
+	BootstrapAdmin  bootstrapAdminConfig `toml:"bootstrap_admin"`
+}
+
+type bootstrapAdminConfig struct {
+	Username     string `toml:"username"`
+	PasswordHash string `toml:"password_hash"`
 }
 
 type clusterFileConfig struct {
@@ -52,7 +64,14 @@ type runtimeServeConfig struct {
 	APIAddr      string
 	DBPath       string
 	StoreOptions store.Options
+	Auth         runtimeAuthConfig
 	Cluster      cluster.Config
+}
+
+type runtimeAuthConfig struct {
+	TokenSecret     string
+	TokenTTLMinutes int
+	BootstrapAdmin  store.BootstrapAdminConfig
 }
 
 func loadServeRuntimeConfig(path string) (runtimeServeConfig, error) {
@@ -102,10 +121,26 @@ func (c serveConfig) runtimeConfig(configPath string) (runtimeServeConfig, error
 	if c.Store.MessageWindowSize < 0 {
 		return runtimeServeConfig{}, fmt.Errorf("store.message_window_size must be positive")
 	}
+	if strings.TrimSpace(c.Auth.TokenSecret) == "" {
+		return runtimeServeConfig{}, fmt.Errorf("auth.token_secret cannot be empty")
+	}
+	if strings.TrimSpace(c.Auth.BootstrapAdmin.Username) == "" {
+		return runtimeServeConfig{}, fmt.Errorf("auth.bootstrap_admin.username cannot be empty")
+	}
+	if strings.TrimSpace(c.Auth.BootstrapAdmin.PasswordHash) == "" {
+		return runtimeServeConfig{}, fmt.Errorf("auth.bootstrap_admin.password_hash cannot be empty")
+	}
+	if c.Auth.TokenTTLMinutes < 0 {
+		return runtimeServeConfig{}, fmt.Errorf("auth.token_ttl_minutes must be non-negative")
+	}
 
 	messageWindowSize := c.Store.MessageWindowSize
 	if messageWindowSize == 0 {
 		messageWindowSize = store.DefaultMessageWindowSize
+	}
+	tokenTTLMinutes := c.Auth.TokenTTLMinutes
+	if tokenTTLMinutes == 0 {
+		tokenTTLMinutes = 1440
 	}
 
 	peers := make([]cluster.Peer, 0, len(c.Cluster.Peers))
@@ -133,6 +168,9 @@ func (c serveConfig) runtimeConfig(configPath string) (runtimeServeConfig, error
 	if err := clusterCfg.Validate(); err != nil {
 		return runtimeServeConfig{}, fmt.Errorf("invalid cluster config: %w", err)
 	}
+	if clusterCfg.Enabled() && strings.TrimSpace(c.Auth.TokenSecret) == clusterCfg.ClusterSecret {
+		return runtimeServeConfig{}, fmt.Errorf("auth.token_secret must differ from cluster.secret")
+	}
 
 	return runtimeServeConfig{
 		ConfigPath: configPath,
@@ -142,6 +180,14 @@ func (c serveConfig) runtimeConfig(configPath string) (runtimeServeConfig, error
 			NodeID:            strings.TrimSpace(c.Node.ID),
 			NodeSlot:          slot,
 			MessageWindowSize: messageWindowSize,
+		},
+		Auth: runtimeAuthConfig{
+			TokenSecret:     strings.TrimSpace(c.Auth.TokenSecret),
+			TokenTTLMinutes: tokenTTLMinutes,
+			BootstrapAdmin: store.BootstrapAdminConfig{
+				Username:     strings.TrimSpace(c.Auth.BootstrapAdmin.Username),
+				PasswordHash: strings.TrimSpace(c.Auth.BootstrapAdmin.PasswordHash),
+			},
 		},
 		Cluster: clusterCfg,
 	}, nil

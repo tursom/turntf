@@ -462,6 +462,80 @@ func TestApplyReplicatedEventIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestReplicatedDuplicateUsernameUsersRemainDistinctByID(t *testing.T) {
+	t.Parallel()
+
+	sourceA := openNamedTestStore(t, "node-a", 1)
+	defer sourceA.Close()
+
+	sourceB := openNamedTestStore(t, "node-b", 2)
+	defer sourceB.Close()
+
+	observerAB := openNamedTestStore(t, "node-c", 3)
+	defer observerAB.Close()
+
+	observerBA := openNamedTestStore(t, "node-d", 4)
+	defer observerBA.Close()
+
+	ctx := context.Background()
+	userA, eventA, err := sourceA.CreateUser(ctx, CreateUserParams{
+		Username:     "shared-name",
+		PasswordHash: "hash-a",
+	})
+	if err != nil {
+		t.Fatalf("create source A user: %v", err)
+	}
+	userB, eventB, err := sourceB.CreateUser(ctx, CreateUserParams{
+		Username:     "shared-name",
+		PasswordHash: "hash-b",
+	})
+	if err != nil {
+		t.Fatalf("create source B user: %v", err)
+	}
+	if userA.ID == userB.ID {
+		t.Fatalf("expected distinct replicated user ids, both were %d", userA.ID)
+	}
+
+	if err := observerAB.ApplyReplicatedEvent(ctx, ToReplicatedEvent(eventA)); err != nil {
+		t.Fatalf("apply source A event to observer AB: %v", err)
+	}
+	if err := observerAB.ApplyReplicatedEvent(ctx, ToReplicatedEvent(eventB)); err != nil {
+		t.Fatalf("apply source B event to observer AB: %v", err)
+	}
+	if err := observerBA.ApplyReplicatedEvent(ctx, ToReplicatedEvent(eventB)); err != nil {
+		t.Fatalf("apply source B event to observer BA: %v", err)
+	}
+	if err := observerBA.ApplyReplicatedEvent(ctx, ToReplicatedEvent(eventA)); err != nil {
+		t.Fatalf("apply source A event to observer BA: %v", err)
+	}
+
+	assertUsersDistinctByID := func(t *testing.T, st *Store) {
+		t.Helper()
+
+		users, err := st.ListUsers(ctx)
+		if err != nil {
+			t.Fatalf("list replicated users: %v", err)
+		}
+		if len(users) != 2 {
+			t.Fatalf("expected 2 users with duplicate username, got %d: %+v", len(users), users)
+		}
+
+		byID := make(map[int64]User, len(users))
+		for _, user := range users {
+			byID[user.ID] = user
+		}
+		if byID[userA.ID].Username != "shared-name" || byID[userA.ID].PasswordHash != "hash-a" {
+			t.Fatalf("missing or changed source A user: %+v", byID[userA.ID])
+		}
+		if byID[userB.ID].Username != "shared-name" || byID[userB.ID].PasswordHash != "hash-b" {
+			t.Fatalf("missing or changed source B user: %+v", byID[userB.ID])
+		}
+	}
+
+	assertUsersDistinctByID(t, observerAB)
+	assertUsersDistinctByID(t, observerBA)
+}
+
 func TestApplyReplicatedMessageIsIdempotent(t *testing.T) {
 	t.Parallel()
 

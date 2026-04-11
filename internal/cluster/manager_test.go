@@ -395,6 +395,74 @@ func TestHandleEventBatchSendsAckAfterSuccessfulApply(t *testing.T) {
 	}
 }
 
+func TestHandleEventBatchDuplicateDeliveryIsIdempotentAndAcks(t *testing.T) {
+	t.Parallel()
+
+	sourceStore := newReplicationTestStore(t, "node-a", 1)
+	targetStore := newReplicationTestStore(t, "node-b", 2)
+	mgr := newReplicationTestManager(t, targetStore)
+
+	user, event, err := sourceStore.CreateUser(context.Background(), store.CreateUserParams{
+		Username:     "duplicate-batch-user",
+		PasswordHash: "hash-1",
+	})
+	if err != nil {
+		t.Fatalf("create source user: %v", err)
+	}
+
+	sess := &session{
+		manager: mgr,
+		peerID:  "node-a",
+		send:    make(chan *internalproto.Envelope, 2),
+	}
+	sess.markReplicationReady()
+	envelope := &internalproto.Envelope{
+		NodeId:    "node-a",
+		Sequence:  uint64(event.Sequence),
+		SentAtHlc: event.HLC.String(),
+		Body: &internalproto.Envelope_EventBatch{
+			EventBatch: &internalproto.EventBatch{
+				Events: []*internalproto.ReplicatedEvent{store.ToReplicatedEvent(event)},
+			},
+		},
+	}
+
+	for attempt := 1; attempt <= 2; attempt++ {
+		if err := mgr.handleEventBatch(sess, envelope); err != nil {
+			t.Fatalf("handle event batch attempt %d: %v", attempt, err)
+		}
+
+		select {
+		case ackEnvelope := <-sess.send:
+			ack := ackEnvelope.GetAck()
+			if ack == nil {
+				t.Fatalf("expected ack on attempt %d, got %+v", attempt, ackEnvelope)
+			}
+			if ack.AckedSequence != uint64(event.Sequence) {
+				t.Fatalf("unexpected ack sequence on attempt %d: got=%d want=%d", attempt, ack.AckedSequence, event.Sequence)
+			}
+		default:
+			t.Fatalf("expected ack to be enqueued on attempt %d", attempt)
+		}
+	}
+
+	users, err := targetStore.ListUsers(context.Background())
+	if err != nil {
+		t.Fatalf("list target users: %v", err)
+	}
+	if len(users) != 1 || users[0].ID != user.ID {
+		t.Fatalf("expected one replicated user after duplicate delivery, got %+v", users)
+	}
+
+	events, err := targetStore.ListEvents(context.Background(), 0, 10)
+	if err != nil {
+		t.Fatalf("list target events: %v", err)
+	}
+	if len(events) != 1 || events[0].EventID != event.EventID {
+		t.Fatalf("expected one replicated event after duplicate delivery, got %+v", events)
+	}
+}
+
 func TestHandleEventBatchDoesNotAckFailedApply(t *testing.T) {
 	t.Parallel()
 
@@ -1116,6 +1184,85 @@ func TestLateJoiningNodeTrimsCatchupToLocalWindow(t *testing.T) {
 		}
 		return messages[0].Body == "message-5" && messages[1].Body == "message-4"
 	})
+}
+
+func TestSnapshotRepairOverWebSocketRepairsRowsOutsideEventLog(t *testing.T) {
+	lnA := mustListen(t)
+	lnB := mustListen(t)
+
+	nodeA := newClusterTestNode(t, "node-a", 1, lnA, []Peer{
+		{NodeID: "node-b", URL: wsURL(lnB)},
+	})
+	nodeB := newClusterTestNode(t, "node-b", 2, lnB, []Peer{
+		{NodeID: "node-a", URL: wsURL(lnA)},
+	})
+
+	ctx := context.Background()
+	seedStore := newReplicationTestStore(t, "node-a", 1)
+	user, _, err := seedStore.CreateUser(ctx, store.CreateUserParams{
+		Username:     "snapshot-only-user",
+		PasswordHash: "hash-1",
+	})
+	if err != nil {
+		t.Fatalf("create seed user: %v", err)
+	}
+	if _, _, err := seedStore.CreateMessage(ctx, store.CreateMessageParams{
+		UserID: user.ID,
+		Sender: "orders",
+		Body:   "snapshot-only-message",
+	}); err != nil {
+		t.Fatalf("create seed message: %v", err)
+	}
+
+	userChunk, err := seedStore.BuildSnapshotChunk(ctx, store.SnapshotUsersPartition)
+	if err != nil {
+		t.Fatalf("build seed user snapshot chunk: %v", err)
+	}
+	if err := nodeA.store.ApplySnapshotChunk(ctx, userChunk); err != nil {
+		t.Fatalf("apply seed user snapshot chunk to node A: %v", err)
+	}
+	messageChunk, err := seedStore.BuildSnapshotChunk(ctx, store.MessageSnapshotPartition("node-a"))
+	if err != nil {
+		t.Fatalf("build seed message snapshot chunk: %v", err)
+	}
+	if err := nodeA.store.ApplySnapshotChunk(ctx, messageChunk); err != nil {
+		t.Fatalf("apply seed message snapshot chunk to node A: %v", err)
+	}
+
+	nodeAEvents, err := nodeA.store.ListEvents(ctx, 0, 10)
+	if err != nil {
+		t.Fatalf("list node A events before repair: %v", err)
+	}
+	if len(nodeAEvents) != 0 {
+		t.Fatalf("expected node A seed data to be outside event log, got %+v", nodeAEvents)
+	}
+
+	nodeA.start(t)
+	nodeB.start(t)
+
+	waitFor(t, 5*time.Second, func() bool {
+		return nodeA.activePeer("node-b") && nodeB.activePeer("node-a")
+	})
+
+	waitFor(t, 5*time.Second, func() bool {
+		if sess := nodeA.currentSession("node-b"); sess != nil {
+			nodeA.manager.sendSnapshotDigest(sess)
+		}
+
+		if _, err := nodeB.store.GetUser(ctx, user.ID); err != nil {
+			return false
+		}
+		messages, err := nodeB.store.ListMessagesByUser(ctx, user.ID, 10)
+		return err == nil && len(messages) == 1 && messages[0].Body == "snapshot-only-message"
+	})
+
+	nodeBEvents, err := nodeB.store.ListEvents(ctx, 0, 10)
+	if err != nil {
+		t.Fatalf("list node B events after repair: %v", err)
+	}
+	if len(nodeBEvents) != 0 {
+		t.Fatalf("expected snapshot repair to avoid event log replay, got %+v", nodeBEvents)
+	}
 }
 
 func TestThreeNodeFieldLevelConvergence(t *testing.T) {

@@ -16,6 +16,7 @@
 - SQLite 作为每节点本地数据库
 - `github.com/gorilla/websocket`
 - `github.com/mattn/go-sqlite3`
+- `github.com/rs/zerolog`
 - `google.golang.org/protobuf`
 - 标准库
 
@@ -123,6 +124,10 @@ token_ttl_minutes = 1440
 username = "root"
 password_hash = "$2a$10$1gGoT/pdOu8vX1W28skBPOB7ICjISmVgt9lMyZf9c6re6cMHU6mAa"
 
+[logging]
+level = "info"
+file_path = "./data/notifier.log"
+
 [cluster]
 advertise_path = "/internal/cluster/ws"
 secret = "secret"
@@ -144,6 +149,8 @@ url = "ws://127.0.0.1:9081/internal/cluster/ws"
 - `auth.token_ttl_minutes`：登录 token 的有效期，默认 `1440`
 - `auth.bootstrap_admin.username`：固定保底超级管理员用户名；启动时会修复到该值
 - `auth.bootstrap_admin.password_hash`：保底超级管理员的初始 bcrypt 密码哈希；仅首次创建时使用，后续不会在启动时强制覆盖。上面的示例值对应明文密码 `root`
+- `logging.level`：服务日志级别，默认 `info`，可选 `debug`、`info`、`warn`、`error`
+- `logging.file_path`：可选的 JSON 行日志文件路径；省略或留空时只输出控制台日志
 - `cluster` 整段可省略；省略时按单节点模式运行
 - 配置了 `cluster` 后，需要同时提供 `cluster.advertise_path`、`cluster.secret`
 - `cluster.advertise_path`：节点对外暴露的集群 WebSocket 路径，必须以 `/` 开头；peer 的 `url` 需要带上这个路径
@@ -199,7 +206,7 @@ url = "ws://127.0.0.1:9081/internal/cluster/ws"
 - 所有集群 `Envelope` 在收发两端都使用 `cluster.secret` 做 HMAC 鉴权
 - `/ops/status` 提供管理员可访问的本节点运维快照，包括 peer 状态、未确认事件、反熵进度、冲突数和消息裁剪统计
 - `/metrics` 提供无额外依赖的 Prometheus 文本指标，指标名使用 `notifier_*` 前缀
-- 服务日志使用标准库输出可解析的 `key=value` 结构化行
+- 服务日志使用 zerolog；控制台输出易读文本，配置 `logging.file_path` 后同时写入 JSON 行日志文件
 
 ## 运维与上线
 

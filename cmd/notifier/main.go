@@ -7,11 +7,12 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"os"
 	"strings"
 	"time"
+
+	"github.com/rs/zerolog/log"
 
 	"notifier/internal/api"
 	"notifier/internal/auth"
@@ -20,18 +21,18 @@ import (
 )
 
 func main() {
+	configureDefaultLogger(os.Stderr)
 	if err := run(os.Args[1:], os.Stdout); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return
 		}
-		log.Fatal(err)
+		log.Fatal().Err(err).Msg("command_failed")
 	}
 }
 
 func run(args []string, stdout io.Writer) error {
 	if len(args) == 0 {
-		printUsage(stdout)
-		return nil
+		return runServe(args, stdout)
 	}
 
 	switch args[0] {
@@ -67,6 +68,13 @@ func runServe(args []string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
+	closeLogger, err := configureLogger(cfg.Logging, os.Stderr)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = closeLogger()
+	}()
 
 	st, err := store.Open(cfg.DBPath, cfg.StoreOptions)
 	if err != nil {
@@ -109,11 +117,11 @@ func runServe(args []string, stdout io.Writer) error {
 	}
 
 	errCh := make(chan error, 1)
-	log.Printf("level=info component=notifier event=config_loaded path=%q", cfg.ConfigPath)
-	log.Printf("level=info component=notifier event=http_api_listening addr=%q", cfg.APIAddr)
-	log.Printf("level=info component=notifier event=sqlite_database path=%q", cfg.DBPath)
+	log.Info().Str("component", "notifier").Str("event", "config_loaded").Str("path", cfg.ConfigPath).Msg("config loaded")
+	log.Info().Str("component", "notifier").Str("event", "http_api_listening").Str("addr", cfg.APIAddr).Msg("http api listening")
+	log.Info().Str("component", "notifier").Str("event", "sqlite_database").Str("path", cfg.DBPath).Msg("sqlite database")
 	if manager != nil {
-		log.Printf("level=info component=cluster event=websocket_listening addr=%q path=%q", cfg.APIAddr, cfg.Cluster.AdvertisePath)
+		log.Info().Str("component", "cluster").Str("event", "websocket_listening").Str("addr", cfg.APIAddr).Str("path", cfg.Cluster.AdvertisePath).Msg("websocket listening")
 	}
 	go func() {
 		errCh <- apiServer.ListenAndServe()

@@ -5,9 +5,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"sort"
 	"strings"
+
+	"github.com/rs/zerolog/log"
 
 	internalproto "notifier/internal/proto"
 	"notifier/internal/store"
@@ -43,7 +44,7 @@ func (m *Manager) sendSnapshotDigest(sess *session) {
 
 	envelope, err := m.buildSnapshotDigestEnvelope()
 	if err != nil {
-		log.Printf("level=warn component=cluster peer=%s event=build_snapshot_digest_failed err=%q", sess.peerID, err)
+		log.Warn().Err(err).Str("component", "cluster").Str("peer", sess.peerID).Str("event", "build_snapshot_digest_failed").Msg("build snapshot digest failed")
 		return
 	}
 	m.markSnapshotDigestSent(sess.peerID)

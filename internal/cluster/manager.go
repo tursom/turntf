@@ -6,7 +6,6 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
-	"log"
 	"net/http"
 	"sort"
 	"strings"
@@ -14,6 +13,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/rs/zerolog/log"
 	"google.golang.org/protobuf/proto"
 
 	"notifier/internal/app"
@@ -345,7 +345,7 @@ func (m *Manager) runSession(sess *session) {
 
 	hello, err := m.buildHelloEnvelope()
 	if err != nil {
-		log.Printf("level=warn component=cluster event=build_hello_failed err=%q", err)
+		log.Warn().Err(err).Str("component", "cluster").Str("event", "build_hello_failed").Msg("build hello failed")
 		return
 	}
 
@@ -398,7 +398,7 @@ func (m *Manager) writeLoop(sess *session) {
 
 			data, err := m.marshalSignedEnvelope(envelope)
 			if err != nil {
-				log.Printf("level=warn component=cluster peer=%s event=marshal_envelope_failed err=%q", sess.peerID, err)
+				log.Warn().Err(err).Str("component", "cluster").Str("peer", sess.peerID).Str("event", "marshal_envelope_failed").Msg("marshal envelope failed")
 				return
 			}
 
@@ -513,13 +513,13 @@ func (m *Manager) handleHello(sess *session, envelope *internalproto.Envelope) e
 		return fmt.Errorf("peer mismatch: expected %s got %s", sess.configuredPeerID, peerID)
 	}
 	if int(hello.MessageWindowSize) != m.cfg.MessageWindowSize {
-		log.Printf(
-			"level=warn component=cluster peer=%s event=message_window_mismatch local=%d remote=%d msg=%q",
-			peerID,
-			m.cfg.MessageWindowSize,
-			hello.MessageWindowSize,
-			"continuing with per-node windows",
-		)
+		log.Warn().
+			Str("component", "cluster").
+			Str("peer", peerID).
+			Str("event", "message_window_mismatch").
+			Int("local", m.cfg.MessageWindowSize).
+			Uint32("remote", hello.MessageWindowSize).
+			Msg("continuing with per-node windows")
 	}
 
 	sess.peerID = peerID
@@ -539,12 +539,12 @@ func (m *Manager) handleHello(sess *session, envelope *internalproto.Envelope) e
 
 func (m *Manager) bootstrapSession(sess *session) {
 	if err := m.performTimeSync(sess); err != nil {
-		log.Printf("level=warn component=cluster peer=%s event=time_sync_failed err=%q", sess.peerID, err)
+		log.Warn().Err(err).Str("component", "cluster").Str("peer", sess.peerID).Str("event", "time_sync_failed").Msg("time sync failed")
 		sess.close()
 		return
 	}
 	if !m.activateSession(sess) {
-		log.Printf("level=warn component=cluster peer=%s event=duplicate_session_rejected", sess.peerID)
+		log.Warn().Str("component", "cluster").Str("peer", sess.peerID).Str("event", "duplicate_session_rejected").Msg("duplicate session rejected")
 		sess.close()
 		return
 	}
@@ -558,7 +558,7 @@ func (m *Manager) bootstrapSession(sess *session) {
 	if m.store != nil {
 		requested, err := m.requestCatchupIfNeeded(sess)
 		if err != nil {
-			log.Printf("level=warn component=cluster peer=%s event=request_catchup_failed err=%q", sess.peerID, err)
+			log.Warn().Err(err).Str("component", "cluster").Str("peer", sess.peerID).Str("event", "request_catchup_failed").Msg("request catchup failed")
 			sess.close()
 			return
 		}
@@ -867,7 +867,13 @@ func (m *Manager) performTimeSync(sess *session) error {
 		warnThreshold = DefaultMaxClockSkewMs
 	}
 	if warnThreshold > 0 && absInt64(best.offsetMs) > warnThreshold {
-		log.Printf("level=warn component=cluster peer=%s event=clock_offset_warn offset_ms=%d threshold_ms=%d", sess.peerID, best.offsetMs, warnThreshold)
+		log.Warn().
+			Str("component", "cluster").
+			Str("peer", sess.peerID).
+			Str("event", "clock_offset_warn").
+			Int64("offset_ms", best.offsetMs).
+			Int64("threshold_ms", warnThreshold).
+			Msg("clock offset exceeds warning threshold")
 	}
 	return nil
 }
@@ -966,7 +972,7 @@ func (m *Manager) sessionSyncLoop(sess *session) {
 				return
 			}
 			if err := m.performTimeSync(sess); err != nil {
-				log.Printf("level=warn component=cluster peer=%s event=periodic_time_sync_failed err=%q", sess.peerID, err)
+				log.Warn().Err(err).Str("component", "cluster").Str("peer", sess.peerID).Str("event", "periodic_time_sync_failed").Msg("periodic time sync failed")
 				sess.close()
 				return
 			}
@@ -976,7 +982,7 @@ func (m *Manager) sessionSyncLoop(sess *session) {
 				return
 			}
 			if _, err := m.requestCatchupIfNeeded(sess); err != nil {
-				log.Printf("level=warn component=cluster peer=%s event=periodic_catchup_failed err=%q", sess.peerID, err)
+				log.Warn().Err(err).Str("component", "cluster").Str("peer", sess.peerID).Str("event", "periodic_catchup_failed").Msg("periodic catchup failed")
 				sess.close()
 				return
 			}

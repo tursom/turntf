@@ -11,6 +11,7 @@
 - 将 `api.listen_addr` 暴露给业务调用方，同时只允许可信节点访问 `cluster.advertise_path`。
 - 保持节点系统时钟同步。集群模式下，节点首次成功校时前会拒绝写入；时钟偏差超过 `cluster.max_clock_skew_ms` 会导致 peer 被拒绝或断开。
 - 将 `GET /healthz` 接入存活探针，将 `GET /metrics` 接入带管理员 Bearer token 的指标抓取。
+- 控制台日志为易读文本；如需持久化结构化日志，配置 `logging.file_path` 写入 JSON 行文件，并由 logrotate、容器运行时或日志平台负责轮转。
 
 ## 运维接口
 
@@ -65,6 +66,20 @@ sqlite3 ./data/node-a.db ".backup './backup/node-a-$(date +%Y%m%d%H%M%S).db'"
 - `notifier_message_trimmed_total{node_id}`：累计被本地消息窗口裁剪的消息数。
 - `notifier_clock_offset_ms{node_id,peer_node_id}`：最近一次可信校时偏移。
 - `notifier_write_gate_ready{node_id}`：本节点是否允许本地写入。集群模式下为 `0` 通常表示尚未完成可信校时。
+
+## 日志配置
+
+服务日志使用 zerolog。默认仅向 `stderr` 输出控制台文本日志；配置文件中可增加：
+
+```toml
+[logging]
+level = "info"
+file_path = "./data/notifier.log"
+```
+
+- `logging.level` 默认 `info`，支持 `debug`、`info`、`warn`、`error`。
+- `logging.file_path` 为空时不写日志文件；配置后会自动创建父目录并追加写入 JSON 行日志。
+- 服务本身不做日志轮转、压缩或清理，生产环境应交给外部日志组件处理。
 
 ## 常见告警排查
 

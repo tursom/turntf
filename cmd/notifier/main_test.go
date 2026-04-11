@@ -14,22 +14,27 @@ import (
 	"notifier/internal/store"
 )
 
-func TestRunWithoutArgsPrintsHelp(t *testing.T) {
+func TestRunWithoutArgsDefaultsToServe(t *testing.T) {
+	originalWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+
+	tempDir := t.TempDir()
+	if err := os.Chdir(tempDir); err != nil {
+		t.Fatalf("chdir tempdir: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chdir(originalWD)
+	})
+
 	var stdout bytes.Buffer
-
-	if err := run(nil, &stdout); err != nil {
-		t.Fatalf("run returned error: %v", err)
+	err = run(nil, &stdout)
+	if err == nil {
+		t.Fatalf("expected missing default config to fail")
 	}
-
-	output := stdout.String()
-	if !strings.Contains(output, "usage:") {
-		t.Fatalf("expected usage in output, got %q", output)
-	}
-	if !strings.Contains(output, "notifier serve [-config ./config.toml]") {
-		t.Fatalf("expected serve config usage in output, got %q", output)
-	}
-	if strings.Contains(output, "init-store") {
-		t.Fatalf("did not expect init-store in output, got %q", output)
+	if !strings.Contains(err.Error(), "read config ./config.toml") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
@@ -351,6 +356,91 @@ db_path = "./data/node-a.db"
 	}
 	if cfg.Auth.TokenTTLMinutes != 1440 {
 		t.Fatalf("unexpected default auth ttl: %d", cfg.Auth.TokenTTLMinutes)
+	}
+}
+
+func TestLoadServeRuntimeConfigUsesDefaultLogging(t *testing.T) {
+	t.Parallel()
+
+	configPath := filepath.Join(t.TempDir(), "default-logging.toml")
+	writeTestConfig(t, configPath, `
+[node]
+id = "node-a"
+slot = 1
+
+[api]
+listen_addr = ":8080"
+
+[store]
+db_path = "./data/node-a.db"
+`)
+
+	cfg, err := loadServeRuntimeConfig(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if cfg.Logging.Level != "info" {
+		t.Fatalf("unexpected default log level: %q", cfg.Logging.Level)
+	}
+	if cfg.Logging.FilePath != "" {
+		t.Fatalf("unexpected default log file path: %q", cfg.Logging.FilePath)
+	}
+}
+
+func TestLoadServeRuntimeConfigReadsLogging(t *testing.T) {
+	t.Parallel()
+
+	configPath := filepath.Join(t.TempDir(), "logging.toml")
+	writeTestConfig(t, configPath, `
+[node]
+id = "node-a"
+slot = 1
+
+[api]
+listen_addr = ":8080"
+
+[store]
+db_path = "./data/node-a.db"
+
+[logging]
+level = "warn"
+file_path = "./logs/notifier.log"
+`)
+
+	cfg, err := loadServeRuntimeConfig(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if cfg.Logging.Level != "warn" {
+		t.Fatalf("unexpected log level: %q", cfg.Logging.Level)
+	}
+	if cfg.Logging.FilePath != filepath.Clean("./logs/notifier.log") {
+		t.Fatalf("unexpected log file path: %q", cfg.Logging.FilePath)
+	}
+}
+
+func TestLoadServeRuntimeConfigRejectsInvalidLoggingLevel(t *testing.T) {
+	t.Parallel()
+
+	configPath := filepath.Join(t.TempDir(), "bad-logging.toml")
+	writeTestConfig(t, configPath, `
+[node]
+id = "node-a"
+slot = 1
+
+[api]
+listen_addr = ":8080"
+
+[store]
+db_path = "./data/node-a.db"
+
+[logging]
+level = "trace"
+`)
+
+	_, err := loadServeRuntimeConfig(configPath)
+	if err == nil || !strings.Contains(err.Error(), `logging.level "trace" is invalid`) {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 

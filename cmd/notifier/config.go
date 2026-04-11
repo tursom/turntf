@@ -19,6 +19,7 @@ type serveConfig struct {
 	API     apiConfig         `toml:"api"`
 	Store   storeConfig       `toml:"store"`
 	Auth    authConfig        `toml:"auth"`
+	Logging loggingConfig     `toml:"logging"`
 	Cluster clusterFileConfig `toml:"cluster"`
 }
 
@@ -47,6 +48,11 @@ type bootstrapAdminConfig struct {
 	PasswordHash string `toml:"password_hash"`
 }
 
+type loggingConfig struct {
+	Level    string `toml:"level"`
+	FilePath string `toml:"file_path"`
+}
+
 type clusterFileConfig struct {
 	AdvertisePath  string           `toml:"advertise_path"`
 	Secret         string           `toml:"secret"`
@@ -65,6 +71,7 @@ type runtimeServeConfig struct {
 	DBPath       string
 	StoreOptions store.Options
 	Auth         runtimeAuthConfig
+	Logging      runtimeLoggingConfig
 	Cluster      cluster.Config
 }
 
@@ -133,6 +140,10 @@ func (c serveConfig) runtimeConfig(configPath string) (runtimeServeConfig, error
 	if c.Auth.TokenTTLMinutes < 0 {
 		return runtimeServeConfig{}, fmt.Errorf("auth.token_ttl_minutes must be non-negative")
 	}
+	loggingCfg, err := c.Logging.runtimeConfig()
+	if err != nil {
+		return runtimeServeConfig{}, err
+	}
 
 	messageWindowSize := c.Store.MessageWindowSize
 	if messageWindowSize == 0 {
@@ -189,6 +200,7 @@ func (c serveConfig) runtimeConfig(configPath string) (runtimeServeConfig, error
 				PasswordHash: strings.TrimSpace(c.Auth.BootstrapAdmin.PasswordHash),
 			},
 		},
+		Logging: loggingCfg,
 		Cluster: clusterCfg,
 	}, nil
 }

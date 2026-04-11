@@ -29,12 +29,13 @@ func TestUserAndMessageHTTPAPI(t *testing.T) {
 	}
 
 	var createdUser struct {
-		ID       int64             `json:"id"`
+		NodeID   int64             `json:"node_id"`
+		UserID   int64             `json:"user_id"`
 		Username string            `json:"username"`
 		Profile  map[string]string `json:"profile"`
 	}
 	mustJSON(t, doJSON(t, handler, http.MethodPost, "/users", createUserBody, http.StatusCreated), &createdUser)
-	if createdUser.ID == 0 {
+	if createdUser.NodeID == 0 || createdUser.UserID == 0 {
 		t.Fatalf("expected created user id")
 	}
 	if createdUser.Username != "alice" {
@@ -42,12 +43,13 @@ func TestUserAndMessageHTTPAPI(t *testing.T) {
 	}
 
 	var loadedUser struct {
-		ID       int64             `json:"id"`
+		NodeID   int64             `json:"node_id"`
+		UserID   int64             `json:"user_id"`
 		Username string            `json:"username"`
 		Profile  map[string]string `json:"profile"`
 	}
-	mustJSON(t, doJSON(t, handler, http.MethodGet, "/users/"+strconv.FormatInt(createdUser.ID, 10), nil, http.StatusOK), &loadedUser)
-	if loadedUser.ID != createdUser.ID {
+	mustJSON(t, doJSON(t, handler, http.MethodGet, userPath(createdUser.NodeID, createdUser.UserID), nil, http.StatusOK), &loadedUser)
+	if loadedUser.NodeID != createdUser.NodeID || loadedUser.UserID != createdUser.UserID {
 		t.Fatalf("unexpected loaded user: %+v", loadedUser)
 	}
 
@@ -62,42 +64,44 @@ func TestUserAndMessageHTTPAPI(t *testing.T) {
 		Username string            `json:"username"`
 		Profile  map[string]string `json:"profile"`
 	}
-	mustJSON(t, doJSON(t, handler, http.MethodPatch, "/users/"+strconv.FormatInt(createdUser.ID, 10), updateBody, http.StatusOK), &updatedUser)
+	mustJSON(t, doJSON(t, handler, http.MethodPatch, userPath(createdUser.NodeID, createdUser.UserID), updateBody, http.StatusOK), &updatedUser)
 	if updatedUser.Username != "alice-updated" || updatedUser.Profile["display_name"] != "Alice Updated" {
 		t.Fatalf("unexpected updated user: %+v", updatedUser)
 	}
 
 	createMessageBody := map[string]any{
-		"user_id": createdUser.ID,
-		"sender":  "orders",
-		"body":    "package shipped",
+		"sender": "orders",
+		"body":   "package shipped",
 		"metadata": map[string]any{
 			"order_id": "A1001",
 		},
 	}
 	var createdMessage struct {
-		UserID   int64             `json:"user_id"`
-		NodeID   int64             `json:"node_id"`
-		Seq      int64             `json:"seq"`
-		Metadata map[string]string `json:"metadata"`
+		UserNodeID int64             `json:"user_node_id"`
+		UserID     int64             `json:"user_id"`
+		NodeID     int64             `json:"node_id"`
+		Seq        int64             `json:"seq"`
+		Metadata   map[string]string `json:"metadata"`
 	}
-	mustJSON(t, doJSON(t, handler, http.MethodPost, "/messages", createMessageBody, http.StatusCreated), &createdMessage)
-	if createdMessage.UserID != createdUser.ID || createdMessage.NodeID != testNodeID(1) || createdMessage.Seq != 1 {
+	mustJSON(t, doJSON(t, handler, http.MethodPost, userMessagesPath(createdUser.NodeID, createdUser.UserID), createMessageBody, http.StatusCreated), &createdMessage)
+	if createdMessage.UserNodeID != createdUser.NodeID || createdMessage.UserID != createdUser.UserID || createdMessage.NodeID != testNodeID(1) || createdMessage.Seq != 1 {
 		t.Fatalf("unexpected created message: %+v", createdMessage)
 	}
 
 	var listMessages struct {
 		Count int `json:"count"`
 		Items []struct {
-			UserID int64  `json:"user_id"`
-			NodeID int64  `json:"node_id"`
-			Seq    int64  `json:"seq"`
-			Body   string `json:"body"`
+			UserNodeID int64  `json:"user_node_id"`
+			UserID     int64  `json:"user_id"`
+			NodeID     int64  `json:"node_id"`
+			Seq        int64  `json:"seq"`
+			Body       string `json:"body"`
 		} `json:"items"`
 	}
-	mustJSON(t, doJSON(t, handler, http.MethodGet, "/users/"+strconv.FormatInt(createdUser.ID, 10)+"/messages?limit=10", nil, http.StatusOK), &listMessages)
+	mustJSON(t, doJSON(t, handler, http.MethodGet, userMessagesPath(createdUser.NodeID, createdUser.UserID)+"?limit=10", nil, http.StatusOK), &listMessages)
 	if listMessages.Count != 1 || len(listMessages.Items) != 1 ||
-		listMessages.Items[0].UserID != createdUser.ID ||
+		listMessages.Items[0].UserNodeID != createdUser.NodeID ||
+		listMessages.Items[0].UserID != createdUser.UserID ||
 		listMessages.Items[0].NodeID != testNodeID(1) ||
 		listMessages.Items[0].Seq != 1 ||
 		listMessages.Items[0].Body != "package shipped" {
@@ -133,7 +137,7 @@ func TestUserAndMessageHTTPAPI(t *testing.T) {
 		t.Fatalf("metrics missing last sequence: %s", metrics)
 	}
 
-	body := doJSON(t, handler, http.MethodDelete, "/users/"+strconv.FormatInt(createdUser.ID, 10), nil, http.StatusOK)
+	body := doJSON(t, handler, http.MethodDelete, userPath(createdUser.NodeID, createdUser.UserID), nil, http.StatusOK)
 	var deleteResp struct {
 		Status string `json:"status"`
 	}
@@ -142,7 +146,7 @@ func TestUserAndMessageHTTPAPI(t *testing.T) {
 		t.Fatalf("unexpected delete response: %+v", deleteResp)
 	}
 
-	doJSON(t, handler, http.MethodGet, "/users/"+strconv.FormatInt(createdUser.ID, 10), nil, http.StatusNotFound)
+	doJSON(t, handler, http.MethodGet, userPath(createdUser.NodeID, createdUser.UserID), nil, http.StatusNotFound)
 }
 
 func TestCreateUserAllowsDuplicateUsername(t *testing.T) {
@@ -164,10 +168,12 @@ func TestUpdateUserAllowsDuplicateUsername(t *testing.T) {
 	handler := newTestHandler(t)
 
 	var first struct {
-		ID int64 `json:"id"`
+		NodeID int64 `json:"node_id"`
+		UserID int64 `json:"user_id"`
 	}
 	var second struct {
-		ID int64 `json:"id"`
+		NodeID int64 `json:"node_id"`
+		UserID int64 `json:"user_id"`
 	}
 
 	mustJSON(t, doJSON(t, handler, http.MethodPost, "/users", map[string]any{
@@ -179,7 +185,7 @@ func TestUpdateUserAllowsDuplicateUsername(t *testing.T) {
 		"password": "password-2",
 	}, http.StatusCreated), &second)
 
-	doJSON(t, handler, http.MethodPatch, "/users/"+strconv.FormatInt(second.ID, 10), map[string]any{
+	doJSON(t, handler, http.MethodPatch, userPath(second.NodeID, second.UserID), map[string]any{
 		"username": "alice",
 	}, http.StatusOK)
 }
@@ -238,23 +244,22 @@ func TestWriteEndpointsReturn503WhenClockIsNotSynchronized(t *testing.T) {
 		},
 		{
 			method: http.MethodPost,
-			path:   "/messages",
+			path:   userMessagesPath(user.NodeID, user.ID),
 			body: map[string]any{
-				"user_id": user.ID,
-				"sender":  "orders",
-				"body":    "package shipped",
+				"sender": "orders",
+				"body":   "package shipped",
 			},
 		},
 		{
 			method: http.MethodPatch,
-			path:   "/users/" + strconv.FormatInt(user.ID, 10),
+			path:   userPath(user.NodeID, user.ID),
 			body: map[string]any{
 				"username": "renamed-user",
 			},
 		},
 		{
 			method: http.MethodDelete,
-			path:   "/users/" + strconv.FormatInt(user.ID, 10),
+			path:   userPath(user.NodeID, user.ID),
 			body:   nil,
 		},
 	} {
@@ -288,6 +293,14 @@ func newTestHandler(t *testing.T) http.Handler {
 	}
 
 	return NewHTTP(New(st, nil)).Handler()
+}
+
+func userPath(nodeID, userID int64) string {
+	return "/nodes/" + strconv.FormatInt(nodeID, 10) + "/users/" + strconv.FormatInt(userID, 10)
+}
+
+func userMessagesPath(nodeID, userID int64) string {
+	return userPath(nodeID, userID) + "/messages"
 }
 
 func doJSON(t *testing.T, handler http.Handler, method, path string, body any, wantStatus int) []byte {

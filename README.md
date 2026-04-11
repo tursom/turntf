@@ -8,7 +8,7 @@
 - 用户数据最终完全一致
 - 消息数据按每节点配置的每用户最近 N 条最终一致；当各节点 N 相同，窗口内容也一致
 
-当前仓库已经完成实施计划的前 10 步：本地存储内核、单节点 HTTP/JSON API、WebSocket + Protobuf 的最小集群同步链路、断线后的事件日志补发、基于 `user_id` 的用户多主冲突收敛、消息窗口扩散与按节点 N 收敛、反熵同步与快照修复、认证与安全控制、核心一致性测试，以及最小运维观测能力。
+当前仓库已经完成实施计划的前 10 步：本地存储内核、单节点 HTTP/JSON API、WebSocket + Protobuf 的最小集群同步链路、断线后的事件日志补发、基于 `(node_id, user_id)` 的用户多主冲突收敛、消息窗口扩散与按节点 N 收敛、反熵同步与快照修复、认证与安全控制、核心一致性测试，以及最小运维观测能力。
 
 ## 技术栈
 
@@ -160,11 +160,11 @@ url = "ws://127.0.0.1:9081/internal/cluster/ws"
 
 - `POST /auth/login`
 - `POST /users`
-- `GET /users/{id}`
-- `PATCH /users/{id}`
-- `DELETE /users/{id}`
-- `POST /messages`
-- `GET /users/{id}/messages?limit=N`
+- `GET /nodes/{node_id}/users/{user_id}`
+- `PATCH /nodes/{node_id}/users/{user_id}`
+- `DELETE /nodes/{node_id}/users/{user_id}`
+- `POST /nodes/{node_id}/users/{user_id}/messages`
+- `GET /nodes/{node_id}/users/{user_id}/messages?limit=N`
 - `GET /events?after=0&limit=100`
 - `GET /ops/status`
 - `GET /metrics`
@@ -174,15 +174,15 @@ url = "ws://127.0.0.1:9081/internal/cluster/ws"
 当前认证与授权边界：
 
 - `GET /healthz` 和 `POST /auth/login` 公开
-- `POST /users`、`PATCH /users/{id}`、`DELETE /users/{id}`、`GET /events`、`GET /ops/status`、`GET /metrics` 需要管理员或保底超级管理员
-- `GET /users/{id}`、`GET /users/{id}/messages` 允许本人或管理员访问
-- `POST /messages` 需要登录；普通用户只能给自己的 `user_id` 写消息，管理员可给任意用户写消息
-- 登录请求固定使用 `user_id + password`
-- 保底超级管理员固定为 `user_id = 1`，不可删除、不可降权、不可改名，允许修改密码
+- `POST /users`、`PATCH /nodes/{node_id}/users/{user_id}`、`DELETE /nodes/{node_id}/users/{user_id}`、`GET /events`、`GET /ops/status`、`GET /metrics` 需要管理员或保底超级管理员
+- `GET /nodes/{node_id}/users/{user_id}`、`GET /nodes/{node_id}/users/{user_id}/messages` 允许本人或管理员访问
+- `POST /nodes/{node_id}/users/{user_id}/messages` 需要登录；普通用户只能给自己的 `(node_id, user_id)` 写消息，管理员可给任意用户写消息
+- 登录请求固定使用 `node_id + user_id + password`
+- 用户身份由 `(node_id, user_id)` 二元组定位；`user_id = 1` 是每个节点的 root 候选，当前已存储且 `node_id` 最小的 root 候选是唯一受保护保底超级管理员，不可删除、不可降权、不可改名，允许修改密码
 
 当前集群同步行为：
 
-- 本地 `POST /users`、`PATCH /users/{id}`、`DELETE /users/{id}`、`POST /messages` 成功后，会异步广播对应事件
+- 本地 `POST /users`、`PATCH /nodes/{node_id}/users/{user_id}`、`DELETE /nodes/{node_id}/users/{user_id}`、`POST /nodes/{node_id}/users/{user_id}/messages` 成功后，会异步广播对应事件
 - 对端节点成功应用事件后返回 `Ack`
 - 两节点在线时，创建用户和写消息可以自动同步
 - 集群模式下，节点只有在首次成功校时后才接受本地写入；未校时时写接口会返回 `503`
@@ -191,11 +191,11 @@ url = "ws://127.0.0.1:9081/internal/cluster/ws"
 - 摘要不一致时，节点会请求对应快照分片并增量合并到本地；用户仍按字段级 LWW 和墓碑删除优先收敛，消息仍按本地 `message_window_size` 裁剪
 - 当两个节点 `message_window_size` 不一致时，反熵只修复用户分片，避免不同窗口大小导致消息分片反复互拉
 - 拉取重放与实时广播重叠时，重复事件会被 `applied_events` 幂等吸收
-- 用户复制按 `user_id` 做字段级 LWW 合并，用户名允许重复
+- 用户复制按 `(node_id, user_id)` 做字段级 LWW 合并，用户名允许重复
 - 删除通过 `tombstones` 传播，旧的创建/更新事件不会把已删除用户重新复活
 - 启用了 `cluster.max_clock_skew_ms` 时，时钟偏差超限或未来时间戳事件会导致该 peer 被拒绝/断开，避免污染 LWW
 - `tombstones`：删除墓碑表，用来记录“这个对象已经被删过”，避免旧事件在延迟到达时把数据错误复活
-- 消息复制按 `(user_id, node_id, seq)` 幂等去重，并在本地和复制应用时都裁剪到最近 N 条
+- 消息复制按 `(user_node_id, user_id, node_id, seq)` 幂等去重，并在本地和复制应用时都裁剪到最近 N 条
 - 当集群所有节点使用相同的 `message_window_size` 时，同一用户的最近 N 条消息会收敛到相同结果
 - 任意节点签发的登录 token 都可以在其他节点使用，只要它们共享同一 `auth.token_secret`
 - 所有集群 `Envelope` 在收发两端都使用 `cluster.secret` 做 HMAC 鉴权

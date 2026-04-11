@@ -26,6 +26,18 @@ func testNodeID(slot uint16) int64 {
 	return int64(slot) << 12
 }
 
+func clusterUserKey(nodeID, userID int64) store.UserKey {
+	return store.UserKey{NodeID: nodeID, UserID: userID}
+}
+
+func clusterUserPath(nodeID, userID int64) string {
+	return "/nodes/" + strconv.FormatInt(nodeID, 10) + "/users/" + strconv.FormatInt(userID, 10)
+}
+
+func clusterUserMessagesPath(nodeID, userID int64) string {
+	return clusterUserPath(nodeID, userID) + "/messages"
+}
+
 func TestActivateSessionPrefersExpectedDirection(t *testing.T) {
 	t.Parallel()
 
@@ -284,6 +296,15 @@ func TestTokenSignedByNodeAIsAcceptedByNodeB(t *testing.T) {
 			t.Fatalf("ensure bootstrap admin: %v", err)
 		}
 	}
+	events, err := storeA.ListEvents(context.Background(), 0, 10)
+	if err != nil {
+		t.Fatalf("list node A bootstrap events: %v", err)
+	}
+	for _, event := range events {
+		if err := storeB.ApplyReplicatedEvent(context.Background(), store.ToReplicatedEvent(event)); err != nil {
+			t.Fatalf("replicate node A bootstrap admin to node B: %v", err)
+		}
+	}
 
 	signerA, err := auth.NewSigner("shared-token-secret")
 	if err != nil {
@@ -311,6 +332,7 @@ func TestTokenSignedByNodeAIsAcceptedByNodeB(t *testing.T) {
 		Token string `json:"token"`
 	}
 	mustJSON(t, doJSON(t, serverA.URL, http.MethodPost, "/auth/login", map[string]any{
+		"node_id":  testNodeID(1),
 		"user_id":  store.BootstrapAdminUserID,
 		"password": "root-password",
 	}, http.StatusOK), &loginResp)
@@ -318,7 +340,7 @@ func TestTokenSignedByNodeAIsAcceptedByNodeB(t *testing.T) {
 		t.Fatalf("expected login token from node A")
 	}
 
-	_, err = doJSONRequestWithHeaders(serverB.URL, http.MethodGet, "/users/1", nil, http.StatusOK, map[string]string{
+	_, err = doJSONRequestWithHeaders(serverB.URL, http.MethodGet, clusterUserPath(testNodeID(1), store.BootstrapAdminUserID), nil, http.StatusOK, map[string]string{
 		"Authorization": "Bearer " + loginResp.Token,
 	})
 	if err != nil {
@@ -363,7 +385,7 @@ func TestHandleEventBatchSendsAckAfterSuccessfulApply(t *testing.T) {
 		t.Fatalf("handle event batch: %v", err)
 	}
 
-	replicatedUser, err := targetStore.GetUser(context.Background(), user.ID)
+	replicatedUser, err := targetStore.GetUser(context.Background(), user.Key())
 	if err != nil {
 		t.Fatalf("expected replicated user: %v", err)
 	}
@@ -565,16 +587,16 @@ func TestHandlePullEventsReturnsRequestedRange(t *testing.T) {
 		t.Fatalf("create user: %v", err)
 	}
 	if _, _, err := sourceStore.CreateMessage(ctx, store.CreateMessageParams{
-		UserID: user.ID,
-		Sender: "orders",
-		Body:   "first",
+		UserKey: user.Key(),
+		Sender:  "orders",
+		Body:    "first",
 	}); err != nil {
 		t.Fatalf("create first message: %v", err)
 	}
 	if _, _, err := sourceStore.CreateMessage(ctx, store.CreateMessageParams{
-		UserID: user.ID,
-		Sender: "orders",
-		Body:   "second",
+		UserKey: user.Key(),
+		Sender:  "orders",
+		Body:    "second",
 	}); err != nil {
 		t.Fatalf("create second message: %v", err)
 	}
@@ -682,9 +704,9 @@ func TestHandleSnapshotDigestRequestsUsersBeforeMessages(t *testing.T) {
 		t.Fatalf("create source user: %v", err)
 	}
 	if _, _, err := sourceStore.CreateMessage(ctx, store.CreateMessageParams{
-		UserID: user.ID,
-		Sender: "orders",
-		Body:   "snapshot message",
+		UserKey: user.Key(),
+		Sender:  "orders",
+		Body:    "snapshot message",
 	}); err != nil {
 		t.Fatalf("create source message: %v", err)
 	}
@@ -968,27 +990,27 @@ func TestTwoNodeReplicationOverWebSocket(t *testing.T) {
 		},
 	}
 	var createdUser struct {
-		ID int64 `json:"id"`
+		NodeID int64 `json:"node_id"`
+		UserID int64 `json:"user_id"`
 	}
 	mustJSON(t, doJSON(t, nodeA.apiBaseURL, http.MethodPost, "/users", createUserBody, http.StatusCreated), &createdUser)
 
 	waitFor(t, 5*time.Second, func() bool {
-		_, err := nodeB.store.GetUser(context.Background(), createdUser.ID)
+		_, err := nodeB.store.GetUser(context.Background(), clusterUserKey(createdUser.NodeID, createdUser.UserID))
 		return err == nil
 	})
 
 	createMessageBody := map[string]any{
-		"user_id": createdUser.ID,
-		"sender":  "orders",
-		"body":    "replicated payload",
+		"sender": "orders",
+		"body":   "replicated payload",
 		"metadata": map[string]any{
 			"order_id": "A1001",
 		},
 	}
-	doJSON(t, nodeA.apiBaseURL, http.MethodPost, "/messages", createMessageBody, http.StatusCreated)
+	doJSON(t, nodeA.apiBaseURL, http.MethodPost, clusterUserMessagesPath(createdUser.NodeID, createdUser.UserID), createMessageBody, http.StatusCreated)
 
 	waitFor(t, 5*time.Second, func() bool {
-		messages, err := nodeB.store.ListMessagesByUser(context.Background(), createdUser.ID, 10)
+		messages, err := nodeB.store.ListMessagesByUser(context.Background(), clusterUserKey(createdUser.NodeID, createdUser.UserID), 10)
 		return err == nil && len(messages) == 1 && messages[0].Body == "replicated payload"
 	})
 
@@ -1027,7 +1049,8 @@ func TestTwoNodeMessageWindowConvergesWhenSizesMatch(t *testing.T) {
 	})
 
 	var createdUser struct {
-		ID int64 `json:"id"`
+		NodeID int64 `json:"node_id"`
+		UserID int64 `json:"user_id"`
 	}
 	mustJSON(t, doJSON(t, nodeA.apiBaseURL, http.MethodPost, "/users", map[string]any{
 		"username": "window-user",
@@ -1035,22 +1058,21 @@ func TestTwoNodeMessageWindowConvergesWhenSizesMatch(t *testing.T) {
 	}, http.StatusCreated), &createdUser)
 
 	waitFor(t, 5*time.Second, func() bool {
-		_, err := nodeB.store.GetUser(context.Background(), createdUser.ID)
+		_, err := nodeB.store.GetUser(context.Background(), clusterUserKey(createdUser.NodeID, createdUser.UserID))
 		return err == nil
 	})
 
 	for i := 1; i <= 4; i++ {
-		doJSON(t, nodeA.apiBaseURL, http.MethodPost, "/messages", map[string]any{
-			"user_id": createdUser.ID,
-			"sender":  "orders",
-			"body":    "message-" + strconv.Itoa(i),
+		doJSON(t, nodeA.apiBaseURL, http.MethodPost, clusterUserMessagesPath(createdUser.NodeID, createdUser.UserID), map[string]any{
+			"sender": "orders",
+			"body":   "message-" + strconv.Itoa(i),
 		}, http.StatusCreated)
 	}
 
 	waitFor(t, 5*time.Second, func() bool {
 		expected := []string{"message-4", "message-3"}
 		for _, node := range []*testNode{nodeA, nodeB} {
-			messages, err := node.store.ListMessagesByUser(context.Background(), createdUser.ID, 10)
+			messages, err := node.store.ListMessagesByUser(context.Background(), clusterUserKey(createdUser.NodeID, createdUser.UserID), 10)
 			if err != nil || len(messages) != len(expected) {
 				return false
 			}
@@ -1083,7 +1105,8 @@ func TestTwoNodeMessageWindowMismatchKeepsPerNodeWindows(t *testing.T) {
 	})
 
 	var createdUser struct {
-		ID int64 `json:"id"`
+		NodeID int64 `json:"node_id"`
+		UserID int64 `json:"user_id"`
 	}
 	mustJSON(t, doJSON(t, nodeA.apiBaseURL, http.MethodPost, "/users", map[string]any{
 		"username": "window-mismatch-user",
@@ -1091,24 +1114,23 @@ func TestTwoNodeMessageWindowMismatchKeepsPerNodeWindows(t *testing.T) {
 	}, http.StatusCreated), &createdUser)
 
 	waitFor(t, 5*time.Second, func() bool {
-		_, err := nodeB.store.GetUser(context.Background(), createdUser.ID)
+		_, err := nodeB.store.GetUser(context.Background(), clusterUserKey(createdUser.NodeID, createdUser.UserID))
 		return err == nil
 	})
 
 	for i := 1; i <= 4; i++ {
-		doJSON(t, nodeA.apiBaseURL, http.MethodPost, "/messages", map[string]any{
-			"user_id": createdUser.ID,
-			"sender":  "orders",
-			"body":    "message-" + strconv.Itoa(i),
+		doJSON(t, nodeA.apiBaseURL, http.MethodPost, clusterUserMessagesPath(createdUser.NodeID, createdUser.UserID), map[string]any{
+			"sender": "orders",
+			"body":   "message-" + strconv.Itoa(i),
 		}, http.StatusCreated)
 	}
 
 	waitFor(t, 5*time.Second, func() bool {
-		aMessages, err := nodeA.store.ListMessagesByUser(context.Background(), createdUser.ID, 10)
+		aMessages, err := nodeA.store.ListMessagesByUser(context.Background(), clusterUserKey(createdUser.NodeID, createdUser.UserID), 10)
 		if err != nil || len(aMessages) != 3 {
 			return false
 		}
-		bMessages, err := nodeB.store.ListMessagesByUser(context.Background(), createdUser.ID, 10)
+		bMessages, err := nodeB.store.ListMessagesByUser(context.Background(), clusterUserKey(createdUser.NodeID, createdUser.UserID), 10)
 		if err != nil || len(bMessages) != 2 {
 			return false
 		}
@@ -1141,9 +1163,9 @@ func TestLateJoiningNodeCatchesUpWithoutDuplicates(t *testing.T) {
 		t.Fatalf("create offline user: %v", err)
 	}
 	if _, _, err := nodeA.store.CreateMessage(context.Background(), store.CreateMessageParams{
-		UserID: user.ID,
-		Sender: "orders",
-		Body:   "missed while offline",
+		UserKey: user.Key(),
+		Sender:  "orders",
+		Body:    "missed while offline",
 	}); err != nil {
 		t.Fatalf("create offline message: %v", err)
 	}
@@ -1151,11 +1173,11 @@ func TestLateJoiningNodeCatchesUpWithoutDuplicates(t *testing.T) {
 	nodeB.start(t)
 
 	waitFor(t, 5*time.Second, func() bool {
-		_, err := nodeB.store.GetUser(context.Background(), user.ID)
+		_, err := nodeB.store.GetUser(context.Background(), user.Key())
 		return err == nil
 	})
 	waitFor(t, 5*time.Second, func() bool {
-		messages, err := nodeB.store.ListMessagesByUser(context.Background(), user.ID, 10)
+		messages, err := nodeB.store.ListMessagesByUser(context.Background(), user.Key(), 10)
 		return err == nil && len(messages) == 1 && messages[0].Body == "missed while offline"
 	})
 
@@ -1191,9 +1213,9 @@ func TestLateJoiningNodeCatchesUpAcrossMultiplePullBatches(t *testing.T) {
 	}
 	for i := 0; i < pullBatchSize+12; i++ {
 		if _, _, err := nodeA.store.CreateMessage(ctx, store.CreateMessageParams{
-			UserID: user.ID,
-			Sender: "orders",
-			Body:   "message-" + strconv.Itoa(i),
+			UserKey: user.Key(),
+			Sender:  "orders",
+			Body:    "message-" + strconv.Itoa(i),
 		}); err != nil {
 			t.Fatalf("create backlog message %d: %v", i, err)
 		}
@@ -1202,11 +1224,11 @@ func TestLateJoiningNodeCatchesUpAcrossMultiplePullBatches(t *testing.T) {
 	nodeB.start(t)
 
 	waitFor(t, 5*time.Second, func() bool {
-		_, err := nodeB.store.GetUser(context.Background(), user.ID)
+		_, err := nodeB.store.GetUser(context.Background(), user.Key())
 		return err == nil
 	})
 	waitFor(t, 5*time.Second, func() bool {
-		messages, err := nodeB.store.ListMessagesByUser(context.Background(), user.ID, 500)
+		messages, err := nodeB.store.ListMessagesByUser(context.Background(), user.Key(), 500)
 		return err == nil && len(messages) == pullBatchSize+12
 	})
 
@@ -1241,9 +1263,9 @@ func TestLateJoiningNodeTrimsCatchupToLocalWindow(t *testing.T) {
 	}
 	for i := 1; i <= 5; i++ {
 		if _, _, err := nodeA.store.CreateMessage(context.Background(), store.CreateMessageParams{
-			UserID: user.ID,
-			Sender: "orders",
-			Body:   "message-" + strconv.Itoa(i),
+			UserKey: user.Key(),
+			Sender:  "orders",
+			Body:    "message-" + strconv.Itoa(i),
 		}); err != nil {
 			t.Fatalf("create offline message %d: %v", i, err)
 		}
@@ -1252,7 +1274,7 @@ func TestLateJoiningNodeTrimsCatchupToLocalWindow(t *testing.T) {
 	nodeB.start(t)
 
 	waitFor(t, 5*time.Second, func() bool {
-		messages, err := nodeB.store.ListMessagesByUser(context.Background(), user.ID, 10)
+		messages, err := nodeB.store.ListMessagesByUser(context.Background(), user.Key(), 10)
 		if err != nil || len(messages) != 2 {
 			return false
 		}
@@ -1281,9 +1303,9 @@ func TestSnapshotRepairOverWebSocketRepairsRowsOutsideEventLog(t *testing.T) {
 		t.Fatalf("create seed user: %v", err)
 	}
 	if _, _, err := seedStore.CreateMessage(ctx, store.CreateMessageParams{
-		UserID: user.ID,
-		Sender: "orders",
-		Body:   "snapshot-only-message",
+		UserKey: user.Key(),
+		Sender:  "orders",
+		Body:    "snapshot-only-message",
 	}); err != nil {
 		t.Fatalf("create seed message: %v", err)
 	}
@@ -1323,10 +1345,10 @@ func TestSnapshotRepairOverWebSocketRepairsRowsOutsideEventLog(t *testing.T) {
 			nodeA.manager.sendSnapshotDigest(sess)
 		}
 
-		if _, err := nodeB.store.GetUser(ctx, user.ID); err != nil {
+		if _, err := nodeB.store.GetUser(ctx, user.Key()); err != nil {
 			return false
 		}
-		messages, err := nodeB.store.ListMessagesByUser(ctx, user.ID, 10)
+		messages, err := nodeB.store.ListMessagesByUser(ctx, user.Key(), 10)
 		return err == nil && len(messages) == 1 && messages[0].Body == "snapshot-only-message"
 	})
 
@@ -1368,7 +1390,8 @@ func TestThreeNodeFieldLevelConvergence(t *testing.T) {
 	})
 
 	var createdUser struct {
-		ID int64 `json:"id"`
+		NodeID int64 `json:"node_id"`
+		UserID int64 `json:"user_id"`
 	}
 	mustJSON(t, doJSON(t, nodeA.apiBaseURL, http.MethodPost, "/users", map[string]any{
 		"username": "cluster-user",
@@ -1379,8 +1402,8 @@ func TestThreeNodeFieldLevelConvergence(t *testing.T) {
 	}, http.StatusCreated), &createdUser)
 
 	waitFor(t, 5*time.Second, func() bool {
-		_, errB := nodeB.store.GetUser(context.Background(), createdUser.ID)
-		_, errC := nodeC.store.GetUser(context.Background(), createdUser.ID)
+		_, errB := nodeB.store.GetUser(context.Background(), clusterUserKey(createdUser.NodeID, createdUser.UserID))
+		_, errC := nodeC.store.GetUser(context.Background(), clusterUserKey(createdUser.NodeID, createdUser.UserID))
 		return errB == nil && errC == nil
 	})
 
@@ -1389,7 +1412,7 @@ func TestThreeNodeFieldLevelConvergence(t *testing.T) {
 
 	go func() {
 		<-start
-		_, err := doJSONRequest(nodeB.apiBaseURL, http.MethodPatch, "/users/"+strconv.FormatInt(createdUser.ID, 10), map[string]any{
+		_, err := doJSONRequest(nodeB.apiBaseURL, http.MethodPatch, clusterUserPath(createdUser.NodeID, createdUser.UserID), map[string]any{
 			"username": "cluster-user-renamed",
 		}, http.StatusOK)
 		errCh <- err
@@ -1397,7 +1420,7 @@ func TestThreeNodeFieldLevelConvergence(t *testing.T) {
 
 	go func() {
 		<-start
-		_, err := doJSONRequest(nodeC.apiBaseURL, http.MethodPatch, "/users/"+strconv.FormatInt(createdUser.ID, 10), map[string]any{
+		_, err := doJSONRequest(nodeC.apiBaseURL, http.MethodPatch, clusterUserPath(createdUser.NodeID, createdUser.UserID), map[string]any{
 			"profile": map[string]any{
 				"display_name": "Merged Profile",
 			},
@@ -1414,7 +1437,7 @@ func TestThreeNodeFieldLevelConvergence(t *testing.T) {
 
 	waitFor(t, 5*time.Second, func() bool {
 		for _, node := range []*testNode{nodeA, nodeB, nodeC} {
-			user, err := node.store.GetUser(context.Background(), createdUser.ID)
+			user, err := node.store.GetUser(context.Background(), clusterUserKey(createdUser.NodeID, createdUser.UserID))
 			if err != nil {
 				return false
 			}
@@ -1455,7 +1478,8 @@ func TestThreeNodeDeleteWinsOverConcurrentUpdate(t *testing.T) {
 	})
 
 	var createdUser struct {
-		ID int64 `json:"id"`
+		NodeID int64 `json:"node_id"`
+		UserID int64 `json:"user_id"`
 	}
 	mustJSON(t, doJSON(t, nodeA.apiBaseURL, http.MethodPost, "/users", map[string]any{
 		"username": "delete-user",
@@ -1463,8 +1487,8 @@ func TestThreeNodeDeleteWinsOverConcurrentUpdate(t *testing.T) {
 	}, http.StatusCreated), &createdUser)
 
 	waitFor(t, 5*time.Second, func() bool {
-		_, errB := nodeB.store.GetUser(context.Background(), createdUser.ID)
-		_, errC := nodeC.store.GetUser(context.Background(), createdUser.ID)
+		_, errB := nodeB.store.GetUser(context.Background(), clusterUserKey(createdUser.NodeID, createdUser.UserID))
+		_, errC := nodeC.store.GetUser(context.Background(), clusterUserKey(createdUser.NodeID, createdUser.UserID))
 		return errB == nil && errC == nil
 	})
 
@@ -1473,7 +1497,7 @@ func TestThreeNodeDeleteWinsOverConcurrentUpdate(t *testing.T) {
 
 	go func() {
 		<-start
-		_, err := doJSONRequest(nodeB.apiBaseURL, http.MethodPatch, "/users/"+strconv.FormatInt(createdUser.ID, 10), map[string]any{
+		_, err := doJSONRequest(nodeB.apiBaseURL, http.MethodPatch, clusterUserPath(createdUser.NodeID, createdUser.UserID), map[string]any{
 			"profile": map[string]any{
 				"display_name": "Should Lose To Delete",
 			},
@@ -1483,7 +1507,7 @@ func TestThreeNodeDeleteWinsOverConcurrentUpdate(t *testing.T) {
 
 	go func() {
 		<-start
-		_, err := doJSONRequest(nodeC.apiBaseURL, http.MethodDelete, "/users/"+strconv.FormatInt(createdUser.ID, 10), nil, http.StatusOK)
+		_, err := doJSONRequest(nodeC.apiBaseURL, http.MethodDelete, clusterUserPath(createdUser.NodeID, createdUser.UserID), nil, http.StatusOK)
 		errCh <- err
 	}()
 
@@ -1496,7 +1520,7 @@ func TestThreeNodeDeleteWinsOverConcurrentUpdate(t *testing.T) {
 
 	waitFor(t, 5*time.Second, func() bool {
 		for _, node := range []*testNode{nodeA, nodeB, nodeC} {
-			if _, err := node.store.GetUser(context.Background(), createdUser.ID); err != store.ErrNotFound {
+			if _, err := node.store.GetUser(context.Background(), clusterUserKey(createdUser.NodeID, createdUser.UserID)); err != store.ErrNotFound {
 				return false
 			}
 		}

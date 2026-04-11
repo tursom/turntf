@@ -34,13 +34,13 @@
 - 用户冲突规则固定如下：
   - 字段级 LWW
   - 删除优先
-  - 用户以 `user_id` 为唯一身份标识，用户名允许重复
+  - 用户以 `(node_id, user_id)` 为唯一身份标识，用户名允许重复
 - 删除通过墓碑传播，避免离线节点把旧数据重新同步回来。
 
 ### 消息数据一致性
 
 - 消息采用广播扩散和幂等去重。
-- 每条消息由 `(user_id, node_id, seq)` 三元组唯一定位。
+- 每条消息由 `(user_node_id, user_id, node_id, seq)` 四元组唯一定位，其中 `node_id` 表示消息生产节点。
 - 节点最终只保留每个用户最近 N 条消息，默认 N = 500。
 - 消息同步不追求全历史强一致，只保证每个节点本地窗口内消息最终收敛。
 
@@ -61,11 +61,11 @@
 建议保留对外 HTTP/JSON API，和集群内部同步协议解耦。
 
 - `POST /users`
-- `PATCH /users/{id}`
-- `DELETE /users/{id}`
-- `GET /users/{id}`
-- `POST /messages`
-- `GET /users/{id}/messages?limit=N`
+- `PATCH /nodes/{node_id}/users/{user_id}`
+- `DELETE /nodes/{node_id}/users/{user_id}`
+- `GET /nodes/{node_id}/users/{user_id}`
+- `POST /nodes/{node_id}/users/{user_id}/messages`
+- `GET /nodes/{node_id}/users/{user_id}/messages?limit=N`
 
 ### 内部 Protobuf 协议
 
@@ -113,6 +113,7 @@
 用户表建议包含：
 
 - `user_id`
+- `node_id`
 - `username`
 - `password_hash`
 - `profile`
@@ -128,6 +129,7 @@
 消息表建议包含：
 
 - `user_id`
+- `user_node_id`
 - `node_id`
 - `seq`
 - `sender`
@@ -190,12 +192,12 @@
 - 为用户字段引入独立版本。
 - 落地字段级 LWW 合并。
 - 落地删除优先和墓碑传播。
-- 允许不同用户使用相同用户名，用户身份只通过 `user_id` 判定。
-- `user.created` 和 `user.updated` 都按 `user_id` 走 upsert + 字段级合并。
+- 允许不同用户使用相同用户名，用户身份只通过 `(node_id, user_id)` 判定。
+- `user.created` 和 `user.updated` 都按 `(node_id, user_id)` 走 upsert + 字段级合并。
 
 完成标准：
 
-- 三节点并发修改同一 `user_id` 对应的用户后，所有节点最终收敛为同一状态，且删除不会被旧更新重新复活。
+- 三节点并发修改同一 `(node_id, user_id)` 对应的用户后，所有节点最终收敛为同一状态，且删除不会被旧更新重新复活。
 
 ### 第 6 步：消息扩散与最近 N 条一致
 

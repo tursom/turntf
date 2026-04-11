@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -31,14 +30,16 @@ func TestAuthenticatedHTTPLoginAndAuthorization(t *testing.T) {
 	}, nil, http.StatusUnauthorized)
 
 	doJSONWithHeaders(t, testAPI.handler, http.MethodPost, "/auth/login", map[string]any{
+		"node_id":  testNodeID(1),
 		"user_id":  store.BootstrapAdminUserID,
 		"password": "wrong",
 	}, nil, http.StatusUnauthorized)
 
-	adminToken := loginToken(t, testAPI.handler, store.BootstrapAdminUserID, "root-password")
-	aliceID := createUserAs(t, testAPI.handler, adminToken, "alice", "alice-password", store.RoleUser)
+	adminKey := store.UserKey{NodeID: testNodeID(1), UserID: store.BootstrapAdminUserID}
+	adminToken := loginToken(t, testAPI.handler, adminKey, "root-password")
+	aliceKey := createUserAs(t, testAPI.handler, adminToken, "alice", "alice-password", store.RoleUser)
 
-	aliceToken := loginToken(t, testAPI.handler, aliceID, "alice-password")
+	aliceToken := loginToken(t, testAPI.handler, aliceKey, "alice-password")
 
 	doJSONWithHeaders(t, testAPI.handler, http.MethodGet, "/ops/status", nil, map[string]string{
 		"Authorization": "Bearer " + adminToken,
@@ -54,11 +55,11 @@ func TestAuthenticatedHTTPLoginAndAuthorization(t *testing.T) {
 		t.Fatalf("metrics missing write gate gauge: %s", metrics)
 	}
 
-	doJSONWithHeaders(t, testAPI.handler, http.MethodGet, "/users/"+strconv.FormatInt(aliceID, 10), nil, map[string]string{
+	doJSONWithHeaders(t, testAPI.handler, http.MethodGet, userPath(aliceKey.NodeID, aliceKey.UserID), nil, map[string]string{
 		"Authorization": "Bearer " + aliceToken,
 	}, http.StatusOK)
 
-	doJSONWithHeaders(t, testAPI.handler, http.MethodGet, "/users/"+strconv.FormatInt(store.BootstrapAdminUserID, 10), nil, map[string]string{
+	doJSONWithHeaders(t, testAPI.handler, http.MethodGet, userPath(adminKey.NodeID, adminKey.UserID), nil, map[string]string{
 		"Authorization": "Bearer " + aliceToken,
 	}, http.StatusForbidden)
 
@@ -69,18 +70,16 @@ func TestAuthenticatedHTTPLoginAndAuthorization(t *testing.T) {
 		"Authorization": "Bearer " + aliceToken,
 	}, http.StatusForbidden)
 
-	doJSONWithHeaders(t, testAPI.handler, http.MethodPost, "/messages", map[string]any{
-		"user_id": aliceID,
-		"sender":  "alice",
-		"body":    "hello",
+	doJSONWithHeaders(t, testAPI.handler, http.MethodPost, userMessagesPath(aliceKey.NodeID, aliceKey.UserID), map[string]any{
+		"sender": "alice",
+		"body":   "hello",
 	}, map[string]string{
 		"Authorization": "Bearer " + aliceToken,
 	}, http.StatusCreated)
 
-	doJSONWithHeaders(t, testAPI.handler, http.MethodPost, "/messages", map[string]any{
-		"user_id": store.BootstrapAdminUserID,
-		"sender":  "alice",
-		"body":    "forbidden",
+	doJSONWithHeaders(t, testAPI.handler, http.MethodPost, userMessagesPath(adminKey.NodeID, adminKey.UserID), map[string]any{
+		"sender": "alice",
+		"body":   "forbidden",
 	}, map[string]string{
 		"Authorization": "Bearer " + aliceToken,
 	}, http.StatusForbidden)
@@ -123,14 +122,15 @@ func newAuthenticatedTestAPI(t *testing.T) authenticatedTestAPI {
 	}
 }
 
-func loginToken(t *testing.T, handler http.Handler, userID int64, password string) string {
+func loginToken(t *testing.T, handler http.Handler, key store.UserKey, password string) string {
 	t.Helper()
 
 	var response struct {
 		Token string `json:"token"`
 	}
 	mustJSON(t, doJSONWithHeaders(t, handler, http.MethodPost, "/auth/login", map[string]any{
-		"user_id":  userID,
+		"node_id":  key.NodeID,
+		"user_id":  key.UserID,
 		"password": password,
 	}, nil, http.StatusOK), &response)
 	if response.Token == "" {
@@ -139,11 +139,12 @@ func loginToken(t *testing.T, handler http.Handler, userID int64, password strin
 	return response.Token
 }
 
-func createUserAs(t *testing.T, handler http.Handler, token, username, password, role string) int64 {
+func createUserAs(t *testing.T, handler http.Handler, token, username, password, role string) store.UserKey {
 	t.Helper()
 
 	var response struct {
-		ID int64 `json:"id"`
+		NodeID int64 `json:"node_id"`
+		UserID int64 `json:"user_id"`
 	}
 	mustJSON(t, doJSONWithHeaders(t, handler, http.MethodPost, "/users", map[string]any{
 		"username": username,
@@ -152,10 +153,11 @@ func createUserAs(t *testing.T, handler http.Handler, token, username, password,
 	}, map[string]string{
 		"Authorization": "Bearer " + token,
 	}, http.StatusCreated), &response)
-	if response.ID == 0 {
+	key := store.UserKey{NodeID: response.NodeID, UserID: response.UserID}
+	if err := key.Validate(); err != nil {
 		t.Fatalf("expected created user id")
 	}
-	return response.ID
+	return key
 }
 
 func mustHashPassword(t *testing.T, password string) string {

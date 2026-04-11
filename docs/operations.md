@@ -25,7 +25,7 @@
 ```bash
 TOKEN="$(curl -sS -X POST http://127.0.0.1:8080/auth/login \
   -H 'Content-Type: application/json' \
-  -d '{"user_id":1,"password":"root"}' | jq -r .token)"
+  -d '{"node_id":4096,"user_id":1,"password":"root"}' | jq -r .token)"
 
 curl -H "Authorization: Bearer ${TOKEN}" http://127.0.0.1:8080/ops/status
 curl -H "Authorization: Bearer ${TOKEN}" http://127.0.0.1:8080/metrics

@@ -13,6 +13,7 @@ import (
 )
 
 type replicatedUserPayload struct {
+	NodeID              int64  `json:"node_id"`
 	ID                  int64  `json:"id"`
 	Username            string `json:"username"`
 	PasswordHash        string `json:"password_hash"`
@@ -35,18 +36,20 @@ type replicatedUserEnvelope struct {
 }
 
 type replicatedDeletePayload struct {
+	NodeID       int64  `json:"node_id"`
 	UserID       int64  `json:"user_id"`
 	DeletedAtHLC string `json:"deleted_at_hlc"`
 }
 
 type replicatedMessagePayload struct {
-	UserID    int64  `json:"user_id"`
-	NodeID    int64  `json:"node_id"`
-	Seq       int64  `json:"seq"`
-	Sender    string `json:"sender"`
-	Body      string `json:"body"`
-	Metadata  string `json:"metadata,omitempty"`
-	CreatedAt string `json:"created_at"`
+	UserNodeID int64  `json:"user_node_id"`
+	UserID     int64  `json:"user_id"`
+	NodeID     int64  `json:"node_id"`
+	Seq        int64  `json:"seq"`
+	Sender     string `json:"sender"`
+	Body       string `json:"body"`
+	Metadata   string `json:"metadata,omitempty"`
+	CreatedAt  string `json:"created_at"`
 }
 
 type replicatedMessageEnvelope struct {
@@ -56,6 +59,7 @@ type replicatedMessageEnvelope struct {
 func encodeCreateUserPayload(user User) (string, error) {
 	return marshalPayload(replicatedUserEnvelope{
 		User: replicatedUserPayload{
+			NodeID:              user.NodeID,
 			ID:                  user.ID,
 			Username:            user.Username,
 			PasswordHash:        user.PasswordHash,
@@ -75,6 +79,7 @@ func encodeCreateUserPayload(user User) (string, error) {
 
 func encodeUpdateUserPayload(user User) (string, error) {
 	payload := replicatedUserPayload{
+		NodeID:              user.NodeID,
 		ID:                  user.ID,
 		Username:            user.Username,
 		PasswordHash:        user.PasswordHash,
@@ -98,9 +103,10 @@ func encodeUpdateUserPayload(user User) (string, error) {
 	return marshalPayload(replicatedUserEnvelope{User: payload})
 }
 
-func encodeDeleteUserPayload(userID int64, deletedAt string) (string, error) {
+func encodeDeleteUserPayload(key UserKey, deletedAt string) (string, error) {
 	return marshalPayload(replicatedDeletePayload{
-		UserID:       userID,
+		NodeID:       key.NodeID,
+		UserID:       key.UserID,
 		DeletedAtHLC: deletedAt,
 	})
 }
@@ -108,13 +114,14 @@ func encodeDeleteUserPayload(userID int64, deletedAt string) (string, error) {
 func encodeCreateMessagePayload(message Message) (string, error) {
 	return marshalPayload(replicatedMessageEnvelope{
 		Message: replicatedMessagePayload{
-			UserID:    message.UserID,
-			NodeID:    message.NodeID,
-			Seq:       message.Seq,
-			Sender:    message.Sender,
-			Body:      message.Body,
-			Metadata:  message.Metadata,
-			CreatedAt: message.CreatedAt.String(),
+			UserNodeID: message.UserNodeID,
+			UserID:     message.UserID,
+			NodeID:     message.NodeID,
+			Seq:        message.Seq,
+			Sender:     message.Sender,
+			Body:       message.Body,
+			Metadata:   message.Metadata,
+			CreatedAt:  message.CreatedAt.String(),
 		},
 	})
 }
@@ -129,13 +136,14 @@ func marshalPayload(value any) (string, error) {
 
 func ToReplicatedEvent(event Event) *clusterproto.ReplicatedEvent {
 	return &clusterproto.ReplicatedEvent{
-		EventId:       event.EventID,
-		Kind:          event.Kind,
-		AggregateType: event.Aggregate,
-		AggregateId:   event.AggregateID,
-		Hlc:           event.HLC.String(),
-		OriginNodeId:  event.OriginNodeID,
-		Payload:       []byte(event.Payload),
+		EventId:         event.EventID,
+		Kind:            event.Kind,
+		AggregateType:   event.Aggregate,
+		AggregateNodeId: event.AggregateNodeID,
+		AggregateId:     event.AggregateID,
+		Hlc:             event.HLC.String(),
+		OriginNodeId:    event.OriginNodeID,
+		Payload:         []byte(event.Payload),
 	}
 }
 
@@ -194,9 +202,9 @@ func (s *Store) ApplyReplicatedEvent(ctx context.Context, event *clusterproto.Re
 	}
 
 	if _, err := tx.ExecContext(ctx, `
-INSERT INTO event_log(event_id, kind, aggregate_type, aggregate_id, hlc, origin_node_id, payload)
-VALUES(?, ?, ?, ?, ?, ?, ?)
-`, event.EventId, event.Kind, event.AggregateType, event.AggregateId, hlc.String(), event.OriginNodeId, string(event.Payload)); err != nil {
+INSERT INTO event_log(event_id, kind, aggregate_type, aggregate_node_id, aggregate_id, hlc, origin_node_id, payload)
+VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+`, event.EventId, event.Kind, event.AggregateType, event.AggregateNodeId, event.AggregateId, hlc.String(), event.OriginNodeId, string(event.Payload)); err != nil {
 		if isUniqueConstraint(err) {
 			if err := tx.Commit(); err != nil {
 				return fmt.Errorf("commit duplicate event log entry: %w", err)
@@ -239,15 +247,16 @@ func (s *Store) applyReplicatedUserDeleted(ctx context.Context, tx *sql.Tx, even
 	if err := json.Unmarshal(event.Payload, &payload); err != nil {
 		return fmt.Errorf("decode user.deleted payload: %w", err)
 	}
-	if payload.UserID == 0 {
-		return fmt.Errorf("%w: user id cannot be empty", ErrInvalidInput)
+	key := UserKey{NodeID: payload.NodeID, UserID: payload.UserID}
+	if err := key.Validate(); err != nil {
+		return err
 	}
 
 	deletedAt, err := parseRequiredTimestamp(payload.DeletedAtHLC, "deleted_at_hlc")
 	if err != nil {
 		return err
 	}
-	return s.applyUserDeleteTx(ctx, tx, payload.UserID, deletedAt, event.OriginNodeId, false)
+	return s.applyUserDeleteTx(ctx, tx, key, deletedAt, event.OriginNodeId, false)
 }
 
 func (s *Store) applyReplicatedMessageCreated(ctx context.Context, tx *sql.Tx, event *clusterproto.ReplicatedEvent) error {
@@ -256,31 +265,29 @@ func (s *Store) applyReplicatedMessageCreated(ctx context.Context, tx *sql.Tx, e
 		return fmt.Errorf("decode message.created payload: %w", err)
 	}
 	message := payload.Message
-	if message.UserID == 0 || message.NodeID <= 0 || message.Seq <= 0 {
-		return fmt.Errorf("%w: message user id, node id, and seq are required", ErrInvalidInput)
+	key := UserKey{NodeID: message.UserNodeID, UserID: message.UserID}
+	if err := validateMessageIdentity(key, message.NodeID, message.Seq); err != nil {
+		return err
 	}
 	if event.OriginNodeId != 0 && event.OriginNodeId != message.NodeID {
 		return fmt.Errorf("%w: message node id %d does not match event origin %d", ErrInvalidInput, message.NodeID, event.OriginNodeId)
 	}
 
-	if _, err := s.getUserByIDTx(ctx, tx, message.UserID, false); err != nil {
+	if _, err := s.getUserByIDTx(ctx, tx, key, false); err != nil {
 		return err
 	}
 
 	if _, err := tx.ExecContext(ctx, `
-INSERT INTO messages(user_id, node_id, seq, sender, body, metadata, created_at_hlc)
-VALUES(?, ?, ?, ?, ?, ?, ?)
-`, message.UserID, message.NodeID, message.Seq, message.Sender, message.Body, nullIfEmpty(message.Metadata),
+INSERT INTO messages(user_node_id, user_id, node_id, seq, sender, body, metadata, created_at_hlc)
+VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+`, message.UserNodeID, message.UserID, message.NodeID, message.Seq, message.Sender, message.Body, nullIfEmpty(message.Metadata),
 		message.CreatedAt); err != nil {
 		if isUniqueConstraint(err) {
-			return s.recordMessageSeqTx(ctx, tx, message.UserID, message.NodeID, message.Seq)
+			return nil
 		}
 		return fmt.Errorf("insert replicated message: %w", err)
 	}
-	if err := s.recordMessageSeqTx(ctx, tx, message.UserID, message.NodeID, message.Seq); err != nil {
-		return err
-	}
-	if err := s.trimMessagesForUserTx(ctx, tx, message.UserID); err != nil {
+	if err := s.trimMessagesForUserTx(ctx, tx, key); err != nil {
 		return err
 	}
 	return nil
@@ -294,17 +301,20 @@ func (s *Store) isEventAppliedTx(ctx context.Context, tx *sql.Tx, eventID int64)
 	return count > 0, nil
 }
 
-func (s *Store) getUserByIDTx(ctx context.Context, tx *sql.Tx, userID int64, includeDeleted bool) (User, error) {
+func (s *Store) getUserByIDTx(ctx context.Context, tx *sql.Tx, key UserKey, includeDeleted bool) (User, error) {
+	if err := key.Validate(); err != nil {
+		return User{}, err
+	}
 	query := `
-SELECT user_id, username, password_hash, profile, role, system_reserved, created_at_hlc, updated_at_hlc,
+SELECT node_id, user_id, username, password_hash, profile, role, system_reserved, created_at_hlc, updated_at_hlc,
        deleted_at_hlc, version_username, version_password_hash, version_profile,
        version_role, version_deleted, origin_node_id
 FROM users
-WHERE user_id = ?`
+WHERE node_id = ? AND user_id = ?`
 	if !includeDeleted {
 		query += ` AND deleted_at_hlc IS NULL`
 	}
-	row := tx.QueryRowContext(ctx, query, userID)
+	row := tx.QueryRowContext(ctx, query, key.NodeID, key.UserID)
 	user, err := scanUser(row)
 	if err == sql.ErrNoRows {
 		return User{}, ErrNotFound
@@ -338,8 +348,9 @@ func decodeReplicatedUser(userPayload []byte, kind string) (User, error) {
 	}
 
 	payload := envelope.User
-	if payload.ID == 0 {
-		return User{}, fmt.Errorf("%w: user id cannot be empty", ErrInvalidInput)
+	key := UserKey{NodeID: payload.NodeID, UserID: payload.ID}
+	if err := key.Validate(); err != nil {
+		return User{}, err
 	}
 
 	createdAt, err := parseRequiredTimestamp(payload.CreatedAt, "user created_at")
@@ -372,6 +383,7 @@ func decodeReplicatedUser(userPayload []byte, kind string) (User, error) {
 	}
 
 	user := User{
+		NodeID:              payload.NodeID,
 		ID:                  payload.ID,
 		Username:            payload.Username,
 		PasswordHash:        payload.PasswordHash,
@@ -386,7 +398,7 @@ func decodeReplicatedUser(userPayload []byte, kind string) (User, error) {
 		VersionRole:         versionRole,
 		OriginNodeID:        payload.OriginNodeID,
 	}
-	user = applyReplicatedBootstrapInvariant(user)
+	user.SystemReserved = user.SystemReserved && user.ID == BootstrapAdminUserID
 
 	if strings.TrimSpace(payload.VersionDeleted) != "" {
 		parsed, err := parseRequiredTimestamp(payload.VersionDeleted, "user version_deleted")
@@ -411,25 +423,26 @@ func (s *Store) applyReplicatedUserUpsert(ctx context.Context, tx *sql.Tx, event
 		return err
 	}
 
-	if _, exists, err := s.getTombstoneTx(ctx, tx, "user", incoming.ID); err != nil {
+	key := incoming.Key()
+	if _, exists, err := s.getTombstoneTx(ctx, tx, "user", key); err != nil {
 		return err
 	} else if exists {
 		return nil
 	}
 
-	current, err := s.getUserByIDTx(ctx, tx, incoming.ID, true)
+	current, err := s.getUserByIDTx(ctx, tx, key, true)
 	switch {
 	case err == nil:
 	case errors.Is(err, ErrNotFound):
 		incoming.UpdatedAt = latestUserVersion(incoming)
 		if _, err := tx.ExecContext(ctx, `
 INSERT INTO users(
-    user_id, username, password_hash, profile, role, system_reserved, created_at_hlc, updated_at_hlc,
+    node_id, user_id, username, password_hash, profile, role, system_reserved, created_at_hlc, updated_at_hlc,
     deleted_at_hlc, version_username, version_password_hash, version_profile,
     version_role, version_deleted, origin_node_id
 )
-VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-`, incoming.ID, incoming.Username, incoming.PasswordHash, defaultJSON(incoming.Profile), incoming.Role,
+VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`, incoming.NodeID, incoming.ID, incoming.Username, incoming.PasswordHash, defaultJSON(incoming.Profile), incoming.Role,
 			boolToInt(incoming.SystemReserved), incoming.CreatedAt.String(), incoming.UpdatedAt.String(),
 			nullableTimestampString(incoming.DeletedAt), incoming.VersionUsername.String(),
 			incoming.VersionPasswordHash.String(), incoming.VersionProfile.String(),
@@ -437,7 +450,7 @@ VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			incoming.OriginNodeID); err != nil {
 			return fmt.Errorf("insert replicated user: %w", err)
 		}
-		return nil
+		return s.reconcileBootstrapAdminsTx(ctx, tx)
 	default:
 		return err
 	}
@@ -452,13 +465,13 @@ VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 UPDATE users
 SET username = ?, password_hash = ?, profile = ?, role = ?, system_reserved = ?, updated_at_hlc = ?,
     version_username = ?, version_password_hash = ?, version_profile = ?, version_role = ?
-WHERE user_id = ?
+WHERE node_id = ? AND user_id = ?
 `, merged.Username, merged.PasswordHash, defaultJSON(merged.Profile), merged.Role, boolToInt(merged.SystemReserved),
 		merged.UpdatedAt.String(), merged.VersionUsername.String(), merged.VersionPasswordHash.String(),
-		merged.VersionProfile.String(), merged.VersionRole.String(), merged.ID); err != nil {
+		merged.VersionProfile.String(), merged.VersionRole.String(), merged.NodeID, merged.ID); err != nil {
 		return fmt.Errorf("update replicated user: %w", err)
 	}
-	return nil
+	return s.reconcileBootstrapAdminsTx(ctx, tx)
 }
 
 func mergeReplicatedUser(current, incoming User) User {
@@ -503,16 +516,6 @@ func latestUserVersion(user User) clock.Timestamp {
 		latest = *user.VersionDeleted
 	}
 	return latest
-}
-
-func applyReplicatedBootstrapInvariant(user User) User {
-	if user.ID != BootstrapAdminUserID {
-		user.SystemReserved = false
-		return user
-	}
-	user.Role = RoleSuperAdmin
-	user.SystemReserved = true
-	return user
 }
 
 func nullableTimestampString(ts *clock.Timestamp) any {

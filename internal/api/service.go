@@ -62,23 +62,23 @@ func (s *Service) UpdateUser(ctx context.Context, params store.UpdateUserParams)
 	return user, event, err
 }
 
-func (s *Service) DeleteUser(ctx context.Context, userID int64) (store.Event, error) {
+func (s *Service) DeleteUser(ctx context.Context, key store.UserKey) (store.Event, error) {
 	if err := s.allowWrite(ctx); err != nil {
 		return store.Event{}, err
 	}
-	event, err := s.store.DeleteUser(ctx, userID)
+	event, err := s.store.DeleteUser(ctx, key)
 	if err == nil {
 		s.eventSink.Publish(event)
 	}
 	return event, err
 }
 
-func (s *Service) GetUser(ctx context.Context, userID int64) (store.User, error) {
-	return s.store.GetUser(ctx, userID)
+func (s *Service) GetUser(ctx context.Context, key store.UserKey) (store.User, error) {
+	return s.store.GetUser(ctx, key)
 }
 
-func (s *Service) AuthenticateUser(ctx context.Context, userID int64, password string) (store.User, error) {
-	return s.store.AuthenticateUser(ctx, userID, password)
+func (s *Service) AuthenticateUser(ctx context.Context, key store.UserKey, password string) (store.User, error) {
+	return s.store.AuthenticateUser(ctx, key, password)
 }
 
 func (s *Service) ListUsers(ctx context.Context) ([]store.User, error) {
@@ -96,8 +96,8 @@ func (s *Service) CreateMessage(ctx context.Context, params store.CreateMessageP
 	return message, event, err
 }
 
-func (s *Service) ListMessagesByUser(ctx context.Context, userID int64, limit int) ([]store.Message, error) {
-	return s.store.ListMessagesByUser(ctx, userID, limit)
+func (s *Service) ListMessagesByUser(ctx context.Context, key store.UserKey, limit int) ([]store.Message, error) {
+	return s.store.ListMessagesByUser(ctx, key, limit)
 }
 
 func (s *Service) ListEvents(ctx context.Context, afterSequence int64, limit int) ([]store.Event, error) {

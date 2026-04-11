@@ -46,13 +46,13 @@ type updateUserRequest struct {
 }
 
 type createMessageRequest struct {
-	UserID   int64           `json:"user_id"`
 	Sender   string          `json:"sender"`
 	Body     string          `json:"body"`
 	Metadata json.RawMessage `json:"metadata,omitempty"`
 }
 
 type loginRequest struct {
+	NodeID   int64  `json:"node_id"`
 	UserID   int64  `json:"user_id"`
 	Password string `json:"password"`
 }
@@ -90,11 +90,11 @@ func (h *HTTP) routes() {
 	h.mux.HandleFunc("GET /healthz", h.handleHealth)
 	h.mux.HandleFunc("POST /auth/login", h.handleLogin)
 	h.mux.HandleFunc("POST /users", h.handleCreateUser)
-	h.mux.HandleFunc("GET /users/{id}", h.handleGetUser)
-	h.mux.HandleFunc("PATCH /users/{id}", h.handleUpdateUser)
-	h.mux.HandleFunc("DELETE /users/{id}", h.handleDeleteUser)
-	h.mux.HandleFunc("GET /users/{id}/messages", h.handleListMessagesByUser)
-	h.mux.HandleFunc("POST /messages", h.handleCreateMessage)
+	h.mux.HandleFunc("GET /nodes/{node_id}/users/{user_id}", h.handleGetUser)
+	h.mux.HandleFunc("PATCH /nodes/{node_id}/users/{user_id}", h.handleUpdateUser)
+	h.mux.HandleFunc("DELETE /nodes/{node_id}/users/{user_id}", h.handleDeleteUser)
+	h.mux.HandleFunc("GET /nodes/{node_id}/users/{user_id}/messages", h.handleListMessagesByUser)
+	h.mux.HandleFunc("POST /nodes/{node_id}/users/{user_id}/messages", h.handleCreateMessage)
 	h.mux.HandleFunc("GET /events", h.handleListEvents)
 	h.mux.HandleFunc("GET /ops/status", h.handleOpsStatus)
 	h.mux.HandleFunc("GET /metrics", h.handleMetrics)
@@ -116,7 +116,8 @@ func (h *HTTP) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, err := h.service.AuthenticateUser(r.Context(), req.UserID, req.Password)
+	key := store.UserKey{NodeID: req.NodeID, UserID: req.UserID}
+	user, err := h.service.AuthenticateUser(r.Context(), key, req.Password)
 	if err != nil {
 		if errors.Is(err, store.ErrInvalidInput) {
 			writeStoreError(w, err)
@@ -129,7 +130,7 @@ func (h *HTTP) handleLogin(w http.ResponseWriter, r *http.Request) {
 	now := time.Now().UTC()
 	expiresAt := now.Add(h.tokenTTL)
 	token, err := h.signer.Sign(auth.Claims{
-		Subject:   strconv.FormatInt(user.ID, 10),
+		Subject:   formatUserSubject(user.Key()),
 		Issuer:    strconv.FormatInt(h.nodeID, 10),
 		IssuedAt:  now.Unix(),
 		ExpiresAt: expiresAt.Unix(),
@@ -186,15 +187,15 @@ func (h *HTTP) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *HTTP) handleGetUser(w http.ResponseWriter, r *http.Request) {
-	userID, ok := parsePathID(w, r)
+	key, ok := parsePathUserKey(w, r)
 	if !ok {
 		return
 	}
-	if _, ok := h.requireSelfOrAdmin(w, r, userID); !ok {
+	if _, ok := h.requireSelfOrAdmin(w, r, key); !ok {
 		return
 	}
 
-	user, err := h.service.GetUser(r.Context(), userID)
+	user, err := h.service.GetUser(r.Context(), key)
 	if err != nil {
 		writeStoreError(w, err)
 		return
@@ -204,7 +205,7 @@ func (h *HTTP) handleGetUser(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *HTTP) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
-	userID, ok := parsePathID(w, r)
+	key, ok := parsePathUserKey(w, r)
 	if !ok {
 		return
 	}
@@ -238,7 +239,7 @@ func (h *HTTP) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	user, _, err := h.service.UpdateUser(r.Context(), store.UpdateUserParams{
-		UserID:       userID,
+		Key:          key,
 		Username:     req.Username,
 		PasswordHash: passwordHash,
 		Profile:      profile,
@@ -253,7 +254,7 @@ func (h *HTTP) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *HTTP) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
-	userID, ok := parsePathID(w, r)
+	key, ok := parsePathUserKey(w, r)
 	if !ok {
 		return
 	}
@@ -261,18 +262,23 @@ func (h *HTTP) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if _, err := h.service.DeleteUser(r.Context(), userID); err != nil {
+	if _, err := h.service.DeleteUser(r.Context(), key); err != nil {
 		writeStoreError(w, err)
 		return
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"status": "deleted",
-		"id":     userID,
+		"status":  "deleted",
+		"node_id": key.NodeID,
+		"user_id": key.UserID,
 	})
 }
 
 func (h *HTTP) handleCreateMessage(w http.ResponseWriter, r *http.Request) {
+	key, pathOK := parsePathUserKey(w, r)
+	if !pathOK {
+		return
+	}
 	principal, ok := h.requireAuthenticated(w, r)
 	if !ok {
 		return
@@ -283,7 +289,7 @@ func (h *HTTP) handleCreateMessage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if principal != nil && !isAdminRole(principal.User.Role) && req.UserID != principal.User.ID {
+	if principal != nil && !isAdminRole(principal.User.Role) && principal.User.Key() != key {
 		writeError(w, http.StatusForbidden, "forbidden")
 		return
 	}
@@ -295,7 +301,7 @@ func (h *HTTP) handleCreateMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	message, _, err := h.service.CreateMessage(r.Context(), store.CreateMessageParams{
-		UserID:   req.UserID,
+		UserKey:  key,
 		Sender:   req.Sender,
 		Body:     req.Body,
 		Metadata: metadata,
@@ -309,11 +315,11 @@ func (h *HTTP) handleCreateMessage(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *HTTP) handleListMessagesByUser(w http.ResponseWriter, r *http.Request) {
-	userID, ok := parsePathID(w, r)
+	key, ok := parsePathUserKey(w, r)
 	if !ok {
 		return
 	}
-	if _, ok := h.requireSelfOrAdmin(w, r, userID); !ok {
+	if _, ok := h.requireSelfOrAdmin(w, r, key); !ok {
 		return
 	}
 
@@ -327,7 +333,7 @@ func (h *HTTP) handleListMessagesByUser(w http.ResponseWriter, r *http.Request) 
 		limit = parsed
 	}
 
-	messages, err := h.service.ListMessagesByUser(r.Context(), userID, limit)
+	messages, err := h.service.ListMessagesByUser(r.Context(), key, limit)
 	if err != nil {
 		writeStoreError(w, err)
 		return
@@ -415,7 +421,9 @@ func (h *HTTP) handleMetrics(w http.ResponseWriter, r *http.Request) {
 }
 
 type userResponse struct {
-	ID             int64           `json:"id"`
+	NodeID         int64           `json:"node_id"`
+	UserID         int64           `json:"user_id"`
+	ID             int64           `json:"id,omitempty"`
 	Username       string          `json:"username"`
 	Profile        json.RawMessage `json:"profile"`
 	Role           string          `json:"role"`
@@ -426,28 +434,32 @@ type userResponse struct {
 }
 
 type messageResponse struct {
-	UserID    int64           `json:"user_id"`
-	NodeID    int64           `json:"node_id"`
-	Seq       int64           `json:"seq"`
-	Sender    string          `json:"sender"`
-	Body      string          `json:"body"`
-	Metadata  json.RawMessage `json:"metadata,omitempty"`
-	CreatedAt string          `json:"created_at"`
+	UserNodeID int64           `json:"user_node_id"`
+	UserID     int64           `json:"user_id"`
+	NodeID     int64           `json:"node_id"`
+	Seq        int64           `json:"seq"`
+	Sender     string          `json:"sender"`
+	Body       string          `json:"body"`
+	Metadata   json.RawMessage `json:"metadata,omitempty"`
+	CreatedAt  string          `json:"created_at"`
 }
 
 type eventResponse struct {
-	Sequence     int64           `json:"sequence"`
-	EventID      int64           `json:"event_id"`
-	Kind         string          `json:"kind"`
-	Aggregate    string          `json:"aggregate"`
-	AggregateID  int64           `json:"aggregate_id"`
-	HLC          string          `json:"hlc"`
-	OriginNodeID int64           `json:"origin_node_id"`
-	Payload      json.RawMessage `json:"payload"`
+	Sequence        int64           `json:"sequence"`
+	EventID         int64           `json:"event_id"`
+	Kind            string          `json:"kind"`
+	Aggregate       string          `json:"aggregate"`
+	AggregateNodeID int64           `json:"aggregate_node_id"`
+	AggregateID     int64           `json:"aggregate_id"`
+	HLC             string          `json:"hlc"`
+	OriginNodeID    int64           `json:"origin_node_id"`
+	Payload         json.RawMessage `json:"payload"`
 }
 
 func userResponseFromStore(user store.User) userResponse {
 	return userResponse{
+		NodeID:         user.NodeID,
+		UserID:         user.ID,
 		ID:             user.ID,
 		Username:       user.Username,
 		Profile:        json.RawMessage(user.Profile),
@@ -465,26 +477,28 @@ func messageResponseFromStore(message store.Message) messageResponse {
 		metadata = json.RawMessage(message.Metadata)
 	}
 	return messageResponse{
-		UserID:    message.UserID,
-		NodeID:    message.NodeID,
-		Seq:       message.Seq,
-		Sender:    message.Sender,
-		Body:      message.Body,
-		Metadata:  metadata,
-		CreatedAt: message.CreatedAt.String(),
+		UserNodeID: message.UserNodeID,
+		UserID:     message.UserID,
+		NodeID:     message.NodeID,
+		Seq:        message.Seq,
+		Sender:     message.Sender,
+		Body:       message.Body,
+		Metadata:   metadata,
+		CreatedAt:  message.CreatedAt.String(),
 	}
 }
 
 func eventResponseFromStore(event store.Event) eventResponse {
 	return eventResponse{
-		Sequence:     event.Sequence,
-		EventID:      event.EventID,
-		Kind:         event.Kind,
-		Aggregate:    event.Aggregate,
-		AggregateID:  event.AggregateID,
-		HLC:          event.HLC.String(),
-		OriginNodeID: event.OriginNodeID,
-		Payload:      json.RawMessage(event.Payload),
+		Sequence:        event.Sequence,
+		EventID:         event.EventID,
+		Kind:            event.Kind,
+		Aggregate:       event.Aggregate,
+		AggregateNodeID: event.AggregateNodeID,
+		AggregateID:     event.AggregateID,
+		HLC:             event.HLC.String(),
+		OriginNodeID:    event.OriginNodeID,
+		Payload:         json.RawMessage(event.Payload),
 	}
 }
 
@@ -527,11 +541,23 @@ func writeStoreError(w http.ResponseWriter, err error) {
 	}
 }
 
-func parsePathID(w http.ResponseWriter, r *http.Request) (int64, bool) {
-	raw := strings.TrimSpace(r.PathValue("id"))
+func parsePathUserKey(w http.ResponseWriter, r *http.Request) (store.UserKey, bool) {
+	nodeID, ok := parsePositivePathInt(w, r, "node_id")
+	if !ok {
+		return store.UserKey{}, false
+	}
+	userID, ok := parsePositivePathInt(w, r, "user_id")
+	if !ok {
+		return store.UserKey{}, false
+	}
+	return store.UserKey{NodeID: nodeID, UserID: userID}, true
+}
+
+func parsePositivePathInt(w http.ResponseWriter, r *http.Request, name string) (int64, bool) {
+	raw := strings.TrimSpace(r.PathValue(name))
 	value, err := strconv.ParseInt(raw, 10, 64)
 	if err != nil || value <= 0 {
-		writeError(w, http.StatusBadRequest, "id must be a positive integer")
+		writeError(w, http.StatusBadRequest, name+" must be a positive integer")
 		return 0, false
 	}
 	return value, true
@@ -575,7 +601,7 @@ func (h *HTTP) requireAdmin(w http.ResponseWriter, r *http.Request) (*requestPri
 	return principal, true
 }
 
-func (h *HTTP) requireSelfOrAdmin(w http.ResponseWriter, r *http.Request, userID int64) (*requestPrincipal, bool) {
+func (h *HTTP) requireSelfOrAdmin(w http.ResponseWriter, r *http.Request, key store.UserKey) (*requestPrincipal, bool) {
 	if h.signer == nil {
 		return nil, true
 	}
@@ -583,7 +609,7 @@ func (h *HTTP) requireSelfOrAdmin(w http.ResponseWriter, r *http.Request, userID
 	if !ok {
 		return nil, false
 	}
-	if isAdminRole(principal.User.Role) || principal.User.ID == userID {
+	if isAdminRole(principal.User.Role) || principal.User.Key() == key {
 		return principal, true
 	}
 	writeError(w, http.StatusForbidden, "forbidden")
@@ -610,11 +636,11 @@ func (h *HTTP) authenticateRequest(ctx context.Context, r *http.Request) (*reque
 	if claims.ExpiresAt <= 0 || now >= claims.ExpiresAt {
 		return nil, errors.New("token expired")
 	}
-	userID, err := strconv.ParseInt(strings.TrimSpace(claims.Subject), 10, 64)
-	if err != nil || userID <= 0 {
+	key, err := parseUserSubject(claims.Subject)
+	if err != nil {
 		return nil, errors.New("invalid subject")
 	}
-	user, err := h.service.GetUser(ctx, userID)
+	user, err := h.service.GetUser(ctx, key)
 	if err != nil {
 		return nil, err
 	}
@@ -623,4 +649,28 @@ func (h *HTTP) authenticateRequest(ctx context.Context, r *http.Request) (*reque
 
 func isAdminRole(role string) bool {
 	return role == store.RoleSuperAdmin || role == store.RoleAdmin
+}
+
+func formatUserSubject(key store.UserKey) string {
+	return strconv.FormatInt(key.NodeID, 10) + ":" + strconv.FormatInt(key.UserID, 10)
+}
+
+func parseUserSubject(subject string) (store.UserKey, error) {
+	parts := strings.Split(strings.TrimSpace(subject), ":")
+	if len(parts) != 2 {
+		return store.UserKey{}, fmt.Errorf("invalid subject")
+	}
+	nodeID, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil {
+		return store.UserKey{}, err
+	}
+	userID, err := strconv.ParseInt(parts[1], 10, 64)
+	if err != nil {
+		return store.UserKey{}, err
+	}
+	key := store.UserKey{NodeID: nodeID, UserID: userID}
+	if err := key.Validate(); err != nil {
+		return store.UserKey{}, err
+	}
+	return key, nil
 }

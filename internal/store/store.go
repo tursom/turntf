@@ -30,7 +30,7 @@ const (
 	RoleAdmin            = "admin"
 	RoleUser             = "user"
 	BootstrapAdminUserID = int64(1)
-	defaultSchemaVersion = "3"
+	defaultSchemaVersion = "4"
 	schemaMetaNodeIDKey  = "node_id"
 )
 
@@ -52,7 +52,20 @@ type Store struct {
 	bootstrapAdmin    BootstrapAdminConfig
 }
 
+type UserKey struct {
+	NodeID int64 `json:"node_id"`
+	UserID int64 `json:"user_id"`
+}
+
+func (k UserKey) Validate() error {
+	if k.NodeID <= 0 || k.UserID <= 0 {
+		return fmt.Errorf("%w: user node id and user id are required", ErrInvalidInput)
+	}
+	return nil
+}
+
 type User struct {
+	NodeID              int64            `json:"node_id"`
 	ID                  int64            `json:"id"`
 	Username            string           `json:"username"`
 	PasswordHash        string           `json:"password_hash"`
@@ -70,25 +83,35 @@ type User struct {
 	OriginNodeID        int64            `json:"origin_node_id"`
 }
 
+func (u User) Key() UserKey {
+	return UserKey{NodeID: u.NodeID, UserID: u.ID}
+}
+
 type Message struct {
-	UserID    int64           `json:"user_id"`
-	NodeID    int64           `json:"node_id"`
-	Seq       int64           `json:"seq"`
-	Sender    string          `json:"sender"`
-	Body      string          `json:"body"`
-	Metadata  string          `json:"metadata,omitempty"`
-	CreatedAt clock.Timestamp `json:"created_at"`
+	UserNodeID int64           `json:"user_node_id"`
+	UserID     int64           `json:"user_id"`
+	NodeID     int64           `json:"node_id"`
+	Seq        int64           `json:"seq"`
+	Sender     string          `json:"sender"`
+	Body       string          `json:"body"`
+	Metadata   string          `json:"metadata,omitempty"`
+	CreatedAt  clock.Timestamp `json:"created_at"`
+}
+
+func (m Message) UserKey() UserKey {
+	return UserKey{NodeID: m.UserNodeID, UserID: m.UserID}
 }
 
 type Event struct {
-	Sequence     int64           `json:"sequence"`
-	EventID      int64           `json:"event_id"`
-	Kind         string          `json:"kind"`
-	Aggregate    string          `json:"aggregate"`
-	AggregateID  int64           `json:"aggregate_id"`
-	HLC          clock.Timestamp `json:"hlc"`
-	OriginNodeID int64           `json:"origin_node_id"`
-	Payload      string          `json:"payload"`
+	Sequence        int64           `json:"sequence"`
+	EventID         int64           `json:"event_id"`
+	Kind            string          `json:"kind"`
+	Aggregate       string          `json:"aggregate"`
+	AggregateNodeID int64           `json:"aggregate_node_id"`
+	AggregateID     int64           `json:"aggregate_id"`
+	HLC             clock.Timestamp `json:"hlc"`
+	OriginNodeID    int64           `json:"origin_node_id"`
+	Payload         string          `json:"payload"`
 }
 
 type PeerCursor struct {
@@ -106,7 +129,7 @@ type CreateUserParams struct {
 }
 
 type UpdateUserParams struct {
-	UserID       int64
+	Key          UserKey
 	Username     *string
 	PasswordHash *string
 	Profile      *string
@@ -114,7 +137,7 @@ type UpdateUserParams struct {
 }
 
 type CreateMessageParams struct {
-	UserID   int64
+	UserKey  UserKey
 	Sender   string
 	Body     string
 	Metadata string
@@ -177,7 +200,8 @@ CREATE TABLE IF NOT EXISTS schema_meta (
 );
 
 CREATE TABLE IF NOT EXISTS users (
-    user_id INTEGER PRIMARY KEY,
+    node_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
     username TEXT NOT NULL,
     password_hash TEXT NOT NULL,
     profile TEXT NOT NULL DEFAULT '{}',
@@ -191,11 +215,13 @@ CREATE TABLE IF NOT EXISTS users (
     version_profile TEXT NOT NULL,
     version_role TEXT NOT NULL,
     version_deleted TEXT,
-    origin_node_id INTEGER NOT NULL
+    origin_node_id INTEGER NOT NULL,
+    PRIMARY KEY(node_id, user_id)
 );
 CREATE INDEX IF NOT EXISTS idx_users_username_deleted ON users(username, deleted_at_hlc);
 
 CREATE TABLE IF NOT EXISTS messages (
+    user_node_id INTEGER NOT NULL,
     user_id INTEGER NOT NULL,
     node_id INTEGER NOT NULL,
     seq INTEGER NOT NULL,
@@ -203,15 +229,8 @@ CREATE TABLE IF NOT EXISTS messages (
     body TEXT NOT NULL,
     metadata TEXT,
     created_at_hlc TEXT NOT NULL,
-    FOREIGN KEY(user_id) REFERENCES users(user_id),
-    PRIMARY KEY(user_id, node_id, seq)
-);
-
-CREATE TABLE IF NOT EXISTS message_cursors (
-    user_id INTEGER NOT NULL,
-    node_id INTEGER NOT NULL,
-    last_seq INTEGER NOT NULL,
-    PRIMARY KEY(user_id, node_id)
+    FOREIGN KEY(user_node_id, user_id) REFERENCES users(node_id, user_id),
+    PRIMARY KEY(user_node_id, user_id, node_id, seq)
 );
 
 CREATE TABLE IF NOT EXISTS event_log (
@@ -219,6 +238,7 @@ CREATE TABLE IF NOT EXISTS event_log (
     event_id INTEGER NOT NULL UNIQUE,
     kind TEXT NOT NULL,
     aggregate_type TEXT NOT NULL,
+    aggregate_node_id INTEGER NOT NULL,
     aggregate_id INTEGER NOT NULL,
     hlc TEXT NOT NULL,
     origin_node_id INTEGER NOT NULL,
@@ -240,7 +260,9 @@ CREATE TABLE IF NOT EXISTS applied_events (
 
 CREATE TABLE IF NOT EXISTS user_conflicts (
     conflict_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    loser_node_id INTEGER NOT NULL,
     loser_user_id INTEGER NOT NULL,
+    winner_node_id INTEGER NOT NULL,
     winner_user_id INTEGER NOT NULL,
     username TEXT NOT NULL,
     detected_at_hlc TEXT NOT NULL,
@@ -249,11 +271,12 @@ CREATE TABLE IF NOT EXISTS user_conflicts (
 
 CREATE TABLE IF NOT EXISTS tombstones (
     entity_type TEXT NOT NULL,
+    entity_node_id INTEGER NOT NULL,
     entity_id INTEGER NOT NULL,
     deleted_at_hlc TEXT NOT NULL,
     expires_at_hlc TEXT,
     origin_node_id INTEGER NOT NULL,
-    PRIMARY KEY(entity_type, entity_id)
+    PRIMARY KEY(entity_type, entity_node_id, entity_id)
 );
 
 CREATE TABLE IF NOT EXISTS message_trim_stats (
@@ -267,8 +290,8 @@ CREATE TABLE IF NOT EXISTS message_trim_stats (
 	}
 
 	if _, err := s.db.ExecContext(ctx, `
-CREATE INDEX IF NOT EXISTS idx_messages_user_created ON messages(user_id, created_at_hlc DESC, node_id ASC, seq DESC);
-CREATE INDEX IF NOT EXISTS idx_messages_node ON messages(node_id, user_id, seq);
+CREATE INDEX IF NOT EXISTS idx_messages_user_created ON messages(user_node_id, user_id, created_at_hlc DESC, node_id ASC, seq DESC);
+CREATE INDEX IF NOT EXISTS idx_messages_node ON messages(node_id, user_node_id, user_id, seq);
 `); err != nil {
 		return fmt.Errorf("init message indexes: %w", err)
 	}
@@ -387,8 +410,13 @@ func (s *Store) CreateUser(ctx context.Context, params CreateUserParams) (User, 
 	defer tx.Rollback()
 
 	now := s.clock.Now()
+	userID, err := s.nextUserIDTx(ctx, tx, s.nodeID)
+	if err != nil {
+		return User{}, Event{}, err
+	}
 	user := User{
-		ID:                  s.ids.Next(),
+		NodeID:              s.nodeID,
+		ID:                  userID,
 		Username:            username,
 		PasswordHash:        params.PasswordHash,
 		Profile:             profile,
@@ -405,12 +433,12 @@ func (s *Store) CreateUser(ctx context.Context, params CreateUserParams) (User, 
 
 	if _, err := tx.ExecContext(ctx, `
 INSERT INTO users(
-    user_id, username, password_hash, profile, role, system_reserved, created_at_hlc, updated_at_hlc,
+    node_id, user_id, username, password_hash, profile, role, system_reserved, created_at_hlc, updated_at_hlc,
     deleted_at_hlc, version_username, version_password_hash, version_profile,
     version_role, version_deleted, origin_node_id
 )
-VALUES(?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, NULL, ?)
-`, user.ID, user.Username, user.PasswordHash, user.Profile, user.Role, boolToInt(user.SystemReserved),
+VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, NULL, ?)
+`, user.NodeID, user.ID, user.Username, user.PasswordHash, user.Profile, user.Role, boolToInt(user.SystemReserved),
 		user.CreatedAt.String(), user.UpdatedAt.String(), user.VersionUsername.String(),
 		user.VersionPasswordHash.String(), user.VersionProfile.String(), user.VersionRole.String(),
 		user.OriginNodeID); err != nil {
@@ -422,7 +450,7 @@ VALUES(?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, NULL, ?)
 		return User{}, Event{}, fmt.Errorf("marshal create user event: %w", err)
 	}
 
-	event, err := s.insertEvent(ctx, tx, "user.created", "user", user.ID, now, string(payload))
+	event, err := s.insertEvent(ctx, tx, "user.created", "user", user.NodeID, user.ID, now, string(payload))
 	if err != nil {
 		return User{}, Event{}, err
 	}
@@ -434,8 +462,8 @@ VALUES(?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, NULL, ?)
 }
 
 func (s *Store) UpdateUser(ctx context.Context, params UpdateUserParams) (User, Event, error) {
-	if params.UserID == 0 {
-		return User{}, Event{}, fmt.Errorf("%w: user id cannot be empty", ErrInvalidInput)
+	if err := params.Key.Validate(); err != nil {
+		return User{}, Event{}, err
 	}
 	if params.Username == nil && params.PasswordHash == nil && params.Profile == nil && params.Role == nil {
 		return User{}, Event{}, fmt.Errorf("%w: at least one field must be updated", ErrInvalidInput)
@@ -447,7 +475,7 @@ func (s *Store) UpdateUser(ctx context.Context, params UpdateUserParams) (User, 
 	}
 	defer tx.Rollback()
 
-	current, err := s.getUserTx(ctx, tx, params.UserID, false)
+	current, err := s.getUserTx(ctx, tx, params.Key, false)
 	if err != nil {
 		return User{}, Event{}, err
 	}
@@ -518,10 +546,10 @@ func (s *Store) UpdateUser(ctx context.Context, params UpdateUserParams) (User, 
 UPDATE users
 SET username = ?, password_hash = ?, profile = ?, role = ?, system_reserved = ?, updated_at_hlc = ?,
     version_username = ?, version_password_hash = ?, version_profile = ?, version_role = ?
-WHERE user_id = ? AND deleted_at_hlc IS NULL
+WHERE node_id = ? AND user_id = ? AND deleted_at_hlc IS NULL
 `, current.Username, current.PasswordHash, current.Profile, current.Role, boolToInt(current.SystemReserved),
 		current.UpdatedAt.String(), current.VersionUsername.String(), current.VersionPasswordHash.String(),
-		current.VersionProfile.String(), current.VersionRole.String(), current.ID); err != nil {
+		current.VersionProfile.String(), current.VersionRole.String(), current.NodeID, current.ID); err != nil {
 		return User{}, Event{}, fmt.Errorf("update user: %w", err)
 	}
 
@@ -530,7 +558,7 @@ WHERE user_id = ? AND deleted_at_hlc IS NULL
 		return User{}, Event{}, fmt.Errorf("marshal update user event: %w", err)
 	}
 
-	event, err := s.insertEvent(ctx, tx, "user.updated", "user", current.ID, now, string(payload))
+	event, err := s.insertEvent(ctx, tx, "user.updated", "user", current.NodeID, current.ID, now, string(payload))
 	if err != nil {
 		return User{}, Event{}, err
 	}
@@ -541,9 +569,9 @@ WHERE user_id = ? AND deleted_at_hlc IS NULL
 	return current, event, nil
 }
 
-func (s *Store) DeleteUser(ctx context.Context, userID int64) (Event, error) {
-	if userID == 0 {
-		return Event{}, fmt.Errorf("%w: user id cannot be empty", ErrInvalidInput)
+func (s *Store) DeleteUser(ctx context.Context, key UserKey) (Event, error) {
+	if err := key.Validate(); err != nil {
+		return Event{}, err
 	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -552,7 +580,7 @@ func (s *Store) DeleteUser(ctx context.Context, userID int64) (Event, error) {
 	}
 	defer tx.Rollback()
 
-	user, err := s.getUserTx(ctx, tx, userID, false)
+	user, err := s.getUserTx(ctx, tx, key, false)
 	if err != nil {
 		return Event{}, err
 	}
@@ -561,16 +589,16 @@ func (s *Store) DeleteUser(ctx context.Context, userID int64) (Event, error) {
 	}
 
 	now := s.clock.Now()
-	if err := s.applyUserDeleteTx(ctx, tx, userID, now, s.nodeID, true); err != nil {
+	if err := s.applyUserDeleteTx(ctx, tx, key, now, s.nodeID, true); err != nil {
 		return Event{}, err
 	}
 
-	payload, err := encodeDeleteUserPayload(userID, now.String())
+	payload, err := encodeDeleteUserPayload(key, now.String())
 	if err != nil {
 		return Event{}, fmt.Errorf("marshal delete user event: %w", err)
 	}
 
-	event, err := s.insertEvent(ctx, tx, "user.deleted", "user", userID, now, string(payload))
+	event, err := s.insertEvent(ctx, tx, "user.deleted", "user", key.NodeID, key.UserID, now, string(payload))
 	if err != nil {
 		return Event{}, err
 	}
@@ -581,18 +609,18 @@ func (s *Store) DeleteUser(ctx context.Context, userID int64) (Event, error) {
 	return event, nil
 }
 
-func (s *Store) GetUser(ctx context.Context, userID int64) (User, error) {
-	return s.getUser(ctx, userID, false)
+func (s *Store) GetUser(ctx context.Context, key UserKey) (User, error) {
+	return s.getUser(ctx, key, false)
 }
 
 func (s *Store) ListUsers(ctx context.Context) ([]User, error) {
 	rows, err := s.db.QueryContext(ctx, `
-SELECT user_id, username, password_hash, profile, role, system_reserved, created_at_hlc, updated_at_hlc,
+SELECT node_id, user_id, username, password_hash, profile, role, system_reserved, created_at_hlc, updated_at_hlc,
        deleted_at_hlc, version_username, version_password_hash, version_profile,
        version_role, version_deleted, origin_node_id
 FROM users
 WHERE deleted_at_hlc IS NULL
-ORDER BY user_id ASC
+ORDER BY node_id ASC, user_id ASC
 `)
 	if err != nil {
 		return nil, fmt.Errorf("list users: %w", err)
@@ -614,8 +642,8 @@ ORDER BY user_id ASC
 }
 
 func (s *Store) CreateMessage(ctx context.Context, params CreateMessageParams) (Message, Event, error) {
-	if params.UserID == 0 {
-		return Message{}, Event{}, fmt.Errorf("%w: user id cannot be empty", ErrInvalidInput)
+	if err := params.UserKey.Validate(); err != nil {
+		return Message{}, Event{}, err
 	}
 	if strings.TrimSpace(params.Sender) == "" {
 		return Message{}, Event{}, fmt.Errorf("%w: sender cannot be empty", ErrInvalidInput)
@@ -630,29 +658,30 @@ func (s *Store) CreateMessage(ctx context.Context, params CreateMessageParams) (
 	}
 	defer tx.Rollback()
 
-	if _, err := s.getUserTx(ctx, tx, params.UserID, false); err != nil {
+	if _, err := s.getUserTx(ctx, tx, params.UserKey, false); err != nil {
 		return Message{}, Event{}, err
 	}
 
 	now := s.clock.Now()
-	seq, err := s.nextMessageSeqTx(ctx, tx, params.UserID, s.nodeID)
+	seq, err := s.nextMessageSeqTx(ctx, tx, params.UserKey, s.nodeID)
 	if err != nil {
 		return Message{}, Event{}, err
 	}
 	message := Message{
-		UserID:    params.UserID,
-		NodeID:    s.nodeID,
-		Seq:       seq,
-		Sender:    strings.TrimSpace(params.Sender),
-		Body:      strings.TrimSpace(params.Body),
-		Metadata:  strings.TrimSpace(params.Metadata),
-		CreatedAt: now,
+		UserNodeID: params.UserKey.NodeID,
+		UserID:     params.UserKey.UserID,
+		NodeID:     s.nodeID,
+		Seq:        seq,
+		Sender:     strings.TrimSpace(params.Sender),
+		Body:       strings.TrimSpace(params.Body),
+		Metadata:   strings.TrimSpace(params.Metadata),
+		CreatedAt:  now,
 	}
 
 	if _, err := tx.ExecContext(ctx, `
-INSERT INTO messages(user_id, node_id, seq, sender, body, metadata, created_at_hlc)
-VALUES(?, ?, ?, ?, ?, ?, ?)
-`, message.UserID, message.NodeID, message.Seq, message.Sender, message.Body, nullIfEmpty(message.Metadata),
+INSERT INTO messages(user_node_id, user_id, node_id, seq, sender, body, metadata, created_at_hlc)
+VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+`, message.UserNodeID, message.UserID, message.NodeID, message.Seq, message.Sender, message.Body, nullIfEmpty(message.Metadata),
 		message.CreatedAt.String()); err != nil {
 		return Message{}, Event{}, fmt.Errorf("insert message: %w", err)
 	}
@@ -662,12 +691,12 @@ VALUES(?, ?, ?, ?, ?, ?, ?)
 		return Message{}, Event{}, fmt.Errorf("marshal create message event: %w", err)
 	}
 
-	event, err := s.insertEvent(ctx, tx, "message.created", "message", message.Seq, now, string(payload))
+	event, err := s.insertEvent(ctx, tx, "message.created", "message", message.NodeID, message.Seq, now, string(payload))
 	if err != nil {
 		return Message{}, Event{}, err
 	}
 
-	if err := s.trimMessagesForUserTx(ctx, tx, message.UserID); err != nil {
+	if err := s.trimMessagesForUserTx(ctx, tx, message.UserKey()); err != nil {
 		return Message{}, Event{}, err
 	}
 
@@ -677,18 +706,21 @@ VALUES(?, ?, ?, ?, ?, ?, ?)
 	return message, event, nil
 }
 
-func (s *Store) ListMessagesByUser(ctx context.Context, userID int64, limit int) ([]Message, error) {
+func (s *Store) ListMessagesByUser(ctx context.Context, key UserKey, limit int) ([]Message, error) {
+	if err := key.Validate(); err != nil {
+		return nil, err
+	}
 	if limit <= 0 || limit > 1000 {
 		limit = 100
 	}
 
 	rows, err := s.db.QueryContext(ctx, `
-SELECT user_id, node_id, seq, sender, body, COALESCE(metadata, ''), created_at_hlc
+SELECT user_node_id, user_id, node_id, seq, sender, body, COALESCE(metadata, ''), created_at_hlc
 FROM messages
-WHERE user_id = ?
+WHERE user_node_id = ? AND user_id = ?
 ORDER BY created_at_hlc DESC, node_id ASC, seq DESC
 LIMIT ?
-`, userID, limit)
+`, key.NodeID, key.UserID, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list messages: %w", err)
 	}
@@ -714,7 +746,7 @@ func (s *Store) ListEvents(ctx context.Context, afterSequence int64, limit int) 
 	}
 
 	rows, err := s.db.QueryContext(ctx, `
-SELECT sequence, event_id, kind, aggregate_type, aggregate_id, hlc, origin_node_id, payload
+SELECT sequence, event_id, kind, aggregate_type, aggregate_node_id, aggregate_id, hlc, origin_node_id, payload
 FROM event_log
 WHERE sequence > ?
 ORDER BY sequence ASC
@@ -739,18 +771,21 @@ LIMIT ?
 	return events, nil
 }
 
-func (s *Store) getUser(ctx context.Context, userID int64, includeDeleted bool) (User, error) {
+func (s *Store) getUser(ctx context.Context, key UserKey, includeDeleted bool) (User, error) {
+	if err := key.Validate(); err != nil {
+		return User{}, err
+	}
 	query := `
-SELECT user_id, username, password_hash, profile, role, system_reserved, created_at_hlc, updated_at_hlc,
+SELECT node_id, user_id, username, password_hash, profile, role, system_reserved, created_at_hlc, updated_at_hlc,
        deleted_at_hlc, version_username, version_password_hash, version_profile,
        version_role, version_deleted, origin_node_id
 FROM users
-WHERE user_id = ?`
+WHERE node_id = ? AND user_id = ?`
 	if !includeDeleted {
 		query += ` AND deleted_at_hlc IS NULL`
 	}
 
-	row := s.db.QueryRowContext(ctx, query, userID)
+	row := s.db.QueryRowContext(ctx, query, key.NodeID, key.UserID)
 	user, err := scanUser(row)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -761,18 +796,21 @@ WHERE user_id = ?`
 	return user, nil
 }
 
-func (s *Store) getUserTx(ctx context.Context, tx *sql.Tx, userID int64, includeDeleted bool) (User, error) {
+func (s *Store) getUserTx(ctx context.Context, tx *sql.Tx, key UserKey, includeDeleted bool) (User, error) {
+	if err := key.Validate(); err != nil {
+		return User{}, err
+	}
 	query := `
-SELECT user_id, username, password_hash, profile, role, system_reserved, created_at_hlc, updated_at_hlc,
+SELECT node_id, user_id, username, password_hash, profile, role, system_reserved, created_at_hlc, updated_at_hlc,
        deleted_at_hlc, version_username, version_password_hash, version_profile,
        version_role, version_deleted, origin_node_id
 FROM users
-WHERE user_id = ?`
+WHERE node_id = ? AND user_id = ?`
 	if !includeDeleted {
 		query += ` AND deleted_at_hlc IS NULL`
 	}
 
-	row := tx.QueryRowContext(ctx, query, userID)
+	row := tx.QueryRowContext(ctx, query, key.NodeID, key.UserID)
 	user, err := scanUser(row)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -783,21 +821,22 @@ WHERE user_id = ?`
 	return user, nil
 }
 
-func (s *Store) insertEvent(ctx context.Context, tx *sql.Tx, kind, aggregate string, aggregateID int64, hlc clock.Timestamp, payload string) (Event, error) {
+func (s *Store) insertEvent(ctx context.Context, tx *sql.Tx, kind, aggregate string, aggregateNodeID, aggregateID int64, hlc clock.Timestamp, payload string) (Event, error) {
 	event := Event{
-		EventID:      s.ids.Next(),
-		Kind:         kind,
-		Aggregate:    aggregate,
-		AggregateID:  aggregateID,
-		HLC:          hlc,
-		OriginNodeID: s.nodeID,
-		Payload:      payload,
+		EventID:         s.ids.Next(),
+		Kind:            kind,
+		Aggregate:       aggregate,
+		AggregateNodeID: aggregateNodeID,
+		AggregateID:     aggregateID,
+		HLC:             hlc,
+		OriginNodeID:    s.nodeID,
+		Payload:         payload,
 	}
 
 	result, err := tx.ExecContext(ctx, `
-INSERT INTO event_log(event_id, kind, aggregate_type, aggregate_id, hlc, origin_node_id, payload)
-VALUES(?, ?, ?, ?, ?, ?, ?)
-`, event.EventID, event.Kind, event.Aggregate, event.AggregateID, event.HLC.String(),
+INSERT INTO event_log(event_id, kind, aggregate_type, aggregate_node_id, aggregate_id, hlc, origin_node_id, payload)
+VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+`, event.EventID, event.Kind, event.Aggregate, event.AggregateNodeID, event.AggregateID, event.HLC.String(),
 		event.OriginNodeID, event.Payload)
 	if err != nil {
 		return Event{}, fmt.Errorf("insert event: %w", err)
@@ -810,51 +849,46 @@ VALUES(?, ?, ?, ?, ?, ?, ?)
 	return event, nil
 }
 
-func (s *Store) nextMessageSeqTx(ctx context.Context, tx *sql.Tx, userID int64, nodeID int64) (int64, error) {
-	if userID == 0 || nodeID <= 0 {
-		return 0, fmt.Errorf("%w: user id and node id are required for message sequence", ErrInvalidInput)
+func (s *Store) nextUserIDTx(ctx context.Context, tx *sql.Tx, nodeID int64) (int64, error) {
+	if nodeID <= 0 {
+		return 0, fmt.Errorf("%w: node id is required for user sequence", ErrInvalidInput)
 	}
+	var userID int64
+	if err := tx.QueryRowContext(ctx, `
+SELECT COALESCE(MAX(user_id), ?) + 1
+FROM users
+WHERE node_id = ?
+`, BootstrapAdminUserID, nodeID).Scan(&userID); err != nil {
+		return 0, fmt.Errorf("read next user id: %w", err)
+	}
+	return userID, nil
+}
 
-	if _, err := tx.ExecContext(ctx, `
-INSERT INTO message_cursors(user_id, node_id, last_seq)
-VALUES(?, ?, 0)
-ON CONFLICT(user_id, node_id) DO NOTHING
-`, userID, nodeID); err != nil {
-		return 0, fmt.Errorf("initialize message cursor: %w", err)
+func (s *Store) nextMessageSeqTx(ctx context.Context, tx *sql.Tx, key UserKey, nodeID int64) (int64, error) {
+	if err := key.Validate(); err != nil {
+		return 0, err
 	}
-	if _, err := tx.ExecContext(ctx, `
-UPDATE message_cursors
-SET last_seq = last_seq + 1
-WHERE user_id = ? AND node_id = ?
-`, userID, nodeID); err != nil {
-		return 0, fmt.Errorf("advance message cursor: %w", err)
+	if nodeID <= 0 {
+		return 0, fmt.Errorf("%w: user id and node id are required for message sequence", ErrInvalidInput)
 	}
 
 	var seq int64
 	if err := tx.QueryRowContext(ctx, `
-SELECT last_seq
-FROM message_cursors
-WHERE user_id = ? AND node_id = ?
-`, userID, nodeID).Scan(&seq); err != nil {
-		return 0, fmt.Errorf("read message cursor: %w", err)
+SELECT COALESCE(MAX(seq), 0) + 1
+FROM messages
+WHERE user_node_id = ? AND user_id = ? AND node_id = ?
+`, key.NodeID, key.UserID, nodeID).Scan(&seq); err != nil {
+		return 0, fmt.Errorf("read next message sequence: %w", err)
 	}
 	return seq, nil
 }
 
-func (s *Store) recordMessageSeqTx(ctx context.Context, tx *sql.Tx, userID int64, nodeID int64, seq int64) error {
-	if userID == 0 || nodeID <= 0 || seq <= 0 {
-		return fmt.Errorf("%w: user id, node id, and seq are required for message cursor", ErrInvalidInput)
+func validateMessageIdentity(key UserKey, nodeID int64, seq int64) error {
+	if err := key.Validate(); err != nil {
+		return err
 	}
-	if _, err := tx.ExecContext(ctx, `
-INSERT INTO message_cursors(user_id, node_id, last_seq)
-VALUES(?, ?, ?)
-ON CONFLICT(user_id, node_id) DO UPDATE SET
-    last_seq = CASE
-        WHEN excluded.last_seq > message_cursors.last_seq THEN excluded.last_seq
-        ELSE message_cursors.last_seq
-    END
-`, userID, nodeID, seq); err != nil {
-		return fmt.Errorf("record message cursor: %w", err)
+	if nodeID <= 0 || seq <= 0 {
+		return fmt.Errorf("%w: user id, node id, and seq are required for message", ErrInvalidInput)
 	}
 	return nil
 }
@@ -873,21 +907,25 @@ WHERE username = ? AND deleted_at_hlc IS NULL AND user_id != ?
 
 type tombstoneRecord struct {
 	EntityType   string
+	EntityNodeID int64
 	EntityID     int64
 	DeletedAt    clock.Timestamp
 	OriginNodeID int64
 }
 
-func (s *Store) getTombstoneTx(ctx context.Context, tx *sql.Tx, entityType string, entityID int64) (tombstoneRecord, bool, error) {
+func (s *Store) getTombstoneTx(ctx context.Context, tx *sql.Tx, entityType string, key UserKey) (tombstoneRecord, bool, error) {
+	if err := key.Validate(); err != nil {
+		return tombstoneRecord{}, false, err
+	}
 	row := tx.QueryRowContext(ctx, `
-SELECT entity_type, entity_id, deleted_at_hlc, origin_node_id
+SELECT entity_type, entity_node_id, entity_id, deleted_at_hlc, origin_node_id
 FROM tombstones
-WHERE entity_type = ? AND entity_id = ?
-`, entityType, entityID)
+WHERE entity_type = ? AND entity_node_id = ? AND entity_id = ?
+`, entityType, key.NodeID, key.UserID)
 
 	var record tombstoneRecord
 	var deletedAtRaw string
-	if err := row.Scan(&record.EntityType, &record.EntityID, &deletedAtRaw, &record.OriginNodeID); err != nil {
+	if err := row.Scan(&record.EntityType, &record.EntityNodeID, &record.EntityID, &deletedAtRaw, &record.OriginNodeID); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return tombstoneRecord{}, false, nil
 		}
@@ -902,11 +940,14 @@ WHERE entity_type = ? AND entity_id = ?
 	return record, true, nil
 }
 
-func (s *Store) upsertTombstoneTx(ctx context.Context, tx *sql.Tx, entityType string, entityID int64, deletedAt clock.Timestamp, originNodeID int64) error {
+func (s *Store) upsertTombstoneTx(ctx context.Context, tx *sql.Tx, entityType string, key UserKey, deletedAt clock.Timestamp, originNodeID int64) error {
+	if err := key.Validate(); err != nil {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx, `
-INSERT INTO tombstones(entity_type, entity_id, deleted_at_hlc, expires_at_hlc, origin_node_id)
-VALUES(?, ?, ?, NULL, ?)
-ON CONFLICT(entity_type, entity_id) DO UPDATE SET
+INSERT INTO tombstones(entity_type, entity_node_id, entity_id, deleted_at_hlc, expires_at_hlc, origin_node_id)
+VALUES(?, ?, ?, ?, NULL, ?)
+ON CONFLICT(entity_type, entity_node_id, entity_id) DO UPDATE SET
     deleted_at_hlc = CASE
         WHEN excluded.deleted_at_hlc > tombstones.deleted_at_hlc THEN excluded.deleted_at_hlc
         ELSE tombstones.deleted_at_hlc
@@ -915,14 +956,14 @@ ON CONFLICT(entity_type, entity_id) DO UPDATE SET
         WHEN excluded.deleted_at_hlc > tombstones.deleted_at_hlc THEN excluded.origin_node_id
         ELSE tombstones.origin_node_id
     END
-`, entityType, entityID, deletedAt.String(), originNodeID); err != nil {
+`, entityType, key.NodeID, key.UserID, deletedAt.String(), originNodeID); err != nil {
 		return fmt.Errorf("upsert tombstone: %w", err)
 	}
 	return nil
 }
 
-func (s *Store) applyUserDeleteTx(ctx context.Context, tx *sql.Tx, userID int64, deletedAt clock.Timestamp, originNodeID int64, requireActive bool) error {
-	user, err := s.getUserByIDTx(ctx, tx, userID, true)
+func (s *Store) applyUserDeleteTx(ctx context.Context, tx *sql.Tx, key UserKey, deletedAt clock.Timestamp, originNodeID int64, requireActive bool) error {
+	user, err := s.getUserByIDTx(ctx, tx, key, true)
 	switch {
 	case err == nil:
 	case errors.Is(err, ErrNotFound):
@@ -957,14 +998,17 @@ func (s *Store) applyUserDeleteTx(ctx context.Context, tx *sql.Tx, userID int64,
 			if _, err := tx.ExecContext(ctx, `
 UPDATE users
 SET deleted_at_hlc = ?, updated_at_hlc = ?, version_deleted = ?
-WHERE user_id = ?
-`, deletedAt.String(), updatedAt.String(), deletedAt.String(), userID); err != nil {
+WHERE node_id = ? AND user_id = ?
+`, deletedAt.String(), updatedAt.String(), deletedAt.String(), key.NodeID, key.UserID); err != nil {
 				return fmt.Errorf("delete user: %w", err)
 			}
 		}
 	}
 
-	if err := s.upsertTombstoneTx(ctx, tx, "user", userID, deletedAt, originNodeID); err != nil {
+	if err := s.upsertTombstoneTx(ctx, tx, "user", key, deletedAt, originNodeID); err != nil {
+		return err
+	}
+	if err := s.reconcileBootstrapAdminsTx(ctx, tx); err != nil {
 		return err
 	}
 	return nil
@@ -985,6 +1029,7 @@ func scanUser(scanner interface {
 	var versionDeletedRaw sql.NullString
 
 	if err := scanner.Scan(
+		&user.NodeID,
 		&user.ID,
 		&user.Username,
 		&user.PasswordHash,
@@ -1054,6 +1099,7 @@ func scanMessage(scanner interface {
 	var createdAtRaw string
 
 	if err := scanner.Scan(
+		&message.UserNodeID,
 		&message.UserID,
 		&message.NodeID,
 		&message.Seq,
@@ -1084,6 +1130,7 @@ func scanEvent(scanner interface {
 		&event.EventID,
 		&event.Kind,
 		&event.Aggregate,
+		&event.AggregateNodeID,
 		&event.AggregateID,
 		&hlcRaw,
 		&event.OriginNodeID,
@@ -1114,14 +1161,14 @@ func normalizeMessageWindowSize(size int) int {
 	return size
 }
 
-func (s *Store) AuthenticateUser(ctx context.Context, userID int64, password string) (User, error) {
-	if userID == 0 {
-		return User{}, fmt.Errorf("%w: user id cannot be empty", ErrInvalidInput)
+func (s *Store) AuthenticateUser(ctx context.Context, key UserKey, password string) (User, error) {
+	if err := key.Validate(); err != nil {
+		return User{}, err
 	}
 	if strings.TrimSpace(password) == "" {
 		return User{}, fmt.Errorf("%w: password cannot be empty", ErrInvalidInput)
 	}
-	user, err := s.GetUser(ctx, userID)
+	user, err := s.GetUser(ctx, key)
 	if err != nil {
 		return User{}, err
 	}
@@ -1149,14 +1196,16 @@ func (s *Store) EnsureBootstrapAdmin(ctx context.Context, cfg BootstrapAdminConf
 	defer tx.Rollback()
 
 	now := s.clock.Now()
-	if _, err := tx.ExecContext(ctx, `DELETE FROM tombstones WHERE entity_type = 'user' AND entity_id = ?`, BootstrapAdminUserID); err != nil {
+	key := UserKey{NodeID: s.nodeID, UserID: BootstrapAdminUserID}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM tombstones WHERE entity_type = 'user' AND entity_node_id = ? AND entity_id = ?`, key.NodeID, key.UserID); err != nil {
 		return fmt.Errorf("delete bootstrap admin tombstone: %w", err)
 	}
 
-	current, err := s.getUserTx(ctx, tx, BootstrapAdminUserID, true)
+	current, err := s.getUserTx(ctx, tx, key, true)
 	switch {
 	case errors.Is(err, ErrNotFound):
 		user := User{
+			NodeID:              s.nodeID,
 			ID:                  BootstrapAdminUserID,
 			Username:            username,
 			PasswordHash:        passwordHash,
@@ -1173,12 +1222,12 @@ func (s *Store) EnsureBootstrapAdmin(ctx context.Context, cfg BootstrapAdminConf
 		}
 		if _, err := tx.ExecContext(ctx, `
 INSERT INTO users(
-    user_id, username, password_hash, profile, role, system_reserved, created_at_hlc, updated_at_hlc,
+    node_id, user_id, username, password_hash, profile, role, system_reserved, created_at_hlc, updated_at_hlc,
     deleted_at_hlc, version_username, version_password_hash, version_profile,
     version_role, version_deleted, origin_node_id
 )
-VALUES(?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, NULL, ?)
-`, user.ID, user.Username, user.PasswordHash, user.Profile, user.Role, boolToInt(user.SystemReserved),
+VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, NULL, ?)
+`, user.NodeID, user.ID, user.Username, user.PasswordHash, user.Profile, user.Role, boolToInt(user.SystemReserved),
 			user.CreatedAt.String(), user.UpdatedAt.String(), user.VersionUsername.String(),
 			user.VersionPasswordHash.String(), user.VersionProfile.String(), user.VersionRole.String(),
 			user.OriginNodeID); err != nil {
@@ -1188,7 +1237,7 @@ VALUES(?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, NULL, ?)
 		if err != nil {
 			return fmt.Errorf("marshal bootstrap admin create event: %w", err)
 		}
-		if _, err := s.insertEvent(ctx, tx, "user.created", "user", user.ID, now, payload); err != nil {
+		if _, err := s.insertEvent(ctx, tx, "user.created", "user", user.NodeID, user.ID, now, payload); err != nil {
 			return err
 		}
 	case err != nil:
@@ -1222,21 +1271,24 @@ UPDATE users
 SET username = ?, password_hash = ?, profile = ?, role = ?, system_reserved = ?, created_at_hlc = ?, updated_at_hlc = ?,
     deleted_at_hlc = NULL, version_username = ?, version_password_hash = ?, version_profile = ?,
     version_role = ?, version_deleted = NULL, origin_node_id = ?
-WHERE user_id = ?
+WHERE node_id = ? AND user_id = ?
 `, updated.Username, updated.PasswordHash, updated.Profile, updated.Role, boolToInt(updated.SystemReserved),
 				updated.CreatedAt.String(), updated.UpdatedAt.String(), updated.VersionUsername.String(),
 				updated.VersionPasswordHash.String(), updated.VersionProfile.String(), updated.VersionRole.String(),
-				updated.OriginNodeID, updated.ID); err != nil {
+				updated.OriginNodeID, updated.NodeID, updated.ID); err != nil {
 				return fmt.Errorf("repair bootstrap admin: %w", err)
 			}
 			payload, err := encodeUpdateUserPayload(updated)
 			if err != nil {
 				return fmt.Errorf("marshal bootstrap admin update event: %w", err)
 			}
-			if _, err := s.insertEvent(ctx, tx, "user.updated", "user", updated.ID, updated.UpdatedAt, payload); err != nil {
+			if _, err := s.insertEvent(ctx, tx, "user.updated", "user", updated.NodeID, updated.ID, updated.UpdatedAt, payload); err != nil {
 				return err
 			}
 		}
+	}
+	if err := s.reconcileBootstrapAdminsTx(ctx, tx); err != nil {
+		return err
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -1270,7 +1322,7 @@ func normalizeMutableRole(role string) (string, error) {
 }
 
 func (s *Store) applyReservedUserInvariants(user User) User {
-	if user.ID != BootstrapAdminUserID {
+	if user.ID != BootstrapAdminUserID || !user.SystemReserved {
 		user.SystemReserved = false
 		return user
 	}
@@ -1286,6 +1338,41 @@ func (u User) isProtectedBootstrapAdmin() bool {
 	return u.ID == BootstrapAdminUserID && u.SystemReserved
 }
 
+func (s *Store) reconcileBootstrapAdminsTx(ctx context.Context, tx *sql.Tx) error {
+	var minNodeID sql.NullInt64
+	if err := tx.QueryRowContext(ctx, `
+SELECT MIN(node_id)
+FROM users
+WHERE user_id = ? AND deleted_at_hlc IS NULL
+`, BootstrapAdminUserID).Scan(&minNodeID); err != nil {
+		return fmt.Errorf("find bootstrap admin owner: %w", err)
+	}
+	if !minNodeID.Valid {
+		return nil
+	}
+
+	now := s.clock.Now().String()
+	if _, err := tx.ExecContext(ctx, `
+UPDATE users
+SET role = ?, system_reserved = 1, updated_at_hlc = ?,
+    version_role = CASE WHEN version_role < ? THEN ? ELSE version_role END
+WHERE node_id = ? AND user_id = ? AND deleted_at_hlc IS NULL
+`, RoleSuperAdmin, now, now, now, minNodeID.Int64, BootstrapAdminUserID); err != nil {
+		return fmt.Errorf("promote bootstrap admin: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+UPDATE users
+SET role = CASE WHEN role = ? THEN ? ELSE role END,
+    system_reserved = 0,
+    updated_at_hlc = ?,
+    version_role = CASE WHEN role = ? AND version_role < ? THEN ? ELSE version_role END
+WHERE user_id = ? AND node_id != ? AND deleted_at_hlc IS NULL
+`, RoleSuperAdmin, RoleUser, now, RoleSuperAdmin, now, now, BootstrapAdminUserID, minNodeID.Int64); err != nil {
+		return fmt.Errorf("demote non-owner bootstrap admins: %w", err)
+	}
+	return nil
+}
+
 func boolToInt(value bool) int {
 	if value {
 		return 1
@@ -1293,25 +1380,28 @@ func boolToInt(value bool) int {
 	return 0
 }
 
-func (s *Store) trimMessagesForUserTx(ctx context.Context, tx *sql.Tx, userID int64) error {
+func (s *Store) trimMessagesForUserTx(ctx context.Context, tx *sql.Tx, key UserKey) error {
+	if err := key.Validate(); err != nil {
+		return err
+	}
 	windowSize := normalizeMessageWindowSize(s.messageWindowSize)
 	result, err := tx.ExecContext(ctx, `
 DELETE FROM messages
-WHERE user_id = ?
+WHERE user_node_id = ? AND user_id = ?
   AND (node_id, seq) IN (
     SELECT node_id, seq
     FROM messages
-    WHERE user_id = ?
+    WHERE user_node_id = ? AND user_id = ?
     ORDER BY created_at_hlc DESC, node_id ASC, seq DESC
     LIMIT -1 OFFSET ?
   )
-`, userID, userID, windowSize)
+`, key.NodeID, key.UserID, key.NodeID, key.UserID, windowSize)
 	if err != nil {
-		return fmt.Errorf("trim messages for user %d: %w", userID, err)
+		return fmt.Errorf("trim messages for user %d:%d: %w", key.NodeID, key.UserID, err)
 	}
 	trimmed, err := result.RowsAffected()
 	if err != nil {
-		return fmt.Errorf("count trimmed messages for user %d: %w", userID, err)
+		return fmt.Errorf("count trimmed messages for user %d:%d: %w", key.NodeID, key.UserID, err)
 	}
 	if trimmed > 0 {
 		if err := s.recordMessageTrimTx(ctx, tx, trimmed); err != nil {

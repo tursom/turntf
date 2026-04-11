@@ -43,6 +43,7 @@ message ReplicatedEvent {
   int64 event_id = 1;
   string kind = 2;
   string aggregate_type = 3;
+  int64 aggregate_node_id = 8;
   int64 aggregate_id = 4;
   string hlc = 5;
   int64 origin_node_id = 6;
@@ -90,6 +91,7 @@ message SnapshotRow {
 
 message SnapshotUserRow {
   int64 user_id = 1;
+  int64 node_id = 16;
   string username = 2;
   string password_hash = 3;
   string profile = 4;
@@ -111,11 +113,13 @@ message SnapshotTombstoneRow {
   int64 entity_id = 2;
   string deleted_at_hlc = 3;
   int64 origin_node_id = 4;
+  int64 entity_node_id = 5;
 }
 
 message SnapshotMessageRow {
   int64 user_id = 1;
   int64 node_id = 2;
+  int64 user_node_id = 8;
   string sender = 3;
   string body = 4;
   string metadata = 5;
@@ -139,6 +143,7 @@ message UserEvent {
   int64 event_id = 1;
   string kind = 2;
   int64 user_id = 3;
+  int64 node_id = 6;
   string hlc = 4;
   bytes payload = 5;
 }
@@ -148,6 +153,7 @@ message MessageEvent {
   string kind = 2;
   int64 user_id = 3;
   int64 node_id = 4;
+  int64 user_node_id = 8;
   string hlc = 5;
   bytes payload = 6;
   int64 seq = 7;

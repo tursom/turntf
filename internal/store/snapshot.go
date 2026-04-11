@@ -131,18 +131,18 @@ func (s *Store) ApplySnapshotChunk(ctx context.Context, chunk *clusterproto.Snap
 		if err != nil {
 			return fmt.Errorf("%w: message snapshot partition missing producer", ErrInvalidInput)
 		}
-		affectedUsers := make(map[int64]struct{})
+		affectedUsers := make(map[UserKey]struct{})
 		for _, row := range chunk.Rows {
-			userID, err := s.applyMessageSnapshotRowTx(ctx, tx, producer, row)
+			key, err := s.applyMessageSnapshotRowTx(ctx, tx, producer, row)
 			if err != nil {
 				return err
 			}
-			if userID != 0 {
-				affectedUsers[userID] = struct{}{}
+			if key != (UserKey{}) {
+				affectedUsers[key] = struct{}{}
 			}
 		}
-		for userID := range affectedUsers {
-			if err := s.trimMessagesForUserTx(ctx, tx, userID); err != nil {
+		for key := range affectedUsers {
+			if err := s.trimMessagesForUserTx(ctx, tx, key); err != nil {
 				return err
 			}
 		}
@@ -158,11 +158,11 @@ func (s *Store) ApplySnapshotChunk(ctx context.Context, chunk *clusterproto.Snap
 
 func (s *Store) buildUserSnapshotRows(ctx context.Context) ([]*clusterproto.SnapshotRow, error) {
 	rows, err := s.db.QueryContext(ctx, `
-SELECT user_id, username, password_hash, profile, role, system_reserved, created_at_hlc, updated_at_hlc,
+SELECT node_id, user_id, username, password_hash, profile, role, system_reserved, created_at_hlc, updated_at_hlc,
        deleted_at_hlc, version_username, version_password_hash, version_profile,
        version_role, version_deleted, origin_node_id
 FROM users
-ORDER BY user_id ASC
+ORDER BY node_id ASC, user_id ASC
 `)
 	if err != nil {
 		return nil, fmt.Errorf("query snapshot users: %w", err)
@@ -182,10 +182,10 @@ ORDER BY user_id ASC
 	}
 
 	tombstoneRows, err := s.db.QueryContext(ctx, `
-SELECT entity_type, entity_id, deleted_at_hlc, origin_node_id
+SELECT entity_type, entity_node_id, entity_id, deleted_at_hlc, origin_node_id
 FROM tombstones
 WHERE entity_type = 'user'
-ORDER BY entity_type ASC, entity_id ASC
+ORDER BY entity_type ASC, entity_node_id ASC, entity_id ASC
 `)
 	if err != nil {
 		return nil, fmt.Errorf("query snapshot tombstones: %w", err)
@@ -194,15 +194,16 @@ ORDER BY entity_type ASC, entity_id ASC
 
 	for tombstoneRows.Next() {
 		var entityType, deletedAt string
-		var originNodeID int64
+		var entityNodeID, originNodeID int64
 		var entityID int64
-		if err := tombstoneRows.Scan(&entityType, &entityID, &deletedAt, &originNodeID); err != nil {
+		if err := tombstoneRows.Scan(&entityType, &entityNodeID, &entityID, &deletedAt, &originNodeID); err != nil {
 			return nil, fmt.Errorf("scan snapshot tombstone: %w", err)
 		}
 		snapshotRows = append(snapshotRows, &clusterproto.SnapshotRow{
 			Body: &clusterproto.SnapshotRow_Tombstone{
 				Tombstone: &clusterproto.SnapshotTombstoneRow{
 					EntityType:   entityType,
+					EntityNodeId: entityNodeID,
 					EntityId:     entityID,
 					DeletedAtHlc: deletedAt,
 					OriginNodeId: originNodeID,
@@ -218,10 +219,10 @@ ORDER BY entity_type ASC, entity_id ASC
 
 func (s *Store) buildMessageSnapshotRows(ctx context.Context, producer int64) ([]*clusterproto.SnapshotRow, error) {
 	rows, err := s.db.QueryContext(ctx, `
-SELECT user_id, node_id, seq, sender, body, COALESCE(metadata, ''), created_at_hlc
+SELECT user_node_id, user_id, node_id, seq, sender, body, COALESCE(metadata, ''), created_at_hlc
 FROM messages
 WHERE node_id = ?
-ORDER BY user_id ASC, created_at_hlc DESC, node_id ASC, seq DESC
+ORDER BY user_node_id ASC, user_id ASC, created_at_hlc DESC, node_id ASC, seq DESC
 `, producer)
 	if err != nil {
 		return nil, fmt.Errorf("query snapshot messages: %w", err)
@@ -263,7 +264,7 @@ func (s *Store) applyUserSnapshotRowTx(ctx context.Context, tx *sql.Tx, row *clu
 		if deletedAt == nil {
 			deletedAt = user.VersionDeleted
 		}
-		return s.applyUserDeleteTx(ctx, tx, user.ID, *deletedAt, user.OriginNodeID, false)
+		return s.applyUserDeleteTx(ctx, tx, user.Key(), *deletedAt, user.OriginNodeID, false)
 	}
 
 	payload, err := encodeUpdateUserPayload(user)
@@ -284,63 +285,60 @@ func (s *Store) applySnapshotTombstoneTx(ctx context.Context, tx *sql.Tx, row *c
 	if row.EntityType != "user" {
 		return fmt.Errorf("%w: unsupported tombstone entity type %q", ErrInvalidInput, row.EntityType)
 	}
-	if row.EntityId == 0 {
-		return fmt.Errorf("%w: tombstone entity id cannot be empty", ErrInvalidInput)
+	key := UserKey{NodeID: row.EntityNodeId, UserID: row.EntityId}
+	if err := key.Validate(); err != nil {
+		return err
 	}
 	deletedAt, err := parseRequiredTimestamp(row.DeletedAtHlc, "snapshot tombstone deleted_at")
 	if err != nil {
 		return err
 	}
-	return s.applyUserDeleteTx(ctx, tx, row.EntityId, deletedAt, row.OriginNodeId, false)
+	return s.applyUserDeleteTx(ctx, tx, key, deletedAt, row.OriginNodeId, false)
 }
 
-func (s *Store) applyMessageSnapshotRowTx(ctx context.Context, tx *sql.Tx, producer int64, row *clusterproto.SnapshotRow) (int64, error) {
+func (s *Store) applyMessageSnapshotRowTx(ctx context.Context, tx *sql.Tx, producer int64, row *clusterproto.SnapshotRow) (UserKey, error) {
 	if row == nil {
-		return 0, fmt.Errorf("%w: snapshot row cannot be nil", ErrInvalidInput)
+		return UserKey{}, fmt.Errorf("%w: snapshot row cannot be nil", ErrInvalidInput)
 	}
 	messageRow := row.GetMessage()
 	if messageRow == nil {
-		return 0, fmt.Errorf("%w: messages snapshot contains non-message row", ErrInvalidInput)
+		return UserKey{}, fmt.Errorf("%w: messages snapshot contains non-message row", ErrInvalidInput)
 	}
-	if messageRow.UserId == 0 || messageRow.NodeId <= 0 || messageRow.Seq <= 0 {
-		return 0, fmt.Errorf("%w: message user id, node id, and seq are required", ErrInvalidInput)
+	key := UserKey{NodeID: messageRow.UserNodeId, UserID: messageRow.UserId}
+	if err := validateMessageIdentity(key, messageRow.NodeId, messageRow.Seq); err != nil {
+		return UserKey{}, err
 	}
 	if messageRow.NodeId != producer {
-		return 0, fmt.Errorf("%w: message node id %d does not match partition producer %d", ErrInvalidInput, messageRow.NodeId, producer)
+		return UserKey{}, fmt.Errorf("%w: message node id %d does not match partition producer %d", ErrInvalidInput, messageRow.NodeId, producer)
 	}
 	if _, err := parseRequiredTimestamp(messageRow.CreatedAtHlc, "snapshot message created_at"); err != nil {
-		return 0, err
+		return UserKey{}, err
 	}
-	if _, err := s.getUserByIDTx(ctx, tx, messageRow.UserId, false); err != nil {
+	if _, err := s.getUserByIDTx(ctx, tx, key, false); err != nil {
 		if errors.Is(err, ErrNotFound) {
-			return 0, nil
+			return UserKey{}, nil
 		}
-		return 0, err
+		return UserKey{}, err
 	}
 
 	if _, err := tx.ExecContext(ctx, `
-INSERT INTO messages(user_id, node_id, seq, sender, body, metadata, created_at_hlc)
-VALUES(?, ?, ?, ?, ?, ?, ?)
-`, messageRow.UserId, messageRow.NodeId, messageRow.Seq, messageRow.Sender, messageRow.Body, nullIfEmpty(messageRow.Metadata),
+INSERT INTO messages(user_node_id, user_id, node_id, seq, sender, body, metadata, created_at_hlc)
+VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+`, messageRow.UserNodeId, messageRow.UserId, messageRow.NodeId, messageRow.Seq, messageRow.Sender, messageRow.Body, nullIfEmpty(messageRow.Metadata),
 		messageRow.CreatedAtHlc); err != nil {
 		if isUniqueConstraint(err) {
-			if err := s.recordMessageSeqTx(ctx, tx, messageRow.UserId, messageRow.NodeId, messageRow.Seq); err != nil {
-				return 0, err
-			}
-			return messageRow.UserId, nil
+			return key, nil
 		}
-		return 0, fmt.Errorf("insert snapshot message: %w", err)
+		return UserKey{}, fmt.Errorf("insert snapshot message: %w", err)
 	}
-	if err := s.recordMessageSeqTx(ctx, tx, messageRow.UserId, messageRow.NodeId, messageRow.Seq); err != nil {
-		return 0, err
-	}
-	return messageRow.UserId, nil
+	return key, nil
 }
 
 func snapshotRowFromUser(user User) *clusterproto.SnapshotRow {
 	return &clusterproto.SnapshotRow{
 		Body: &clusterproto.SnapshotRow_User{
 			User: &clusterproto.SnapshotUserRow{
+				NodeId:              user.NodeID,
 				UserId:              user.ID,
 				Username:            user.Username,
 				PasswordHash:        user.PasswordHash,
@@ -365,6 +363,7 @@ func snapshotRowFromMessage(message Message) *clusterproto.SnapshotRow {
 	return &clusterproto.SnapshotRow{
 		Body: &clusterproto.SnapshotRow_Message{
 			Message: &clusterproto.SnapshotMessageRow{
+				UserNodeId:   message.UserNodeID,
 				UserId:       message.UserID,
 				NodeId:       message.NodeID,
 				Seq:          message.Seq,
@@ -378,8 +377,9 @@ func snapshotRowFromMessage(message Message) *clusterproto.SnapshotRow {
 }
 
 func userFromSnapshotRow(row *clusterproto.SnapshotUserRow) (User, error) {
-	if row.UserId == 0 {
-		return User{}, fmt.Errorf("%w: user id cannot be empty", ErrInvalidInput)
+	key := UserKey{NodeID: row.NodeId, UserID: row.UserId}
+	if err := key.Validate(); err != nil {
+		return User{}, err
 	}
 	createdAt, err := parseRequiredTimestamp(row.CreatedAtHlc, "snapshot user created_at")
 	if err != nil {
@@ -411,6 +411,7 @@ func userFromSnapshotRow(row *clusterproto.SnapshotUserRow) (User, error) {
 	}
 
 	user := User{
+		NodeID:              row.NodeId,
 		ID:                  row.UserId,
 		Username:            row.Username,
 		PasswordHash:        row.PasswordHash,
@@ -439,7 +440,8 @@ func userFromSnapshotRow(row *clusterproto.SnapshotUserRow) (User, error) {
 		}
 		user.VersionDeleted = &versionDeleted
 	}
-	return applyReplicatedBootstrapInvariant(user), nil
+	user.SystemReserved = user.SystemReserved && user.ID == BootstrapAdminUserID
+	return user, nil
 }
 
 func timestampSnapshotString(ts *clock.Timestamp) string {

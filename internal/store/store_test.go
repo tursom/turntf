@@ -14,6 +14,10 @@ func testNodeID(slot uint16) int64 {
 	return int64(slot) << 12
 }
 
+func bootstrapKey(st *Store) UserKey {
+	return UserKey{NodeID: st.NodeID(), UserID: BootstrapAdminUserID}
+}
+
 func TestLocalUserCRUDAndEventLog(t *testing.T) {
 	t.Parallel()
 
@@ -33,7 +37,7 @@ func TestLocalUserCRUDAndEventLog(t *testing.T) {
 		t.Fatalf("unexpected create event kind: %s", createEvent.Kind)
 	}
 
-	loaded, err := st.GetUser(ctx, user.ID)
+	loaded, err := st.GetUser(ctx, user.Key())
 	if err != nil {
 		t.Fatalf("get user: %v", err)
 	}
@@ -45,7 +49,7 @@ func TestLocalUserCRUDAndEventLog(t *testing.T) {
 	newProfile := `{"display_name":"Alice Updated"}`
 	newPasswordHash := "hash-2"
 	updated, updateEvent, err := st.UpdateUser(ctx, UpdateUserParams{
-		UserID:       user.ID,
+		Key:          user.Key(),
 		Username:     &newUsername,
 		Profile:      &newProfile,
 		PasswordHash: &newPasswordHash,
@@ -68,7 +72,7 @@ func TestLocalUserCRUDAndEventLog(t *testing.T) {
 		t.Fatalf("expected 1 active user, got %d", len(users))
 	}
 
-	deleteEvent, err := st.DeleteUser(ctx, user.ID)
+	deleteEvent, err := st.DeleteUser(ctx, user.Key())
 	if err != nil {
 		t.Fatalf("delete user: %v", err)
 	}
@@ -76,7 +80,7 @@ func TestLocalUserCRUDAndEventLog(t *testing.T) {
 		t.Fatalf("unexpected delete event kind: %s", deleteEvent.Kind)
 	}
 
-	if _, err := st.GetUser(ctx, user.ID); err != ErrNotFound {
+	if _, err := st.GetUser(ctx, user.Key()); err != ErrNotFound {
 		t.Fatalf("expected not found after delete, got %v", err)
 	}
 
@@ -174,7 +178,7 @@ func TestEnsureBootstrapAdminCreatesAndProtectsReservedUser(t *testing.T) {
 		t.Fatalf("ensure bootstrap admin: %v", err)
 	}
 
-	user, err := st.GetUser(ctx, BootstrapAdminUserID)
+	user, err := st.GetUser(ctx, bootstrapKey(st))
 	if err != nil {
 		t.Fatalf("get bootstrap admin: %v", err)
 	}
@@ -184,7 +188,7 @@ func TestEnsureBootstrapAdminCreatesAndProtectsReservedUser(t *testing.T) {
 
 	newPasswordHash := "hash-root-2"
 	updated, _, err := st.UpdateUser(ctx, UpdateUserParams{
-		UserID:       BootstrapAdminUserID,
+		Key:          bootstrapKey(st),
 		PasswordHash: &newPasswordHash,
 	})
 	if err != nil {
@@ -196,7 +200,7 @@ func TestEnsureBootstrapAdminCreatesAndProtectsReservedUser(t *testing.T) {
 
 	newUsername := "renamed-root"
 	if _, _, err := st.UpdateUser(ctx, UpdateUserParams{
-		UserID:   BootstrapAdminUserID,
+		Key:      bootstrapKey(st),
 		Username: &newUsername,
 	}); err == nil || !errors.Is(err, ErrForbidden) {
 		t.Fatalf("expected rename bootstrap admin to fail with forbidden, got %v", err)
@@ -204,14 +208,81 @@ func TestEnsureBootstrapAdminCreatesAndProtectsReservedUser(t *testing.T) {
 
 	newRole := RoleAdmin
 	if _, _, err := st.UpdateUser(ctx, UpdateUserParams{
-		UserID: BootstrapAdminUserID,
-		Role:   &newRole,
+		Key:  bootstrapKey(st),
+		Role: &newRole,
 	}); err == nil || !errors.Is(err, ErrForbidden) {
 		t.Fatalf("expected downgrade bootstrap admin to fail with forbidden, got %v", err)
 	}
 
-	if _, err := st.DeleteUser(ctx, BootstrapAdminUserID); err == nil || !errors.Is(err, ErrForbidden) {
+	if _, err := st.DeleteUser(ctx, bootstrapKey(st)); err == nil || !errors.Is(err, ErrForbidden) {
 		t.Fatalf("expected delete bootstrap admin to fail with forbidden, got %v", err)
+	}
+
+	normal, _, err := st.CreateUser(ctx, CreateUserParams{
+		Username:     "alice",
+		PasswordHash: "hash-alice",
+	})
+	if err != nil {
+		t.Fatalf("create normal user: %v", err)
+	}
+	if normal.ID != 2 {
+		t.Fatalf("expected normal user id to start at 2, got %+v", normal)
+	}
+}
+
+func TestBootstrapAdminProtectionFollowsSmallestStoredNodeID(t *testing.T) {
+	t.Parallel()
+
+	nodeA := openNamedTestStore(t, "node-a", 1)
+	defer nodeA.Close()
+	nodeB := openNamedTestStore(t, "node-b", 2)
+	defer nodeB.Close()
+
+	ctx := context.Background()
+	for _, st := range []*Store{nodeA, nodeB} {
+		if err := st.EnsureBootstrapAdmin(ctx, BootstrapAdminConfig{
+			Username:     "root",
+			PasswordHash: "hash-root",
+		}); err != nil {
+			t.Fatalf("ensure bootstrap admin: %v", err)
+		}
+	}
+
+	eventsA, err := nodeA.ListEvents(ctx, 0, 10)
+	if err != nil {
+		t.Fatalf("list node A events: %v", err)
+	}
+	eventsB, err := nodeB.ListEvents(ctx, 0, 10)
+	if err != nil {
+		t.Fatalf("list node B events: %v", err)
+	}
+	for _, event := range eventsA {
+		if err := nodeB.ApplyReplicatedEvent(ctx, ToReplicatedEvent(event)); err != nil {
+			t.Fatalf("replicate node A root to node B: %v", err)
+		}
+	}
+	for _, event := range eventsB {
+		if err := nodeA.ApplyReplicatedEvent(ctx, ToReplicatedEvent(event)); err != nil {
+			t.Fatalf("replicate node B root to node A: %v", err)
+		}
+	}
+
+	for _, st := range []*Store{nodeA, nodeB} {
+		protected, err := st.GetUser(ctx, UserKey{NodeID: nodeA.NodeID(), UserID: BootstrapAdminUserID})
+		if err != nil {
+			t.Fatalf("get protected root on node %d: %v", st.NodeID(), err)
+		}
+		if protected.Role != RoleSuperAdmin || !protected.SystemReserved {
+			t.Fatalf("expected smallest node root to be protected on node %d: %+v", st.NodeID(), protected)
+		}
+
+		demoted, err := st.GetUser(ctx, UserKey{NodeID: nodeB.NodeID(), UserID: BootstrapAdminUserID})
+		if err != nil {
+			t.Fatalf("get demoted root on node %d: %v", st.NodeID(), err)
+		}
+		if demoted.Role == RoleSuperAdmin || demoted.SystemReserved {
+			t.Fatalf("expected larger node root to be demoted on node %d: %+v", st.NodeID(), demoted)
+		}
 	}
 }
 
@@ -233,14 +304,14 @@ func TestEnsureBootstrapAdminRepairsReservedUserWithoutOverwritingPassword(t *te
 	if _, err := st.db.ExecContext(ctx, `
 UPDATE users
 SET username = ?, role = ?, system_reserved = 0, deleted_at_hlc = ?, version_deleted = ?, updated_at_hlc = ?, password_hash = ?
-WHERE user_id = ?
-`, "broken-root", RoleAdmin, now.String(), now.String(), now.String(), "preserve-hash", BootstrapAdminUserID); err != nil {
+WHERE node_id = ? AND user_id = ?
+`, "broken-root", RoleAdmin, now.String(), now.String(), now.String(), "preserve-hash", st.NodeID(), BootstrapAdminUserID); err != nil {
 		t.Fatalf("corrupt bootstrap admin: %v", err)
 	}
 	if _, err := st.db.ExecContext(ctx, `
-INSERT INTO tombstones(entity_type, entity_id, deleted_at_hlc, expires_at_hlc, origin_node_id)
-VALUES('user', ?, ?, NULL, ?)
-`, BootstrapAdminUserID, now.String(), testNodeID(1)); err != nil {
+INSERT INTO tombstones(entity_type, entity_node_id, entity_id, deleted_at_hlc, expires_at_hlc, origin_node_id)
+VALUES('user', ?, ?, ?, NULL, ?)
+`, st.NodeID(), BootstrapAdminUserID, now.String(), testNodeID(1)); err != nil {
 		t.Fatalf("insert bootstrap tombstone: %v", err)
 	}
 
@@ -251,7 +322,7 @@ VALUES('user', ?, ?, NULL, ?)
 		t.Fatalf("repair bootstrap admin: %v", err)
 	}
 
-	user, err := st.GetUser(ctx, BootstrapAdminUserID)
+	user, err := st.GetUser(ctx, bootstrapKey(st))
 	if err != nil {
 		t.Fatalf("get repaired bootstrap admin: %v", err)
 	}
@@ -266,8 +337,8 @@ VALUES('user', ?, ?, NULL, ?)
 	if err := st.db.QueryRowContext(ctx, `
 SELECT COUNT(*)
 FROM tombstones
-WHERE entity_type = 'user' AND entity_id = ?
-`, BootstrapAdminUserID).Scan(&tombstones); err != nil {
+WHERE entity_type = 'user' AND entity_node_id = ? AND entity_id = ?
+`, st.NodeID(), BootstrapAdminUserID).Scan(&tombstones); err != nil {
 		t.Fatalf("count tombstones: %v", err)
 	}
 	if tombstones != 0 {
@@ -291,7 +362,7 @@ func TestLocalMessageWriteAndQuery(t *testing.T) {
 	}
 
 	first, firstEvent, err := st.CreateMessage(ctx, CreateMessageParams{
-		UserID:   user.ID,
+		UserKey:  user.Key(),
 		Sender:   "orders",
 		Body:     "first message",
 		Metadata: `{"kind":"first"}`,
@@ -304,15 +375,15 @@ func TestLocalMessageWriteAndQuery(t *testing.T) {
 	}
 
 	second, _, err := st.CreateMessage(ctx, CreateMessageParams{
-		UserID: user.ID,
-		Sender: "orders",
-		Body:   "second message",
+		UserKey: user.Key(),
+		Sender:  "orders",
+		Body:    "second message",
 	})
 	if err != nil {
 		t.Fatalf("create second message: %v", err)
 	}
 
-	messages, err := st.ListMessagesByUser(ctx, user.ID, 10)
+	messages, err := st.ListMessagesByUser(ctx, user.Key(), 10)
 	if err != nil {
 		t.Fatalf("list messages: %v", err)
 	}
@@ -352,15 +423,15 @@ func TestLocalMessagesTrimToConfiguredWindow(t *testing.T) {
 
 	for i := 1; i <= 3; i++ {
 		if _, _, err := st.CreateMessage(ctx, CreateMessageParams{
-			UserID: user.ID,
-			Sender: "orders",
-			Body:   "message-" + strconv.Itoa(i),
+			UserKey: user.Key(),
+			Sender:  "orders",
+			Body:    "message-" + strconv.Itoa(i),
 		}); err != nil {
 			t.Fatalf("create message %d: %v", i, err)
 		}
 	}
 
-	messages, err := st.ListMessagesByUser(ctx, user.ID, 10)
+	messages, err := st.ListMessagesByUser(ctx, user.Key(), 10)
 	if err != nil {
 		t.Fatalf("list messages: %v", err)
 	}
@@ -446,7 +517,7 @@ func TestRenameUserToDuplicateUsernameAllowed(t *testing.T) {
 
 	duplicate := first.Username
 	updated, _, err := st.UpdateUser(ctx, UpdateUserParams{
-		UserID:   second.ID,
+		Key:      second.Key(),
 		Username: &duplicate,
 	})
 	if err != nil {
@@ -514,9 +585,9 @@ func TestOperationsStatsIncludesPeerCursorsConflictsAndTrimStats(t *testing.T) {
 	}
 	for i := 1; i <= 2; i++ {
 		if _, _, err := st.CreateMessage(ctx, CreateMessageParams{
-			UserID: user.ID,
-			Sender: "orders",
-			Body:   "message-" + strconv.Itoa(i),
+			UserKey: user.Key(),
+			Sender:  "orders",
+			Body:    "message-" + strconv.Itoa(i),
 		}); err != nil {
 			t.Fatalf("create message %d: %v", i, err)
 		}
@@ -530,9 +601,9 @@ func TestOperationsStatsIncludesPeerCursorsConflictsAndTrimStats(t *testing.T) {
 	}
 	now := st.clock.Now().String()
 	if _, err := st.db.ExecContext(ctx, `
-INSERT INTO user_conflicts(loser_user_id, winner_user_id, username, detected_at_hlc)
-VALUES(?, ?, ?, ?)
-`, int64(10), int64(11), "conflicted", now); err != nil {
+INSERT INTO user_conflicts(loser_node_id, loser_user_id, winner_node_id, winner_user_id, username, detected_at_hlc)
+VALUES(?, ?, ?, ?, ?, ?)
+`, testNodeID(1), int64(10), testNodeID(2), int64(11), "conflicted", now); err != nil {
 		t.Fatalf("insert user conflict: %v", err)
 	}
 
@@ -593,7 +664,7 @@ func TestApplyReplicatedEventIsIdempotent(t *testing.T) {
 		t.Fatalf("apply replicated event second time: %v", err)
 	}
 
-	loaded, err := target.GetUser(ctx, user.ID)
+	loaded, err := target.GetUser(ctx, user.Key())
 	if err != nil {
 		t.Fatalf("get replicated user: %v", err)
 	}
@@ -640,8 +711,8 @@ func TestReplicatedDuplicateUsernameUsersRemainDistinctByID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create source B user: %v", err)
 	}
-	if userA.ID == userB.ID {
-		t.Fatalf("expected distinct replicated user ids, both were %d", userA.ID)
+	if userA.Key() == userB.Key() {
+		t.Fatalf("expected distinct replicated user keys, both were %+v", userA.Key())
 	}
 
 	if err := observerAB.ApplyReplicatedEvent(ctx, ToReplicatedEvent(eventA)); err != nil {
@@ -657,7 +728,7 @@ func TestReplicatedDuplicateUsernameUsersRemainDistinctByID(t *testing.T) {
 		t.Fatalf("apply source A event to observer BA: %v", err)
 	}
 
-	assertUsersDistinctByID := func(t *testing.T, st *Store) {
+	assertUsersDistinctByKey := func(t *testing.T, st *Store) {
 		t.Helper()
 
 		users, err := st.ListUsers(ctx)
@@ -668,20 +739,20 @@ func TestReplicatedDuplicateUsernameUsersRemainDistinctByID(t *testing.T) {
 			t.Fatalf("expected 2 users with duplicate username, got %d: %+v", len(users), users)
 		}
 
-		byID := make(map[int64]User, len(users))
+		byKey := make(map[UserKey]User, len(users))
 		for _, user := range users {
-			byID[user.ID] = user
+			byKey[user.Key()] = user
 		}
-		if byID[userA.ID].Username != "shared-name" || byID[userA.ID].PasswordHash != "hash-a" {
-			t.Fatalf("missing or changed source A user: %+v", byID[userA.ID])
+		if byKey[userA.Key()].Username != "shared-name" || byKey[userA.Key()].PasswordHash != "hash-a" {
+			t.Fatalf("missing or changed source A user: %+v", byKey[userA.Key()])
 		}
-		if byID[userB.ID].Username != "shared-name" || byID[userB.ID].PasswordHash != "hash-b" {
-			t.Fatalf("missing or changed source B user: %+v", byID[userB.ID])
+		if byKey[userB.Key()].Username != "shared-name" || byKey[userB.Key()].PasswordHash != "hash-b" {
+			t.Fatalf("missing or changed source B user: %+v", byKey[userB.Key()])
 		}
 	}
 
-	assertUsersDistinctByID(t, observerAB)
-	assertUsersDistinctByID(t, observerBA)
+	assertUsersDistinctByKey(t, observerAB)
+	assertUsersDistinctByKey(t, observerBA)
 }
 
 func TestApplyReplicatedMessageIsIdempotent(t *testing.T) {
@@ -706,7 +777,7 @@ func TestApplyReplicatedMessageIsIdempotent(t *testing.T) {
 	}
 
 	message, messageEvent, err := source.CreateMessage(ctx, CreateMessageParams{
-		UserID:   user.ID,
+		UserKey:  user.Key(),
 		Sender:   "orders",
 		Body:     "hello cluster",
 		Metadata: `{"kind":"replicated"}`,
@@ -723,7 +794,7 @@ func TestApplyReplicatedMessageIsIdempotent(t *testing.T) {
 		t.Fatalf("apply message event second time: %v", err)
 	}
 
-	messages, err := target.ListMessagesByUser(ctx, user.ID, 10)
+	messages, err := target.ListMessagesByUser(ctx, user.Key(), 10)
 	if err != nil {
 		t.Fatalf("list replicated messages: %v", err)
 	}
@@ -755,9 +826,9 @@ func TestReplicatedMessagesTrimToConfiguredWindow(t *testing.T) {
 
 	for i := 1; i <= 3; i++ {
 		_, messageEvent, err := source.CreateMessage(ctx, CreateMessageParams{
-			UserID: user.ID,
-			Sender: "orders",
-			Body:   "message-" + strconv.Itoa(i),
+			UserKey: user.Key(),
+			Sender:  "orders",
+			Body:    "message-" + strconv.Itoa(i),
 		})
 		if err != nil {
 			t.Fatalf("create source message %d: %v", i, err)
@@ -767,7 +838,7 @@ func TestReplicatedMessagesTrimToConfiguredWindow(t *testing.T) {
 		}
 	}
 
-	messages, err := target.ListMessagesByUser(ctx, user.ID, 10)
+	messages, err := target.ListMessagesByUser(ctx, user.Key(), 10)
 	if err != nil {
 		t.Fatalf("list replicated messages: %v", err)
 	}
@@ -800,12 +871,13 @@ func TestReplicatedMessageTrimUsesNodeAndSeqForSameTimestamp(t *testing.T) {
 
 	firstPayload, err := marshalPayload(replicatedMessageEnvelope{
 		Message: replicatedMessagePayload{
-			UserID:    user.ID,
-			NodeID:    testNodeID(1),
-			Seq:       1,
-			Sender:    "orders",
-			Body:      "older-seq",
-			CreatedAt: sharedHLC.String(),
+			UserNodeID: user.NodeID,
+			UserID:     user.ID,
+			NodeID:     testNodeID(1),
+			Seq:        1,
+			Sender:     "orders",
+			Body:       "older-seq",
+			CreatedAt:  sharedHLC.String(),
 		},
 	})
 	if err != nil {
@@ -813,12 +885,13 @@ func TestReplicatedMessageTrimUsesNodeAndSeqForSameTimestamp(t *testing.T) {
 	}
 	secondPayload, err := marshalPayload(replicatedMessageEnvelope{
 		Message: replicatedMessagePayload{
-			UserID:    user.ID,
-			NodeID:    testNodeID(1),
-			Seq:       2,
-			Sender:    "orders",
-			Body:      "newer-seq",
-			CreatedAt: sharedHLC.String(),
+			UserNodeID: user.NodeID,
+			UserID:     user.ID,
+			NodeID:     testNodeID(1),
+			Seq:        2,
+			Sender:     "orders",
+			Body:       "newer-seq",
+			CreatedAt:  sharedHLC.String(),
 		},
 	})
 	if err != nil {
@@ -826,29 +899,31 @@ func TestReplicatedMessageTrimUsesNodeAndSeqForSameTimestamp(t *testing.T) {
 	}
 
 	if err := target.ApplyReplicatedEvent(ctx, ToReplicatedEvent(Event{
-		EventID:      firstEventID,
-		Kind:         "message.created",
-		Aggregate:    "message",
-		AggregateID:  1,
-		HLC:          sharedHLC,
-		OriginNodeID: testNodeID(1),
-		Payload:      firstPayload,
+		EventID:         firstEventID,
+		Kind:            "message.created",
+		Aggregate:       "message",
+		AggregateNodeID: testNodeID(1),
+		AggregateID:     1,
+		HLC:             sharedHLC,
+		OriginNodeID:    testNodeID(1),
+		Payload:         firstPayload,
 	})); err != nil {
 		t.Fatalf("apply first replicated event: %v", err)
 	}
 	if err := target.ApplyReplicatedEvent(ctx, ToReplicatedEvent(Event{
-		EventID:      secondEventID,
-		Kind:         "message.created",
-		Aggregate:    "message",
-		AggregateID:  2,
-		HLC:          sharedHLC,
-		OriginNodeID: testNodeID(1),
-		Payload:      secondPayload,
+		EventID:         secondEventID,
+		Kind:            "message.created",
+		Aggregate:       "message",
+		AggregateNodeID: testNodeID(1),
+		AggregateID:     2,
+		HLC:             sharedHLC,
+		OriginNodeID:    testNodeID(1),
+		Payload:         secondPayload,
 	})); err != nil {
 		t.Fatalf("apply second replicated event: %v", err)
 	}
 
-	messages, err := target.ListMessagesByUser(ctx, user.ID, 10)
+	messages, err := target.ListMessagesByUser(ctx, user.Key(), 10)
 	if err != nil {
 		t.Fatalf("list messages: %v", err)
 	}
@@ -884,7 +959,7 @@ func TestReplicatedUserUpdatesMergeDifferentFields(t *testing.T) {
 
 	nextUsername := "merge-user-renamed"
 	sourceUpdated, updateUsernameEvent, err := source.UpdateUser(ctx, UpdateUserParams{
-		UserID:   user.ID,
+		Key:      user.Key(),
 		Username: &nextUsername,
 	})
 	if err != nil {
@@ -893,7 +968,7 @@ func TestReplicatedUserUpdatesMergeDifferentFields(t *testing.T) {
 
 	nextProfile := `{"display_name":"Merged On Target"}`
 	targetUpdated, updateProfileEvent, err := target.UpdateUser(ctx, UpdateUserParams{
-		UserID:  user.ID,
+		Key:     user.Key(),
 		Profile: &nextProfile,
 	})
 	if err != nil {
@@ -907,11 +982,11 @@ func TestReplicatedUserUpdatesMergeDifferentFields(t *testing.T) {
 		t.Fatalf("apply source username update to target: %v", err)
 	}
 
-	sourceMerged, err := source.GetUser(ctx, user.ID)
+	sourceMerged, err := source.GetUser(ctx, user.Key())
 	if err != nil {
 		t.Fatalf("get merged source user: %v", err)
 	}
-	targetMerged, err := target.GetUser(ctx, user.ID)
+	targetMerged, err := target.GetUser(ctx, user.Key())
 	if err != nil {
 		t.Fatalf("get merged target user: %v", err)
 	}
@@ -947,7 +1022,7 @@ func TestReplicatedUserUpdatesLatestFieldWins(t *testing.T) {
 
 	firstName := "winner-from-source"
 	_, firstUpdateEvent, err := source.UpdateUser(ctx, UpdateUserParams{
-		UserID:   user.ID,
+		Key:      user.Key(),
 		Username: &firstName,
 	})
 	if err != nil {
@@ -962,7 +1037,7 @@ func TestReplicatedUserUpdatesLatestFieldWins(t *testing.T) {
 
 	secondName := "winner-from-target"
 	targetUpdated, secondUpdateEvent, err := target.UpdateUser(ctx, UpdateUserParams{
-		UserID:   user.ID,
+		Key:      user.Key(),
 		Username: &secondName,
 	})
 	if err != nil {
@@ -976,11 +1051,11 @@ func TestReplicatedUserUpdatesLatestFieldWins(t *testing.T) {
 		t.Fatalf("apply earlier source update to target: %v", err)
 	}
 
-	sourceMerged, err := source.GetUser(ctx, user.ID)
+	sourceMerged, err := source.GetUser(ctx, user.Key())
 	if err != nil {
 		t.Fatalf("get merged source user: %v", err)
 	}
-	targetMerged, err := target.GetUser(ctx, user.ID)
+	targetMerged, err := target.GetUser(ctx, user.Key())
 	if err != nil {
 		t.Fatalf("get merged target user: %v", err)
 	}
@@ -1020,14 +1095,14 @@ func TestReplicatedDeletePreventsResurrection(t *testing.T) {
 
 	newProfile := `{"display_name":"Stale Update"}`
 	_, staleUpdateEvent, err := replica.UpdateUser(ctx, UpdateUserParams{
-		UserID:  user.ID,
+		Key:     user.Key(),
 		Profile: &newProfile,
 	})
 	if err != nil {
 		t.Fatalf("create stale update event: %v", err)
 	}
 
-	deleteEvent, err := source.DeleteUser(ctx, user.ID)
+	deleteEvent, err := source.DeleteUser(ctx, user.Key())
 	if err != nil {
 		t.Fatalf("delete source user: %v", err)
 	}
@@ -1039,7 +1114,7 @@ func TestReplicatedDeletePreventsResurrection(t *testing.T) {
 		t.Fatalf("apply stale update event after delete: %v", err)
 	}
 
-	if _, err := observer.GetUser(ctx, user.ID); err != ErrNotFound {
+	if _, err := observer.GetUser(ctx, user.Key()); err != ErrNotFound {
 		t.Fatalf("expected deleted user to stay hidden, got %v", err)
 	}
 }
@@ -1066,7 +1141,7 @@ func TestReplicatedUpdateUpsertsWithoutRegressingOnOlderCreate(t *testing.T) {
 	updatedName := "upsert-updated"
 	updatedProfile := `{"display_name":"Updated"}`
 	updatedUser, updateEvent, err := source.UpdateUser(ctx, UpdateUserParams{
-		UserID:   user.ID,
+		Key:      user.Key(),
 		Username: &updatedName,
 		Profile:  &updatedProfile,
 	})
@@ -1081,7 +1156,7 @@ func TestReplicatedUpdateUpsertsWithoutRegressingOnOlderCreate(t *testing.T) {
 		t.Fatalf("apply older create after update: %v", err)
 	}
 
-	loaded, err := target.GetUser(ctx, user.ID)
+	loaded, err := target.GetUser(ctx, user.Key())
 	if err != nil {
 		t.Fatalf("get upserted user: %v", err)
 	}
@@ -1110,7 +1185,7 @@ func TestSnapshotUsersChunkRepairsDeletedUser(t *testing.T) {
 	if err := target.ApplyReplicatedEvent(ctx, ToReplicatedEvent(createEvent)); err != nil {
 		t.Fatalf("apply create to target: %v", err)
 	}
-	if _, err := source.DeleteUser(ctx, user.ID); err != nil {
+	if _, err := source.DeleteUser(ctx, user.Key()); err != nil {
 		t.Fatalf("delete source user: %v", err)
 	}
 
@@ -1122,7 +1197,7 @@ func TestSnapshotUsersChunkRepairsDeletedUser(t *testing.T) {
 		t.Fatalf("apply users snapshot chunk: %v", err)
 	}
 
-	if _, err := target.GetUser(ctx, user.ID); err != ErrNotFound {
+	if _, err := target.GetUser(ctx, user.Key()); err != ErrNotFound {
 		t.Fatalf("expected snapshot tombstone to hide user, got %v", err)
 	}
 }
@@ -1146,9 +1221,9 @@ func TestSnapshotMessagesChunkIsIdempotentAndTrimsToLocalWindow(t *testing.T) {
 	}
 	for i := 1; i <= 3; i++ {
 		if _, _, err := source.CreateMessage(ctx, CreateMessageParams{
-			UserID: user.ID,
-			Sender: "orders",
-			Body:   "message-" + strconv.Itoa(i),
+			UserKey: user.Key(),
+			Sender:  "orders",
+			Body:    "message-" + strconv.Itoa(i),
 		}); err != nil {
 			t.Fatalf("create source message %d: %v", i, err)
 		}
@@ -1173,7 +1248,7 @@ func TestSnapshotMessagesChunkIsIdempotentAndTrimsToLocalWindow(t *testing.T) {
 		t.Fatalf("apply messages snapshot chunk second time: %v", err)
 	}
 
-	messages, err := target.ListMessagesByUser(ctx, user.ID, 10)
+	messages, err := target.ListMessagesByUser(ctx, user.Key(), 10)
 	if err != nil {
 		t.Fatalf("list target messages: %v", err)
 	}

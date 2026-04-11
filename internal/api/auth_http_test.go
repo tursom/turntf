@@ -91,8 +91,7 @@ func newAuthenticatedTestAPI(t *testing.T) authenticatedTestAPI {
 
 	dbPath := filepath.Join(t.TempDir(), "auth-api.db")
 	st, err := store.Open(dbPath, store.Options{
-		NodeID:   "node-a",
-		NodeSlot: 1,
+		NodeID: testNodeID(1),
 	})
 	if err != nil {
 		t.Fatalf("open store: %v", err)
@@ -117,7 +116,7 @@ func newAuthenticatedTestAPI(t *testing.T) authenticatedTestAPI {
 
 	return authenticatedTestAPI{
 		handler: NewHTTP(New(st, nil), HTTPOptions{
-			NodeID:   "node-a",
+			NodeID:   testNodeID(1),
 			Signer:   signer,
 			TokenTTL: time.Hour,
 		}).Handler(),

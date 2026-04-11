@@ -47,7 +47,7 @@
 - `幂等`：同一事件重复投递多次，最终效果仍只生效一次。集群复制必须具备幂等性，否则断线重连或重放时会产生重复数据。
 - `反熵`：anti-entropy，同步双方定期比对摘要并修补差异的机制。它用于补偿“实时广播 + 增量补拉”仍可能遗漏的边角情况。
 - `快照修复`：当事件补拉不足以修复状态差异时，直接按分片传输当前数据快照并增量合并到本地状态的机制。
-- `peer`：当前节点已知的其他节点配置项。每个 peer 至少包含一个逻辑身份 `node_id` 和一个可拨号的 `url`。
+- `peer`：当前节点已知的其他节点配置项。每个 peer 至少包含一个数字身份 `node_id` 和一个可拨号的 `url`。
 
 ## 当前状态
 
@@ -105,10 +105,6 @@ cp ./config.example.toml ./config.toml
 `config.example.toml` 结构如下：
 
 ```toml
-[node]
-id = "node-a"
-slot = 1
-
 [api]
 listen_addr = ":8080"
 
@@ -134,14 +130,13 @@ secret = "secret"
 max_clock_skew_ms = 1000
 
 [[cluster.peers]]
-node_id = "node-b"
+node_id = 8192
 url = "ws://127.0.0.1:9081/internal/cluster/ws"
 ```
 
 字段说明：
 
-- `node.id`：节点的稳定字符串身份，用于复制协议中的节点识别，例如 `node-a`
-- `node.slot`：节点的数值编号，用于生成全局唯一 ID 和 HLC；必须在集群内唯一，当前上限是 `1023`
+- 本地 `node_id`：节点首次启动时自动生成的稳定数字身份，保存到 SQLite `schema_meta` 的 `node_id` key；该 ID 内嵌的 slot 用于生成全局唯一 ID 和 HLC
 - `api.listen_addr`：外部 HTTP API 监听地址，同时承载内部 `GET /internal/cluster/ws`
 - `store.db_path`：本地 SQLite 数据库路径。每个节点各自维护本地库，复制链路负责把状态传播到别的节点
 - `store.message_window_size`：每节点每用户本地保留的消息窗口，默认 `500`。超过窗口的旧消息会在本地写入或复制应用时被裁剪
@@ -157,7 +152,7 @@ url = "ws://127.0.0.1:9081/internal/cluster/ws"
 - `cluster.secret`：集群内部 `Envelope` 的共享 HMAC 密钥；节点间握手、广播、补拉和反熵消息都会验签
 - `cluster.max_clock_skew_ms`：允许的最大时钟偏差，默认 `1000` 毫秒；正数启用超限拒绝，`0` 表示关闭“超限拒绝”，但节点仍会在首次成功校时前拒绝本地写入
 - `[[cluster.peers]]`：静态 peer 列表，可重复出现多个条目，但 `node_id` 不能和本节点相同
-- `cluster.peers.node_id`：远端节点的稳定字符串身份
+- `cluster.peers.node_id`：远端节点的稳定数字身份，可从远端日志、`/ops/status` 或 `/metrics` 中查看
 - `cluster.peers.url`：当前节点主动拨号到远端时使用的完整 WebSocket URL，例如 `ws://127.0.0.1:9081/internal/cluster/ws`
 - 当前协议不支持旧快照版本节点混跑；升级后需整集群使用新协议版本和快照版本
 

@@ -85,6 +85,8 @@ func runServe(args []string, stdout io.Writer) error {
 	if err := st.Init(context.Background()); err != nil {
 		return err
 	}
+	cfg.Cluster.NodeID = st.NodeID()
+	cfg.Cluster.NodeSlot = st.NodeSlot()
 	if err := st.EnsureBootstrapAdmin(context.Background(), cfg.Auth.BootstrapAdmin); err != nil {
 		return err
 	}
@@ -106,7 +108,7 @@ func runServe(args []string, stdout io.Writer) error {
 
 	svc := api.New(st, manager)
 	httpAPI := api.NewHTTP(svc, api.HTTPOptions{
-		NodeID:   cfg.StoreOptions.NodeID,
+		NodeID:   st.NodeID(),
 		Signer:   signer,
 		TokenTTL: time.Duration(cfg.Auth.TokenTTLMinutes) * time.Minute,
 	})

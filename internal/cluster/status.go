@@ -69,46 +69,46 @@ func (m *Manager) Status(context.Context) (app.ClusterStatus, error) {
 	return status, nil
 }
 
-func (m *Manager) ConfiguredPeerNodeIDs() []string {
+func (m *Manager) ConfiguredPeerNodeIDs() []int64 {
 	if m == nil {
 		return nil
 	}
-	ids := make([]string, 0, len(m.cfg.Peers))
+	ids := make([]int64, 0, len(m.cfg.Peers))
 	for _, peer := range m.cfg.Peers {
 		ids = append(ids, peer.NodeID)
 	}
 	return ids
 }
 
-func (m *Manager) markSnapshotDigestSent(peerID string) {
+func (m *Manager) markSnapshotDigestSent(peerID int64) {
 	m.markSnapshotActivity(peerID, func(peer *peerState, now time.Time) {
 		peer.snapshotDigestsSent++
 		peer.lastSnapshotDigestAt = now
 	})
 }
 
-func (m *Manager) markSnapshotDigestReceived(peerID string) {
+func (m *Manager) markSnapshotDigestReceived(peerID int64) {
 	m.markSnapshotActivity(peerID, func(peer *peerState, now time.Time) {
 		peer.snapshotDigestsReceived++
 		peer.lastSnapshotDigestAt = now
 	})
 }
 
-func (m *Manager) markSnapshotChunkSent(peerID string) {
+func (m *Manager) markSnapshotChunkSent(peerID int64) {
 	m.markSnapshotActivity(peerID, func(peer *peerState, now time.Time) {
 		peer.snapshotChunksSent++
 		peer.lastSnapshotChunkAt = now
 	})
 }
 
-func (m *Manager) markSnapshotChunkReceived(peerID string) {
+func (m *Manager) markSnapshotChunkReceived(peerID int64) {
 	m.markSnapshotActivity(peerID, func(peer *peerState, now time.Time) {
 		peer.snapshotChunksReceived++
 		peer.lastSnapshotChunkAt = now
 	})
 }
 
-func (m *Manager) markSnapshotActivity(peerID string, update func(*peerState, time.Time)) {
+func (m *Manager) markSnapshotActivity(peerID int64, update func(*peerState, time.Time)) {
 	if m == nil || update == nil {
 		return
 	}

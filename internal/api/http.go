@@ -20,13 +20,13 @@ import (
 type HTTP struct {
 	service  *Service
 	mux      *http.ServeMux
-	nodeID   string
+	nodeID   int64
 	signer   *auth.Signer
 	tokenTTL time.Duration
 }
 
 type HTTPOptions struct {
-	NodeID   string
+	NodeID   int64
 	Signer   *auth.Signer
 	TokenTTL time.Duration
 }
@@ -74,7 +74,7 @@ func NewHTTP(service *Service, opts ...HTTPOptions) *HTTP {
 	h := &HTTP{
 		service:  service,
 		mux:      http.NewServeMux(),
-		nodeID:   strings.TrimSpace(resolved.NodeID),
+		nodeID:   resolved.NodeID,
 		signer:   resolved.Signer,
 		tokenTTL: tokenTTL,
 	}
@@ -130,7 +130,7 @@ func (h *HTTP) handleLogin(w http.ResponseWriter, r *http.Request) {
 	expiresAt := now.Add(h.tokenTTL)
 	token, err := h.signer.Sign(auth.Claims{
 		Subject:   strconv.FormatInt(user.ID, 10),
-		Issuer:    h.nodeID,
+		Issuer:    strconv.FormatInt(h.nodeID, 10),
 		IssuedAt:  now.Unix(),
 		ExpiresAt: expiresAt.Unix(),
 		Metadata: map[string]string{
@@ -422,12 +422,12 @@ type userResponse struct {
 	SystemReserved bool            `json:"system_reserved"`
 	CreatedAt      string          `json:"created_at"`
 	UpdatedAt      string          `json:"updated_at"`
-	OriginNodeID   string          `json:"origin_node_id"`
+	OriginNodeID   int64           `json:"origin_node_id"`
 }
 
 type messageResponse struct {
 	UserID    int64           `json:"user_id"`
-	NodeID    string          `json:"node_id"`
+	NodeID    int64           `json:"node_id"`
 	Seq       int64           `json:"seq"`
 	Sender    string          `json:"sender"`
 	Body      string          `json:"body"`
@@ -442,7 +442,7 @@ type eventResponse struct {
 	Aggregate    string          `json:"aggregate"`
 	AggregateID  int64           `json:"aggregate_id"`
 	HLC          string          `json:"hlc"`
-	OriginNodeID string          `json:"origin_node_id"`
+	OriginNodeID int64           `json:"origin_node_id"`
 	Payload      json.RawMessage `json:"payload"`
 }
 

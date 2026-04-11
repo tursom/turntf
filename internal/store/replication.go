@@ -27,7 +27,7 @@ type replicatedUserPayload struct {
 	VersionRole         string `json:"version_role"`
 	VersionDeleted      string `json:"version_deleted,omitempty"`
 	DeletedAt           string `json:"deleted_at,omitempty"`
-	OriginNodeID        string `json:"origin_node_id"`
+	OriginNodeID        int64  `json:"origin_node_id"`
 }
 
 type replicatedUserEnvelope struct {
@@ -41,7 +41,7 @@ type replicatedDeletePayload struct {
 
 type replicatedMessagePayload struct {
 	UserID    int64  `json:"user_id"`
-	NodeID    string `json:"node_id"`
+	NodeID    int64  `json:"node_id"`
 	Seq       int64  `json:"seq"`
 	Sender    string `json:"sender"`
 	Body      string `json:"body"`
@@ -256,11 +256,11 @@ func (s *Store) applyReplicatedMessageCreated(ctx context.Context, tx *sql.Tx, e
 		return fmt.Errorf("decode message.created payload: %w", err)
 	}
 	message := payload.Message
-	if message.UserID == 0 || strings.TrimSpace(message.NodeID) == "" || message.Seq <= 0 {
+	if message.UserID == 0 || message.NodeID <= 0 || message.Seq <= 0 {
 		return fmt.Errorf("%w: message user id, node id, and seq are required", ErrInvalidInput)
 	}
-	if event.OriginNodeId != "" && event.OriginNodeId != message.NodeID {
-		return fmt.Errorf("%w: message node id %q does not match event origin %q", ErrInvalidInput, message.NodeID, event.OriginNodeId)
+	if event.OriginNodeId != 0 && event.OriginNodeId != message.NodeID {
+		return fmt.Errorf("%w: message node id %d does not match event origin %d", ErrInvalidInput, message.NodeID, event.OriginNodeId)
 	}
 
 	if _, err := s.getUserByIDTx(ctx, tx, message.UserID, false); err != nil {

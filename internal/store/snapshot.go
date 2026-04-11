@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	gproto "google.golang.org/protobuf/proto"
@@ -23,11 +24,11 @@ const (
 	snapshotPartitionKindMessage = clusterproto.SnapshotPartitionKind_SNAPSHOT_PARTITION_KIND_MESSAGES
 )
 
-func MessageSnapshotPartition(originNodeID string) string {
-	return SnapshotMessagesPrefix + strings.TrimSpace(originNodeID)
+func MessageSnapshotPartition(originNodeID int64) string {
+	return SnapshotMessagesPrefix + strconv.FormatInt(originNodeID, 10)
 }
 
-func (s *Store) BuildSnapshotDigest(ctx context.Context, producerNodeIDs []string) (*clusterproto.SnapshotDigest, error) {
+func (s *Store) BuildSnapshotDigest(ctx context.Context, producerNodeIDs []int64) (*clusterproto.SnapshotDigest, error) {
 	partitions := make([]*clusterproto.SnapshotPartitionDigest, 0, 1+len(producerNodeIDs))
 
 	userRows, err := s.buildUserSnapshotRows(ctx)
@@ -79,8 +80,8 @@ func (s *Store) BuildSnapshotChunk(ctx context.Context, partition string) (*clus
 			Rows:      rows,
 		}, nil
 	case strings.HasPrefix(partition, SnapshotMessagesPrefix):
-		producer := strings.TrimSpace(strings.TrimPrefix(partition, SnapshotMessagesPrefix))
-		if producer == "" {
+		producer, err := parseSnapshotProducer(partition)
+		if err != nil {
 			return nil, fmt.Errorf("%w: message snapshot partition missing producer", ErrInvalidInput)
 		}
 		rows, err := s.buildMessageSnapshotRows(ctx, producer)
@@ -126,8 +127,8 @@ func (s *Store) ApplySnapshotChunk(ctx context.Context, chunk *clusterproto.Snap
 		if chunk.Kind != snapshotPartitionKindMessage {
 			return fmt.Errorf("%w: messages snapshot chunk has kind %s", ErrInvalidInput, chunk.Kind)
 		}
-		producer := strings.TrimSpace(strings.TrimPrefix(partition, SnapshotMessagesPrefix))
-		if producer == "" {
+		producer, err := parseSnapshotProducer(partition)
+		if err != nil {
 			return fmt.Errorf("%w: message snapshot partition missing producer", ErrInvalidInput)
 		}
 		affectedUsers := make(map[int64]struct{})
@@ -192,7 +193,8 @@ ORDER BY entity_type ASC, entity_id ASC
 	defer tombstoneRows.Close()
 
 	for tombstoneRows.Next() {
-		var entityType, deletedAt, originNodeID string
+		var entityType, deletedAt string
+		var originNodeID int64
 		var entityID int64
 		if err := tombstoneRows.Scan(&entityType, &entityID, &deletedAt, &originNodeID); err != nil {
 			return nil, fmt.Errorf("scan snapshot tombstone: %w", err)
@@ -214,7 +216,7 @@ ORDER BY entity_type ASC, entity_id ASC
 	return snapshotRows, nil
 }
 
-func (s *Store) buildMessageSnapshotRows(ctx context.Context, producer string) ([]*clusterproto.SnapshotRow, error) {
+func (s *Store) buildMessageSnapshotRows(ctx context.Context, producer int64) ([]*clusterproto.SnapshotRow, error) {
 	rows, err := s.db.QueryContext(ctx, `
 SELECT user_id, node_id, seq, sender, body, COALESCE(metadata, ''), created_at_hlc
 FROM messages
@@ -292,7 +294,7 @@ func (s *Store) applySnapshotTombstoneTx(ctx context.Context, tx *sql.Tx, row *c
 	return s.applyUserDeleteTx(ctx, tx, row.EntityId, deletedAt, row.OriginNodeId, false)
 }
 
-func (s *Store) applyMessageSnapshotRowTx(ctx context.Context, tx *sql.Tx, producer string, row *clusterproto.SnapshotRow) (int64, error) {
+func (s *Store) applyMessageSnapshotRowTx(ctx context.Context, tx *sql.Tx, producer int64, row *clusterproto.SnapshotRow) (int64, error) {
 	if row == nil {
 		return 0, fmt.Errorf("%w: snapshot row cannot be nil", ErrInvalidInput)
 	}
@@ -300,11 +302,11 @@ func (s *Store) applyMessageSnapshotRowTx(ctx context.Context, tx *sql.Tx, produ
 	if messageRow == nil {
 		return 0, fmt.Errorf("%w: messages snapshot contains non-message row", ErrInvalidInput)
 	}
-	if messageRow.UserId == 0 || strings.TrimSpace(messageRow.NodeId) == "" || messageRow.Seq <= 0 {
+	if messageRow.UserId == 0 || messageRow.NodeId <= 0 || messageRow.Seq <= 0 {
 		return 0, fmt.Errorf("%w: message user id, node id, and seq are required", ErrInvalidInput)
 	}
-	if strings.TrimSpace(messageRow.NodeId) != producer {
-		return 0, fmt.Errorf("%w: message node id %q does not match partition producer %q", ErrInvalidInput, messageRow.NodeId, producer)
+	if messageRow.NodeId != producer {
+		return 0, fmt.Errorf("%w: message node id %d does not match partition producer %d", ErrInvalidInput, messageRow.NodeId, producer)
 	}
 	if _, err := parseRequiredTimestamp(messageRow.CreatedAtHlc, "snapshot message created_at"); err != nil {
 		return 0, err
@@ -467,19 +469,32 @@ func hashSnapshotRows(rows []*clusterproto.SnapshotRow) ([]byte, error) {
 	return hasher.Sum(nil), nil
 }
 
-func normalizeProducerNodeIDs(nodeIDs []string) []string {
-	seen := make(map[string]struct{}, len(nodeIDs))
+func parseSnapshotProducer(partition string) (int64, error) {
+	raw := strings.TrimSpace(strings.TrimPrefix(partition, SnapshotMessagesPrefix))
+	if raw == "" {
+		return 0, fmt.Errorf("empty producer")
+	}
+	producer, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || producer <= 0 {
+		return 0, fmt.Errorf("invalid producer %q", raw)
+	}
+	return producer, nil
+}
+
+func normalizeProducerNodeIDs(nodeIDs []int64) []int64 {
+	seen := make(map[int64]struct{}, len(nodeIDs))
 	for _, nodeID := range nodeIDs {
-		trimmed := strings.TrimSpace(nodeID)
-		if trimmed == "" {
+		if nodeID <= 0 {
 			continue
 		}
-		seen[trimmed] = struct{}{}
+		seen[nodeID] = struct{}{}
 	}
-	normalized := make([]string, 0, len(seen))
+	normalized := make([]int64, 0, len(seen))
 	for nodeID := range seen {
 		normalized = append(normalized, nodeID)
 	}
-	sort.Strings(normalized)
+	sort.Slice(normalized, func(i, j int) bool {
+		return normalized[i] < normalized[j]
+	})
 	return normalized
 }

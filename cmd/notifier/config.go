@@ -7,7 +7,6 @@ import (
 
 	"github.com/BurntSushi/toml"
 
-	"notifier/internal/clock"
 	"notifier/internal/cluster"
 	"notifier/internal/store"
 )
@@ -15,17 +14,11 @@ import (
 const defaultConfigPath = "./config.toml"
 
 type serveConfig struct {
-	Node    nodeConfig        `toml:"node"`
 	API     apiConfig         `toml:"api"`
 	Store   storeConfig       `toml:"store"`
 	Auth    authConfig        `toml:"auth"`
 	Logging loggingConfig     `toml:"logging"`
 	Cluster clusterFileConfig `toml:"cluster"`
-}
-
-type nodeConfig struct {
-	ID   string `toml:"id"`
-	Slot int    `toml:"slot"`
 }
 
 type apiConfig struct {
@@ -61,7 +54,7 @@ type clusterFileConfig struct {
 }
 
 type peerFileConfig struct {
-	NodeID string `toml:"node_id"`
+	NodeID int64  `toml:"node_id"`
 	URL    string `toml:"url"`
 }
 
@@ -110,15 +103,6 @@ func resolveConfigPath(path string) string {
 }
 
 func (c serveConfig) runtimeConfig(configPath string) (runtimeServeConfig, error) {
-	if strings.TrimSpace(c.Node.ID) == "" {
-		return runtimeServeConfig{}, fmt.Errorf("node.id cannot be empty")
-	}
-	if c.Node.Slot <= 0 {
-		return runtimeServeConfig{}, fmt.Errorf("node.slot must be positive")
-	}
-	if c.Node.Slot > clock.MaxNodeID {
-		return runtimeServeConfig{}, fmt.Errorf("node.slot %d exceeds max %d", c.Node.Slot, clock.MaxNodeID)
-	}
 	if strings.TrimSpace(c.API.ListenAddr) == "" {
 		return runtimeServeConfig{}, fmt.Errorf("api.listen_addr cannot be empty")
 	}
@@ -157,26 +141,23 @@ func (c serveConfig) runtimeConfig(configPath string) (runtimeServeConfig, error
 	peers := make([]cluster.Peer, 0, len(c.Cluster.Peers))
 	for _, peer := range c.Cluster.Peers {
 		peers = append(peers, cluster.Peer{
-			NodeID: strings.TrimSpace(peer.NodeID),
+			NodeID: peer.NodeID,
 			URL:    strings.TrimSpace(peer.URL),
 		})
 	}
 
-	slot := uint16(c.Node.Slot)
 	maxClockSkewMs := cluster.DefaultMaxClockSkewMs
 	if c.Cluster.MaxClockSkewMs != nil {
 		maxClockSkewMs = *c.Cluster.MaxClockSkewMs
 	}
 	clusterCfg := cluster.Config{
-		NodeID:            strings.TrimSpace(c.Node.ID),
-		NodeSlot:          slot,
 		AdvertisePath:     strings.TrimSpace(c.Cluster.AdvertisePath),
 		ClusterSecret:     strings.TrimSpace(c.Cluster.Secret),
 		Peers:             peers,
 		MessageWindowSize: messageWindowSize,
 		MaxClockSkewMs:    maxClockSkewMs,
 	}
-	if err := clusterCfg.Validate(); err != nil {
+	if err := validateClusterFileConfig(clusterCfg); err != nil {
 		return runtimeServeConfig{}, fmt.Errorf("invalid cluster config: %w", err)
 	}
 	if clusterCfg.Enabled() && strings.TrimSpace(c.Auth.TokenSecret) == clusterCfg.ClusterSecret {
@@ -188,8 +169,6 @@ func (c serveConfig) runtimeConfig(configPath string) (runtimeServeConfig, error
 		APIAddr:    strings.TrimSpace(c.API.ListenAddr),
 		DBPath:     filepath.Clean(strings.TrimSpace(c.Store.DBPath)),
 		StoreOptions: store.Options{
-			NodeID:            strings.TrimSpace(c.Node.ID),
-			NodeSlot:          slot,
 			MessageWindowSize: messageWindowSize,
 		},
 		Auth: runtimeAuthConfig{
@@ -203,4 +182,36 @@ func (c serveConfig) runtimeConfig(configPath string) (runtimeServeConfig, error
 		Logging: loggingCfg,
 		Cluster: clusterCfg,
 	}, nil
+}
+
+func validateClusterFileConfig(c cluster.Config) error {
+	if c.MaxClockSkewMs < 0 {
+		return fmt.Errorf("cluster max clock skew must be non-negative")
+	}
+	if c.Enabled() {
+		if strings.TrimSpace(c.ClusterSecret) == "" {
+			return fmt.Errorf("cluster secret cannot be empty")
+		}
+		if strings.TrimSpace(c.AdvertisePath) == "" {
+			return fmt.Errorf("cluster advertise path cannot be empty when cluster mode is enabled")
+		}
+		if !strings.HasPrefix(strings.TrimSpace(c.AdvertisePath), "/") {
+			return fmt.Errorf("cluster advertise path must start with /")
+		}
+	}
+
+	seenPeers := make(map[int64]struct{}, len(c.Peers))
+	for _, peer := range c.Peers {
+		if peer.NodeID <= 0 {
+			return fmt.Errorf("peer node id cannot be empty")
+		}
+		if strings.TrimSpace(peer.URL) == "" {
+			return fmt.Errorf("peer url cannot be empty")
+		}
+		if _, ok := seenPeers[peer.NodeID]; ok {
+			return fmt.Errorf("duplicate peer node id %d", peer.NodeID)
+		}
+		seenPeers[peer.NodeID] = struct{}{}
+	}
+	return nil
 }

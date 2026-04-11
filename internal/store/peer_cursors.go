@@ -4,14 +4,12 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"strings"
 
 	"notifier/internal/clock"
 )
 
-func (s *Store) GetPeerCursor(ctx context.Context, peerNodeID string) (PeerCursor, error) {
-	peerNodeID = strings.TrimSpace(peerNodeID)
-	if peerNodeID == "" {
+func (s *Store) GetPeerCursor(ctx context.Context, peerNodeID int64) (PeerCursor, error) {
+	if peerNodeID <= 0 {
 		return PeerCursor{}, fmt.Errorf("%w: peer node id cannot be empty", ErrInvalidInput)
 	}
 
@@ -31,23 +29,22 @@ WHERE peer_node_id = ?
 	return cursor, nil
 }
 
-func (s *Store) RecordPeerAck(ctx context.Context, peerNodeID string, ackedSequence int64) error {
+func (s *Store) RecordPeerAck(ctx context.Context, peerNodeID int64, ackedSequence int64) error {
 	if ackedSequence < 0 {
 		return fmt.Errorf("%w: acked sequence cannot be negative", ErrInvalidInput)
 	}
 	return s.upsertPeerCursor(ctx, peerNodeID, ackedSequence, 0)
 }
 
-func (s *Store) RecordPeerApplied(ctx context.Context, peerNodeID string, appliedSequence int64) error {
+func (s *Store) RecordPeerApplied(ctx context.Context, peerNodeID int64, appliedSequence int64) error {
 	if appliedSequence < 0 {
 		return fmt.Errorf("%w: applied sequence cannot be negative", ErrInvalidInput)
 	}
 	return s.upsertPeerCursor(ctx, peerNodeID, 0, appliedSequence)
 }
 
-func (s *Store) upsertPeerCursor(ctx context.Context, peerNodeID string, ackedSequence, appliedSequence int64) error {
-	peerNodeID = strings.TrimSpace(peerNodeID)
-	if peerNodeID == "" {
+func (s *Store) upsertPeerCursor(ctx context.Context, peerNodeID int64, ackedSequence, appliedSequence int64) error {
+	if peerNodeID <= 0 {
 		return fmt.Errorf("%w: peer node id cannot be empty", ErrInvalidInput)
 	}
 

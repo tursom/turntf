@@ -22,18 +22,22 @@ import (
 	"notifier/internal/store"
 )
 
+func testNodeID(slot uint16) int64 {
+	return int64(slot) << 12
+}
+
 func TestActivateSessionPrefersExpectedDirection(t *testing.T) {
 	t.Parallel()
 
 	mgr, err := NewManager(Config{
-		NodeID:            "node-a",
+		NodeID:            testNodeID(1),
 		NodeSlot:          1,
 		AdvertisePath:     websocketPath,
 		ClusterSecret:     "secret",
 		MessageWindowSize: store.DefaultMessageWindowSize,
 		MaxClockSkewMs:    DefaultMaxClockSkewMs,
 		Peers: []Peer{
-			{NodeID: "node-b", URL: "ws://127.0.0.1:9999/internal/cluster/ws"},
+			{NodeID: testNodeID(2), URL: "ws://127.0.0.1:9999/internal/cluster/ws"},
 		},
 	}, nil)
 	if err != nil {
@@ -43,8 +47,8 @@ func TestActivateSessionPrefersExpectedDirection(t *testing.T) {
 		return timeSyncSample{offsetMs: 0, rttMs: 1}, nil
 	}
 
-	inbound := &session{manager: mgr, conn: nil, peerID: "node-b", outbound: false, send: make(chan *internalproto.Envelope, 1)}
-	outbound := &session{manager: mgr, conn: nil, peerID: "node-b", outbound: true, send: make(chan *internalproto.Envelope, 1)}
+	inbound := &session{manager: mgr, conn: nil, peerID: testNodeID(2), outbound: false, send: make(chan *internalproto.Envelope, 1)}
+	outbound := &session{manager: mgr, conn: nil, peerID: testNodeID(2), outbound: true, send: make(chan *internalproto.Envelope, 1)}
 
 	if !mgr.activateSession(inbound) {
 		t.Fatalf("expected first session to activate")
@@ -54,7 +58,7 @@ func TestActivateSessionPrefersExpectedDirection(t *testing.T) {
 	}
 
 	mgr.mu.Lock()
-	active := mgr.peers["node-b"].active
+	active := mgr.peers[testNodeID(2)].active
 	mgr.mu.Unlock()
 	if active != outbound {
 		t.Fatalf("expected outbound session to be active")
@@ -70,8 +74,8 @@ func TestHandleHelloRejectsInvalidHandshake(t *testing.T) {
 		name             string
 		session          *session
 		hello            *internalproto.Hello
-		envelopeNodeID   string
-		wantActivePeerID string
+		envelopeNodeID   int64
+		wantActivePeerID int64
 	}{
 		{
 			name: "unknown peer",
@@ -80,12 +84,12 @@ func TestHandleHelloRejectsInvalidHandshake(t *testing.T) {
 				send:    make(chan *internalproto.Envelope, 1),
 			},
 			hello: &internalproto.Hello{
-				NodeId:            "node-c",
+				NodeId:            testNodeID(3),
 				AdvertiseAddr:     websocketPath,
 				ProtocolVersion:   internalproto.ProtocolVersion,
 				MessageWindowSize: store.DefaultMessageWindowSize,
 			},
-			envelopeNodeID: "node-c",
+			envelopeNodeID: testNodeID(3),
 		},
 		{
 			name: "protocol mismatch",
@@ -94,12 +98,12 @@ func TestHandleHelloRejectsInvalidHandshake(t *testing.T) {
 				send:    make(chan *internalproto.Envelope, 1),
 			},
 			hello: &internalproto.Hello{
-				NodeId:            "node-b",
+				NodeId:            testNodeID(2),
 				AdvertiseAddr:     websocketPath,
 				ProtocolVersion:   "v0",
 				MessageWindowSize: store.DefaultMessageWindowSize,
 			},
-			envelopeNodeID: "node-b",
+			envelopeNodeID: testNodeID(2),
 		},
 		{
 			name: "self peer",
@@ -108,28 +112,28 @@ func TestHandleHelloRejectsInvalidHandshake(t *testing.T) {
 				send:    make(chan *internalproto.Envelope, 1),
 			},
 			hello: &internalproto.Hello{
-				NodeId:            "node-a",
+				NodeId:            testNodeID(1),
 				AdvertiseAddr:     websocketPath,
 				ProtocolVersion:   internalproto.ProtocolVersion,
 				MessageWindowSize: store.DefaultMessageWindowSize,
 			},
-			envelopeNodeID: "node-a",
+			envelopeNodeID: testNodeID(1),
 		},
 		{
 			name: "outbound peer mismatch",
 			session: &session{
 				manager:          mgr,
 				outbound:         true,
-				configuredPeerID: "node-c",
+				configuredPeerID: testNodeID(3),
 				send:             make(chan *internalproto.Envelope, 1),
 			},
 			hello: &internalproto.Hello{
-				NodeId:            "node-b",
+				NodeId:            testNodeID(2),
 				AdvertiseAddr:     websocketPath,
 				ProtocolVersion:   internalproto.ProtocolVersion,
 				MessageWindowSize: store.DefaultMessageWindowSize,
 			},
-			envelopeNodeID: "node-b",
+			envelopeNodeID: testNodeID(2),
 		},
 		{
 			name: "invalid message window size",
@@ -138,11 +142,11 @@ func TestHandleHelloRejectsInvalidHandshake(t *testing.T) {
 				send:    make(chan *internalproto.Envelope, 1),
 			},
 			hello: &internalproto.Hello{
-				NodeId:          "node-b",
+				NodeId:          testNodeID(2),
 				AdvertiseAddr:   "",
 				ProtocolVersion: internalproto.ProtocolVersion,
 			},
-			envelopeNodeID: "node-b",
+			envelopeNodeID: testNodeID(2),
 		},
 	}
 
@@ -152,7 +156,7 @@ func TestHandleHelloRejectsInvalidHandshake(t *testing.T) {
 			if err := mgr.handleHello(tt.session, envelope); err == nil {
 				t.Fatalf("expected handshake error")
 			}
-			if mgr.hasActivePeer("node-b") {
+			if mgr.hasActivePeer(testNodeID(2)) {
 				t.Fatalf("expected invalid handshake to leave peer inactive")
 			}
 		})
@@ -163,14 +167,14 @@ func TestHandleHelloAllowsMismatchedMessageWindowSizes(t *testing.T) {
 	t.Parallel()
 
 	mgr, err := NewManager(Config{
-		NodeID:            "node-a",
+		NodeID:            testNodeID(1),
 		NodeSlot:          1,
 		AdvertisePath:     websocketPath,
 		ClusterSecret:     "secret",
 		MessageWindowSize: 5,
 		MaxClockSkewMs:    DefaultMaxClockSkewMs,
 		Peers: []Peer{
-			{NodeID: "node-b", URL: "ws://127.0.0.1:9081/internal/cluster/ws"},
+			{NodeID: testNodeID(2), URL: "ws://127.0.0.1:9081/internal/cluster/ws"},
 		},
 	}, nil)
 	if err != nil {
@@ -184,8 +188,8 @@ func TestHandleHelloAllowsMismatchedMessageWindowSizes(t *testing.T) {
 		manager: mgr,
 		send:    make(chan *internalproto.Envelope, 1),
 	}
-	envelope := mustHelloEnvelope(t, "node-b", &internalproto.Hello{
-		NodeId:            "node-b",
+	envelope := mustHelloEnvelope(t, testNodeID(2), &internalproto.Hello{
+		NodeId:            testNodeID(2),
 		AdvertiseAddr:     websocketPath,
 		ProtocolVersion:   internalproto.ProtocolVersion,
 		MessageWindowSize: 2,
@@ -195,7 +199,7 @@ func TestHandleHelloAllowsMismatchedMessageWindowSizes(t *testing.T) {
 		t.Fatalf("handle hello with mismatched window: %v", err)
 	}
 	waitFor(t, time.Second, func() bool {
-		return mgr.hasActivePeer("node-b")
+		return mgr.hasActivePeer(testNodeID(2))
 	})
 }
 
@@ -203,8 +207,8 @@ func TestVerifyEnvelopeRejectsInvalidHMAC(t *testing.T) {
 	t.Parallel()
 
 	mgr := newHandshakeTestManager(t)
-	hello := mustHelloEnvelope(t, "node-b", &internalproto.Hello{
-		NodeId:            "node-b",
+	hello := mustHelloEnvelope(t, testNodeID(2), &internalproto.Hello{
+		NodeId:            testNodeID(2),
 		AdvertiseAddr:     websocketPath,
 		ProtocolVersion:   internalproto.ProtocolVersion,
 		SnapshotVersion:   internalproto.SnapshotVersion,
@@ -220,7 +224,7 @@ func TestVerifyEnvelopeRejectsInvalidHMAC(t *testing.T) {
 	}
 
 	eventBatch := &internalproto.Envelope{
-		NodeId:    "node-b",
+		NodeId:    testNodeID(2),
 		Sequence:  1,
 		SentAtHlc: clock.NewClock(2).Now().String(),
 		Body: &internalproto.Envelope_EventBatch{
@@ -231,8 +235,8 @@ func TestVerifyEnvelopeRejectsInvalidHMAC(t *testing.T) {
 					AggregateType: "user",
 					AggregateId:   1,
 					Hlc:           clock.NewClock(2).Now().String(),
-					OriginNodeId:  "node-b",
-					Payload:       []byte(`{"user":{"id":1,"username":"root","password_hash":"hash-root","profile":"{}","role":"super_admin","system_reserved":true,"created_at":"1:0:1","updated_at":"1:0:1","version_username":"1:0:1","version_password_hash":"1:0:1","version_profile":"1:0:1","version_role":"1:0:1","origin_node_id":"node-b"}}`),
+					OriginNodeId:  testNodeID(2),
+					Payload:       []byte(`{"user":{"id":1,"username":"root","password_hash":"hash-root","profile":"{}","role":"super_admin","system_reserved":true,"created_at":"1:0:1","updated_at":"1:0:1","version_username":"1:0:1","version_password_hash":"1:0:1","version_profile":"1:0:1","version_role":"1:0:1","origin_node_id":8192}}`),
 				}},
 			},
 		},
@@ -247,8 +251,8 @@ func TestSignedEnvelopeVerifiesSuccessfully(t *testing.T) {
 	t.Parallel()
 
 	mgr := newHandshakeTestManager(t)
-	data, err := mgr.marshalSignedEnvelope(mustHelloEnvelope(t, "node-b", &internalproto.Hello{
-		NodeId:            "node-b",
+	data, err := mgr.marshalSignedEnvelope(mustHelloEnvelope(t, testNodeID(2), &internalproto.Hello{
+		NodeId:            testNodeID(2),
 		AdvertiseAddr:     websocketPath,
 		ProtocolVersion:   internalproto.ProtocolVersion,
 		SnapshotVersion:   internalproto.SnapshotVersion,
@@ -291,13 +295,13 @@ func TestTokenSignedByNodeAIsAcceptedByNodeB(t *testing.T) {
 	}
 
 	serverA := httptest.NewServer(api.NewHTTP(api.New(storeA, nil), api.HTTPOptions{
-		NodeID:   "node-a",
+		NodeID:   testNodeID(1),
 		Signer:   signerA,
 		TokenTTL: time.Hour,
 	}).Handler())
 	defer serverA.Close()
 	serverB := httptest.NewServer(api.NewHTTP(api.New(storeB, nil), api.HTTPOptions{
-		NodeID:   "node-b",
+		NodeID:   testNodeID(2),
 		Signer:   signerB,
 		TokenTTL: time.Hour,
 	}).Handler())
@@ -340,12 +344,12 @@ func TestHandleEventBatchSendsAckAfterSuccessfulApply(t *testing.T) {
 
 	sess := &session{
 		manager: mgr,
-		peerID:  "node-a",
+		peerID:  testNodeID(1),
 		send:    make(chan *internalproto.Envelope, 1),
 	}
 	sess.markReplicationReady()
 	envelope := &internalproto.Envelope{
-		NodeId:    "node-a",
+		NodeId:    testNodeID(1),
 		Sequence:  uint64(event.Sequence),
 		SentAtHlc: event.HLC.String(),
 		Body: &internalproto.Envelope_EventBatch{
@@ -367,7 +371,7 @@ func TestHandleEventBatchSendsAckAfterSuccessfulApply(t *testing.T) {
 		t.Fatalf("unexpected replicated user: %+v", replicatedUser)
 	}
 
-	cursor, err := targetStore.GetPeerCursor(context.Background(), "node-a")
+	cursor, err := targetStore.GetPeerCursor(context.Background(), testNodeID(1))
 	if err != nil {
 		t.Fatalf("get peer cursor: %v", err)
 	}
@@ -377,15 +381,15 @@ func TestHandleEventBatchSendsAckAfterSuccessfulApply(t *testing.T) {
 
 	select {
 	case ackEnvelope := <-sess.send:
-		if ackEnvelope.NodeId != "node-b" {
-			t.Fatalf("unexpected ack envelope node id: %s", ackEnvelope.NodeId)
+		if ackEnvelope.NodeId != testNodeID(2) {
+			t.Fatalf("unexpected ack envelope node id: %d", ackEnvelope.NodeId)
 		}
 		ack := ackEnvelope.GetAck()
 		if ack == nil {
 			t.Fatalf("expected ack envelope body")
 		}
-		if ack.NodeId != "node-b" {
-			t.Fatalf("unexpected ack node id: %s", ack.NodeId)
+		if ack.NodeId != testNodeID(2) {
+			t.Fatalf("unexpected ack node id: %d", ack.NodeId)
 		}
 		if ack.AckedSequence != uint64(event.Sequence) {
 			t.Fatalf("unexpected ack sequence: got=%d want=%d", ack.AckedSequence, event.Sequence)
@@ -412,12 +416,12 @@ func TestHandleEventBatchDuplicateDeliveryIsIdempotentAndAcks(t *testing.T) {
 
 	sess := &session{
 		manager: mgr,
-		peerID:  "node-a",
+		peerID:  testNodeID(1),
 		send:    make(chan *internalproto.Envelope, 2),
 	}
 	sess.markReplicationReady()
 	envelope := &internalproto.Envelope{
-		NodeId:    "node-a",
+		NodeId:    testNodeID(1),
 		Sequence:  uint64(event.Sequence),
 		SentAtHlc: event.HLC.String(),
 		Body: &internalproto.Envelope_EventBatch{
@@ -471,12 +475,12 @@ func TestHandleEventBatchDoesNotAckFailedApply(t *testing.T) {
 
 	sess := &session{
 		manager: mgr,
-		peerID:  "node-a",
+		peerID:  testNodeID(1),
 		send:    make(chan *internalproto.Envelope, 1),
 	}
 	sess.markReplicationReady()
 	envelope := &internalproto.Envelope{
-		NodeId:    "node-a",
+		NodeId:    testNodeID(1),
 		Sequence:  42,
 		SentAtHlc: "2026-01-01T00:00:00.000000000Z/2/1",
 		Body: &internalproto.Envelope_EventBatch{
@@ -496,7 +500,7 @@ func TestHandleEventBatchDoesNotAckFailedApply(t *testing.T) {
 	default:
 	}
 
-	cursor, err := targetStore.GetPeerCursor(context.Background(), "node-a")
+	cursor, err := targetStore.GetPeerCursor(context.Background(), testNodeID(1))
 	if err != nil {
 		t.Fatalf("get peer cursor: %v", err)
 	}
@@ -509,7 +513,7 @@ func TestHandleHelloEnqueuesPullEventsWhenBehind(t *testing.T) {
 	t.Parallel()
 
 	targetStore := newReplicationTestStore(t, "node-b", 2)
-	if err := targetStore.RecordPeerApplied(context.Background(), "node-a", 2); err != nil {
+	if err := targetStore.RecordPeerApplied(context.Background(), testNodeID(1), 2); err != nil {
 		t.Fatalf("record peer applied: %v", err)
 	}
 	mgr := newReplicationTestManager(t, targetStore)
@@ -519,14 +523,14 @@ func TestHandleHelloEnqueuesPullEventsWhenBehind(t *testing.T) {
 		send:    make(chan *internalproto.Envelope, 1),
 	}
 	hello := &internalproto.Hello{
-		NodeId:            "node-a",
+		NodeId:            testNodeID(1),
 		AdvertiseAddr:     websocketPath,
 		ProtocolVersion:   internalproto.ProtocolVersion,
 		LastSequence:      4,
 		MessageWindowSize: store.DefaultMessageWindowSize,
 	}
 
-	if err := mgr.handleHello(sess, mustHelloEnvelope(t, "node-a", hello)); err != nil {
+	if err := mgr.handleHello(sess, mustHelloEnvelope(t, testNodeID(1), hello)); err != nil {
 		t.Fatalf("handle hello: %v", err)
 	}
 	select {
@@ -582,12 +586,12 @@ func TestHandlePullEventsReturnsRequestedRange(t *testing.T) {
 
 	sess := &session{
 		manager: mgr,
-		peerID:  "node-a",
+		peerID:  testNodeID(1),
 		send:    make(chan *internalproto.Envelope, 1),
 	}
 	sess.markReplicationReady()
 	envelope := &internalproto.Envelope{
-		NodeId: "node-a",
+		NodeId: testNodeID(1),
 		Body: &internalproto.Envelope_PullEvents{
 			PullEvents: &internalproto.PullEvents{
 				AfterSequence: 1,
@@ -650,14 +654,14 @@ func TestHandleHelloRejectsMismatchedSnapshotVersion(t *testing.T) {
 		send:    make(chan *internalproto.Envelope, 1),
 	}
 	hello := &internalproto.Hello{
-		NodeId:            "node-b",
+		NodeId:            testNodeID(2),
 		AdvertiseAddr:     websocketPath,
 		ProtocolVersion:   internalproto.ProtocolVersion,
 		SnapshotVersion:   "snapshot-v0",
 		MessageWindowSize: store.DefaultMessageWindowSize,
 	}
 
-	if err := mgr.handleHello(sess, mustHelloEnvelope(t, "node-b", hello)); err == nil {
+	if err := mgr.handleHello(sess, mustHelloEnvelope(t, testNodeID(2), hello)); err == nil {
 		t.Fatalf("expected snapshot version mismatch to fail")
 	}
 }
@@ -685,14 +689,14 @@ func TestHandleSnapshotDigestRequestsUsersBeforeMessages(t *testing.T) {
 		t.Fatalf("create source message: %v", err)
 	}
 
-	remoteDigest, err := sourceStore.BuildSnapshotDigest(ctx, []string{"node-a", "node-b"})
+	remoteDigest, err := sourceStore.BuildSnapshotDigest(ctx, []int64{testNodeID(1), testNodeID(2)})
 	if err != nil {
 		t.Fatalf("build remote digest: %v", err)
 	}
 	remoteDigest.SnapshotVersion = internalproto.SnapshotVersion
 
-	sess := readySnapshotTestSession(mgr, "node-a", store.DefaultMessageWindowSize)
-	if err := mgr.handleSnapshotDigest(sess, snapshotDigestEnvelope("node-a", remoteDigest)); err != nil {
+	sess := readySnapshotTestSession(mgr, testNodeID(1), store.DefaultMessageWindowSize)
+	if err := mgr.handleSnapshotDigest(sess, snapshotDigestEnvelope(testNodeID(1), remoteDigest)); err != nil {
 		t.Fatalf("handle snapshot digest: %v", err)
 	}
 	assertSnapshotRequest(t, sess, store.SnapshotUsersPartition)
@@ -705,11 +709,11 @@ func TestHandleSnapshotDigestRequestsUsersBeforeMessages(t *testing.T) {
 		t.Fatalf("apply users chunk: %v", err)
 	}
 
-	sess = readySnapshotTestSession(mgr, "node-a", store.DefaultMessageWindowSize)
-	if err := mgr.handleSnapshotDigest(sess, snapshotDigestEnvelope("node-a", remoteDigest)); err != nil {
+	sess = readySnapshotTestSession(mgr, testNodeID(1), store.DefaultMessageWindowSize)
+	if err := mgr.handleSnapshotDigest(sess, snapshotDigestEnvelope(testNodeID(1), remoteDigest)); err != nil {
 		t.Fatalf("handle snapshot digest after user repair: %v", err)
 	}
-	assertSnapshotRequest(t, sess, store.MessageSnapshotPartition("node-a"))
+	assertSnapshotRequest(t, sess, store.MessageSnapshotPartition(testNodeID(1)))
 }
 
 func TestHandleAckPersistsPeerCursor(t *testing.T) {
@@ -720,15 +724,15 @@ func TestHandleAckPersistsPeerCursor(t *testing.T) {
 
 	sess := &session{
 		manager: mgr,
-		peerID:  "node-a",
+		peerID:  testNodeID(1),
 		send:    make(chan *internalproto.Envelope, 1),
 	}
 	sess.markReplicationReady()
 	envelope := &internalproto.Envelope{
-		NodeId: "node-a",
+		NodeId: testNodeID(1),
 		Body: &internalproto.Envelope_Ack{
 			Ack: &internalproto.Ack{
-				NodeId:        "node-a",
+				NodeId:        testNodeID(1),
 				AckedSequence: 7,
 			},
 		},
@@ -738,7 +742,7 @@ func TestHandleAckPersistsPeerCursor(t *testing.T) {
 		t.Fatalf("handle ack: %v", err)
 	}
 
-	cursor, err := targetStore.GetPeerCursor(context.Background(), "node-a")
+	cursor, err := targetStore.GetPeerCursor(context.Background(), testNodeID(1))
 	if err != nil {
 		t.Fatalf("get peer cursor: %v", err)
 	}
@@ -760,11 +764,11 @@ func TestStatusReportsPeerReplicationAndWriteGate(t *testing.T) {
 	if status.WriteGateReady {
 		t.Fatalf("expected write gate to be closed before trusted clock sync")
 	}
-	if len(status.Peers) != 1 || status.Peers[0].NodeID != "node-a" || status.Peers[0].Connected {
+	if len(status.Peers) != 1 || status.Peers[0].NodeID != testNodeID(1) || status.Peers[0].Connected {
 		t.Fatalf("unexpected disconnected peer status: %+v", status)
 	}
 
-	sess := readySnapshotTestSession(mgr, "node-a", store.DefaultMessageWindowSize)
+	sess := readySnapshotTestSession(mgr, testNodeID(1), store.DefaultMessageWindowSize)
 	sess.outbound = true
 	sess.noteRemoteLastSequence(9)
 	if !sess.beginPendingPull(3) {
@@ -775,7 +779,7 @@ func TestStatusReportsPeerReplicationAndWriteGate(t *testing.T) {
 	}
 	now := time.Now().UTC()
 	mgr.mu.Lock()
-	peer := mgr.peers["node-a"]
+	peer := mgr.peers[testNodeID(1)]
 	peer.active = sess
 	peer.trustedSession = sess
 	peer.lastAck = 4
@@ -842,13 +846,13 @@ func TestHandleEventBatchRejectsFutureTimestampWhenSkewCheckEnabled(t *testing.T
 
 	sess := &session{
 		manager: mgr,
-		peerID:  "node-a",
+		peerID:  testNodeID(1),
 		send:    make(chan *internalproto.Envelope, 1),
 	}
 	sess.markReplicationReady()
 
 	envelope := &internalproto.Envelope{
-		NodeId:   "node-a",
+		NodeId:   testNodeID(1),
 		Sequence: uint64(event.Sequence),
 		Body: &internalproto.Envelope_EventBatch{
 			EventBatch: &internalproto.EventBatch{
@@ -873,10 +877,10 @@ func TestWriteRequestsBlockedUntilInitialClockSync(t *testing.T) {
 	lnB := mustListen(t)
 
 	nodeA := newClusterTestNode(t, "node-a", 1, lnA, []Peer{
-		{NodeID: "node-b", URL: wsURL(lnB)},
+		{NodeID: testNodeID(2), URL: wsURL(lnB)},
 	})
 	nodeB := newClusterTestNode(t, "node-b", 2, lnB, []Peer{
-		{NodeID: "node-a", URL: wsURL(lnA)},
+		{NodeID: testNodeID(1), URL: wsURL(lnA)},
 	})
 
 	nodeA.start(t)
@@ -887,7 +891,7 @@ func TestWriteRequestsBlockedUntilInitialClockSync(t *testing.T) {
 
 	nodeB.start(t)
 	waitFor(t, 5*time.Second, func() bool {
-		return nodeA.activePeer("node-b") && nodeB.activePeer("node-a")
+		return nodeA.activePeer(testNodeID(2)) && nodeB.activePeer(testNodeID(1))
 	})
 
 	doJSON(t, nodeA.apiBaseURL, http.MethodPost, "/users", map[string]any{
@@ -901,10 +905,10 @@ func TestSkewedPeerRejectedWhenMaxClockSkewExceeded(t *testing.T) {
 	lnB := mustListen(t)
 
 	nodeA := newClusterTestNodeWithWindowAndSkew(t, "node-a", 1, lnA, []Peer{
-		{NodeID: "node-b", URL: wsURL(lnB)},
+		{NodeID: testNodeID(2), URL: wsURL(lnB)},
 	}, store.DefaultMessageWindowSize, 0, DefaultMaxClockSkewMs)
 	nodeB := newClusterTestNodeWithWindowAndSkew(t, "node-b", 2, lnB, []Peer{
-		{NodeID: "node-a", URL: wsURL(lnA)},
+		{NodeID: testNodeID(1), URL: wsURL(lnA)},
 	}, store.DefaultMessageWindowSize, 5000, DefaultMaxClockSkewMs)
 
 	nodeA.start(t)
@@ -912,7 +916,7 @@ func TestSkewedPeerRejectedWhenMaxClockSkewExceeded(t *testing.T) {
 
 	deadline := time.Now().Add(1500 * time.Millisecond)
 	for time.Now().Before(deadline) {
-		if nodeA.activePeer("node-b") || nodeB.activePeer("node-a") {
+		if nodeA.activePeer(testNodeID(2)) || nodeB.activePeer(testNodeID(1)) {
 			t.Fatalf("expected skewed peer to be rejected")
 		}
 		time.Sleep(20 * time.Millisecond)
@@ -924,17 +928,17 @@ func TestSkewedPeerAllowedWhenMaxClockSkewDisabled(t *testing.T) {
 	lnB := mustListen(t)
 
 	nodeA := newClusterTestNodeWithWindowAndSkew(t, "node-a", 1, lnA, []Peer{
-		{NodeID: "node-b", URL: wsURL(lnB)},
+		{NodeID: testNodeID(2), URL: wsURL(lnB)},
 	}, store.DefaultMessageWindowSize, 0, 0)
 	nodeB := newClusterTestNodeWithWindowAndSkew(t, "node-b", 2, lnB, []Peer{
-		{NodeID: "node-a", URL: wsURL(lnA)},
+		{NodeID: testNodeID(1), URL: wsURL(lnA)},
 	}, store.DefaultMessageWindowSize, 5000, 0)
 
 	nodeA.start(t)
 	nodeB.start(t)
 
 	waitFor(t, 5*time.Second, func() bool {
-		return nodeA.activePeer("node-b") && nodeB.activePeer("node-a")
+		return nodeA.activePeer(testNodeID(2)) && nodeB.activePeer(testNodeID(1))
 	})
 }
 
@@ -943,17 +947,17 @@ func TestTwoNodeReplicationOverWebSocket(t *testing.T) {
 	lnB := mustListen(t)
 
 	nodeA := newClusterTestNode(t, "node-a", 1, lnA, []Peer{
-		{NodeID: "node-b", URL: wsURL(lnB)},
+		{NodeID: testNodeID(2), URL: wsURL(lnB)},
 	})
 	nodeB := newClusterTestNode(t, "node-b", 2, lnB, []Peer{
-		{NodeID: "node-a", URL: wsURL(lnA)},
+		{NodeID: testNodeID(1), URL: wsURL(lnA)},
 	})
 
 	nodeA.start(t)
 	nodeB.start(t)
 
 	waitFor(t, 5*time.Second, func() bool {
-		return nodeA.activePeer("node-b") && nodeB.activePeer("node-a")
+		return nodeA.activePeer(testNodeID(2)) && nodeB.activePeer(testNodeID(1))
 	})
 
 	createUserBody := map[string]any{
@@ -989,17 +993,17 @@ func TestTwoNodeReplicationOverWebSocket(t *testing.T) {
 	})
 
 	waitFor(t, 5*time.Second, func() bool {
-		return nodeA.lastAck("node-b") > 0
+		return nodeA.lastAck(testNodeID(2)) > 0
 	})
 
-	oldSession := nodeA.currentSession("node-b")
+	oldSession := nodeA.currentSession(testNodeID(2))
 	if oldSession == nil {
 		t.Fatalf("expected active session before reconnect test")
 	}
 	oldSession.close()
 
 	waitFor(t, 5*time.Second, func() bool {
-		newSession := nodeA.currentSession("node-b")
+		newSession := nodeA.currentSession(testNodeID(2))
 		return newSession != nil && newSession != oldSession
 	})
 }
@@ -1009,17 +1013,17 @@ func TestTwoNodeMessageWindowConvergesWhenSizesMatch(t *testing.T) {
 	lnB := mustListen(t)
 
 	nodeA := newClusterTestNodeWithWindow(t, "node-a", 1, lnA, []Peer{
-		{NodeID: "node-b", URL: wsURL(lnB)},
+		{NodeID: testNodeID(2), URL: wsURL(lnB)},
 	}, 2)
 	nodeB := newClusterTestNodeWithWindow(t, "node-b", 2, lnB, []Peer{
-		{NodeID: "node-a", URL: wsURL(lnA)},
+		{NodeID: testNodeID(1), URL: wsURL(lnA)},
 	}, 2)
 
 	nodeA.start(t)
 	nodeB.start(t)
 
 	waitFor(t, 5*time.Second, func() bool {
-		return nodeA.activePeer("node-b") && nodeB.activePeer("node-a")
+		return nodeA.activePeer(testNodeID(2)) && nodeB.activePeer(testNodeID(1))
 	})
 
 	var createdUser struct {
@@ -1065,17 +1069,17 @@ func TestTwoNodeMessageWindowMismatchKeepsPerNodeWindows(t *testing.T) {
 	lnB := mustListen(t)
 
 	nodeA := newClusterTestNodeWithWindow(t, "node-a", 1, lnA, []Peer{
-		{NodeID: "node-b", URL: wsURL(lnB)},
+		{NodeID: testNodeID(2), URL: wsURL(lnB)},
 	}, 3)
 	nodeB := newClusterTestNodeWithWindow(t, "node-b", 2, lnB, []Peer{
-		{NodeID: "node-a", URL: wsURL(lnA)},
+		{NodeID: testNodeID(1), URL: wsURL(lnA)},
 	}, 2)
 
 	nodeA.start(t)
 	nodeB.start(t)
 
 	waitFor(t, 5*time.Second, func() bool {
-		return nodeA.activePeer("node-b") && nodeB.activePeer("node-a")
+		return nodeA.activePeer(testNodeID(2)) && nodeB.activePeer(testNodeID(1))
 	})
 
 	var createdUser struct {
@@ -1121,10 +1125,10 @@ func TestLateJoiningNodeCatchesUpWithoutDuplicates(t *testing.T) {
 	lnB := mustListen(t)
 
 	nodeA := newClusterTestNode(t, "node-a", 1, lnA, []Peer{
-		{NodeID: "node-b", URL: wsURL(lnB)},
+		{NodeID: testNodeID(2), URL: wsURL(lnB)},
 	})
 	nodeB := newClusterTestNode(t, "node-b", 2, lnB, []Peer{
-		{NodeID: "node-a", URL: wsURL(lnA)},
+		{NodeID: testNodeID(1), URL: wsURL(lnA)},
 	})
 
 	nodeA.start(t)
@@ -1169,10 +1173,10 @@ func TestLateJoiningNodeCatchesUpAcrossMultiplePullBatches(t *testing.T) {
 	lnB := mustListen(t)
 
 	nodeA := newClusterTestNode(t, "node-a", 1, lnA, []Peer{
-		{NodeID: "node-b", URL: wsURL(lnB)},
+		{NodeID: testNodeID(2), URL: wsURL(lnB)},
 	})
 	nodeB := newClusterTestNode(t, "node-b", 2, lnB, []Peer{
-		{NodeID: "node-a", URL: wsURL(lnA)},
+		{NodeID: testNodeID(1), URL: wsURL(lnA)},
 	})
 
 	nodeA.start(t)
@@ -1220,10 +1224,10 @@ func TestLateJoiningNodeTrimsCatchupToLocalWindow(t *testing.T) {
 	lnB := mustListen(t)
 
 	nodeA := newClusterTestNodeWithWindow(t, "node-a", 1, lnA, []Peer{
-		{NodeID: "node-b", URL: wsURL(lnB)},
+		{NodeID: testNodeID(2), URL: wsURL(lnB)},
 	}, 5)
 	nodeB := newClusterTestNodeWithWindow(t, "node-b", 2, lnB, []Peer{
-		{NodeID: "node-a", URL: wsURL(lnA)},
+		{NodeID: testNodeID(1), URL: wsURL(lnA)},
 	}, 2)
 
 	nodeA.start(t)
@@ -1261,10 +1265,10 @@ func TestSnapshotRepairOverWebSocketRepairsRowsOutsideEventLog(t *testing.T) {
 	lnB := mustListen(t)
 
 	nodeA := newClusterTestNode(t, "node-a", 1, lnA, []Peer{
-		{NodeID: "node-b", URL: wsURL(lnB)},
+		{NodeID: testNodeID(2), URL: wsURL(lnB)},
 	})
 	nodeB := newClusterTestNode(t, "node-b", 2, lnB, []Peer{
-		{NodeID: "node-a", URL: wsURL(lnA)},
+		{NodeID: testNodeID(1), URL: wsURL(lnA)},
 	})
 
 	ctx := context.Background()
@@ -1291,7 +1295,7 @@ func TestSnapshotRepairOverWebSocketRepairsRowsOutsideEventLog(t *testing.T) {
 	if err := nodeA.store.ApplySnapshotChunk(ctx, userChunk); err != nil {
 		t.Fatalf("apply seed user snapshot chunk to node A: %v", err)
 	}
-	messageChunk, err := seedStore.BuildSnapshotChunk(ctx, store.MessageSnapshotPartition("node-a"))
+	messageChunk, err := seedStore.BuildSnapshotChunk(ctx, store.MessageSnapshotPartition(testNodeID(1)))
 	if err != nil {
 		t.Fatalf("build seed message snapshot chunk: %v", err)
 	}
@@ -1311,11 +1315,11 @@ func TestSnapshotRepairOverWebSocketRepairsRowsOutsideEventLog(t *testing.T) {
 	nodeB.start(t)
 
 	waitFor(t, 5*time.Second, func() bool {
-		return nodeA.activePeer("node-b") && nodeB.activePeer("node-a")
+		return nodeA.activePeer(testNodeID(2)) && nodeB.activePeer(testNodeID(1))
 	})
 
 	waitFor(t, 5*time.Second, func() bool {
-		if sess := nodeA.currentSession("node-b"); sess != nil {
+		if sess := nodeA.currentSession(testNodeID(2)); sess != nil {
 			nodeA.manager.sendSnapshotDigest(sess)
 		}
 
@@ -1341,16 +1345,16 @@ func TestThreeNodeFieldLevelConvergence(t *testing.T) {
 	lnC := mustListen(t)
 
 	nodeA := newClusterTestNode(t, "node-a", 1, lnA, []Peer{
-		{NodeID: "node-b", URL: wsURL(lnB)},
-		{NodeID: "node-c", URL: wsURL(lnC)},
+		{NodeID: testNodeID(2), URL: wsURL(lnB)},
+		{NodeID: testNodeID(3), URL: wsURL(lnC)},
 	})
 	nodeB := newClusterTestNode(t, "node-b", 2, lnB, []Peer{
-		{NodeID: "node-a", URL: wsURL(lnA)},
-		{NodeID: "node-c", URL: wsURL(lnC)},
+		{NodeID: testNodeID(1), URL: wsURL(lnA)},
+		{NodeID: testNodeID(3), URL: wsURL(lnC)},
 	})
 	nodeC := newClusterTestNode(t, "node-c", 3, lnC, []Peer{
-		{NodeID: "node-a", URL: wsURL(lnA)},
-		{NodeID: "node-b", URL: wsURL(lnB)},
+		{NodeID: testNodeID(1), URL: wsURL(lnA)},
+		{NodeID: testNodeID(2), URL: wsURL(lnB)},
 	})
 
 	nodeA.start(t)
@@ -1358,9 +1362,9 @@ func TestThreeNodeFieldLevelConvergence(t *testing.T) {
 	nodeC.start(t)
 
 	waitFor(t, 5*time.Second, func() bool {
-		return nodeA.activePeer("node-b") && nodeA.activePeer("node-c") &&
-			nodeB.activePeer("node-a") && nodeB.activePeer("node-c") &&
-			nodeC.activePeer("node-a") && nodeC.activePeer("node-b")
+		return nodeA.activePeer(testNodeID(2)) && nodeA.activePeer(testNodeID(3)) &&
+			nodeB.activePeer(testNodeID(1)) && nodeB.activePeer(testNodeID(3)) &&
+			nodeC.activePeer(testNodeID(1)) && nodeC.activePeer(testNodeID(2))
 	})
 
 	var createdUser struct {
@@ -1428,16 +1432,16 @@ func TestThreeNodeDeleteWinsOverConcurrentUpdate(t *testing.T) {
 	lnC := mustListen(t)
 
 	nodeA := newClusterTestNode(t, "node-a", 1, lnA, []Peer{
-		{NodeID: "node-b", URL: wsURL(lnB)},
-		{NodeID: "node-c", URL: wsURL(lnC)},
+		{NodeID: testNodeID(2), URL: wsURL(lnB)},
+		{NodeID: testNodeID(3), URL: wsURL(lnC)},
 	})
 	nodeB := newClusterTestNode(t, "node-b", 2, lnB, []Peer{
-		{NodeID: "node-a", URL: wsURL(lnA)},
-		{NodeID: "node-c", URL: wsURL(lnC)},
+		{NodeID: testNodeID(1), URL: wsURL(lnA)},
+		{NodeID: testNodeID(3), URL: wsURL(lnC)},
 	})
 	nodeC := newClusterTestNode(t, "node-c", 3, lnC, []Peer{
-		{NodeID: "node-a", URL: wsURL(lnA)},
-		{NodeID: "node-b", URL: wsURL(lnB)},
+		{NodeID: testNodeID(1), URL: wsURL(lnA)},
+		{NodeID: testNodeID(2), URL: wsURL(lnB)},
 	})
 
 	nodeA.start(t)
@@ -1445,9 +1449,9 @@ func TestThreeNodeDeleteWinsOverConcurrentUpdate(t *testing.T) {
 	nodeC.start(t)
 
 	waitFor(t, 5*time.Second, func() bool {
-		return nodeA.activePeer("node-b") && nodeA.activePeer("node-c") &&
-			nodeB.activePeer("node-a") && nodeB.activePeer("node-c") &&
-			nodeC.activePeer("node-a") && nodeC.activePeer("node-b")
+		return nodeA.activePeer(testNodeID(2)) && nodeA.activePeer(testNodeID(3)) &&
+			nodeB.activePeer(testNodeID(1)) && nodeB.activePeer(testNodeID(3)) &&
+			nodeC.activePeer(testNodeID(1)) && nodeC.activePeer(testNodeID(2))
 	})
 
 	var createdUser struct {
@@ -1501,7 +1505,7 @@ func TestThreeNodeDeleteWinsOverConcurrentUpdate(t *testing.T) {
 }
 
 type testNode struct {
-	id         string
+	id         int64
 	store      *store.Store
 	manager    *Manager
 	apiBaseURL string
@@ -1523,12 +1527,12 @@ func newClusterTestNodeWithWindowAndSkew(t *testing.T, nodeID string, slot uint1
 	t.Helper()
 
 	dbPath := filepath.Join(t.TempDir(), nodeID+".db")
+	numericNodeID := testNodeID(slot)
 	sharedClock := clock.NewClockWithSource(slot, func() int64 {
 		return time.Now().UTC().UnixMilli() + skewMs
 	})
 	st, err := store.Open(dbPath, store.Options{
-		NodeID:            nodeID,
-		NodeSlot:          slot,
+		NodeID:            numericNodeID,
 		MessageWindowSize: messageWindowSize,
 		Clock:             sharedClock,
 	})
@@ -1540,7 +1544,7 @@ func newClusterTestNodeWithWindowAndSkew(t *testing.T, nodeID string, slot uint1
 	}
 
 	manager, err := NewManager(Config{
-		NodeID:            nodeID,
+		NodeID:            numericNodeID,
 		NodeSlot:          slot,
 		AdvertisePath:     websocketPath,
 		ClusterSecret:     "secret",
@@ -1559,7 +1563,7 @@ func newClusterTestNodeWithWindowAndSkew(t *testing.T, nodeID string, slot uint1
 	server := &http.Server{Handler: rootMux}
 
 	node := &testNode{
-		id:         nodeID,
+		id:         numericNodeID,
 		store:      st,
 		manager:    manager,
 		apiBaseURL: "http://" + ln.Addr().String(),
@@ -1589,11 +1593,11 @@ func (n *testNode) start(t *testing.T) {
 	}()
 }
 
-func (n *testNode) activePeer(peerID string) bool {
+func (n *testNode) activePeer(peerID int64) bool {
 	return n.manager.hasActivePeer(peerID)
 }
 
-func (n *testNode) lastAck(peerID string) uint64 {
+func (n *testNode) lastAck(peerID int64) uint64 {
 	n.manager.mu.Lock()
 	defer n.manager.mu.Unlock()
 
@@ -1604,7 +1608,7 @@ func (n *testNode) lastAck(peerID string) uint64 {
 	return peer.lastAck
 }
 
-func (n *testNode) currentSession(peerID string) *session {
+func (n *testNode) currentSession(peerID int64) *session {
 	n.manager.mu.Lock()
 	defer n.manager.mu.Unlock()
 
@@ -1710,14 +1714,14 @@ func newHandshakeTestManager(t *testing.T) *Manager {
 	t.Helper()
 
 	mgr, err := NewManager(Config{
-		NodeID:            "node-a",
+		NodeID:            testNodeID(1),
 		NodeSlot:          1,
 		AdvertisePath:     websocketPath,
 		ClusterSecret:     "secret",
 		MessageWindowSize: store.DefaultMessageWindowSize,
 		MaxClockSkewMs:    DefaultMaxClockSkewMs,
 		Peers: []Peer{
-			{NodeID: "node-b", URL: "ws://127.0.0.1:9081/internal/cluster/ws"},
+			{NodeID: testNodeID(2), URL: "ws://127.0.0.1:9081/internal/cluster/ws"},
 		},
 	}, nil)
 	if err != nil {
@@ -1739,8 +1743,7 @@ func newReplicationTestStoreWithWindow(t *testing.T, nodeID string, slot uint16,
 
 	dbPath := filepath.Join(t.TempDir(), nodeID+".db")
 	st, err := store.Open(dbPath, store.Options{
-		NodeID:            nodeID,
-		NodeSlot:          slot,
+		NodeID:            testNodeID(slot),
 		MessageWindowSize: messageWindowSize,
 	})
 	if err != nil {
@@ -1774,14 +1777,14 @@ func newReplicationTestManagerWithWindow(t *testing.T, st *store.Store, messageW
 	t.Helper()
 
 	mgr, err := NewManager(Config{
-		NodeID:            "node-b",
+		NodeID:            testNodeID(2),
 		NodeSlot:          2,
 		AdvertisePath:     websocketPath,
 		ClusterSecret:     "secret",
 		MessageWindowSize: messageWindowSize,
 		MaxClockSkewMs:    DefaultMaxClockSkewMs,
 		Peers: []Peer{
-			{NodeID: "node-a", URL: "ws://127.0.0.1:9080/internal/cluster/ws"},
+			{NodeID: testNodeID(1), URL: "ws://127.0.0.1:9080/internal/cluster/ws"},
 		},
 	}, st)
 	if err != nil {
@@ -1799,7 +1802,7 @@ func newReplicationTestManagerWithWindow(t *testing.T, st *store.Store, messageW
 	return mgr
 }
 
-func readySnapshotTestSession(mgr *Manager, peerID string, remoteMessageWindowSize int) *session {
+func readySnapshotTestSession(mgr *Manager, peerID int64, remoteMessageWindowSize int) *session {
 	sess := &session{
 		manager:                 mgr,
 		peerID:                  peerID,
@@ -1811,7 +1814,7 @@ func readySnapshotTestSession(mgr *Manager, peerID string, remoteMessageWindowSi
 	return sess
 }
 
-func snapshotDigestEnvelope(nodeID string, digest *internalproto.SnapshotDigest) *internalproto.Envelope {
+func snapshotDigestEnvelope(nodeID int64, digest *internalproto.SnapshotDigest) *internalproto.Envelope {
 	return &internalproto.Envelope{
 		NodeId: nodeID,
 		Body: &internalproto.Envelope_SnapshotDigest{
@@ -1840,7 +1843,7 @@ func assertSnapshotRequest(t *testing.T, sess *session, partition string) {
 	}
 }
 
-func mustHelloEnvelope(t *testing.T, envelopeNodeID string, hello *internalproto.Hello) *internalproto.Envelope {
+func mustHelloEnvelope(t *testing.T, envelopeNodeID int64, hello *internalproto.Hello) *internalproto.Envelope {
 	t.Helper()
 	if hello != nil && hello.SnapshotVersion == "" {
 		hello.SnapshotVersion = internalproto.SnapshotVersion

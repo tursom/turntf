@@ -32,7 +32,7 @@ func (m *Manager) buildSnapshotDigestEnvelope() (*internalproto.Envelope, error)
 }
 
 func (m *Manager) sendSnapshotDigest(sess *session) {
-	if m.store == nil || sess == nil || sess.peerID == "" {
+	if m.store == nil || sess == nil || sess.peerID == 0 {
 		return
 	}
 	if !sess.isReplicationReady() || sess.hasPendingPull() || sess.isClosed() {
@@ -44,7 +44,7 @@ func (m *Manager) sendSnapshotDigest(sess *session) {
 
 	envelope, err := m.buildSnapshotDigestEnvelope()
 	if err != nil {
-		log.Warn().Err(err).Str("component", "cluster").Str("peer", sess.peerID).Str("event", "build_snapshot_digest_failed").Msg("build snapshot digest failed")
+		log.Warn().Err(err).Str("component", "cluster").Int64("peer", sess.peerID).Str("event", "build_snapshot_digest_failed").Msg("build snapshot digest failed")
 		return
 	}
 	m.markSnapshotDigestSent(sess.peerID)
@@ -182,8 +182,8 @@ func (m *Manager) requestSnapshotPartition(sess *session, partition *internalpro
 	})
 }
 
-func (m *Manager) snapshotProducerNodeIDs() []string {
-	producers := make([]string, 0, 1+len(m.cfg.Peers))
+func (m *Manager) snapshotProducerNodeIDs() []int64 {
+	producers := make([]int64, 0, 1+len(m.cfg.Peers))
 	producers = append(producers, m.cfg.NodeID)
 	for _, peer := range m.cfg.Peers {
 		producers = append(producers, peer.NodeID)

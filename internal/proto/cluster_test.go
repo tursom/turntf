@@ -6,6 +6,8 @@ import (
 	gproto "google.golang.org/protobuf/proto"
 )
 
+const testNodeID = int64(4096)
+
 func TestEnvelopeBatchRoundTrip(t *testing.T) {
 	t.Parallel()
 
@@ -17,13 +19,13 @@ func TestEnvelopeBatchRoundTrip(t *testing.T) {
 				AggregateType: "user",
 				AggregateId:   2002,
 				Hlc:           "1740000000000-00001-00001",
-				OriginNodeId:  "node-a",
+				OriginNodeId:  testNodeID,
 				Payload:       []byte(`{"user":{"id":2002}}`),
 			},
 		},
 	}
 	envelope := &Envelope{
-		NodeId:    "node-a",
+		NodeId:    testNodeID,
 		Sequence:  7,
 		SentAtHlc: "1740000000000-00002-00001",
 		Body: &Envelope_EventBatch{
@@ -39,7 +41,7 @@ func TestEnvelopeBatchRoundTrip(t *testing.T) {
 	if err := gproto.Unmarshal(data, &decoded); err != nil {
 		t.Fatalf("unmarshal envelope: %v", err)
 	}
-	if decoded.GetNodeId() != "node-a" || decoded.GetSequence() != 7 {
+	if decoded.GetNodeId() != testNodeID || decoded.GetSequence() != 7 {
 		t.Fatalf("unexpected envelope: %+v", decoded)
 	}
 
@@ -59,18 +61,18 @@ func TestSnapshotMessageRowRoundTripUsesTripleIdentity(t *testing.T) {
 	t.Parallel()
 
 	envelope := &Envelope{
-		NodeId: "node-a",
+		NodeId: testNodeID,
 		Body: &Envelope_SnapshotChunk{
 			SnapshotChunk: &SnapshotChunk{
 				SnapshotVersion: SnapshotVersion,
-				Partition:       "messages/node-a",
+				Partition:       "messages/4096",
 				Kind:            SnapshotPartitionKind_SNAPSHOT_PARTITION_KIND_MESSAGES,
 				Rows: []*SnapshotRow{
 					{
 						Body: &SnapshotRow_Message{
 							Message: &SnapshotMessageRow{
 								UserId:       42,
-								NodeId:       "node-a",
+								NodeId:       testNodeID,
 								Seq:          7,
 								Sender:       "orders",
 								Body:         "hello",
@@ -94,7 +96,7 @@ func TestSnapshotMessageRowRoundTripUsesTripleIdentity(t *testing.T) {
 	}
 
 	message := decoded.GetSnapshotChunk().GetRows()[0].GetMessage()
-	if message.GetUserId() != 42 || message.GetNodeId() != "node-a" || message.GetSeq() != 7 {
+	if message.GetUserId() != 42 || message.GetNodeId() != testNodeID || message.GetSeq() != 7 {
 		t.Fatalf("unexpected snapshot message identity: %+v", message)
 	}
 }

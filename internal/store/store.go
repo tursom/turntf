@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -30,21 +31,23 @@ const (
 	RoleUser             = "user"
 	BootstrapAdminUserID = int64(1)
 	defaultSchemaVersion = "3"
+	schemaMetaNodeIDKey  = "node_id"
 )
 
 type Options struct {
-	NodeID            string
-	NodeSlot          uint16
+	// NodeID seeds schema_meta.node_id for deterministic tests; production leaves it empty.
+	NodeID            int64
 	MessageWindowSize int
 	Clock             *clock.Clock
 }
 
 type Store struct {
 	db                *sql.DB
-	nodeID            string
+	nodeID            int64
 	clock             *clock.Clock
 	ids               *clock.IDGenerator
 	nodeSlot          uint16
+	initialNodeID     int64
 	messageWindowSize int
 	bootstrapAdmin    BootstrapAdminConfig
 }
@@ -64,12 +67,12 @@ type User struct {
 	VersionProfile      clock.Timestamp  `json:"version_profile"`
 	VersionRole         clock.Timestamp  `json:"version_role"`
 	VersionDeleted      *clock.Timestamp `json:"version_deleted,omitempty"`
-	OriginNodeID        string           `json:"origin_node_id"`
+	OriginNodeID        int64            `json:"origin_node_id"`
 }
 
 type Message struct {
 	UserID    int64           `json:"user_id"`
-	NodeID    string          `json:"node_id"`
+	NodeID    int64           `json:"node_id"`
 	Seq       int64           `json:"seq"`
 	Sender    string          `json:"sender"`
 	Body      string          `json:"body"`
@@ -84,12 +87,12 @@ type Event struct {
 	Aggregate    string          `json:"aggregate"`
 	AggregateID  int64           `json:"aggregate_id"`
 	HLC          clock.Timestamp `json:"hlc"`
-	OriginNodeID string          `json:"origin_node_id"`
+	OriginNodeID int64           `json:"origin_node_id"`
 	Payload      string          `json:"payload"`
 }
 
 type PeerCursor struct {
-	PeerNodeID      string          `json:"peer_node_id"`
+	PeerNodeID      int64           `json:"peer_node_id"`
 	AckedSequence   int64           `json:"acked_sequence"`
 	AppliedSequence int64           `json:"applied_sequence"`
 	UpdatedAt       clock.Timestamp `json:"updated_at"`
@@ -123,9 +126,6 @@ type BootstrapAdminConfig struct {
 }
 
 func Open(dbPath string, opts Options) (*Store, error) {
-	if strings.TrimSpace(opts.NodeID) == "" {
-		return nil, fmt.Errorf("node id cannot be empty")
-	}
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
 		return nil, fmt.Errorf("create db dir: %w", err)
 	}
@@ -141,35 +141,24 @@ func Open(dbPath string, opts Options) (*Store, error) {
 		return nil, fmt.Errorf("enable foreign keys: %w", err)
 	}
 
-	ids, err := clock.NewIDGenerator(opts.NodeSlot)
-	if err != nil {
-		_ = db.Close()
-		return nil, err
-	}
-
 	return &Store{
 		db:                db,
-		nodeID:            opts.NodeID,
-		nodeSlot:          opts.NodeSlot,
-		clock:             resolvedClock(opts),
-		ids:               ids,
+		initialNodeID:     opts.NodeID,
 		messageWindowSize: normalizeMessageWindowSize(opts.MessageWindowSize),
+		clock:             opts.Clock,
 	}, nil
-}
-
-func resolvedClock(opts Options) *clock.Clock {
-	if opts.Clock != nil {
-		return opts.Clock
-	}
-	return clock.NewClock(opts.NodeSlot)
 }
 
 func (s *Store) Clock() *clock.Clock {
 	return s.clock
 }
 
-func (s *Store) NodeID() string {
+func (s *Store) NodeID() int64 {
 	return s.nodeID
+}
+
+func (s *Store) NodeSlot() uint16 {
+	return s.nodeSlot
 }
 
 func (s *Store) MessageWindowSize() int {
@@ -202,13 +191,13 @@ CREATE TABLE IF NOT EXISTS users (
     version_profile TEXT NOT NULL,
     version_role TEXT NOT NULL,
     version_deleted TEXT,
-    origin_node_id TEXT NOT NULL
+    origin_node_id INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_users_username_deleted ON users(username, deleted_at_hlc);
 
 CREATE TABLE IF NOT EXISTS messages (
     user_id INTEGER NOT NULL,
-    node_id TEXT NOT NULL,
+    node_id INTEGER NOT NULL,
     seq INTEGER NOT NULL,
     sender TEXT NOT NULL,
     body TEXT NOT NULL,
@@ -220,7 +209,7 @@ CREATE TABLE IF NOT EXISTS messages (
 
 CREATE TABLE IF NOT EXISTS message_cursors (
     user_id INTEGER NOT NULL,
-    node_id TEXT NOT NULL,
+    node_id INTEGER NOT NULL,
     last_seq INTEGER NOT NULL,
     PRIMARY KEY(user_id, node_id)
 );
@@ -232,12 +221,12 @@ CREATE TABLE IF NOT EXISTS event_log (
     aggregate_type TEXT NOT NULL,
     aggregate_id INTEGER NOT NULL,
     hlc TEXT NOT NULL,
-    origin_node_id TEXT NOT NULL,
+    origin_node_id INTEGER NOT NULL,
     payload TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS peer_cursors (
-    peer_node_id TEXT PRIMARY KEY,
+    peer_node_id INTEGER PRIMARY KEY,
     acked_sequence INTEGER NOT NULL DEFAULT 0,
     applied_sequence INTEGER NOT NULL DEFAULT 0,
     updated_at_hlc TEXT NOT NULL
@@ -245,7 +234,7 @@ CREATE TABLE IF NOT EXISTS peer_cursors (
 
 CREATE TABLE IF NOT EXISTS applied_events (
     event_id INTEGER PRIMARY KEY,
-    source_node_id TEXT NOT NULL,
+    source_node_id INTEGER NOT NULL,
     applied_at_hlc TEXT NOT NULL
 );
 
@@ -263,7 +252,7 @@ CREATE TABLE IF NOT EXISTS tombstones (
     entity_id INTEGER NOT NULL,
     deleted_at_hlc TEXT NOT NULL,
     expires_at_hlc TEXT,
-    origin_node_id TEXT NOT NULL,
+    origin_node_id INTEGER NOT NULL,
     PRIMARY KEY(entity_type, entity_id)
 );
 
@@ -291,7 +280,86 @@ ON CONFLICT(key) DO UPDATE SET value = excluded.value
 `, defaultSchemaVersion); err != nil {
 		return fmt.Errorf("store schema version: %w", err)
 	}
+	if err := s.ensureNodeIdentity(ctx); err != nil {
+		return err
+	}
 	return nil
+}
+
+func (s *Store) ensureNodeIdentity(ctx context.Context) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin node identity init: %w", err)
+	}
+	defer tx.Rollback()
+
+	nodeID, err := readNodeIDTx(ctx, tx)
+	if err != nil {
+		return err
+	}
+	if nodeID == 0 {
+		if s.initialNodeID > 0 {
+			nodeID = s.initialNodeID
+		} else {
+			nodeID, err = clock.GenerateNodeID()
+			if err != nil {
+				return err
+			}
+		}
+		if _, err := tx.ExecContext(ctx, `
+INSERT INTO schema_meta(key, value)
+VALUES(?, ?)
+`, schemaMetaNodeIDKey, strconv.FormatInt(nodeID, 10)); err != nil {
+			return fmt.Errorf("store node id: %w", err)
+		}
+	} else if s.initialNodeID > 0 && nodeID != s.initialNodeID {
+		return fmt.Errorf("node id %d does not match existing node id %d", s.initialNodeID, nodeID)
+	}
+
+	slot, err := clock.NodeSlotFromID(nodeID)
+	if err != nil {
+		return fmt.Errorf("load node id: %w", err)
+	}
+	ids, err := clock.NewIDGenerator(slot)
+	if err != nil {
+		return err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit node identity init: %w", err)
+	}
+
+	s.nodeID = nodeID
+	s.nodeSlot = slot
+	s.ids = ids
+	if s.clock == nil {
+		s.clock = clock.NewClock(slot)
+	}
+	return nil
+}
+
+func readNodeIDTx(ctx context.Context, tx *sql.Tx) (int64, error) {
+	var raw string
+	err := tx.QueryRowContext(ctx, `
+SELECT value
+FROM schema_meta
+WHERE key = ?
+`, schemaMetaNodeIDKey).Scan(&raw)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("read node id: %w", err)
+	}
+
+	nodeID, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("parse node id %q: %w", raw, err)
+	}
+	if nodeID <= 0 {
+		return 0, fmt.Errorf("node id must be positive")
+	}
+	return nodeID, nil
 }
 
 func (s *Store) CreateUser(ctx context.Context, params CreateUserParams) (User, Event, error) {
@@ -742,9 +810,8 @@ VALUES(?, ?, ?, ?, ?, ?, ?)
 	return event, nil
 }
 
-func (s *Store) nextMessageSeqTx(ctx context.Context, tx *sql.Tx, userID int64, nodeID string) (int64, error) {
-	nodeID = strings.TrimSpace(nodeID)
-	if userID == 0 || nodeID == "" {
+func (s *Store) nextMessageSeqTx(ctx context.Context, tx *sql.Tx, userID int64, nodeID int64) (int64, error) {
+	if userID == 0 || nodeID <= 0 {
 		return 0, fmt.Errorf("%w: user id and node id are required for message sequence", ErrInvalidInput)
 	}
 
@@ -774,9 +841,8 @@ WHERE user_id = ? AND node_id = ?
 	return seq, nil
 }
 
-func (s *Store) recordMessageSeqTx(ctx context.Context, tx *sql.Tx, userID int64, nodeID string, seq int64) error {
-	nodeID = strings.TrimSpace(nodeID)
-	if userID == 0 || nodeID == "" || seq <= 0 {
+func (s *Store) recordMessageSeqTx(ctx context.Context, tx *sql.Tx, userID int64, nodeID int64, seq int64) error {
+	if userID == 0 || nodeID <= 0 || seq <= 0 {
 		return fmt.Errorf("%w: user id, node id, and seq are required for message cursor", ErrInvalidInput)
 	}
 	if _, err := tx.ExecContext(ctx, `
@@ -809,7 +875,7 @@ type tombstoneRecord struct {
 	EntityType   string
 	EntityID     int64
 	DeletedAt    clock.Timestamp
-	OriginNodeID string
+	OriginNodeID int64
 }
 
 func (s *Store) getTombstoneTx(ctx context.Context, tx *sql.Tx, entityType string, entityID int64) (tombstoneRecord, bool, error) {
@@ -836,7 +902,7 @@ WHERE entity_type = ? AND entity_id = ?
 	return record, true, nil
 }
 
-func (s *Store) upsertTombstoneTx(ctx context.Context, tx *sql.Tx, entityType string, entityID int64, deletedAt clock.Timestamp, originNodeID string) error {
+func (s *Store) upsertTombstoneTx(ctx context.Context, tx *sql.Tx, entityType string, entityID int64, deletedAt clock.Timestamp, originNodeID int64) error {
 	if _, err := tx.ExecContext(ctx, `
 INSERT INTO tombstones(entity_type, entity_id, deleted_at_hlc, expires_at_hlc, origin_node_id)
 VALUES(?, ?, ?, NULL, ?)
@@ -855,7 +921,7 @@ ON CONFLICT(entity_type, entity_id) DO UPDATE SET
 	return nil
 }
 
-func (s *Store) applyUserDeleteTx(ctx context.Context, tx *sql.Tx, userID int64, deletedAt clock.Timestamp, originNodeID string, requireActive bool) error {
+func (s *Store) applyUserDeleteTx(ctx context.Context, tx *sql.Tx, userID int64, deletedAt clock.Timestamp, originNodeID int64, requireActive bool) error {
 	user, err := s.getUserByIDTx(ctx, tx, userID, true)
 	switch {
 	case err == nil:

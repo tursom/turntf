@@ -5,7 +5,7 @@ package notifier.cluster.v1;
 option go_package = "notifier/internal/proto;proto";
 
 message Envelope {
-  string node_id = 1;
+  int64 node_id = 1;
   uint64 sequence = 2;
   string sent_at_hlc = 3;
   oneof body {
@@ -22,7 +22,7 @@ message Envelope {
 }
 
 message Hello {
-  string node_id = 1;
+  int64 node_id = 1;
   string advertise_addr = 2;
   string protocol_version = 3;
   uint64 last_sequence = 4;
@@ -31,7 +31,7 @@ message Hello {
 }
 
 message Ack {
-  string node_id = 1;
+  int64 node_id = 1;
   uint64 acked_sequence = 2;
 }
 
@@ -45,7 +45,7 @@ message ReplicatedEvent {
   string aggregate_type = 3;
   int64 aggregate_id = 4;
   string hlc = 5;
-  string origin_node_id = 6;
+  int64 origin_node_id = 6;
   bytes payload = 7;
 }
 
@@ -103,19 +103,19 @@ message SnapshotUserRow {
   string version_profile = 10;
   string version_role = 15;
   string version_deleted = 11;
-  string origin_node_id = 12;
+  int64 origin_node_id = 12;
 }
 
 message SnapshotTombstoneRow {
   string entity_type = 1;
   int64 entity_id = 2;
   string deleted_at_hlc = 3;
-  string origin_node_id = 4;
+  int64 origin_node_id = 4;
 }
 
 message SnapshotMessageRow {
   int64 user_id = 1;
-  string node_id = 2;
+  int64 node_id = 2;
   string sender = 3;
   string body = 4;
   string metadata = 5;
@@ -147,7 +147,7 @@ message MessageEvent {
   int64 event_id = 1;
   string kind = 2;
   int64 user_id = 3;
-  string node_id = 4;
+  int64 node_id = 4;
   string hlc = 5;
   bytes payload = 6;
   int64 seq = 7;

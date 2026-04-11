@@ -93,10 +93,6 @@ func TestLoadServeRuntimeConfigFromExplicitPath(t *testing.T) {
 
 	configPath := filepath.Join(t.TempDir(), "notifier.toml")
 	writeTestConfig(t, configPath, `
-[node]
-id = "node-a"
-slot = 1
-
 [api]
 listen_addr = ":8080"
 
@@ -109,7 +105,7 @@ advertise_path = "/internal/cluster/ws"
 secret = "secret"
 
 [[cluster.peers]]
-node_id = "node-b"
+node_id = 8192
 url = "ws://127.0.0.1:9081/internal/cluster/ws"
 `)
 
@@ -126,9 +122,6 @@ url = "ws://127.0.0.1:9081/internal/cluster/ws"
 	}
 	if cfg.DBPath != filepath.Clean("./data/node-a.db") {
 		t.Fatalf("unexpected db path: %q", cfg.DBPath)
-	}
-	if cfg.StoreOptions.NodeID != "node-a" || cfg.StoreOptions.NodeSlot != 1 {
-		t.Fatalf("unexpected store options: %+v", cfg.StoreOptions)
 	}
 	if cfg.StoreOptions.MessageWindowSize != 250 {
 		t.Fatalf("unexpected message window size: %d", cfg.StoreOptions.MessageWindowSize)
@@ -156,10 +149,6 @@ func TestLoadServeRuntimeConfigUsesDefaultPathAndDefaultMessageWindow(t *testing
 	})
 
 	writeTestConfig(t, filepath.Join(tempDir, "config.toml"), `
-[node]
-id = "node-a"
-slot = 1
-
 [api]
 listen_addr = ":8080"
 
@@ -185,10 +174,6 @@ func TestLoadServeRuntimeConfigRejectsMissingRequiredFields(t *testing.T) {
 
 	configPath := filepath.Join(t.TempDir(), "broken.toml")
 	writeTestConfig(t, configPath, `
-[node]
-id = "node-a"
-slot = 1
-
 [store]
 db_path = "./data/node-a.db"
 `)
@@ -207,10 +192,6 @@ func TestLoadServeRuntimeConfigRejectsMissingAuthTokenSecret(t *testing.T) {
 
 	configPath := filepath.Join(t.TempDir(), "missing-auth.toml")
 	if err := os.WriteFile(configPath, []byte(strings.TrimSpace(`
-[node]
-id = "node-a"
-slot = 1
-
 [api]
 listen_addr = ":8080"
 
@@ -235,10 +216,6 @@ func TestLoadServeRuntimeConfigRejectsMissingBootstrapAdminConfig(t *testing.T) 
 
 	configPath := filepath.Join(t.TempDir(), "missing-bootstrap.toml")
 	if err := os.WriteFile(configPath, []byte(strings.TrimSpace(`
-[node]
-id = "node-a"
-slot = 1
-
 [api]
 listen_addr = ":8080"
 
@@ -262,10 +239,6 @@ func TestLoadServeRuntimeConfigRejectsMatchingAuthAndClusterSecrets(t *testing.T
 
 	configPath := filepath.Join(t.TempDir(), "matching-secrets.toml")
 	writeTestConfig(t, configPath, `
-[node]
-id = "node-a"
-slot = 1
-
 [api]
 listen_addr = ":8080"
 
@@ -339,10 +312,6 @@ func TestLoadServeRuntimeConfigUsesDefaultAuthTokenTTL(t *testing.T) {
 
 	configPath := filepath.Join(t.TempDir(), "default-auth-ttl.toml")
 	writeTestConfig(t, configPath, `
-[node]
-id = "node-a"
-slot = 1
-
 [api]
 listen_addr = ":8080"
 
@@ -364,10 +333,6 @@ func TestLoadServeRuntimeConfigUsesDefaultLogging(t *testing.T) {
 
 	configPath := filepath.Join(t.TempDir(), "default-logging.toml")
 	writeTestConfig(t, configPath, `
-[node]
-id = "node-a"
-slot = 1
-
 [api]
 listen_addr = ":8080"
 
@@ -392,10 +357,6 @@ func TestLoadServeRuntimeConfigReadsLogging(t *testing.T) {
 
 	configPath := filepath.Join(t.TempDir(), "logging.toml")
 	writeTestConfig(t, configPath, `
-[node]
-id = "node-a"
-slot = 1
-
 [api]
 listen_addr = ":8080"
 
@@ -424,10 +385,6 @@ func TestLoadServeRuntimeConfigRejectsInvalidLoggingLevel(t *testing.T) {
 
 	configPath := filepath.Join(t.TempDir(), "bad-logging.toml")
 	writeTestConfig(t, configPath, `
-[node]
-id = "node-a"
-slot = 1
-
 [api]
 listen_addr = ":8080"
 
@@ -449,10 +406,6 @@ func TestLoadServeRuntimeConfigAllowsDisablingMaxClockSkew(t *testing.T) {
 
 	configPath := filepath.Join(t.TempDir(), "notifier.toml")
 	writeTestConfig(t, configPath, `
-[node]
-id = "node-a"
-slot = 1
-
 [api]
 listen_addr = ":8080"
 
@@ -465,7 +418,7 @@ secret = "secret"
 max_clock_skew_ms = 0
 
 [[cluster.peers]]
-node_id = "node-b"
+node_id = 8192
 url = "ws://127.0.0.1:9081/internal/cluster/ws"
 `)
 
@@ -483,10 +436,6 @@ func TestLoadServeRuntimeConfigRejectsNegativeMaxClockSkew(t *testing.T) {
 
 	configPath := filepath.Join(t.TempDir(), "notifier.toml")
 	writeTestConfig(t, configPath, `
-[node]
-id = "node-a"
-slot = 1
-
 [api]
 listen_addr = ":8080"
 
@@ -499,7 +448,7 @@ secret = "secret"
 max_clock_skew_ms = -1
 
 [[cluster.peers]]
-node_id = "node-b"
+node_id = 8192
 url = "ws://127.0.0.1:9081/internal/cluster/ws"
 `)
 
@@ -517,10 +466,6 @@ func TestLoadServeRuntimeConfigRejectsRemovedClusterListenAddr(t *testing.T) {
 
 	configPath := filepath.Join(t.TempDir(), "legacy.toml")
 	writeTestConfig(t, configPath, `
-[node]
-id = "node-a"
-slot = 1
-
 [api]
 listen_addr = ":8080"
 
@@ -547,10 +492,6 @@ func TestLoadServeRuntimeConfigRejectsRemovedClusterAdvertiseAddr(t *testing.T) 
 
 	configPath := filepath.Join(t.TempDir(), "legacy-advertise.toml")
 	writeTestConfig(t, configPath, `
-[node]
-id = "node-a"
-slot = 1
-
 [api]
 listen_addr = ":8080"
 
@@ -610,7 +551,7 @@ secret = "secret"
 [cluster]
 
 [[cluster.peers]]
-node_id = "node-b"
+node_id = 8192
 url = "ws://127.0.0.1:9081/internal/cluster/ws"
 `,
 			wantErr: "cluster secret cannot be empty",
@@ -621,10 +562,6 @@ url = "ws://127.0.0.1:9081/internal/cluster/ws"
 		t.Run(tt.name, func(t *testing.T) {
 			configPath := filepath.Join(t.TempDir(), "broken.toml")
 			writeTestConfig(t, configPath, `
-[node]
-id = "node-a"
-slot = 1
-
 [api]
 listen_addr = ":8080"
 
@@ -640,6 +577,32 @@ db_path = "./data/node-a.db"
 				t.Fatalf("unexpected error: %v", err)
 			}
 		})
+	}
+}
+
+func TestLoadServeRuntimeConfigRejectsStringPeerNodeID(t *testing.T) {
+	t.Parallel()
+
+	configPath := filepath.Join(t.TempDir(), "string-peer-id.toml")
+	writeTestConfig(t, configPath, `
+[api]
+listen_addr = ":8080"
+
+[store]
+db_path = "./data/node-a.db"
+
+[cluster]
+advertise_path = "/internal/cluster/ws"
+secret = "secret"
+
+[[cluster.peers]]
+node_id = "node-b"
+url = "ws://127.0.0.1:9081/internal/cluster/ws"
+`)
+
+	_, err := loadServeRuntimeConfig(configPath)
+	if err == nil || !strings.Contains(err.Error(), "destination has type integer") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
@@ -660,7 +623,7 @@ func TestServeHandlerMountsClusterRouteOnAPIListener(t *testing.T) {
 	t.Parallel()
 
 	manager, err := cluster.NewManager(cluster.Config{
-		NodeID:            "node-a",
+		NodeID:            int64(4096),
 		NodeSlot:          1,
 		AdvertisePath:     "/internal/cluster/ws",
 		ClusterSecret:     "secret",

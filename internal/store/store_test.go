@@ -10,6 +10,10 @@ import (
 	"notifier/internal/clock"
 )
 
+func testNodeID(slot uint16) int64 {
+	return int64(slot) << 12
+}
+
 func TestLocalUserCRUDAndEventLog(t *testing.T) {
 	t.Parallel()
 
@@ -85,6 +89,74 @@ func TestLocalUserCRUDAndEventLog(t *testing.T) {
 	}
 	if events[0].Sequence >= events[1].Sequence || events[1].Sequence >= events[2].Sequence {
 		t.Fatalf("events not ordered by sequence: %+v", events)
+	}
+}
+
+func TestInitGeneratesAndPersistsNodeID(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "node-id.db")
+	first, err := Open(dbPath, Options{})
+	if err != nil {
+		t.Fatalf("open first store: %v", err)
+	}
+	if err := first.Init(context.Background()); err != nil {
+		t.Fatalf("init first store: %v", err)
+	}
+	nodeID := first.NodeID()
+	slot := first.NodeSlot()
+	if nodeID <= 0 {
+		t.Fatalf("expected generated node id, got %d", nodeID)
+	}
+	if slot == 0 || slot > clock.MaxNodeID {
+		t.Fatalf("unexpected generated slot: %d", slot)
+	}
+
+	var stored string
+	if err := first.db.QueryRow(`SELECT value FROM schema_meta WHERE key = 'node_id'`).Scan(&stored); err != nil {
+		t.Fatalf("read stored node id: %v", err)
+	}
+	if stored != strconv.FormatInt(nodeID, 10) {
+		t.Fatalf("unexpected stored node id: got=%q want=%d", stored, nodeID)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatalf("close first store: %v", err)
+	}
+
+	second, err := Open(dbPath, Options{})
+	if err != nil {
+		t.Fatalf("open second store: %v", err)
+	}
+	defer second.Close()
+	if err := second.Init(context.Background()); err != nil {
+		t.Fatalf("init second store: %v", err)
+	}
+	if second.NodeID() != nodeID || second.NodeSlot() != slot {
+		t.Fatalf("expected persisted node identity, got id=%d slot=%d want id=%d slot=%d", second.NodeID(), second.NodeSlot(), nodeID, slot)
+	}
+}
+
+func TestInitRejectsInvalidStoredNodeID(t *testing.T) {
+	t.Parallel()
+
+	st, err := Open(filepath.Join(t.TempDir(), "bad-node-id.db"), Options{})
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	if _, err := st.db.Exec(`
+CREATE TABLE schema_meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+INSERT INTO schema_meta(key, value) VALUES('node_id', 'not-an-int');
+`); err != nil {
+		t.Fatalf("seed invalid node id: %v", err)
+	}
+
+	if err := st.Init(context.Background()); err == nil {
+		t.Fatalf("expected invalid stored node id to fail")
 	}
 }
 
@@ -168,7 +240,7 @@ WHERE user_id = ?
 	if _, err := st.db.ExecContext(ctx, `
 INSERT INTO tombstones(entity_type, entity_id, deleted_at_hlc, expires_at_hlc, origin_node_id)
 VALUES('user', ?, ?, NULL, ?)
-`, BootstrapAdminUserID, now.String(), "node-a"); err != nil {
+`, BootstrapAdminUserID, now.String(), testNodeID(1)); err != nil {
 		t.Fatalf("insert bootstrap tombstone: %v", err)
 	}
 
@@ -247,7 +319,7 @@ func TestLocalMessageWriteAndQuery(t *testing.T) {
 	if len(messages) != 2 {
 		t.Fatalf("expected 2 messages, got %d", len(messages))
 	}
-	if first.NodeID != "node-a" || first.Seq != 1 || second.NodeID != "node-a" || second.Seq != 2 {
+	if first.NodeID != testNodeID(1) || first.Seq != 1 || second.NodeID != testNodeID(1) || second.Seq != 2 {
 		t.Fatalf("unexpected message identities: first=%+v second=%+v", first, second)
 	}
 	if messages[0].Seq != second.Seq || messages[1].Seq != first.Seq {
@@ -401,20 +473,20 @@ FROM peer_cursors
 	}
 	rows.Close()
 
-	if err := st.RecordPeerAck(ctx, "node-a", 5); err != nil {
+	if err := st.RecordPeerAck(ctx, testNodeID(1), 5); err != nil {
 		t.Fatalf("record peer ack: %v", err)
 	}
-	if err := st.RecordPeerAck(ctx, "node-a", 3); err != nil {
+	if err := st.RecordPeerAck(ctx, testNodeID(1), 3); err != nil {
 		t.Fatalf("record stale peer ack: %v", err)
 	}
-	if err := st.RecordPeerApplied(ctx, "node-a", 7); err != nil {
+	if err := st.RecordPeerApplied(ctx, testNodeID(1), 7); err != nil {
 		t.Fatalf("record peer applied: %v", err)
 	}
-	if err := st.RecordPeerApplied(ctx, "node-a", 4); err != nil {
+	if err := st.RecordPeerApplied(ctx, testNodeID(1), 4); err != nil {
 		t.Fatalf("record stale peer applied: %v", err)
 	}
 
-	cursor, err := st.GetPeerCursor(ctx, "node-a")
+	cursor, err := st.GetPeerCursor(ctx, testNodeID(1))
 	if err != nil {
 		t.Fatalf("get peer cursor: %v", err)
 	}
@@ -450,10 +522,10 @@ func TestOperationsStatsIncludesPeerCursorsConflictsAndTrimStats(t *testing.T) {
 		}
 	}
 
-	if err := st.RecordPeerAck(ctx, "node-a", 1); err != nil {
+	if err := st.RecordPeerAck(ctx, testNodeID(1), 1); err != nil {
 		t.Fatalf("record peer ack: %v", err)
 	}
-	if err := st.RecordPeerApplied(ctx, "node-a", 2); err != nil {
+	if err := st.RecordPeerApplied(ctx, testNodeID(1), 2); err != nil {
 		t.Fatalf("record peer applied: %v", err)
 	}
 	now := st.clock.Now().String()
@@ -464,11 +536,11 @@ VALUES(?, ?, ?, ?)
 		t.Fatalf("insert user conflict: %v", err)
 	}
 
-	stats, err := st.OperationsStats(ctx, []string{"node-a", "node-c"})
+	stats, err := st.OperationsStats(ctx, []int64{testNodeID(1), testNodeID(3)})
 	if err != nil {
 		t.Fatalf("operations stats: %v", err)
 	}
-	if stats.NodeID != "node-b" || stats.MessageWindowSize != 1 || stats.LastEventSequence != 3 {
+	if stats.NodeID != testNodeID(2) || stats.MessageWindowSize != 1 || stats.LastEventSequence != 3 {
 		t.Fatalf("unexpected top-level stats: %+v", stats)
 	}
 	if stats.UserConflictsTotal != 1 {
@@ -480,14 +552,14 @@ VALUES(?, ?, ?, ?)
 	if len(stats.PeerCursors) != 2 {
 		t.Fatalf("expected configured peer stats, got %+v", stats.PeerCursors)
 	}
-	if stats.PeerCursors[0].PeerNodeID != "node-a" ||
+	if stats.PeerCursors[0].PeerNodeID != testNodeID(1) ||
 		stats.PeerCursors[0].AckedSequence != 1 ||
 		stats.PeerCursors[0].AppliedSequence != 2 ||
 		stats.PeerCursors[0].UnconfirmedEvents != 2 ||
 		stats.PeerCursors[0].UpdatedAt == nil {
 		t.Fatalf("unexpected node-a cursor stats: %+v", stats.PeerCursors[0])
 	}
-	if stats.PeerCursors[1].PeerNodeID != "node-c" ||
+	if stats.PeerCursors[1].PeerNodeID != testNodeID(3) ||
 		stats.PeerCursors[1].UnconfirmedEvents != 3 ||
 		stats.PeerCursors[1].UpdatedAt != nil {
 		t.Fatalf("unexpected node-c cursor stats: %+v", stats.PeerCursors[1])
@@ -729,7 +801,7 @@ func TestReplicatedMessageTrimUsesNodeAndSeqForSameTimestamp(t *testing.T) {
 	firstPayload, err := marshalPayload(replicatedMessageEnvelope{
 		Message: replicatedMessagePayload{
 			UserID:    user.ID,
-			NodeID:    "node-a",
+			NodeID:    testNodeID(1),
 			Seq:       1,
 			Sender:    "orders",
 			Body:      "older-seq",
@@ -742,7 +814,7 @@ func TestReplicatedMessageTrimUsesNodeAndSeqForSameTimestamp(t *testing.T) {
 	secondPayload, err := marshalPayload(replicatedMessageEnvelope{
 		Message: replicatedMessagePayload{
 			UserID:    user.ID,
-			NodeID:    "node-a",
+			NodeID:    testNodeID(1),
 			Seq:       2,
 			Sender:    "orders",
 			Body:      "newer-seq",
@@ -759,7 +831,7 @@ func TestReplicatedMessageTrimUsesNodeAndSeqForSameTimestamp(t *testing.T) {
 		Aggregate:    "message",
 		AggregateID:  1,
 		HLC:          sharedHLC,
-		OriginNodeID: "node-a",
+		OriginNodeID: testNodeID(1),
 		Payload:      firstPayload,
 	})); err != nil {
 		t.Fatalf("apply first replicated event: %v", err)
@@ -770,7 +842,7 @@ func TestReplicatedMessageTrimUsesNodeAndSeqForSameTimestamp(t *testing.T) {
 		Aggregate:    "message",
 		AggregateID:  2,
 		HLC:          sharedHLC,
-		OriginNodeID: "node-a",
+		OriginNodeID: testNodeID(1),
 		Payload:      secondPayload,
 	})); err != nil {
 		t.Fatalf("apply second replicated event: %v", err)
@@ -783,7 +855,7 @@ func TestReplicatedMessageTrimUsesNodeAndSeqForSameTimestamp(t *testing.T) {
 	if len(messages) != 1 {
 		t.Fatalf("expected 1 message after trim, got %d", len(messages))
 	}
-	if messages[0].NodeID != "node-a" || messages[0].Seq != 2 || messages[0].Body != "newer-seq" {
+	if messages[0].NodeID != testNodeID(1) || messages[0].Seq != 2 || messages[0].Body != "newer-seq" {
 		t.Fatalf("expected higher seq to win tie, got %+v", messages[0])
 	}
 }
@@ -1090,7 +1162,7 @@ func TestSnapshotMessagesChunkIsIdempotentAndTrimsToLocalWindow(t *testing.T) {
 		t.Fatalf("apply users snapshot chunk: %v", err)
 	}
 
-	messageChunk, err := source.BuildSnapshotChunk(ctx, MessageSnapshotPartition("node-a"))
+	messageChunk, err := source.BuildSnapshotChunk(ctx, MessageSnapshotPartition(testNodeID(1)))
 	if err != nil {
 		t.Fatalf("build messages snapshot chunk: %v", err)
 	}
@@ -1129,8 +1201,7 @@ func openNamedTestStoreWithWindow(t *testing.T, nodeID string, nodeSlot uint16, 
 
 	dbPath := filepath.Join(t.TempDir(), "distributed.db")
 	st, err := Open(dbPath, Options{
-		NodeID:            nodeID,
-		NodeSlot:          nodeSlot,
+		NodeID:            testNodeID(nodeSlot),
 		MessageWindowSize: messageWindowSize,
 	})
 	if err != nil {

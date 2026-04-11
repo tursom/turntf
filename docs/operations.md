@@ -4,7 +4,7 @@
 
 ## 小规模部署建议
 
-- 为每个节点配置唯一的 `node.id` 和 `node.slot`；`node.slot` 会进入全局 ID 与 HLC 时间戳，同一集群内不能重复。
+- 每个节点首次启动时会自动生成唯一的数字 `node_id` 并保存到 SQLite `schema_meta`；该 `node_id` 内嵌的 slot 会进入全局 ID 与 HLC 时间戳，同一集群内不能重复。
 - 所有节点使用相同的 `auth.token_secret`，否则跨节点登录 token 无法互认。
 - 所有节点使用相同的 `cluster.secret`，并确保它不同于 `auth.token_secret`。
 - 生产环境建议所有节点使用相同的 `store.message_window_size`，避免消息反熵因窗口不一致而跳过消息分片修复。
@@ -41,13 +41,13 @@ curl -H "Authorization: Bearer ${TOKEN}" http://127.0.0.1:8080/metrics
 sqlite3 ./data/node-a.db ".backup './backup/node-a-$(date +%Y%m%d%H%M%S).db'"
 ```
 
-- 至少备份配置文件和数据库文件；配置里的 `node.id`、`node.slot`、`auth.token_secret`、`cluster.secret` 是恢复时的关键材料。
+- 至少备份配置文件和数据库文件；SQLite `schema_meta` 中的 `node_id` 以及配置里的 `auth.token_secret`、`cluster.secret` 是恢复时的关键材料。
 - 单节点备份只代表该节点本地状态。集群仍依赖事件补拉和快照反熵来修复节点间差异。
 
 ## 节点恢复流程
 
 1. 停止故障节点进程。
-2. 确认恢复时仍使用原来的 `node.id` 和 `node.slot`，不要把同一个身份同时启动两份。
+2. 确认恢复时仍使用原来的 SQLite 数据库或至少保留 `schema_meta.node_id`，不要把同一个身份同时启动两份。
 3. 从最近备份恢复 SQLite 数据库文件。
 4. 使用原配置启动节点，确保 `cluster.peers` 指向当前可用节点。
 5. 观察 `/ops/status` 中该节点对各 peer 的 `unconfirmed_events`、`pending_catchup`、`pending_snapshot_partitions` 是否逐步归零。

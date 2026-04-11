@@ -106,3 +106,41 @@ func TestIDGeneratorMonotonicAndUnique(t *testing.T) {
 		last = next
 	}
 }
+
+func TestGenerateNodeIDUsesDecodableRandomSlotAndSequence(t *testing.T) {
+	t.Parallel()
+
+	nodeID, err := GenerateNodeID()
+	if err != nil {
+		t.Fatalf("generate node id: %v", err)
+	}
+	if nodeID <= 0 {
+		t.Fatalf("expected positive node id, got %d", nodeID)
+	}
+
+	slot, err := NodeSlotFromID(nodeID)
+	if err != nil {
+		t.Fatalf("decode node slot: %v", err)
+	}
+	if slot == 0 || slot > MaxNodeID {
+		t.Fatalf("slot out of range: %d", slot)
+	}
+
+	sequence, err := NodeSequenceFromID(nodeID)
+	if err != nil {
+		t.Fatalf("decode node sequence: %v", err)
+	}
+	if sequence > maxSequence {
+		t.Fatalf("sequence out of range: %d", sequence)
+	}
+}
+
+func TestNodeSlotFromIDRejectsInvalidIDs(t *testing.T) {
+	t.Parallel()
+
+	for _, nodeID := range []int64{0, -1, 1} {
+		if _, err := NodeSlotFromID(nodeID); err == nil {
+			t.Fatalf("expected node id %d to be rejected", nodeID)
+		}
+	}
+}

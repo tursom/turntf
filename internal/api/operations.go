@@ -16,11 +16,11 @@ import (
 
 type clusterStatusProvider interface {
 	Status(context.Context) (app.ClusterStatus, error)
-	ConfiguredPeerNodeIDs() []string
+	ConfiguredPeerNodeIDs() []int64
 }
 
 type operationsStatus struct {
-	NodeID            string               `json:"node_id"`
+	NodeID            int64                `json:"node_id"`
 	MessageWindowSize int                  `json:"message_window_size"`
 	LastEventSequence int64                `json:"last_event_sequence"`
 	WriteGateReady    bool                 `json:"write_gate_ready"`
@@ -35,7 +35,7 @@ type messageTrimStatus struct {
 }
 
 type peerStatusResponse struct {
-	NodeID                    string `json:"node_id"`
+	NodeID                    int64  `json:"node_id"`
 	ConfiguredURL             string `json:"configured_url,omitempty"`
 	Connected                 bool   `json:"connected"`
 	SessionDirection          string `json:"session_direction,omitempty"`
@@ -62,7 +62,7 @@ type peerStatusResponse struct {
 func (s *Service) OperationsStatus(ctx context.Context) (operationsStatus, error) {
 	var (
 		clusterStatus app.ClusterStatus
-		peerNodeIDs   []string
+		peerNodeIDs   []int64
 	)
 	clusterStatus.WriteGateReady = true
 
@@ -92,7 +92,7 @@ func (s *Service) OperationsStatus(ctx context.Context) (operationsStatus, error
 		},
 		Peers: mergePeerStatus(storeStats.PeerCursors, clusterStatus.Peers),
 	}
-	if response.NodeID == "" {
+	if response.NodeID == 0 {
 		response.NodeID = clusterStatus.NodeID
 	}
 	if response.MessageWindowSize == 0 {
@@ -108,14 +108,15 @@ func (s *Service) Metrics(ctx context.Context) (string, error) {
 	}
 
 	var buf bytes.Buffer
+	nodeIDLabel := strconv.FormatInt(status.NodeID, 10)
 	writeMetricHelp(&buf, "notifier_event_log_last_sequence", "Local event log last sequence.", "gauge")
-	writeGauge(&buf, "notifier_event_log_last_sequence", map[string]string{"node_id": status.NodeID}, float64(status.LastEventSequence))
+	writeGauge(&buf, "notifier_event_log_last_sequence", map[string]string{"node_id": nodeIDLabel}, float64(status.LastEventSequence))
 	writeMetricHelp(&buf, "notifier_user_conflicts_total", "Total recorded user conflicts.", "counter")
-	writeGauge(&buf, "notifier_user_conflicts_total", map[string]string{"node_id": status.NodeID}, float64(status.ConflictTotal))
+	writeGauge(&buf, "notifier_user_conflicts_total", map[string]string{"node_id": nodeIDLabel}, float64(status.ConflictTotal))
 	writeMetricHelp(&buf, "notifier_message_trimmed_total", "Total messages trimmed by the local window.", "counter")
-	writeGauge(&buf, "notifier_message_trimmed_total", map[string]string{"node_id": status.NodeID}, float64(status.MessageTrim.TrimmedTotal))
+	writeGauge(&buf, "notifier_message_trimmed_total", map[string]string{"node_id": nodeIDLabel}, float64(status.MessageTrim.TrimmedTotal))
 	writeMetricHelp(&buf, "notifier_write_gate_ready", "Whether the node currently allows local writes.", "gauge")
-	writeGauge(&buf, "notifier_write_gate_ready", map[string]string{"node_id": status.NodeID}, boolGauge(status.WriteGateReady))
+	writeGauge(&buf, "notifier_write_gate_ready", map[string]string{"node_id": nodeIDLabel}, boolGauge(status.WriteGateReady))
 
 	writeMetricHelp(&buf, "notifier_peer_connected", "Whether the peer has an active cluster session.", "gauge")
 	writeMetricHelp(&buf, "notifier_peer_unconfirmed_events", "Local events not yet acknowledged by the peer.", "gauge")
@@ -125,8 +126,8 @@ func (s *Service) Metrics(ctx context.Context) (string, error) {
 	writeMetricHelp(&buf, "notifier_clock_offset_ms", "Last trusted clock offset for the peer in milliseconds.", "gauge")
 	for _, peer := range status.Peers {
 		labels := map[string]string{
-			"node_id":      status.NodeID,
-			"peer_node_id": peer.NodeID,
+			"node_id":      nodeIDLabel,
+			"peer_node_id": strconv.FormatInt(peer.NodeID, 10),
 		}
 		writeGauge(&buf, "notifier_peer_connected", labels, boolGauge(peer.Connected))
 		writeGauge(&buf, "notifier_peer_unconfirmed_events", labels, float64(peer.UnconfirmedEvents))
@@ -139,7 +140,7 @@ func (s *Service) Metrics(ctx context.Context) (string, error) {
 }
 
 func mergePeerStatus(storePeers []store.PeerOperationsStats, clusterPeers []app.ClusterPeerStatus) []peerStatusResponse {
-	index := make(map[string]peerStatusResponse, len(storePeers)+len(clusterPeers))
+	index := make(map[int64]peerStatusResponse, len(storePeers)+len(clusterPeers))
 	for _, peer := range storePeers {
 		index[peer.PeerNodeID] = peerStatusResponse{
 			NodeID:            peer.PeerNodeID,

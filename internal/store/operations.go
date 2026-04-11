@@ -5,13 +5,12 @@ import (
 	"database/sql"
 	"fmt"
 	"sort"
-	"strings"
 
 	"notifier/internal/clock"
 )
 
 type OperationsStats struct {
-	NodeID             string
+	NodeID             int64
 	MessageWindowSize  int
 	LastEventSequence  int64
 	PeerCursors        []PeerOperationsStats
@@ -20,7 +19,7 @@ type OperationsStats struct {
 }
 
 type PeerOperationsStats struct {
-	PeerNodeID        string
+	PeerNodeID        int64
 	AckedSequence     int64
 	AppliedSequence   int64
 	UnconfirmedEvents int64
@@ -32,7 +31,7 @@ type MessageTrimStats struct {
 	LastTrimmedAt *clock.Timestamp
 }
 
-func (s *Store) OperationsStats(ctx context.Context, peerNodeIDs []string) (OperationsStats, error) {
+func (s *Store) OperationsStats(ctx context.Context, peerNodeIDs []int64) (OperationsStats, error) {
 	lastSequence, err := s.LastEventSequence(ctx)
 	if err != nil {
 		return OperationsStats{}, err
@@ -63,11 +62,10 @@ func (s *Store) OperationsStats(ctx context.Context, peerNodeIDs []string) (Oper
 	}, nil
 }
 
-func (s *Store) peerOperationsStats(ctx context.Context, peerNodeIDs []string, lastSequence int64) ([]PeerOperationsStats, error) {
-	index := make(map[string]PeerOperationsStats)
+func (s *Store) peerOperationsStats(ctx context.Context, peerNodeIDs []int64, lastSequence int64) ([]PeerOperationsStats, error) {
+	index := make(map[int64]PeerOperationsStats)
 	for _, peerID := range peerNodeIDs {
-		peerID = strings.TrimSpace(peerID)
-		if peerID == "" {
+		if peerID <= 0 {
 			continue
 		}
 		index[peerID] = PeerOperationsStats{
@@ -145,7 +143,7 @@ WHERE scope = 'global'
 	}
 
 	stats := MessageTrimStats{TrimmedTotal: total}
-	if last.Valid && strings.TrimSpace(last.String) != "" {
+	if last.Valid && last.String != "" {
 		parsed, err := clock.ParseTimestamp(last.String)
 		if err != nil {
 			return MessageTrimStats{}, fmt.Errorf("parse message trim timestamp: %w", err)

@@ -8,6 +8,10 @@ import (
 	"notifier/internal/store"
 )
 
+func testNodeID(slot uint16) int64 {
+	return int64(slot) << 12
+}
+
 type recordingSink struct {
 	events []store.Event
 }
@@ -21,8 +25,7 @@ func TestServicePublishesOnlySuccessfulWrites(t *testing.T) {
 
 	dbPath := filepath.Join(t.TempDir(), "service.db")
 	st, err := store.Open(dbPath, store.Options{
-		NodeID:   "node-a",
-		NodeSlot: 1,
+		NodeID: testNodeID(1),
 	})
 	if err != nil {
 		t.Fatalf("open store: %v", err)
@@ -75,7 +78,7 @@ func TestServicePublishesOnlySuccessfulWrites(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create message: %v", err)
 	}
-	if message.UserID != user.ID || message.NodeID != "node-a" || message.Seq != 1 {
+	if message.UserID != user.ID || message.NodeID != testNodeID(1) || message.Seq != 1 {
 		t.Fatalf("unexpected message: %+v", message)
 	}
 	if len(sink.events) != 3 {

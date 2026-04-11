@@ -58,7 +58,7 @@ type Manager struct {
 	dialer    *websocket.Dialer
 
 	mu    sync.Mutex
-	peers map[string]*peerState
+	peers map[int64]*peerState
 
 	lastSuccessfulClockSync time.Time
 	timeSyncer              func(*session) (timeSyncSample, error)
@@ -85,8 +85,8 @@ type session struct {
 	conn     *websocket.Conn
 	outbound bool
 
-	configuredPeerID string
-	peerID           string
+	configuredPeerID int64
+	peerID           int64
 
 	send chan *internalproto.Envelope
 
@@ -119,11 +119,18 @@ type timeSyncSample struct {
 
 func NewManager(cfg Config, st *store.Store) (*Manager, error) {
 	cfg.MessageWindowSize = normalizedMessageWindowSize(cfg.MessageWindowSize)
+	if cfg.NodeSlot == 0 && cfg.NodeID > 0 {
+		slot, err := clock.NodeSlotFromID(cfg.NodeID)
+		if err != nil {
+			return nil, err
+		}
+		cfg.NodeSlot = slot
+	}
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
 
-	peers := make(map[string]*peerState, len(cfg.Peers))
+	peers := make(map[int64]*peerState, len(cfg.Peers))
 	for _, peer := range cfg.Peers {
 		peers[peer.NodeID] = &peerState{cfg: peer}
 	}
@@ -314,7 +321,7 @@ func (m *Manager) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sess := m.newSession(conn, false, "")
+	sess := m.newSession(conn, false, 0)
 	m.wg.Add(1)
 	go func() {
 		defer m.wg.Done()
@@ -322,7 +329,7 @@ func (m *Manager) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}()
 }
 
-func (m *Manager) newSession(conn *websocket.Conn, outbound bool, configuredPeerID string) *session {
+func (m *Manager) newSession(conn *websocket.Conn, outbound bool, configuredPeerID int64) *session {
 	return &session{
 		manager:          m,
 		conn:             conn,
@@ -398,7 +405,7 @@ func (m *Manager) writeLoop(sess *session) {
 
 			data, err := m.marshalSignedEnvelope(envelope)
 			if err != nil {
-				log.Warn().Err(err).Str("component", "cluster").Str("peer", sess.peerID).Str("event", "marshal_envelope_failed").Msg("marshal envelope failed")
+				log.Warn().Err(err).Str("component", "cluster").Int64("peer", sess.peerID).Str("event", "marshal_envelope_failed").Msg("marshal envelope failed")
 				return
 			}
 
@@ -430,7 +437,7 @@ func (m *Manager) readLoop(sess *session) {
 			return
 		}
 
-		if sess.peerID == "" && envelope.GetHello() == nil {
+		if sess.peerID == 0 && envelope.GetHello() == nil {
 			return
 		}
 
@@ -474,7 +481,7 @@ func (m *Manager) readLoop(sess *session) {
 }
 
 func (m *Manager) handleHello(sess *session, envelope *internalproto.Envelope) error {
-	if sess.peerID != "" {
+	if sess.peerID != 0 {
 		return errors.New("duplicate hello")
 	}
 
@@ -483,16 +490,16 @@ func (m *Manager) handleHello(sess *session, envelope *internalproto.Envelope) e
 		return errors.New("hello body cannot be empty")
 	}
 
-	envelopeNodeID := strings.TrimSpace(envelope.NodeId)
-	peerID := strings.TrimSpace(hello.NodeId)
-	if peerID == "" || peerID == m.cfg.NodeID {
-		return fmt.Errorf("invalid peer id %q", peerID)
+	envelopeNodeID := envelope.NodeId
+	peerID := hello.NodeId
+	if peerID <= 0 || peerID == m.cfg.NodeID {
+		return fmt.Errorf("invalid peer id %d", peerID)
 	}
-	if envelopeNodeID == "" {
+	if envelopeNodeID <= 0 {
 		return errors.New("hello envelope node id cannot be empty")
 	}
 	if envelopeNodeID != peerID {
-		return fmt.Errorf("hello envelope node id mismatch: got %s want %s", envelopeNodeID, peerID)
+		return fmt.Errorf("hello envelope node id mismatch: got %d want %d", envelopeNodeID, peerID)
 	}
 	if hello.ProtocolVersion != internalproto.ProtocolVersion {
 		return fmt.Errorf("unsupported protocol version %q", hello.ProtocolVersion)
@@ -509,13 +516,13 @@ func (m *Manager) handleHello(sess *session, envelope *internalproto.Envelope) e
 	if !strings.HasPrefix(strings.TrimSpace(hello.AdvertiseAddr), "/") {
 		return errors.New("hello advertise path must start with /")
 	}
-	if sess.outbound && sess.configuredPeerID != "" && sess.configuredPeerID != peerID {
-		return fmt.Errorf("peer mismatch: expected %s got %s", sess.configuredPeerID, peerID)
+	if sess.outbound && sess.configuredPeerID != 0 && sess.configuredPeerID != peerID {
+		return fmt.Errorf("peer mismatch: expected %d got %d", sess.configuredPeerID, peerID)
 	}
 	if int(hello.MessageWindowSize) != m.cfg.MessageWindowSize {
 		log.Warn().
 			Str("component", "cluster").
-			Str("peer", peerID).
+			Int64("peer", peerID).
 			Str("event", "message_window_mismatch").
 			Int("local", m.cfg.MessageWindowSize).
 			Uint32("remote", hello.MessageWindowSize).
@@ -527,7 +534,7 @@ func (m *Manager) handleHello(sess *session, envelope *internalproto.Envelope) e
 	sess.remoteMessageWindowSize = int(hello.MessageWindowSize)
 	sess.noteRemoteLastSequence(hello.LastSequence)
 	if !m.isConfiguredPeer(peerID) {
-		return fmt.Errorf("peer %s is not configured", peerID)
+		return fmt.Errorf("peer %d is not configured", peerID)
 	}
 
 	if !sess.beginBootstrap() {
@@ -539,12 +546,12 @@ func (m *Manager) handleHello(sess *session, envelope *internalproto.Envelope) e
 
 func (m *Manager) bootstrapSession(sess *session) {
 	if err := m.performTimeSync(sess); err != nil {
-		log.Warn().Err(err).Str("component", "cluster").Str("peer", sess.peerID).Str("event", "time_sync_failed").Msg("time sync failed")
+		log.Warn().Err(err).Str("component", "cluster").Int64("peer", sess.peerID).Str("event", "time_sync_failed").Msg("time sync failed")
 		sess.close()
 		return
 	}
 	if !m.activateSession(sess) {
-		log.Warn().Str("component", "cluster").Str("peer", sess.peerID).Str("event", "duplicate_session_rejected").Msg("duplicate session rejected")
+		log.Warn().Str("component", "cluster").Int64("peer", sess.peerID).Str("event", "duplicate_session_rejected").Msg("duplicate session rejected")
 		sess.close()
 		return
 	}
@@ -558,7 +565,7 @@ func (m *Manager) bootstrapSession(sess *session) {
 	if m.store != nil {
 		requested, err := m.requestCatchupIfNeeded(sess)
 		if err != nil {
-			log.Warn().Err(err).Str("component", "cluster").Str("peer", sess.peerID).Str("event", "request_catchup_failed").Msg("request catchup failed")
+			log.Warn().Err(err).Str("component", "cluster").Int64("peer", sess.peerID).Str("event", "request_catchup_failed").Msg("request catchup failed")
 			sess.close()
 			return
 		}
@@ -627,11 +634,11 @@ func (m *Manager) handleAck(sess *session, envelope *internalproto.Envelope) err
 	if err := validatePeerEnvelope(sess, envelope); err != nil {
 		return err
 	}
-	if strings.TrimSpace(ack.NodeId) == "" {
+	if ack.NodeId <= 0 {
 		return errors.New("ack node id cannot be empty")
 	}
 	if ack.NodeId != sess.peerID {
-		return fmt.Errorf("ack node id mismatch: got %s want %s", ack.NodeId, sess.peerID)
+		return fmt.Errorf("ack node id mismatch: got %d want %d", ack.NodeId, sess.peerID)
 	}
 	if m.store != nil {
 		if err := m.store.RecordPeerAck(context.Background(), sess.peerID, int64(ack.AckedSequence)); err != nil {
@@ -775,7 +782,7 @@ func (m *Manager) handlePullEvents(sess *session, envelope *internalproto.Envelo
 }
 
 func (m *Manager) requestCatchupIfNeeded(sess *session) (bool, error) {
-	if m.store == nil || sess.peerID == "" {
+	if m.store == nil || sess.peerID == 0 {
 		return false, nil
 	}
 
@@ -869,7 +876,7 @@ func (m *Manager) performTimeSync(sess *session) error {
 	if warnThreshold > 0 && absInt64(best.offsetMs) > warnThreshold {
 		log.Warn().
 			Str("component", "cluster").
-			Str("peer", sess.peerID).
+			Int64("peer", sess.peerID).
 			Str("event", "clock_offset_warn").
 			Int64("offset_ms", best.offsetMs).
 			Int64("threshold_ms", warnThreshold).
@@ -948,7 +955,7 @@ func (m *Manager) timeSyncRoundTrip(sess *session) (timeSyncSample, error) {
 		return timeSyncSample{offsetMs: offsetMs, rttMs: rttMs}, nil
 	case <-timer.C:
 		sess.cancelTimeSync(requestID, context.DeadlineExceeded)
-		return timeSyncSample{}, fmt.Errorf("time sync with peer %s timed out", sess.peerID)
+		return timeSyncSample{}, fmt.Errorf("time sync with peer %d timed out", sess.peerID)
 	}
 }
 
@@ -972,7 +979,7 @@ func (m *Manager) sessionSyncLoop(sess *session) {
 				return
 			}
 			if err := m.performTimeSync(sess); err != nil {
-				log.Warn().Err(err).Str("component", "cluster").Str("peer", sess.peerID).Str("event", "periodic_time_sync_failed").Msg("periodic time sync failed")
+				log.Warn().Err(err).Str("component", "cluster").Int64("peer", sess.peerID).Str("event", "periodic_time_sync_failed").Msg("periodic time sync failed")
 				sess.close()
 				return
 			}
@@ -982,7 +989,7 @@ func (m *Manager) sessionSyncLoop(sess *session) {
 				return
 			}
 			if _, err := m.requestCatchupIfNeeded(sess); err != nil {
-				log.Warn().Err(err).Str("component", "cluster").Str("peer", sess.peerID).Str("event", "periodic_catchup_failed").Msg("periodic catchup failed")
+				log.Warn().Err(err).Str("component", "cluster").Int64("peer", sess.peerID).Str("event", "periodic_catchup_failed").Msg("periodic catchup failed")
 				sess.close()
 				return
 			}
@@ -1125,20 +1132,20 @@ func (m *Manager) envelopeHMAC(envelope *internalproto.Envelope) ([]byte, error)
 }
 
 func validatePeerEnvelope(sess *session, envelope *internalproto.Envelope) error {
-	envelopeNodeID := strings.TrimSpace(envelope.NodeId)
-	if envelopeNodeID == "" {
+	envelopeNodeID := envelope.NodeId
+	if envelopeNodeID <= 0 {
 		return errors.New("envelope node id cannot be empty")
 	}
-	if sess.peerID == "" {
+	if sess.peerID == 0 {
 		return errors.New("session has not completed hello")
 	}
 	if envelopeNodeID != sess.peerID {
-		return fmt.Errorf("envelope node id mismatch: got %s want %s", envelopeNodeID, sess.peerID)
+		return fmt.Errorf("envelope node id mismatch: got %d want %d", envelopeNodeID, sess.peerID)
 	}
 	return nil
 }
 
-func (m *Manager) isConfiguredPeer(peerID string) bool {
+func (m *Manager) isConfiguredPeer(peerID int64) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	_, ok := m.peers[peerID]
@@ -1175,7 +1182,7 @@ func (m *Manager) activateSession(sess *session) bool {
 }
 
 func (m *Manager) deactivateSession(sess *session) {
-	if sess.peerID == "" {
+	if sess.peerID == 0 {
 		return
 	}
 
@@ -1445,7 +1452,7 @@ func absInt64(value int64) int64 {
 	return value
 }
 
-func (m *Manager) hasActivePeer(peerID string) bool {
+func (m *Manager) hasActivePeer(peerID int64) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 

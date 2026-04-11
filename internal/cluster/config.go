@@ -8,12 +8,12 @@ import (
 )
 
 type Peer struct {
-	NodeID string
+	NodeID int64
 	URL    string
 }
 
 type Config struct {
-	NodeID            string
+	NodeID            int64
 	NodeSlot          uint16
 	AdvertisePath     string
 	ClusterSecret     string
@@ -29,11 +29,18 @@ func (c Config) Enabled() bool {
 }
 
 func (c Config) Validate() error {
-	if strings.TrimSpace(c.NodeID) == "" {
+	if c.NodeID <= 0 {
 		return fmt.Errorf("node id cannot be empty")
 	}
 	if c.NodeSlot > clock.MaxNodeID {
 		return fmt.Errorf("node slot %d exceeds max %d", c.NodeSlot, clock.MaxNodeID)
+	}
+	nodeSlot, err := clock.NodeSlotFromID(c.NodeID)
+	if err != nil {
+		return fmt.Errorf("node id %d is invalid: %w", c.NodeID, err)
+	}
+	if c.NodeSlot != 0 && c.NodeSlot != nodeSlot {
+		return fmt.Errorf("node slot %d does not match node id slot %d", c.NodeSlot, nodeSlot)
 	}
 	if c.MaxClockSkewMs < 0 {
 		return fmt.Errorf("cluster max clock skew must be non-negative")
@@ -51,19 +58,26 @@ func (c Config) Validate() error {
 		}
 	}
 
-	seenPeers := make(map[string]struct{}, len(c.Peers))
+	seenPeers := make(map[int64]struct{}, len(c.Peers))
 	for _, peer := range c.Peers {
-		if strings.TrimSpace(peer.NodeID) == "" {
+		if peer.NodeID <= 0 {
 			return fmt.Errorf("peer node id cannot be empty")
 		}
 		if strings.TrimSpace(peer.URL) == "" {
 			return fmt.Errorf("peer url cannot be empty")
 		}
 		if peer.NodeID == c.NodeID {
-			return fmt.Errorf("peer node id %q cannot match local node id", peer.NodeID)
+			return fmt.Errorf("peer node id %d cannot match local node id", peer.NodeID)
 		}
 		if _, ok := seenPeers[peer.NodeID]; ok {
-			return fmt.Errorf("duplicate peer node id %q", peer.NodeID)
+			return fmt.Errorf("duplicate peer node id %d", peer.NodeID)
+		}
+		peerSlot, err := clock.NodeSlotFromID(peer.NodeID)
+		if err != nil {
+			return fmt.Errorf("peer node id %d is invalid: %w", peer.NodeID, err)
+		}
+		if peerSlot == c.NodeSlot {
+			return fmt.Errorf("peer node id %d uses local node slot %d", peer.NodeID, c.NodeSlot)
 		}
 		seenPeers[peer.NodeID] = struct{}{}
 	}

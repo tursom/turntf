@@ -3,14 +3,14 @@ package app
 import "time"
 
 type ClusterStatus struct {
-	NodeID            string
+	NodeID            int64
 	MessageWindowSize int
 	WriteGateReady    bool
 	Peers             []ClusterPeerStatus
 }
 
 type ClusterPeerStatus struct {
-	NodeID                    string
+	NodeID                    int64
 	ConfiguredURL             string
 	Connected                 bool
 	SessionDirection          string

@@ -77,12 +77,12 @@ func TestUserAndMessageHTTPAPI(t *testing.T) {
 	}
 	var createdMessage struct {
 		UserID   int64             `json:"user_id"`
-		NodeID   string            `json:"node_id"`
+		NodeID   int64             `json:"node_id"`
 		Seq      int64             `json:"seq"`
 		Metadata map[string]string `json:"metadata"`
 	}
 	mustJSON(t, doJSON(t, handler, http.MethodPost, "/messages", createMessageBody, http.StatusCreated), &createdMessage)
-	if createdMessage.UserID != createdUser.ID || createdMessage.NodeID != "node-a" || createdMessage.Seq != 1 {
+	if createdMessage.UserID != createdUser.ID || createdMessage.NodeID != testNodeID(1) || createdMessage.Seq != 1 {
 		t.Fatalf("unexpected created message: %+v", createdMessage)
 	}
 
@@ -90,7 +90,7 @@ func TestUserAndMessageHTTPAPI(t *testing.T) {
 		Count int `json:"count"`
 		Items []struct {
 			UserID int64  `json:"user_id"`
-			NodeID string `json:"node_id"`
+			NodeID int64  `json:"node_id"`
 			Seq    int64  `json:"seq"`
 			Body   string `json:"body"`
 		} `json:"items"`
@@ -98,7 +98,7 @@ func TestUserAndMessageHTTPAPI(t *testing.T) {
 	mustJSON(t, doJSON(t, handler, http.MethodGet, "/users/"+strconv.FormatInt(createdUser.ID, 10)+"/messages?limit=10", nil, http.StatusOK), &listMessages)
 	if listMessages.Count != 1 || len(listMessages.Items) != 1 ||
 		listMessages.Items[0].UserID != createdUser.ID ||
-		listMessages.Items[0].NodeID != "node-a" ||
+		listMessages.Items[0].NodeID != testNodeID(1) ||
 		listMessages.Items[0].Seq != 1 ||
 		listMessages.Items[0].Body != "package shipped" {
 		t.Fatalf("unexpected messages: %+v", listMessages)
@@ -116,20 +116,20 @@ func TestUserAndMessageHTTPAPI(t *testing.T) {
 	}
 
 	var opsStatus struct {
-		NodeID            string `json:"node_id"`
-		LastEventSequence int64  `json:"last_event_sequence"`
-		ConflictTotal     int64  `json:"conflict_total"`
+		NodeID            int64 `json:"node_id"`
+		LastEventSequence int64 `json:"last_event_sequence"`
+		ConflictTotal     int64 `json:"conflict_total"`
 		MessageTrim       struct {
 			TrimmedTotal int64 `json:"trimmed_total"`
 		} `json:"message_trim"`
 	}
 	mustJSON(t, doJSON(t, handler, http.MethodGet, "/ops/status", nil, http.StatusOK), &opsStatus)
-	if opsStatus.NodeID != "node-a" || opsStatus.LastEventSequence != 3 {
+	if opsStatus.NodeID != testNodeID(1) || opsStatus.LastEventSequence != 3 {
 		t.Fatalf("unexpected ops status: %+v", opsStatus)
 	}
 
 	metrics := doPlain(t, handler, http.MethodGet, "/metrics", nil, http.StatusOK)
-	if !strings.Contains(metrics, `notifier_event_log_last_sequence{node_id="node-a"} 3`) {
+	if !strings.Contains(metrics, `notifier_event_log_last_sequence{node_id="4096"} 3`) {
 		t.Fatalf("metrics missing last sequence: %s", metrics)
 	}
 
@@ -202,8 +202,7 @@ func TestWriteEndpointsReturn503WhenClockIsNotSynchronized(t *testing.T) {
 
 	dbPath := filepath.Join(t.TempDir(), "api-gated.db")
 	st, err := store.Open(dbPath, store.Options{
-		NodeID:   "node-a",
-		NodeSlot: 1,
+		NodeID: testNodeID(1),
 	})
 	if err != nil {
 		t.Fatalf("open store: %v", err)
@@ -275,8 +274,7 @@ func newTestHandler(t *testing.T) http.Handler {
 
 	dbPath := filepath.Join(t.TempDir(), "api.db")
 	st, err := store.Open(dbPath, store.Options{
-		NodeID:   "node-a",
-		NodeSlot: 1,
+		NodeID: testNodeID(1),
 	})
 	if err != nil {
 		t.Fatalf("open store: %v", err)

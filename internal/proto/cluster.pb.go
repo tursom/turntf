@@ -72,7 +72,7 @@ func (SnapshotPartitionKind) EnumDescriptor() ([]byte, []int) {
 
 type Envelope struct {
 	state     protoimpl.MessageState `protogen:"open.v1"`
-	NodeId    string                 `protobuf:"bytes,1,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
+	NodeId    int64                  `protobuf:"varint,1,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
 	Sequence  uint64                 `protobuf:"varint,2,opt,name=sequence,proto3" json:"sequence,omitempty"`
 	SentAtHlc string                 `protobuf:"bytes,3,opt,name=sent_at_hlc,json=sentAtHlc,proto3" json:"sent_at_hlc,omitempty"`
 	// Types that are valid to be assigned to Body:
@@ -121,11 +121,11 @@ func (*Envelope) Descriptor() ([]byte, []int) {
 	return file_proto_cluster_proto_rawDescGZIP(), []int{0}
 }
 
-func (x *Envelope) GetNodeId() string {
+func (x *Envelope) GetNodeId() int64 {
 	if x != nil {
 		return x.NodeId
 	}
-	return ""
+	return 0
 }
 
 func (x *Envelope) GetSequence() uint64 {
@@ -282,7 +282,7 @@ func (*Envelope_TimeSyncResponse) isEnvelope_Body() {}
 
 type Hello struct {
 	state             protoimpl.MessageState `protogen:"open.v1"`
-	NodeId            string                 `protobuf:"bytes,1,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
+	NodeId            int64                  `protobuf:"varint,1,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
 	AdvertiseAddr     string                 `protobuf:"bytes,2,opt,name=advertise_addr,json=advertiseAddr,proto3" json:"advertise_addr,omitempty"`
 	ProtocolVersion   string                 `protobuf:"bytes,3,opt,name=protocol_version,json=protocolVersion,proto3" json:"protocol_version,omitempty"`
 	LastSequence      uint64                 `protobuf:"varint,4,opt,name=last_sequence,json=lastSequence,proto3" json:"last_sequence,omitempty"`
@@ -322,11 +322,11 @@ func (*Hello) Descriptor() ([]byte, []int) {
 	return file_proto_cluster_proto_rawDescGZIP(), []int{1}
 }
 
-func (x *Hello) GetNodeId() string {
+func (x *Hello) GetNodeId() int64 {
 	if x != nil {
 		return x.NodeId
 	}
-	return ""
+	return 0
 }
 
 func (x *Hello) GetAdvertiseAddr() string {
@@ -366,7 +366,7 @@ func (x *Hello) GetMessageWindowSize() uint32 {
 
 type Ack struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	NodeId        string                 `protobuf:"bytes,1,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
+	NodeId        int64                  `protobuf:"varint,1,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
 	AckedSequence uint64                 `protobuf:"varint,2,opt,name=acked_sequence,json=ackedSequence,proto3" json:"acked_sequence,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -402,11 +402,11 @@ func (*Ack) Descriptor() ([]byte, []int) {
 	return file_proto_cluster_proto_rawDescGZIP(), []int{2}
 }
 
-func (x *Ack) GetNodeId() string {
+func (x *Ack) GetNodeId() int64 {
 	if x != nil {
 		return x.NodeId
 	}
-	return ""
+	return 0
 }
 
 func (x *Ack) GetAckedSequence() uint64 {
@@ -467,7 +467,7 @@ type ReplicatedEvent struct {
 	AggregateType string                 `protobuf:"bytes,3,opt,name=aggregate_type,json=aggregateType,proto3" json:"aggregate_type,omitempty"`
 	AggregateId   int64                  `protobuf:"varint,4,opt,name=aggregate_id,json=aggregateId,proto3" json:"aggregate_id,omitempty"`
 	Hlc           string                 `protobuf:"bytes,5,opt,name=hlc,proto3" json:"hlc,omitempty"`
-	OriginNodeId  string                 `protobuf:"bytes,6,opt,name=origin_node_id,json=originNodeId,proto3" json:"origin_node_id,omitempty"`
+	OriginNodeId  int64                  `protobuf:"varint,6,opt,name=origin_node_id,json=originNodeId,proto3" json:"origin_node_id,omitempty"`
 	Payload       []byte                 `protobuf:"bytes,7,opt,name=payload,proto3" json:"payload,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -538,11 +538,11 @@ func (x *ReplicatedEvent) GetHlc() string {
 	return ""
 }
 
-func (x *ReplicatedEvent) GetOriginNodeId() string {
+func (x *ReplicatedEvent) GetOriginNodeId() int64 {
 	if x != nil {
 		return x.OriginNodeId
 	}
-	return ""
+	return 0
 }
 
 func (x *ReplicatedEvent) GetPayload() []byte {
@@ -914,7 +914,7 @@ type SnapshotUserRow struct {
 	VersionProfile      string                 `protobuf:"bytes,10,opt,name=version_profile,json=versionProfile,proto3" json:"version_profile,omitempty"`
 	VersionRole         string                 `protobuf:"bytes,15,opt,name=version_role,json=versionRole,proto3" json:"version_role,omitempty"`
 	VersionDeleted      string                 `protobuf:"bytes,11,opt,name=version_deleted,json=versionDeleted,proto3" json:"version_deleted,omitempty"`
-	OriginNodeId        string                 `protobuf:"bytes,12,opt,name=origin_node_id,json=originNodeId,proto3" json:"origin_node_id,omitempty"`
+	OriginNodeId        int64                  `protobuf:"varint,12,opt,name=origin_node_id,json=originNodeId,proto3" json:"origin_node_id,omitempty"`
 	unknownFields       protoimpl.UnknownFields
 	sizeCache           protoimpl.SizeCache
 }
@@ -1047,11 +1047,11 @@ func (x *SnapshotUserRow) GetVersionDeleted() string {
 	return ""
 }
 
-func (x *SnapshotUserRow) GetOriginNodeId() string {
+func (x *SnapshotUserRow) GetOriginNodeId() int64 {
 	if x != nil {
 		return x.OriginNodeId
 	}
-	return ""
+	return 0
 }
 
 type SnapshotTombstoneRow struct {
@@ -1059,7 +1059,7 @@ type SnapshotTombstoneRow struct {
 	EntityType    string                 `protobuf:"bytes,1,opt,name=entity_type,json=entityType,proto3" json:"entity_type,omitempty"`
 	EntityId      int64                  `protobuf:"varint,2,opt,name=entity_id,json=entityId,proto3" json:"entity_id,omitempty"`
 	DeletedAtHlc  string                 `protobuf:"bytes,3,opt,name=deleted_at_hlc,json=deletedAtHlc,proto3" json:"deleted_at_hlc,omitempty"`
-	OriginNodeId  string                 `protobuf:"bytes,4,opt,name=origin_node_id,json=originNodeId,proto3" json:"origin_node_id,omitempty"`
+	OriginNodeId  int64                  `protobuf:"varint,4,opt,name=origin_node_id,json=originNodeId,proto3" json:"origin_node_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1115,17 +1115,17 @@ func (x *SnapshotTombstoneRow) GetDeletedAtHlc() string {
 	return ""
 }
 
-func (x *SnapshotTombstoneRow) GetOriginNodeId() string {
+func (x *SnapshotTombstoneRow) GetOriginNodeId() int64 {
 	if x != nil {
 		return x.OriginNodeId
 	}
-	return ""
+	return 0
 }
 
 type SnapshotMessageRow struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	UserId        int64                  `protobuf:"varint,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
-	NodeId        string                 `protobuf:"bytes,2,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
+	NodeId        int64                  `protobuf:"varint,2,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
 	Sender        string                 `protobuf:"bytes,3,opt,name=sender,proto3" json:"sender,omitempty"`
 	Body          string                 `protobuf:"bytes,4,opt,name=body,proto3" json:"body,omitempty"`
 	Metadata      string                 `protobuf:"bytes,5,opt,name=metadata,proto3" json:"metadata,omitempty"`
@@ -1172,11 +1172,11 @@ func (x *SnapshotMessageRow) GetUserId() int64 {
 	return 0
 }
 
-func (x *SnapshotMessageRow) GetNodeId() string {
+func (x *SnapshotMessageRow) GetNodeId() int64 {
 	if x != nil {
 		return x.NodeId
 	}
-	return ""
+	return 0
 }
 
 func (x *SnapshotMessageRow) GetSender() string {
@@ -1415,7 +1415,7 @@ type MessageEvent struct {
 	EventId       int64                  `protobuf:"varint,1,opt,name=event_id,json=eventId,proto3" json:"event_id,omitempty"`
 	Kind          string                 `protobuf:"bytes,2,opt,name=kind,proto3" json:"kind,omitempty"`
 	UserId        int64                  `protobuf:"varint,3,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
-	NodeId        string                 `protobuf:"bytes,4,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
+	NodeId        int64                  `protobuf:"varint,4,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
 	Hlc           string                 `protobuf:"bytes,5,opt,name=hlc,proto3" json:"hlc,omitempty"`
 	Payload       []byte                 `protobuf:"bytes,6,opt,name=payload,proto3" json:"payload,omitempty"`
 	Seq           int64                  `protobuf:"varint,7,opt,name=seq,proto3" json:"seq,omitempty"`
@@ -1474,11 +1474,11 @@ func (x *MessageEvent) GetUserId() int64 {
 	return 0
 }
 
-func (x *MessageEvent) GetNodeId() string {
+func (x *MessageEvent) GetNodeId() int64 {
 	if x != nil {
 		return x.NodeId
 	}
-	return ""
+	return 0
 }
 
 func (x *MessageEvent) GetHlc() string {
@@ -1508,7 +1508,7 @@ const file_proto_cluster_proto_rawDesc = "" +
 	"\n" +
 	"\x13proto/cluster.proto\x12\x13notifier.cluster.v1\"\xad\x05\n" +
 	"\bEnvelope\x12\x17\n" +
-	"\anode_id\x18\x01 \x01(\tR\x06nodeId\x12\x1a\n" +
+	"\anode_id\x18\x01 \x01(\x03R\x06nodeId\x12\x1a\n" +
 	"\bsequence\x18\x02 \x01(\x04R\bsequence\x12\x1e\n" +
 	"\vsent_at_hlc\x18\x03 \x01(\tR\tsentAtHlc\x122\n" +
 	"\x05hello\x18\x04 \x01(\v2\x1a.notifier.cluster.v1.HelloH\x00R\x05hello\x12,\n" +
@@ -1525,14 +1525,14 @@ const file_proto_cluster_proto_rawDesc = "" +
 	"\x04hmac\x18\f \x01(\fR\x04hmacB\x06\n" +
 	"\x04body\"\xf2\x01\n" +
 	"\x05Hello\x12\x17\n" +
-	"\anode_id\x18\x01 \x01(\tR\x06nodeId\x12%\n" +
+	"\anode_id\x18\x01 \x01(\x03R\x06nodeId\x12%\n" +
 	"\x0eadvertise_addr\x18\x02 \x01(\tR\radvertiseAddr\x12)\n" +
 	"\x10protocol_version\x18\x03 \x01(\tR\x0fprotocolVersion\x12#\n" +
 	"\rlast_sequence\x18\x04 \x01(\x04R\flastSequence\x12)\n" +
 	"\x10snapshot_version\x18\x05 \x01(\tR\x0fsnapshotVersion\x12.\n" +
 	"\x13message_window_size\x18\x06 \x01(\rR\x11messageWindowSize\"E\n" +
 	"\x03Ack\x12\x17\n" +
-	"\anode_id\x18\x01 \x01(\tR\x06nodeId\x12%\n" +
+	"\anode_id\x18\x01 \x01(\x03R\x06nodeId\x12%\n" +
 	"\x0eacked_sequence\x18\x02 \x01(\x04R\rackedSequence\"J\n" +
 	"\n" +
 	"EventBatch\x12<\n" +
@@ -1543,7 +1543,7 @@ const file_proto_cluster_proto_rawDesc = "" +
 	"\x0eaggregate_type\x18\x03 \x01(\tR\raggregateType\x12!\n" +
 	"\faggregate_id\x18\x04 \x01(\x03R\vaggregateId\x12\x10\n" +
 	"\x03hlc\x18\x05 \x01(\tR\x03hlc\x12$\n" +
-	"\x0eorigin_node_id\x18\x06 \x01(\tR\foriginNodeId\x12\x18\n" +
+	"\x0eorigin_node_id\x18\x06 \x01(\x03R\foriginNodeId\x12\x18\n" +
 	"\apayload\x18\a \x01(\fR\apayload\"I\n" +
 	"\n" +
 	"PullEvents\x12%\n" +
@@ -1586,16 +1586,16 @@ const file_proto_cluster_proto_rawDesc = "" +
 	" \x01(\tR\x0eversionProfile\x12!\n" +
 	"\fversion_role\x18\x0f \x01(\tR\vversionRole\x12'\n" +
 	"\x0fversion_deleted\x18\v \x01(\tR\x0eversionDeleted\x12$\n" +
-	"\x0eorigin_node_id\x18\f \x01(\tR\foriginNodeId\"\xa0\x01\n" +
+	"\x0eorigin_node_id\x18\f \x01(\x03R\foriginNodeId\"\xa0\x01\n" +
 	"\x14SnapshotTombstoneRow\x12\x1f\n" +
 	"\ventity_type\x18\x01 \x01(\tR\n" +
 	"entityType\x12\x1b\n" +
 	"\tentity_id\x18\x02 \x01(\x03R\bentityId\x12$\n" +
 	"\x0edeleted_at_hlc\x18\x03 \x01(\tR\fdeletedAtHlc\x12$\n" +
-	"\x0eorigin_node_id\x18\x04 \x01(\tR\foriginNodeId\"\xc6\x01\n" +
+	"\x0eorigin_node_id\x18\x04 \x01(\x03R\foriginNodeId\"\xc6\x01\n" +
 	"\x12SnapshotMessageRow\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\x03R\x06userId\x12\x17\n" +
-	"\anode_id\x18\x02 \x01(\tR\x06nodeId\x12\x16\n" +
+	"\anode_id\x18\x02 \x01(\x03R\x06nodeId\x12\x16\n" +
 	"\x06sender\x18\x03 \x01(\tR\x06sender\x12\x12\n" +
 	"\x04body\x18\x04 \x01(\tR\x04body\x12\x1a\n" +
 	"\bmetadata\x18\x05 \x01(\tR\bmetadata\x12$\n" +
@@ -1621,7 +1621,7 @@ const file_proto_cluster_proto_rawDesc = "" +
 	"\bevent_id\x18\x01 \x01(\x03R\aeventId\x12\x12\n" +
 	"\x04kind\x18\x02 \x01(\tR\x04kind\x12\x17\n" +
 	"\auser_id\x18\x03 \x01(\x03R\x06userId\x12\x17\n" +
-	"\anode_id\x18\x04 \x01(\tR\x06nodeId\x12\x10\n" +
+	"\anode_id\x18\x04 \x01(\x03R\x06nodeId\x12\x10\n" +
 	"\x03hlc\x18\x05 \x01(\tR\x03hlc\x12\x18\n" +
 	"\apayload\x18\x06 \x01(\fR\apayload\x12\x10\n" +
 	"\x03seq\x18\a \x01(\x03R\x03seq*\x89\x01\n" +

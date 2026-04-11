@@ -29,7 +29,7 @@ const (
 	RoleAdmin            = "admin"
 	RoleUser             = "user"
 	BootstrapAdminUserID = int64(1)
-	defaultSchemaVersion = "2"
+	defaultSchemaVersion = "3"
 )
 
 type Options struct {
@@ -168,6 +168,14 @@ func (s *Store) Clock() *clock.Clock {
 	return s.clock
 }
 
+func (s *Store) NodeID() string {
+	return s.nodeID
+}
+
+func (s *Store) MessageWindowSize() int {
+	return normalizeMessageWindowSize(s.messageWindowSize)
+}
+
 func (s *Store) Close() error {
 	return s.db.Close()
 }
@@ -257,6 +265,12 @@ CREATE TABLE IF NOT EXISTS tombstones (
     expires_at_hlc TEXT,
     origin_node_id TEXT NOT NULL,
     PRIMARY KEY(entity_type, entity_id)
+);
+
+CREATE TABLE IF NOT EXISTS message_trim_stats (
+    scope TEXT PRIMARY KEY,
+    trimmed_total INTEGER NOT NULL DEFAULT 0,
+    last_trimmed_at_hlc TEXT
 );
 `
 	if _, err := s.db.ExecContext(ctx, schema); err != nil {
@@ -1215,7 +1229,7 @@ func boolToInt(value bool) int {
 
 func (s *Store) trimMessagesForUserTx(ctx context.Context, tx *sql.Tx, userID int64) error {
 	windowSize := normalizeMessageWindowSize(s.messageWindowSize)
-	if _, err := tx.ExecContext(ctx, `
+	result, err := tx.ExecContext(ctx, `
 DELETE FROM messages
 WHERE user_id = ?
   AND (node_id, seq) IN (
@@ -1225,8 +1239,35 @@ WHERE user_id = ?
     ORDER BY created_at_hlc DESC, node_id ASC, seq DESC
     LIMIT -1 OFFSET ?
   )
-`, userID, userID, windowSize); err != nil {
+`, userID, userID, windowSize)
+	if err != nil {
 		return fmt.Errorf("trim messages for user %d: %w", userID, err)
+	}
+	trimmed, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("count trimmed messages for user %d: %w", userID, err)
+	}
+	if trimmed > 0 {
+		if err := s.recordMessageTrimTx(ctx, tx, trimmed); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Store) recordMessageTrimTx(ctx context.Context, tx *sql.Tx, trimmed int64) error {
+	if trimmed <= 0 {
+		return nil
+	}
+	now := s.clock.Now().String()
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO message_trim_stats(scope, trimmed_total, last_trimmed_at_hlc)
+VALUES('global', ?, ?)
+ON CONFLICT(scope) DO UPDATE SET
+    trimmed_total = message_trim_stats.trimmed_total + excluded.trimmed_total,
+    last_trimmed_at_hlc = excluded.last_trimmed_at_hlc
+`, trimmed, now); err != nil {
+		return fmt.Errorf("record message trim stats: %w", err)
 	}
 	return nil
 }

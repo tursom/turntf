@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 
 	"notifier/internal/app"
@@ -112,6 +113,24 @@ func TestUserAndMessageHTTPAPI(t *testing.T) {
 	mustJSON(t, doJSON(t, handler, http.MethodGet, "/events?after=0&limit=10", nil, http.StatusOK), &listEvents)
 	if listEvents.Count != 3 {
 		t.Fatalf("expected 3 events, got %+v", listEvents)
+	}
+
+	var opsStatus struct {
+		NodeID            string `json:"node_id"`
+		LastEventSequence int64  `json:"last_event_sequence"`
+		ConflictTotal     int64  `json:"conflict_total"`
+		MessageTrim       struct {
+			TrimmedTotal int64 `json:"trimmed_total"`
+		} `json:"message_trim"`
+	}
+	mustJSON(t, doJSON(t, handler, http.MethodGet, "/ops/status", nil, http.StatusOK), &opsStatus)
+	if opsStatus.NodeID != "node-a" || opsStatus.LastEventSequence != 3 {
+		t.Fatalf("unexpected ops status: %+v", opsStatus)
+	}
+
+	metrics := doPlain(t, handler, http.MethodGet, "/metrics", nil, http.StatusOK)
+	if !strings.Contains(metrics, `notifier_event_log_last_sequence{node_id="node-a"} 3`) {
+		t.Fatalf("metrics missing last sequence: %s", metrics)
 	}
 
 	body := doJSON(t, handler, http.MethodDelete, "/users/"+strconv.FormatInt(createdUser.ID, 10), nil, http.StatusOK)
@@ -305,4 +324,23 @@ func mustJSON(t *testing.T, data []byte, dst any) {
 	if err := json.Unmarshal(data, dst); err != nil {
 		t.Fatalf("unmarshal json: %v body=%s", err, string(data))
 	}
+}
+
+func doPlain(t *testing.T, handler http.Handler, method, path string, headers map[string]string, wantStatus int) string {
+	t.Helper()
+
+	req := httptest.NewRequest(method, path, nil)
+	for key, value := range headers {
+		req.Header.Set(key, value)
+	}
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != wantStatus {
+		t.Fatalf("unexpected status for %s %s: got=%d want=%d body=%s", method, path, rr.Code, wantStatus, rr.Body.String())
+	}
+	if wantStatus == http.StatusOK && !strings.HasPrefix(rr.Header().Get("Content-Type"), "text/plain") {
+		t.Fatalf("unexpected content type: %s", rr.Header().Get("Content-Type"))
+	}
+	return rr.Body.String()
 }

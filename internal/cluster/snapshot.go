@@ -43,9 +43,10 @@ func (m *Manager) sendSnapshotDigest(sess *session) {
 
 	envelope, err := m.buildSnapshotDigestEnvelope()
 	if err != nil {
-		log.Printf("warn: build snapshot digest for peer %s: %v", sess.peerID, err)
+		log.Printf("level=warn component=cluster peer=%s event=build_snapshot_digest_failed err=%q", sess.peerID, err)
 		return
 	}
+	m.markSnapshotDigestSent(sess.peerID)
 	sess.enqueue(envelope)
 }
 
@@ -59,6 +60,7 @@ func (m *Manager) handleSnapshotDigest(sess *session, envelope *internalproto.En
 	if m.store == nil {
 		return nil
 	}
+	m.markSnapshotDigestReceived(sess.peerID)
 
 	digest := envelope.GetSnapshotDigest()
 	if digest == nil {
@@ -118,6 +120,7 @@ func (m *Manager) handleSnapshotChunk(sess *session, envelope *internalproto.Env
 	if m.store == nil {
 		return nil
 	}
+	m.markSnapshotChunkReceived(sess.peerID)
 
 	chunk := envelope.GetSnapshotChunk()
 	if chunk == nil {
@@ -136,6 +139,7 @@ func (m *Manager) handleSnapshotChunk(sess *session, envelope *internalproto.Env
 			return err
 		}
 		response.SnapshotVersion = internalproto.SnapshotVersion
+		m.markSnapshotChunkSent(sess.peerID)
 		sess.enqueue(&internalproto.Envelope{
 			NodeId: m.cfg.NodeID,
 			Body: &internalproto.Envelope_SnapshotChunk{
@@ -163,6 +167,7 @@ func (m *Manager) requestSnapshotPartition(sess *session, partition *internalpro
 	if !sess.beginSnapshotRequest(partition.Partition) {
 		return
 	}
+	m.markSnapshotChunkSent(sess.peerID)
 	sess.enqueue(&internalproto.Envelope{
 		NodeId: m.cfg.NodeID,
 		Body: &internalproto.Envelope_SnapshotChunk{

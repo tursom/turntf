@@ -306,6 +306,14 @@ func TestLocalMessagesTrimToConfiguredWindow(t *testing.T) {
 	if len(events) != 4 {
 		t.Fatalf("expected 4 events retained in log, got %d", len(events))
 	}
+
+	stats, err := st.OperationsStats(ctx, nil)
+	if err != nil {
+		t.Fatalf("operations stats: %v", err)
+	}
+	if stats.MessageTrim.TrimmedTotal != 1 || stats.MessageTrim.LastTrimmedAt == nil {
+		t.Fatalf("unexpected message trim stats: %+v", stats.MessageTrim)
+	}
 }
 
 func TestDuplicateActiveUsernameAllowed(t *testing.T) {
@@ -415,6 +423,74 @@ FROM peer_cursors
 	}
 	if cursor.AppliedSequence != 7 {
 		t.Fatalf("unexpected applied sequence: got=%d want=7", cursor.AppliedSequence)
+	}
+}
+
+func TestOperationsStatsIncludesPeerCursorsConflictsAndTrimStats(t *testing.T) {
+	t.Parallel()
+
+	st := openNamedTestStoreWithWindow(t, "node-b", 2, 1)
+	defer st.Close()
+
+	ctx := context.Background()
+	user, _, err := st.CreateUser(ctx, CreateUserParams{
+		Username:     "ops-stats-user",
+		PasswordHash: "hash-1",
+	})
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	for i := 1; i <= 2; i++ {
+		if _, _, err := st.CreateMessage(ctx, CreateMessageParams{
+			UserID: user.ID,
+			Sender: "orders",
+			Body:   "message-" + strconv.Itoa(i),
+		}); err != nil {
+			t.Fatalf("create message %d: %v", i, err)
+		}
+	}
+
+	if err := st.RecordPeerAck(ctx, "node-a", 1); err != nil {
+		t.Fatalf("record peer ack: %v", err)
+	}
+	if err := st.RecordPeerApplied(ctx, "node-a", 2); err != nil {
+		t.Fatalf("record peer applied: %v", err)
+	}
+	now := st.clock.Now().String()
+	if _, err := st.db.ExecContext(ctx, `
+INSERT INTO user_conflicts(loser_user_id, winner_user_id, username, detected_at_hlc)
+VALUES(?, ?, ?, ?)
+`, int64(10), int64(11), "conflicted", now); err != nil {
+		t.Fatalf("insert user conflict: %v", err)
+	}
+
+	stats, err := st.OperationsStats(ctx, []string{"node-a", "node-c"})
+	if err != nil {
+		t.Fatalf("operations stats: %v", err)
+	}
+	if stats.NodeID != "node-b" || stats.MessageWindowSize != 1 || stats.LastEventSequence != 3 {
+		t.Fatalf("unexpected top-level stats: %+v", stats)
+	}
+	if stats.UserConflictsTotal != 1 {
+		t.Fatalf("unexpected conflict count: %+v", stats)
+	}
+	if stats.MessageTrim.TrimmedTotal != 1 || stats.MessageTrim.LastTrimmedAt == nil {
+		t.Fatalf("unexpected trim stats: %+v", stats.MessageTrim)
+	}
+	if len(stats.PeerCursors) != 2 {
+		t.Fatalf("expected configured peer stats, got %+v", stats.PeerCursors)
+	}
+	if stats.PeerCursors[0].PeerNodeID != "node-a" ||
+		stats.PeerCursors[0].AckedSequence != 1 ||
+		stats.PeerCursors[0].AppliedSequence != 2 ||
+		stats.PeerCursors[0].UnconfirmedEvents != 2 ||
+		stats.PeerCursors[0].UpdatedAt == nil {
+		t.Fatalf("unexpected node-a cursor stats: %+v", stats.PeerCursors[0])
+	}
+	if stats.PeerCursors[1].PeerNodeID != "node-c" ||
+		stats.PeerCursors[1].UnconfirmedEvents != 3 ||
+		stats.PeerCursors[1].UpdatedAt != nil {
+		t.Fatalf("unexpected node-c cursor stats: %+v", stats.PeerCursors[1])
 	}
 }
 

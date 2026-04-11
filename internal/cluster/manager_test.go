@@ -747,6 +747,76 @@ func TestHandleAckPersistsPeerCursor(t *testing.T) {
 	}
 }
 
+func TestStatusReportsPeerReplicationAndWriteGate(t *testing.T) {
+	t.Parallel()
+
+	st := newReplicationTestStore(t, "node-b", 2)
+	mgr := newReplicationTestManager(t, st)
+
+	status, err := mgr.Status(context.Background())
+	if err != nil {
+		t.Fatalf("status before session: %v", err)
+	}
+	if status.WriteGateReady {
+		t.Fatalf("expected write gate to be closed before trusted clock sync")
+	}
+	if len(status.Peers) != 1 || status.Peers[0].NodeID != "node-a" || status.Peers[0].Connected {
+		t.Fatalf("unexpected disconnected peer status: %+v", status)
+	}
+
+	sess := readySnapshotTestSession(mgr, "node-a", store.DefaultMessageWindowSize)
+	sess.outbound = true
+	sess.noteRemoteLastSequence(9)
+	if !sess.beginPendingPull(3) {
+		t.Fatalf("expected pending pull to start")
+	}
+	if !sess.beginSnapshotRequest(store.SnapshotUsersPartition) {
+		t.Fatalf("expected snapshot request to start")
+	}
+	now := time.Now().UTC()
+	mgr.mu.Lock()
+	peer := mgr.peers["node-a"]
+	peer.active = sess
+	peer.trustedSession = sess
+	peer.lastAck = 4
+	peer.clockOffsetMs = 12
+	peer.lastClockSync = now
+	peer.snapshotDigestsSent = 1
+	peer.snapshotDigestsReceived = 2
+	peer.snapshotChunksSent = 3
+	peer.snapshotChunksReceived = 4
+	peer.lastSnapshotDigestAt = now
+	peer.lastSnapshotChunkAt = now
+	mgr.mu.Unlock()
+
+	status, err = mgr.Status(context.Background())
+	if err != nil {
+		t.Fatalf("status after session: %v", err)
+	}
+	if !status.WriteGateReady {
+		t.Fatalf("expected write gate to be ready after trusted clock sync")
+	}
+	peerStatus := status.Peers[0]
+	if !peerStatus.Connected ||
+		peerStatus.SessionDirection != "outbound" ||
+		peerStatus.LastAck != 4 ||
+		peerStatus.RemoteLastSequence != 9 ||
+		!peerStatus.PendingCatchup ||
+		peerStatus.PendingSnapshotPartitions != 1 ||
+		peerStatus.RemoteSnapshotVersion != internalproto.SnapshotVersion ||
+		peerStatus.RemoteMessageWindowSize != store.DefaultMessageWindowSize ||
+		peerStatus.ClockOffsetMs != 12 ||
+		peerStatus.LastClockSync == nil ||
+		peerStatus.SnapshotDigestsSentTotal != 1 ||
+		peerStatus.SnapshotDigestsRecvTotal != 2 ||
+		peerStatus.SnapshotChunksSentTotal != 3 ||
+		peerStatus.SnapshotChunksRecvTotal != 4 ||
+		peerStatus.LastSnapshotDigestAt == nil ||
+		peerStatus.LastSnapshotChunkAt == nil {
+		t.Fatalf("unexpected connected peer status: %+v", peerStatus)
+	}
+}
+
 func TestHandleEventBatchRejectsFutureTimestampWhenSkewCheckEnabled(t *testing.T) {
 	t.Parallel()
 

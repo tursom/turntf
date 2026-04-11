@@ -96,6 +96,8 @@ func (h *HTTP) routes() {
 	h.mux.HandleFunc("GET /users/{id}/messages", h.handleListMessagesByUser)
 	h.mux.HandleFunc("POST /messages", h.handleCreateMessage)
 	h.mux.HandleFunc("GET /events", h.handleListEvents)
+	h.mux.HandleFunc("GET /ops/status", h.handleOpsStatus)
+	h.mux.HandleFunc("GET /metrics", h.handleMetrics)
 }
 
 func (h *HTTP) handleHealth(w http.ResponseWriter, _ *http.Request) {
@@ -382,6 +384,34 @@ func (h *HTTP) handleListEvents(w http.ResponseWriter, r *http.Request) {
 		"items": items,
 		"count": len(items),
 	})
+}
+
+func (h *HTTP) handleOpsStatus(w http.ResponseWriter, r *http.Request) {
+	if _, ok := h.requireAdmin(w, r); !ok {
+		return
+	}
+
+	status, err := h.service.OperationsStatus(r.Context())
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, status)
+}
+
+func (h *HTTP) handleMetrics(w http.ResponseWriter, r *http.Request) {
+	if _, ok := h.requireAdmin(w, r); !ok {
+		return
+	}
+
+	metrics, err := h.service.Metrics(r.Context())
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; version=0.0.4")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(metrics))
 }
 
 type userResponse struct {

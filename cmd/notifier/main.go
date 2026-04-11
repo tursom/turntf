@@ -109,11 +109,11 @@ func runServe(args []string, stdout io.Writer) error {
 	}
 
 	errCh := make(chan error, 1)
-	log.Printf("loaded config from %s", cfg.ConfigPath)
-	log.Printf("serving http api on %s", cfg.APIAddr)
-	log.Printf("sqlite database: %s", cfg.DBPath)
+	log.Printf("level=info component=notifier event=config_loaded path=%q", cfg.ConfigPath)
+	log.Printf("level=info component=notifier event=http_api_listening addr=%q", cfg.APIAddr)
+	log.Printf("level=info component=notifier event=sqlite_database path=%q", cfg.DBPath)
 	if manager != nil {
-		log.Printf("serving cluster websocket on %s%s via api listener", cfg.APIAddr, cfg.Cluster.AdvertisePath)
+		log.Printf("level=info component=cluster event=websocket_listening addr=%q path=%q", cfg.APIAddr, cfg.Cluster.AdvertisePath)
 	}
 	go func() {
 		errCh <- apiServer.ListenAndServe()

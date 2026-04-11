@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -38,6 +39,20 @@ func TestAuthenticatedHTTPLoginAndAuthorization(t *testing.T) {
 	aliceID := createUserAs(t, testAPI.handler, adminToken, "alice", "alice-password", store.RoleUser)
 
 	aliceToken := loginToken(t, testAPI.handler, aliceID, "alice-password")
+
+	doJSONWithHeaders(t, testAPI.handler, http.MethodGet, "/ops/status", nil, map[string]string{
+		"Authorization": "Bearer " + adminToken,
+	}, http.StatusOK)
+	doJSONWithHeaders(t, testAPI.handler, http.MethodGet, "/ops/status", nil, map[string]string{
+		"Authorization": "Bearer " + aliceToken,
+	}, http.StatusForbidden)
+	doJSONWithHeaders(t, testAPI.handler, http.MethodGet, "/metrics", nil, nil, http.StatusUnauthorized)
+	metrics := doPlain(t, testAPI.handler, http.MethodGet, "/metrics", map[string]string{
+		"Authorization": "Bearer " + adminToken,
+	}, http.StatusOK)
+	if !strings.Contains(metrics, "notifier_write_gate_ready") {
+		t.Fatalf("metrics missing write gate gauge: %s", metrics)
+	}
 
 	doJSONWithHeaders(t, testAPI.handler, http.MethodGet, "/users/"+strconv.FormatInt(aliceID, 10), nil, map[string]string{
 		"Authorization": "Bearer " + aliceToken,

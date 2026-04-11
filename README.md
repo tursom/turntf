@@ -8,7 +8,7 @@
 - 用户数据最终完全一致
 - 消息数据按每节点配置的每用户最近 N 条最终一致；当各节点 N 相同，窗口内容也一致
 
-当前仓库已经完成实施计划的前 8 步：本地存储内核、单节点 HTTP/JSON API、WebSocket + Protobuf 的最小集群同步链路、断线后的事件日志补发、基于 `user_id` 的用户多主冲突收敛、消息窗口扩散与按节点 N 收敛、反熵同步与快照修复，以及认证、保底管理员与安全控制。
+当前仓库已经完成实施计划的前 10 步：本地存储内核、单节点 HTTP/JSON API、WebSocket + Protobuf 的最小集群同步链路、断线后的事件日志补发、基于 `user_id` 的用户多主冲突收敛、消息窗口扩散与按节点 N 收敛、反熵同步与快照修复、认证与安全控制、核心一致性测试，以及最小运维观测能力。
 
 ## 技术栈
 
@@ -25,6 +25,7 @@
 .
 ├── cmd/notifier/main.go            # 当前 CLI 入口
 ├── docs/distributed-system-plan.md # 分布式实施计划
+├── docs/operations.md              # 运维与上线手册
 ├── internal/api                    # 应用服务层
 ├── internal/auth                   # token 与鉴权
 ├── internal/clock                  # HLC 和全局 ID
@@ -151,7 +152,7 @@ url = "ws://127.0.0.1:9081/internal/cluster/ws"
 - `[[cluster.peers]]`：静态 peer 列表，可重复出现多个条目，但 `node_id` 不能和本节点相同
 - `cluster.peers.node_id`：远端节点的稳定字符串身份
 - `cluster.peers.url`：当前节点主动拨号到远端时使用的完整 WebSocket URL，例如 `ws://127.0.0.1:9081/internal/cluster/ws`
-- 当前第 7 步不支持和第 6 步旧节点混跑；升级后需整集群使用新协议版本和快照版本
+- 当前协议不支持旧快照版本节点混跑；升级后需整集群使用新协议版本和快照版本
 
 当前已提供：
 
@@ -163,13 +164,15 @@ url = "ws://127.0.0.1:9081/internal/cluster/ws"
 - `POST /messages`
 - `GET /users/{id}/messages?limit=N`
 - `GET /events?after=0&limit=100`
+- `GET /ops/status`
+- `GET /metrics`
 - `GET /healthz`
 - `GET /internal/cluster/ws` 作为节点间 WebSocket 同步端点，仅在启用集群模式时挂载到 API 监听器
 
 当前认证与授权边界：
 
 - `GET /healthz` 和 `POST /auth/login` 公开
-- `POST /users`、`PATCH /users/{id}`、`DELETE /users/{id}`、`GET /events` 需要管理员或保底超级管理员
+- `POST /users`、`PATCH /users/{id}`、`DELETE /users/{id}`、`GET /events`、`GET /ops/status`、`GET /metrics` 需要管理员或保底超级管理员
 - `GET /users/{id}`、`GET /users/{id}/messages` 允许本人或管理员访问
 - `POST /messages` 需要登录；普通用户只能给自己的 `user_id` 写消息，管理员可给任意用户写消息
 - 登录请求固定使用 `user_id + password`
@@ -194,7 +197,10 @@ url = "ws://127.0.0.1:9081/internal/cluster/ws"
 - 当集群所有节点使用相同的 `message_window_size` 时，同一用户的最近 N 条消息会收敛到相同结果
 - 任意节点签发的登录 token 都可以在其他节点使用，只要它们共享同一 `auth.token_secret`
 - 所有集群 `Envelope` 在收发两端都使用 `cluster.secret` 做 HMAC 鉴权
+- `/ops/status` 提供管理员可访问的本节点运维快照，包括 peer 状态、未确认事件、反熵进度、冲突数和消息裁剪统计
+- `/metrics` 提供无额外依赖的 Prometheus 文本指标，指标名使用 `notifier_*` 前缀
+- 服务日志使用标准库输出可解析的 `key=value` 结构化行
 
-## 下一步
+## 运维与上线
 
-- 第 9 步：测试体系与故障演练
+运维接口、指标说明、部署建议、备份策略和节点恢复流程见 [docs/operations.md](/root/dev/sys/turntf/docs/operations.md)。

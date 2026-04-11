@@ -69,6 +69,13 @@ type Event struct {
 	Payload      string          `json:"payload"`
 }
 
+type PeerCursor struct {
+	PeerNodeID      string          `json:"peer_node_id"`
+	AckedSequence   int64           `json:"acked_sequence"`
+	AppliedSequence int64           `json:"applied_sequence"`
+	UpdatedAt       clock.Timestamp `json:"updated_at"`
+}
+
 type CreateUserParams struct {
 	Username     string
 	PasswordHash string
@@ -176,6 +183,7 @@ CREATE TABLE IF NOT EXISTS event_log (
 CREATE TABLE IF NOT EXISTS peer_cursors (
     peer_node_id TEXT PRIMARY KEY,
     acked_sequence INTEGER NOT NULL DEFAULT 0,
+    applied_sequence INTEGER NOT NULL DEFAULT 0,
     updated_at_hlc TEXT NOT NULL
 );
 

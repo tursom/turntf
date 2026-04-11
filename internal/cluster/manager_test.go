@@ -8,14 +8,13 @@ import (
 	"net"
 	"net/http"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
 	"notifier/internal/api"
 	internalproto "notifier/internal/proto"
 	"notifier/internal/store"
-
-	"google.golang.org/protobuf/proto"
 )
 
 func TestActivateSessionPrefersExpectedDirection(t *testing.T) {
@@ -150,24 +149,20 @@ func TestHandleEventBatchSendsAckAfterSuccessfulApply(t *testing.T) {
 		t.Fatalf("create source user: %v", err)
 	}
 
-	payload, err := proto.Marshal(&internalproto.EventBatch{
-		Events: []*internalproto.ReplicatedEvent{store.ToReplicatedEvent(event)},
-	})
-	if err != nil {
-		t.Fatalf("marshal event batch: %v", err)
-	}
-
 	sess := &session{
 		manager: mgr,
 		peerID:  "node-a",
 		send:    make(chan *internalproto.Envelope, 1),
 	}
 	envelope := &internalproto.Envelope{
-		NodeId:      "node-a",
-		Sequence:    uint64(event.Sequence),
-		SentAtHlc:   event.HLC.String(),
-		MessageType: string(internalproto.MessageTypeEventBatch),
-		Payload:     payload,
+		NodeId:    "node-a",
+		Sequence:  uint64(event.Sequence),
+		SentAtHlc: event.HLC.String(),
+		Body: &internalproto.Envelope_EventBatch{
+			EventBatch: &internalproto.EventBatch{
+				Events: []*internalproto.ReplicatedEvent{store.ToReplicatedEvent(event)},
+			},
+		},
 	}
 
 	if err := mgr.handleEventBatch(sess, envelope); err != nil {
@@ -182,18 +177,22 @@ func TestHandleEventBatchSendsAckAfterSuccessfulApply(t *testing.T) {
 		t.Fatalf("unexpected replicated user: %+v", replicatedUser)
 	}
 
+	cursor, err := targetStore.GetPeerCursor(context.Background(), "node-a")
+	if err != nil {
+		t.Fatalf("get peer cursor: %v", err)
+	}
+	if cursor.AppliedSequence != int64(event.Sequence) {
+		t.Fatalf("unexpected applied sequence: got=%d want=%d", cursor.AppliedSequence, event.Sequence)
+	}
+
 	select {
 	case ackEnvelope := <-sess.send:
 		if ackEnvelope.NodeId != "node-b" {
 			t.Fatalf("unexpected ack envelope node id: %s", ackEnvelope.NodeId)
 		}
-		if ackEnvelope.MessageType != string(internalproto.MessageTypeAck) {
-			t.Fatalf("unexpected ack envelope type: %s", ackEnvelope.MessageType)
-		}
-
-		var ack internalproto.Ack
-		if err := proto.Unmarshal(ackEnvelope.Payload, &ack); err != nil {
-			t.Fatalf("unmarshal ack: %v", err)
+		ack := ackEnvelope.GetAck()
+		if ack == nil {
+			t.Fatalf("expected ack envelope body")
 		}
 		if ack.NodeId != "node-b" {
 			t.Fatalf("unexpected ack node id: %s", ack.NodeId)
@@ -212,24 +211,20 @@ func TestHandleEventBatchDoesNotAckFailedApply(t *testing.T) {
 	targetStore := newReplicationTestStore(t, "node-b", 2)
 	mgr := newReplicationTestManager(t, targetStore)
 
-	payload, err := proto.Marshal(&internalproto.EventBatch{
-		Events: []*internalproto.ReplicatedEvent{nil},
-	})
-	if err != nil {
-		t.Fatalf("marshal event batch: %v", err)
-	}
-
 	sess := &session{
 		manager: mgr,
 		peerID:  "node-a",
 		send:    make(chan *internalproto.Envelope, 1),
 	}
 	envelope := &internalproto.Envelope{
-		NodeId:      "node-a",
-		Sequence:    42,
-		SentAtHlc:   "2026-01-01T00:00:00.000000000Z/2/1",
-		MessageType: string(internalproto.MessageTypeEventBatch),
-		Payload:     payload,
+		NodeId:    "node-a",
+		Sequence:  42,
+		SentAtHlc: "2026-01-01T00:00:00.000000000Z/2/1",
+		Body: &internalproto.Envelope_EventBatch{
+			EventBatch: &internalproto.EventBatch{
+				Events: []*internalproto.ReplicatedEvent{nil},
+			},
+		},
 	}
 
 	if err := mgr.handleEventBatch(sess, envelope); err == nil {
@@ -240,6 +235,164 @@ func TestHandleEventBatchDoesNotAckFailedApply(t *testing.T) {
 	case ackEnvelope := <-sess.send:
 		t.Fatalf("did not expect ack after failed apply: %+v", ackEnvelope)
 	default:
+	}
+
+	cursor, err := targetStore.GetPeerCursor(context.Background(), "node-a")
+	if err != nil {
+		t.Fatalf("get peer cursor: %v", err)
+	}
+	if cursor.AppliedSequence != 0 {
+		t.Fatalf("expected failed apply to keep applied sequence at 0, got %d", cursor.AppliedSequence)
+	}
+}
+
+func TestHandleHelloEnqueuesPullEventsWhenBehind(t *testing.T) {
+	t.Parallel()
+
+	targetStore := newReplicationTestStore(t, "node-b", 2)
+	if err := targetStore.RecordPeerApplied(context.Background(), "node-a", 2); err != nil {
+		t.Fatalf("record peer applied: %v", err)
+	}
+	mgr := newReplicationTestManager(t, targetStore)
+
+	sess := &session{
+		manager: mgr,
+		send:    make(chan *internalproto.Envelope, 1),
+	}
+	hello := &internalproto.Hello{
+		NodeId:          "node-a",
+		AdvertiseAddr:   "ws://127.0.0.1:9080/internal/cluster/ws",
+		ProtocolVersion: internalproto.ProtocolVersion,
+		LastSequence:    4,
+	}
+
+	if err := mgr.handleHello(sess, mustHelloEnvelope(t, "node-a", hello)); err != nil {
+		t.Fatalf("handle hello: %v", err)
+	}
+
+	select {
+	case envelope := <-sess.send:
+		pull := envelope.GetPullEvents()
+		if pull == nil {
+			t.Fatalf("expected pull events body")
+		}
+		if pull.AfterSequence != 2 {
+			t.Fatalf("unexpected pull after sequence: got=%d want=2", pull.AfterSequence)
+		}
+		if pull.Limit != pullBatchSize {
+			t.Fatalf("unexpected pull limit: got=%d want=%d", pull.Limit, pullBatchSize)
+		}
+	default:
+		t.Fatalf("expected catch-up pull request")
+	}
+}
+
+func TestHandlePullEventsReturnsRequestedRange(t *testing.T) {
+	t.Parallel()
+
+	sourceStore := newReplicationTestStore(t, "node-b", 2)
+	mgr := newReplicationTestManager(t, sourceStore)
+
+	ctx := context.Background()
+	user, _, err := sourceStore.CreateUser(ctx, store.CreateUserParams{
+		Username:     "alice",
+		PasswordHash: "hash-1",
+	})
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	if _, _, err := sourceStore.CreateMessage(ctx, store.CreateMessageParams{
+		UserID: user.ID,
+		Sender: "orders",
+		Body:   "first",
+	}); err != nil {
+		t.Fatalf("create first message: %v", err)
+	}
+	if _, _, err := sourceStore.CreateMessage(ctx, store.CreateMessageParams{
+		UserID: user.ID,
+		Sender: "orders",
+		Body:   "second",
+	}); err != nil {
+		t.Fatalf("create second message: %v", err)
+	}
+
+	expected, err := sourceStore.ListEvents(ctx, 1, 2)
+	if err != nil {
+		t.Fatalf("list expected events: %v", err)
+	}
+
+	sess := &session{
+		manager: mgr,
+		peerID:  "node-a",
+		send:    make(chan *internalproto.Envelope, 1),
+	}
+	envelope := &internalproto.Envelope{
+		NodeId: "node-a",
+		Body: &internalproto.Envelope_PullEvents{
+			PullEvents: &internalproto.PullEvents{
+				AfterSequence: 1,
+				Limit:         2,
+			},
+		},
+	}
+
+	if err := mgr.handlePullEvents(sess, envelope); err != nil {
+		t.Fatalf("handle pull events: %v", err)
+	}
+
+	select {
+	case batchEnvelope := <-sess.send:
+		batch := batchEnvelope.GetEventBatch()
+		if batch == nil {
+			t.Fatalf("expected event batch body")
+		}
+		if batchEnvelope.Sequence != uint64(expected[len(expected)-1].Sequence) {
+			t.Fatalf("unexpected batch sequence: got=%d want=%d", batchEnvelope.Sequence, expected[len(expected)-1].Sequence)
+		}
+		if len(batch.Events) != len(expected) {
+			t.Fatalf("unexpected event count: got=%d want=%d", len(batch.Events), len(expected))
+		}
+		for i, event := range batch.Events {
+			if event.EventId != expected[i].EventID {
+				t.Fatalf("unexpected event at index %d: got=%d want=%d", i, event.EventId, expected[i].EventID)
+			}
+		}
+	default:
+		t.Fatalf("expected event batch response")
+	}
+}
+
+func TestHandleAckPersistsPeerCursor(t *testing.T) {
+	t.Parallel()
+
+	targetStore := newReplicationTestStore(t, "node-b", 2)
+	mgr := newReplicationTestManager(t, targetStore)
+
+	sess := &session{
+		manager: mgr,
+		peerID:  "node-a",
+		send:    make(chan *internalproto.Envelope, 1),
+	}
+	envelope := &internalproto.Envelope{
+		NodeId: "node-a",
+		Body: &internalproto.Envelope_Ack{
+			Ack: &internalproto.Ack{
+				NodeId:        "node-a",
+				AckedSequence: 7,
+			},
+		},
+	}
+
+	if err := mgr.handleAck(sess, envelope); err != nil {
+		t.Fatalf("handle ack: %v", err)
+	}
+
+	cursor, err := targetStore.GetPeerCursor(context.Background(), "node-a")
+	if err != nil {
+		t.Fatalf("get peer cursor: %v", err)
+	}
+	if cursor.AckedSequence != 7 {
+		t.Fatalf("unexpected acked sequence: got=%d want=7", cursor.AckedSequence)
 	}
 }
 
@@ -314,6 +467,120 @@ func TestTwoNodeReplicationOverWebSocket(t *testing.T) {
 		newSession := nodeA.currentSession("node-b")
 		return newSession != nil && newSession != oldSession
 	})
+}
+
+func TestLateJoiningNodeCatchesUpWithoutDuplicates(t *testing.T) {
+	t.Parallel()
+
+	clusterLnA := mustListen(t)
+	clusterLnB := mustListen(t)
+	apiLnA := mustListen(t)
+	apiLnB := mustListen(t)
+
+	clusterURLA := wsURL(clusterLnA)
+	clusterURLB := wsURL(clusterLnB)
+
+	nodeA := newClusterTestNode(t, "node-a", 1, clusterLnA, apiLnA, clusterURLA, []Peer{
+		{NodeID: "node-b", URL: clusterURLB},
+	})
+	nodeB := newClusterTestNode(t, "node-b", 2, clusterLnB, apiLnB, clusterURLB, []Peer{
+		{NodeID: "node-a", URL: clusterURLA},
+	})
+
+	nodeA.start(t)
+
+	createUserBody := map[string]any{
+		"username":      "alice",
+		"password_hash": "hash-1",
+	}
+	var createdUser struct {
+		ID int64 `json:"id"`
+	}
+	mustJSON(t, doJSON(t, nodeA.apiBaseURL, http.MethodPost, "/users", createUserBody, http.StatusCreated), &createdUser)
+
+	createMessageBody := map[string]any{
+		"user_id": createdUser.ID,
+		"sender":  "orders",
+		"body":    "missed while offline",
+	}
+	doJSON(t, nodeA.apiBaseURL, http.MethodPost, "/messages", createMessageBody, http.StatusCreated)
+
+	nodeB.start(t)
+
+	waitFor(t, 5*time.Second, func() bool {
+		_, err := nodeB.store.GetUser(context.Background(), createdUser.ID)
+		return err == nil
+	})
+	waitFor(t, 5*time.Second, func() bool {
+		messages, err := nodeB.store.ListMessagesByUser(context.Background(), createdUser.ID, 10)
+		return err == nil && len(messages) == 1 && messages[0].Body == "missed while offline"
+	})
+
+	events, err := nodeB.store.ListEvents(context.Background(), 0, 10)
+	if err != nil {
+		t.Fatalf("list events after reconnect: %v", err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("expected 2 replicated events without duplicates, got %d", len(events))
+	}
+}
+
+func TestLateJoiningNodeCatchesUpAcrossMultiplePullBatches(t *testing.T) {
+	t.Parallel()
+
+	clusterLnA := mustListen(t)
+	clusterLnB := mustListen(t)
+	apiLnA := mustListen(t)
+	apiLnB := mustListen(t)
+
+	clusterURLA := wsURL(clusterLnA)
+	clusterURLB := wsURL(clusterLnB)
+
+	nodeA := newClusterTestNode(t, "node-a", 1, clusterLnA, apiLnA, clusterURLA, []Peer{
+		{NodeID: "node-b", URL: clusterURLB},
+	})
+	nodeB := newClusterTestNode(t, "node-b", 2, clusterLnB, apiLnB, clusterURLB, []Peer{
+		{NodeID: "node-a", URL: clusterURLA},
+	})
+
+	nodeA.start(t)
+
+	ctx := context.Background()
+	user, _, err := nodeA.store.CreateUser(ctx, store.CreateUserParams{
+		Username:     "bulk-user",
+		PasswordHash: "hash-1",
+	})
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	for i := 0; i < pullBatchSize+12; i++ {
+		if _, _, err := nodeA.store.CreateMessage(ctx, store.CreateMessageParams{
+			UserID: user.ID,
+			Sender: "orders",
+			Body:   "message-" + strconv.Itoa(i),
+		}); err != nil {
+			t.Fatalf("create backlog message %d: %v", i, err)
+		}
+	}
+
+	nodeB.start(t)
+
+	waitFor(t, 5*time.Second, func() bool {
+		_, err := nodeB.store.GetUser(context.Background(), user.ID)
+		return err == nil
+	})
+	waitFor(t, 5*time.Second, func() bool {
+		messages, err := nodeB.store.ListMessagesByUser(context.Background(), user.ID, 500)
+		return err == nil && len(messages) == pullBatchSize+12
+	})
+
+	events, err := nodeB.store.ListEvents(context.Background(), 0, 500)
+	if err != nil {
+		t.Fatalf("list replicated events: %v", err)
+	}
+	if len(events) != pullBatchSize+13 {
+		t.Fatalf("unexpected replicated event count: got=%d want=%d", len(events), pullBatchSize+13)
+	}
 }
 
 type testNode struct {
@@ -564,14 +831,10 @@ func newReplicationTestManager(t *testing.T, st *store.Store) *Manager {
 
 func mustHelloEnvelope(t *testing.T, envelopeNodeID string, hello *internalproto.Hello) *internalproto.Envelope {
 	t.Helper()
-
-	payload, err := proto.Marshal(hello)
-	if err != nil {
-		t.Fatalf("marshal hello: %v", err)
-	}
 	return &internalproto.Envelope{
-		NodeId:      envelopeNodeID,
-		MessageType: string(internalproto.MessageTypeHello),
-		Payload:     payload,
+		NodeId: envelopeNodeID,
+		Body: &internalproto.Envelope_Hello{
+			Hello: hello,
+		},
 	}
 }

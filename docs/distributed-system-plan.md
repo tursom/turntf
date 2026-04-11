@@ -86,8 +86,7 @@
 - `node_id`
 - `sequence`
 - `sent_at_hlc`
-- `message_type`
-- `payload`
+- `oneof body`
 - `hmac`
 
 ### 本地存储结构

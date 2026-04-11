@@ -22,13 +22,20 @@ const (
 )
 
 type Envelope struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	NodeId        string                 `protobuf:"bytes,1,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
-	Sequence      uint64                 `protobuf:"varint,2,opt,name=sequence,proto3" json:"sequence,omitempty"`
-	SentAtHlc     string                 `protobuf:"bytes,3,opt,name=sent_at_hlc,json=sentAtHlc,proto3" json:"sent_at_hlc,omitempty"`
-	MessageType   string                 `protobuf:"bytes,4,opt,name=message_type,json=messageType,proto3" json:"message_type,omitempty"`
-	Payload       []byte                 `protobuf:"bytes,5,opt,name=payload,proto3" json:"payload,omitempty"`
-	Hmac          []byte                 `protobuf:"bytes,6,opt,name=hmac,proto3" json:"hmac,omitempty"`
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	NodeId    string                 `protobuf:"bytes,1,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
+	Sequence  uint64                 `protobuf:"varint,2,opt,name=sequence,proto3" json:"sequence,omitempty"`
+	SentAtHlc string                 `protobuf:"bytes,3,opt,name=sent_at_hlc,json=sentAtHlc,proto3" json:"sent_at_hlc,omitempty"`
+	// Types that are valid to be assigned to Body:
+	//
+	//	*Envelope_Hello
+	//	*Envelope_Ack
+	//	*Envelope_EventBatch
+	//	*Envelope_PullEvents
+	//	*Envelope_SnapshotDigest
+	//	*Envelope_SnapshotChunk
+	Body          isEnvelope_Body `protobuf_oneof:"body"`
+	Hmac          []byte          `protobuf:"bytes,10,opt,name=hmac,proto3" json:"hmac,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -84,16 +91,63 @@ func (x *Envelope) GetSentAtHlc() string {
 	return ""
 }
 
-func (x *Envelope) GetMessageType() string {
+func (x *Envelope) GetBody() isEnvelope_Body {
 	if x != nil {
-		return x.MessageType
+		return x.Body
 	}
-	return ""
+	return nil
 }
 
-func (x *Envelope) GetPayload() []byte {
+func (x *Envelope) GetHello() *Hello {
 	if x != nil {
-		return x.Payload
+		if x, ok := x.Body.(*Envelope_Hello); ok {
+			return x.Hello
+		}
+	}
+	return nil
+}
+
+func (x *Envelope) GetAck() *Ack {
+	if x != nil {
+		if x, ok := x.Body.(*Envelope_Ack); ok {
+			return x.Ack
+		}
+	}
+	return nil
+}
+
+func (x *Envelope) GetEventBatch() *EventBatch {
+	if x != nil {
+		if x, ok := x.Body.(*Envelope_EventBatch); ok {
+			return x.EventBatch
+		}
+	}
+	return nil
+}
+
+func (x *Envelope) GetPullEvents() *PullEvents {
+	if x != nil {
+		if x, ok := x.Body.(*Envelope_PullEvents); ok {
+			return x.PullEvents
+		}
+	}
+	return nil
+}
+
+func (x *Envelope) GetSnapshotDigest() *SnapshotDigest {
+	if x != nil {
+		if x, ok := x.Body.(*Envelope_SnapshotDigest); ok {
+			return x.SnapshotDigest
+		}
+	}
+	return nil
+}
+
+func (x *Envelope) GetSnapshotChunk() *SnapshotChunk {
+	if x != nil {
+		if x, ok := x.Body.(*Envelope_SnapshotChunk); ok {
+			return x.SnapshotChunk
+		}
 	}
 	return nil
 }
@@ -104,6 +158,46 @@ func (x *Envelope) GetHmac() []byte {
 	}
 	return nil
 }
+
+type isEnvelope_Body interface {
+	isEnvelope_Body()
+}
+
+type Envelope_Hello struct {
+	Hello *Hello `protobuf:"bytes,4,opt,name=hello,proto3,oneof"`
+}
+
+type Envelope_Ack struct {
+	Ack *Ack `protobuf:"bytes,5,opt,name=ack,proto3,oneof"`
+}
+
+type Envelope_EventBatch struct {
+	EventBatch *EventBatch `protobuf:"bytes,6,opt,name=event_batch,json=eventBatch,proto3,oneof"`
+}
+
+type Envelope_PullEvents struct {
+	PullEvents *PullEvents `protobuf:"bytes,7,opt,name=pull_events,json=pullEvents,proto3,oneof"`
+}
+
+type Envelope_SnapshotDigest struct {
+	SnapshotDigest *SnapshotDigest `protobuf:"bytes,8,opt,name=snapshot_digest,json=snapshotDigest,proto3,oneof"`
+}
+
+type Envelope_SnapshotChunk struct {
+	SnapshotChunk *SnapshotChunk `protobuf:"bytes,9,opt,name=snapshot_chunk,json=snapshotChunk,proto3,oneof"`
+}
+
+func (*Envelope_Hello) isEnvelope_Body() {}
+
+func (*Envelope_Ack) isEnvelope_Body() {}
+
+func (*Envelope_EventBatch) isEnvelope_Body() {}
+
+func (*Envelope_PullEvents) isEnvelope_Body() {}
+
+func (*Envelope_SnapshotDigest) isEnvelope_Body() {}
+
+func (*Envelope_SnapshotChunk) isEnvelope_Body() {}
 
 type Hello struct {
 	state           protoimpl.MessageState `protogen:"open.v1"`
@@ -689,14 +783,22 @@ var File_proto_cluster_proto protoreflect.FileDescriptor
 
 const file_proto_cluster_proto_rawDesc = "" +
 	"\n" +
-	"\x13proto/cluster.proto\x12\x13notifier.cluster.v1\"\xb0\x01\n" +
+	"\x13proto/cluster.proto\x12\x13notifier.cluster.v1\"\x82\x04\n" +
 	"\bEnvelope\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\tR\x06nodeId\x12\x1a\n" +
 	"\bsequence\x18\x02 \x01(\x04R\bsequence\x12\x1e\n" +
-	"\vsent_at_hlc\x18\x03 \x01(\tR\tsentAtHlc\x12!\n" +
-	"\fmessage_type\x18\x04 \x01(\tR\vmessageType\x12\x18\n" +
-	"\apayload\x18\x05 \x01(\fR\apayload\x12\x12\n" +
-	"\x04hmac\x18\x06 \x01(\fR\x04hmac\"\xc2\x01\n" +
+	"\vsent_at_hlc\x18\x03 \x01(\tR\tsentAtHlc\x122\n" +
+	"\x05hello\x18\x04 \x01(\v2\x1a.notifier.cluster.v1.HelloH\x00R\x05hello\x12,\n" +
+	"\x03ack\x18\x05 \x01(\v2\x18.notifier.cluster.v1.AckH\x00R\x03ack\x12B\n" +
+	"\vevent_batch\x18\x06 \x01(\v2\x1f.notifier.cluster.v1.EventBatchH\x00R\n" +
+	"eventBatch\x12B\n" +
+	"\vpull_events\x18\a \x01(\v2\x1f.notifier.cluster.v1.PullEventsH\x00R\n" +
+	"pullEvents\x12N\n" +
+	"\x0fsnapshot_digest\x18\b \x01(\v2#.notifier.cluster.v1.SnapshotDigestH\x00R\x0esnapshotDigest\x12K\n" +
+	"\x0esnapshot_chunk\x18\t \x01(\v2\".notifier.cluster.v1.SnapshotChunkH\x00R\rsnapshotChunk\x12\x12\n" +
+	"\x04hmac\x18\n" +
+	" \x01(\fR\x04hmacB\x06\n" +
+	"\x04body\"\xc2\x01\n" +
 	"\x05Hello\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\tR\x06nodeId\x12%\n" +
 	"\x0eadvertise_addr\x18\x02 \x01(\tR\radvertiseAddr\x12)\n" +
@@ -770,18 +872,32 @@ var file_proto_cluster_proto_goTypes = []any{
 	(*MessageEvent)(nil),    // 9: notifier.cluster.v1.MessageEvent
 }
 var file_proto_cluster_proto_depIdxs = []int32{
-	4, // 0: notifier.cluster.v1.EventBatch.events:type_name -> notifier.cluster.v1.ReplicatedEvent
-	1, // [1:1] is the sub-list for method output_type
-	1, // [1:1] is the sub-list for method input_type
-	1, // [1:1] is the sub-list for extension type_name
-	1, // [1:1] is the sub-list for extension extendee
-	0, // [0:1] is the sub-list for field type_name
+	1, // 0: notifier.cluster.v1.Envelope.hello:type_name -> notifier.cluster.v1.Hello
+	2, // 1: notifier.cluster.v1.Envelope.ack:type_name -> notifier.cluster.v1.Ack
+	3, // 2: notifier.cluster.v1.Envelope.event_batch:type_name -> notifier.cluster.v1.EventBatch
+	5, // 3: notifier.cluster.v1.Envelope.pull_events:type_name -> notifier.cluster.v1.PullEvents
+	6, // 4: notifier.cluster.v1.Envelope.snapshot_digest:type_name -> notifier.cluster.v1.SnapshotDigest
+	7, // 5: notifier.cluster.v1.Envelope.snapshot_chunk:type_name -> notifier.cluster.v1.SnapshotChunk
+	4, // 6: notifier.cluster.v1.EventBatch.events:type_name -> notifier.cluster.v1.ReplicatedEvent
+	7, // [7:7] is the sub-list for method output_type
+	7, // [7:7] is the sub-list for method input_type
+	7, // [7:7] is the sub-list for extension type_name
+	7, // [7:7] is the sub-list for extension extendee
+	0, // [0:7] is the sub-list for field type_name
 }
 
 func init() { file_proto_cluster_proto_init() }
 func file_proto_cluster_proto_init() {
 	if File_proto_cluster_proto != nil {
 		return
+	}
+	file_proto_cluster_proto_msgTypes[0].OneofWrappers = []any{
+		(*Envelope_Hello)(nil),
+		(*Envelope_Ack)(nil),
+		(*Envelope_EventBatch)(nil),
+		(*Envelope_PullEvents)(nil),
+		(*Envelope_SnapshotDigest)(nil),
+		(*Envelope_SnapshotChunk)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{

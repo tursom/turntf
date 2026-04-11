@@ -163,6 +163,47 @@ func TestDuplicateActiveUsernameRejected(t *testing.T) {
 	}
 }
 
+func TestPeerCursorSchemaAndMonotonicUpdates(t *testing.T) {
+	t.Parallel()
+
+	st := openNamedTestStore(t, "node-b", 2)
+	defer st.Close()
+
+	ctx := context.Background()
+	rows, err := st.db.QueryContext(ctx, `
+SELECT acked_sequence, applied_sequence
+FROM peer_cursors
+`)
+	if err != nil {
+		t.Fatalf("peer cursor schema query: %v", err)
+	}
+	rows.Close()
+
+	if err := st.RecordPeerAck(ctx, "node-a", 5); err != nil {
+		t.Fatalf("record peer ack: %v", err)
+	}
+	if err := st.RecordPeerAck(ctx, "node-a", 3); err != nil {
+		t.Fatalf("record stale peer ack: %v", err)
+	}
+	if err := st.RecordPeerApplied(ctx, "node-a", 7); err != nil {
+		t.Fatalf("record peer applied: %v", err)
+	}
+	if err := st.RecordPeerApplied(ctx, "node-a", 4); err != nil {
+		t.Fatalf("record stale peer applied: %v", err)
+	}
+
+	cursor, err := st.GetPeerCursor(ctx, "node-a")
+	if err != nil {
+		t.Fatalf("get peer cursor: %v", err)
+	}
+	if cursor.AckedSequence != 5 {
+		t.Fatalf("unexpected acked sequence: got=%d want=5", cursor.AckedSequence)
+	}
+	if cursor.AppliedSequence != 7 {
+		t.Fatalf("unexpected applied sequence: got=%d want=7", cursor.AppliedSequence)
+	}
+}
+
 func TestApplyReplicatedEventIsIdempotent(t *testing.T) {
 	t.Parallel()
 

@@ -8,7 +8,7 @@
 - 用户数据最终完全一致
 - 消息数据按每用户最近 N 条最终一致
 
-当前仓库已经完成实施计划的前 3 步：本地存储内核、单节点 HTTP/JSON API，以及 WebSocket + Protobuf 的最小集群同步链路。
+当前仓库已经完成实施计划的前 4 步：本地存储内核、单节点 HTTP/JSON API、WebSocket + Protobuf 的最小集群同步链路，以及断线后的事件日志补发。
 
 ## 技术栈
 
@@ -41,18 +41,18 @@
 
 实施计划见 [docs/distributed-system-plan.md](/root/dev/sys/turntf/docs/distributed-system-plan.md)。
 
-当前第三步已经收紧到以下边界：
+当前第四步已经收紧到以下边界：
 
 - 集群模式必须同时提供 `cluster-listen-addr`、`cluster-advertise-addr`、`cluster-secret`
-- 节点间只启用 `Envelope`、`Hello`、`Ack`、`EventBatch`
+- 节点间启用 `Envelope`、`Hello`、`Ack`、`EventBatch`、`PullEvents`
 - `Hello` 用于交换节点身份、协议版本、广播地址和当前本地 `last_sequence`
-- `EventBatch` 目前按“一个本地事件一批”广播
-- `Ack` 只表示当前在线链路上某个 `EventBatch` 已成功应用
+- `EventBatch` 既用于在线广播，也用于断线后的增量补发
+- `Ack` 和 `peer_cursors` 一起记录每个 peer 的确认进度与已应用进度
 - WebSocket 连接具备握手校验、心跳保活、自动重连和单连接方向裁决
+- 节点重连后会按持久化游标自动补拉缺失事件，并通过 `applied_events` 做幂等去重
 
 当前还没有实现：
 
-- 断线后的游标增量拉取和未确认事件补发
 - `cluster_secret` 的 HMAC 鉴权
 - 快照修复和反熵同步
 
@@ -94,7 +94,7 @@ go run ./cmd/notifier serve \
 
 - 只要传入任意 cluster 参数，就应把三项必填参数一起传全：`-cluster-listen-addr`、`-cluster-advertise-addr`、`-cluster-secret`
 - `-peer` 可以重复传入多个 peer，但 `node-id` 不能和本节点相同
-- 当前实现不会在断线后自动补历史事件，只有连接恢复后的新写入会继续同步
+- 当前第 4 步只支持新初始化的 SQLite 库，不包含旧第 3 步库的自动迁移
 
 当前已提供：
 
@@ -113,7 +113,9 @@ go run ./cmd/notifier serve \
 - 本地 `POST /users`、`PATCH /users/{id}`、`DELETE /users/{id}`、`POST /messages` 成功后，会异步广播对应事件
 - 对端节点成功应用事件后返回 `Ack`
 - 两节点在线时，创建用户和写消息可以自动同步
-- 这一步不承诺断线补发、幂等重放追赶或跨节点鉴权
+- 节点短时离线后重连，会基于 `peer_cursors` 自动补拉未追平的事件
+- 拉取重放与实时广播重叠时，重复事件会被 `applied_events` 幂等吸收
+- 这一步仍不承诺跨节点鉴权、快照修复或字段级冲突收敛
 
 ## 初始化本地存储
 
@@ -133,4 +135,4 @@ go run ./cmd/notifier init-store -db ./data/notifier.db -node-id node-a -node-sl
 
 ## 下一步
 
-- 第 4 步：实现断线后的事件日志补发与游标持久化
+- 第 5 步：实现用户多主冲突收敛

@@ -22,17 +22,13 @@ func TestEnvelopeBatchRoundTrip(t *testing.T) {
 			},
 		},
 	}
-	payload, err := gproto.Marshal(batch)
-	if err != nil {
-		t.Fatalf("marshal batch: %v", err)
-	}
-
 	envelope := &Envelope{
-		NodeId:      "node-a",
-		Sequence:    7,
-		SentAtHlc:   "1740000000000-00002-00001",
-		MessageType: string(MessageTypeEventBatch),
-		Payload:     payload,
+		NodeId:    "node-a",
+		Sequence:  7,
+		SentAtHlc: "1740000000000-00002-00001",
+		Body: &Envelope_EventBatch{
+			EventBatch: batch,
+		},
 	}
 	data, err := gproto.Marshal(envelope)
 	if err != nil {
@@ -47,9 +43,9 @@ func TestEnvelopeBatchRoundTrip(t *testing.T) {
 		t.Fatalf("unexpected envelope: %+v", decoded)
 	}
 
-	var decodedBatch EventBatch
-	if err := gproto.Unmarshal(decoded.GetPayload(), &decodedBatch); err != nil {
-		t.Fatalf("unmarshal batch: %v", err)
+	decodedBatch := decoded.GetEventBatch()
+	if decodedBatch == nil {
+		t.Fatalf("expected event batch body")
 	}
 	if len(decodedBatch.GetEvents()) != 1 {
 		t.Fatalf("expected 1 event, got %d", len(decodedBatch.GetEvents()))

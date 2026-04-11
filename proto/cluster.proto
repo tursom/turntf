@@ -8,9 +8,15 @@ message Envelope {
   string node_id = 1;
   uint64 sequence = 2;
   string sent_at_hlc = 3;
-  string message_type = 4;
-  bytes payload = 5;
-  bytes hmac = 6;
+  oneof body {
+    Hello hello = 4;
+    Ack ack = 5;
+    EventBatch event_batch = 6;
+    PullEvents pull_events = 7;
+    SnapshotDigest snapshot_digest = 8;
+    SnapshotChunk snapshot_chunk = 9;
+  }
+  bytes hmac = 10;
 }
 
 message Hello {

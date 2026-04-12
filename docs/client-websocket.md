@@ -34,7 +34,7 @@ ClientEnvelope {
 字段说明：
 
 - `node_id` 和 `user_id`：登录用户身份，对应 HTTP 登录接口中的同名字段。
-- `password`：用户密码。`role=channel` 和 `role=broadcast` 用户不可登录。
+- `password`：用户密码。`role=channel`、`role=broadcast` 和 `role=node` 用户不可登录。
 - `seen_messages`：客户端已经持久化的消息游标集合。每个游标是消息生产节点和该节点消息序号的二元组 `(node_id, seq)`。
 
 登录成功后，服务端返回：
@@ -89,12 +89,36 @@ ServerEnvelope {
 }
 ```
 
+节点入口瞬时包推送：
+
+```protobuf
+ServerEnvelope {
+  packet_pushed: PacketPushed {
+    packet: {
+      packet_id: 77
+      source_node_id: 4096
+      target_node_id: 8192
+      relay_target: { node_id: 8192, user_id: 1025 }
+      sender: "relay"
+      body: "\xff\x00payload"
+      delivery_mode: CLIENT_DELIVERY_MODE_BEST_EFFORT
+    }
+  }
+}
+```
+
 可见消息范围：
 
 - 登录用户自己的消息。
 - 所有仍在本地窗口内的 `role=broadcast` 消息。
 - 登录用户已订阅 channel 且订阅时间之后的 channel 消息。
 - 管理员用户可见任意目标地址的消息。
+
+`PacketPushed` 与 `MessagePushed` 的区别：
+
+- `PacketPushed` 只用于 `(node_id, 3)` 节点入口地址的瞬时包。
+- 瞬时包没有 `(node_id, seq)` 游标，不参与 `seen_messages` 和 `AckMessage`。
+- 瞬时包不会在重连后补发；只有目标用户当前在线时才能收到。
 
 客户端收到并落盘后，可以发送：
 
@@ -123,18 +147,37 @@ ClientEnvelope {
 }
 ```
 
+发送节点入口瞬时包：
+
+```protobuf
+ClientEnvelope {
+  send_message: SendMessageRequest {
+    request_id: 43
+    target: { node_id: 8192, user_id: 3 }
+    relay_target: { node_id: 8192, user_id: 1025 }
+    sender: "relay"
+    body: "\xff\x00payload"
+    delivery_mode: CLIENT_DELIVERY_MODE_ROUTE_RETRY
+  }
+}
+```
+
 字段说明：
 
 - `request_id`：客户端生成的请求 ID，服务端在响应或错误中原样返回。
 - `target`：消息目标用户、channel 或 broadcast 地址。
+- 当 `target.user_id = 3` 时，表示目标节点的系统节点入口地址，消息会走瞬时包路径。
+- `relay_target`：仅在 `target.user_id = 3` 时必填，表示目标节点上的指定在线用户。
 - `sender`：发送方或来源标签，不能为空。
 - `body`：原始字节数组，不能为空；不要求 UTF-8。
+- `delivery_mode`：仅在 `target.user_id = 3` 时生效；可选 `CLIENT_DELIVERY_MODE_BEST_EFFORT` 或 `CLIENT_DELIVERY_MODE_ROUTE_RETRY`。
 
 权限规则与 HTTP 写消息接口一致：
 
 - 普通用户只能给自己发消息。
 - 普通用户可以给自己已订阅的 `role=channel` 地址发消息。
 - 管理员可以给任意用户、channel 或 broadcast 地址发消息。
+- 任意已登录用户都可以给 `(node_id, 3)` 发送节点入口瞬时包，但 `relay_target` 必须是该目标节点上的可登录用户。
 
 成功响应：
 
@@ -154,6 +197,25 @@ ServerEnvelope {
   }
 }
 ```
+
+节点入口瞬时包受理响应：
+
+```protobuf
+ServerEnvelope {
+  send_message_response: SendMessageResponse {
+    request_id: 43
+    relay_accepted: {
+      packet_id: 77
+      source_node_id: 4096
+      target_node_id: 8192
+      relay_target: { node_id: 8192, user_id: 1025 }
+      delivery_mode: CLIENT_DELIVERY_MODE_ROUTE_RETRY
+    }
+  }
+}
+```
+
+`relay_accepted` 只表示瞬时包已进入本地路由层，不代表目标用户已经收到。
 
 ## Ping/Pong
 
@@ -206,6 +268,8 @@ ServerEnvelope {
 - 持久化消息时至少保存完整 `Message` 和游标 `(node_id, seq)`。
 - 重连时把本地已持久化游标放入 `LoginRequest.seen_messages`。
 - 收到重复 `(node_id, seq)` 时应幂等忽略。
+- 收到 `PacketPushed` 时不要写入消息游标表；如果业务要本地暂存，应自行按 `packet_id` 做去重。
 - `body` 是原始字节，不要按字符串处理；需要文本时由业务层自行约定编码。
 - 如果客户端切换连接节点，仍应按 `(node_id, seq)` 去重；不同节点的可见窗口可能暂时不完全一致，集群最终会收敛。
 - 当前服务端补发历史消息上限来自本地消息窗口和一次登录补发批量，客户端不要依赖服务端保存无限历史。
+- `CLIENT_DELIVERY_MODE_ROUTE_RETRY` 只表示节点间在短时间内尝试重新寻路；它仍然是非持久化、非可靠投递。

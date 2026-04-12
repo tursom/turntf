@@ -10,9 +10,11 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/gorilla/websocket"
 	"google.golang.org/protobuf/proto"
 
 	"notifier/internal/api"
@@ -1557,6 +1559,83 @@ func TestThreeNodeDeleteWinsOverConcurrentUpdate(t *testing.T) {
 	})
 }
 
+func TestTransientPacketRoutesAcrossMultipleHops(t *testing.T) {
+	t.Parallel()
+
+	lnA := mustListen(t)
+	lnB := mustListen(t)
+	lnC := mustListen(t)
+
+	nodeA := newClusterTestNode(t, "node-a", 1, lnA, []Peer{{URL: wsURL(lnB)}})
+	nodeB := newClusterTestNode(t, "node-b", 2, lnB, []Peer{{URL: wsURL(lnA)}, {URL: wsURL(lnC)}})
+	nodeC := newClusterTestNode(t, "node-c", 3, lnC, []Peer{{URL: wsURL(lnB)}})
+
+	nodeA.start(t)
+	nodeB.start(t)
+	nodeC.start(t)
+
+	waitFor(t, 10*time.Second, func() bool {
+		return nodeA.activePeer(testNodeID(2)) &&
+			nodeB.activePeer(testNodeID(1)) &&
+			nodeB.activePeer(testNodeID(3)) &&
+			nodeC.activePeer(testNodeID(2))
+	})
+
+	passwordHash, err := auth.HashPassword("charlie-password")
+	if err != nil {
+		t.Fatalf("hash password: %v", err)
+	}
+	charlie, _, err := nodeC.store.CreateUser(context.Background(), store.CreateUserParams{
+		Username:     "charlie",
+		PasswordHash: passwordHash,
+		Role:         store.RoleUser,
+	})
+	if err != nil {
+		t.Fatalf("create charlie: %v", err)
+	}
+
+	serverC := httptest.NewServer(nodeC.server.Handler)
+	defer serverC.Close()
+	conn := dialClusterClientWebSocket(t, serverC.URL)
+	defer conn.Close()
+	writeClusterClientEnvelope(t, conn, &internalproto.ClientEnvelope{
+		Body: &internalproto.ClientEnvelope_Login{
+			Login: &internalproto.LoginRequest{
+				NodeId:   charlie.NodeID,
+				UserId:   charlie.ID,
+				Password: "charlie-password",
+			},
+		},
+	})
+	if loginResp := readClusterServerEnvelope(t, conn).GetLoginResponse(); loginResp == nil {
+		t.Fatalf("expected login response")
+	}
+
+	nodeC.manager.broadcastRoutingUpdate()
+	nodeB.manager.broadcastRoutingUpdate()
+	waitFor(t, 10*time.Second, func() bool {
+		return nodeA.manager.bestRouteSession(nodeC.id) != nil
+	})
+
+	if err := nodeA.manager.RouteTransientPacket(context.Background(), store.TransientPacket{
+		PacketID:     1,
+		SourceNodeID: nodeA.id,
+		TargetNodeID: nodeC.id,
+		RelayTarget:  charlie.Key(),
+		Sender:       "relay",
+		Body:         []byte("over-mesh"),
+		DeliveryMode: store.DeliveryModeBestEffort,
+		TTLHops:      8,
+	}); err != nil {
+		t.Fatalf("route transient packet: %v", err)
+	}
+
+	packet := readClusterServerEnvelope(t, conn).GetPacketPushed()
+	if packet == nil || packet.Packet == nil || string(packet.Packet.GetBody()) != "over-mesh" {
+		t.Fatalf("unexpected routed packet: %+v", packet)
+	}
+}
+
 type testNode struct {
 	id         int64
 	store      *store.Store
@@ -1609,8 +1688,10 @@ func newClusterTestNodeWithWindowAndSkew(t *testing.T, nodeID string, slot uint1
 	}
 
 	svc := api.New(st, manager)
+	httpAPI := api.NewHTTP(svc)
+	manager.SetTransientHandler(httpAPI.ReceiveTransientPacket)
 	rootMux := http.NewServeMux()
-	rootMux.Handle("/", api.NewHTTP(svc).Handler())
+	rootMux.Handle("/", httpAPI.Handler())
 	rootMux.Handle(manager.AdvertisePath(), manager.Handler())
 	server := &http.Server{Handler: rootMux}
 
@@ -1683,6 +1764,46 @@ func mustListen(t *testing.T) net.Listener {
 
 func wsURL(ln net.Listener) string {
 	return "ws://" + ln.Addr().String() + websocketPath
+}
+
+func dialClusterClientWebSocket(t *testing.T, serverURL string) *websocket.Conn {
+	t.Helper()
+
+	serverURL = "ws" + strings.TrimPrefix(serverURL, "http")
+	conn, _, err := websocket.DefaultDialer.Dial(serverURL+"/ws/client", nil)
+	if err != nil {
+		t.Fatalf("dial client websocket: %v", err)
+	}
+	return conn
+}
+
+func writeClusterClientEnvelope(t *testing.T, conn *websocket.Conn, envelope *internalproto.ClientEnvelope) {
+	t.Helper()
+
+	data, err := proto.Marshal(envelope)
+	if err != nil {
+		t.Fatalf("marshal client envelope: %v", err)
+	}
+	if err := conn.WriteMessage(websocket.BinaryMessage, data); err != nil {
+		t.Fatalf("write client websocket: %v", err)
+	}
+}
+
+func readClusterServerEnvelope(t *testing.T, conn *websocket.Conn) *internalproto.ServerEnvelope {
+	t.Helper()
+
+	messageType, data, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("read server websocket: %v", err)
+	}
+	if messageType != websocket.BinaryMessage {
+		t.Fatalf("unexpected websocket message type: %d", messageType)
+	}
+	var envelope internalproto.ServerEnvelope
+	if err := proto.Unmarshal(data, &envelope); err != nil {
+		t.Fatalf("unmarshal server envelope: %v", err)
+	}
+	return &envelope
 }
 
 func waitFor(t *testing.T, timeout time.Duration, fn func() bool) {

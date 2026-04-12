@@ -2,12 +2,22 @@ package api
 
 import (
 	"context"
+	"sync"
+	"sync/atomic"
 
 	"notifier/internal/store"
 )
 
 type EventSink interface {
 	Publish(event store.Event)
+}
+
+type TransientPacketRouter interface {
+	RouteTransientPacket(context.Context, store.TransientPacket) error
+}
+
+type TransientPacketReceiver interface {
+	ReceiveTransientPacket(store.TransientPacket) bool
 }
 
 type noopEventSink struct{}
@@ -19,9 +29,13 @@ type WriteGate interface {
 }
 
 type Service struct {
-	store     *store.Store
-	eventSink EventSink
-	writeGate WriteGate
+	store           *store.Store
+	eventSink       EventSink
+	writeGate       WriteGate
+	transientRouter TransientPacketRouter
+	transientRecvMu sync.RWMutex
+	transientRecv   TransientPacketReceiver
+	nextTransientID atomic.Uint64
 }
 
 func New(st *store.Store, eventSink EventSink) *Service {
@@ -33,10 +47,15 @@ func New(st *store.Store, eventSink EventSink) *Service {
 	if gate, ok := eventSink.(WriteGate); ok {
 		writeGate = gate
 	}
+	var transientRouter TransientPacketRouter
+	if router, ok := eventSink.(TransientPacketRouter); ok {
+		transientRouter = router
+	}
 	return &Service{
-		store:     st,
-		eventSink: eventSink,
-		writeGate: writeGate,
+		store:           st,
+		eventSink:       eventSink,
+		writeGate:       writeGate,
+		transientRouter: transientRouter,
 	}
 }
 
@@ -94,6 +113,70 @@ func (s *Service) CreateMessage(ctx context.Context, params store.CreateMessageP
 		s.eventSink.Publish(event)
 	}
 	return message, event, err
+}
+
+func (s *Service) SetTransientPacketReceiver(receiver TransientPacketReceiver) {
+	s.transientRecvMu.Lock()
+	defer s.transientRecvMu.Unlock()
+	s.transientRecv = receiver
+}
+
+func (s *Service) DispatchTransientPacket(ctx context.Context, target, relayTarget store.UserKey, sender string, body []byte, mode store.DeliveryMode) (store.TransientPacket, error) {
+	if err := s.allowWrite(ctx); err != nil {
+		return store.TransientPacket{}, err
+	}
+	if err := target.Validate(); err != nil {
+		return store.TransientPacket{}, err
+	}
+	if err := relayTarget.Validate(); err != nil {
+		return store.TransientPacket{}, err
+	}
+	if target.UserID != store.NodeIngressUserID {
+		return store.TransientPacket{}, store.ErrInvalidInput
+	}
+	if relayTarget.NodeID != target.NodeID {
+		return store.TransientPacket{}, store.ErrInvalidInput
+	}
+	if sender == "" || len(body) == 0 {
+		return store.TransientPacket{}, store.ErrInvalidInput
+	}
+	relayUser, err := s.store.GetUser(ctx, relayTarget)
+	if err != nil {
+		return store.TransientPacket{}, err
+	}
+	if !relayUser.CanLogin() {
+		return store.TransientPacket{}, store.ErrForbidden
+	}
+	packet := store.TransientPacket{
+		PacketID:     s.nextTransientID.Add(1),
+		SourceNodeID: s.store.NodeID(),
+		TargetNodeID: target.NodeID,
+		RelayTarget:  relayTarget,
+		Sender:       sender,
+		Body:         append([]byte(nil), body...),
+		DeliveryMode: mode,
+		TTLHops:      8,
+	}
+	if packet.TargetNodeID == s.store.NodeID() {
+		s.deliverTransientPacket(packet)
+		return packet, nil
+	}
+	if s.transientRouter != nil {
+		if err := s.transientRouter.RouteTransientPacket(ctx, packet); err != nil {
+			return store.TransientPacket{}, err
+		}
+	}
+	return packet, nil
+}
+
+func (s *Service) deliverTransientPacket(packet store.TransientPacket) bool {
+	s.transientRecvMu.RLock()
+	receiver := s.transientRecv
+	s.transientRecvMu.RUnlock()
+	if receiver == nil {
+		return false
+	}
+	return receiver.ReceiveTransientPacket(packet)
 }
 
 func (s *Service) ListMessagesByUser(ctx context.Context, key store.UserKey, limit int) ([]store.Message, error) {

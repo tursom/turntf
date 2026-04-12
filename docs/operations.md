@@ -11,6 +11,8 @@
 - `store.engine` 默认 `sqlite`；配置为 `pebble` 时，事件日志和消息投影写入 Pebble，但用户、订阅、游标、pending projection 和运维统计仍写入 SQLite。
 - 将 `api.listen_addr` 暴露给业务调用方，同时只允许可信节点访问 `cluster.advertise_path`。
 - 保持节点系统时钟同步。集群模式下，节点首次成功校时前会拒绝写入；时钟偏差超过 `cluster.max_clock_skew_ms` 会导致 peer 被拒绝或断开。
+- 节点入口瞬时包依赖内存动态路由表和内存重试队列；节点重启后，未送达的 `route_retry` 瞬时包会直接丢失。
+- 如果同一 peer 未来存在多条并行连接，瞬时包出口会按连接级 RTT 和抖动择优，不保证固定走某一条物理连接。
 - 将 `GET /healthz` 接入存活探针，将 `GET /metrics` 接入带管理员 Bearer token 的指标抓取。
 - 控制台日志为易读文本；如需持久化结构化日志，配置 `logging.file_path` 写入 JSON 行文件，并由 logrotate、容器运行时或日志平台负责轮转。
 
@@ -56,6 +58,12 @@ sqlite3 ./data/turntf.db ".backup './backup/turntf-$(date +%Y%m%d%H%M%S).db'"
 6. 观察 `/metrics` 中 `notifier_peer_connected`、`notifier_peer_origin_applied_event_id`、`notifier_peer_pending_snapshot_partitions`。
 7. 如果长时间无法追平，检查集群 HMAC 密钥、peer URL、时钟偏差和网络连通性。
 
+节点入口瞬时包额外排查点：
+
+1. 确认目标用户当前在线，且登录在目标节点的 `GET /ws/client` 连接上。
+2. 确认基础 peer 网络仍连通；动态路由只解决多跳寻路，不替代底层 `cluster.peers` 建链。
+3. 如果依赖 `route_retry`，确认节点没有重启，且问题发生在内存 TTL 窗口内。
+
 ## 核心指标
 
 - `notifier_event_log_last_sequence{node_id}`：本地事件日志最新 sequence。持续增长代表本节点有写入或复制事件入库。
@@ -68,6 +76,8 @@ sqlite3 ./data/turntf.db ".backup './backup/turntf-$(date +%Y%m%d%H%M%S).db'"
 - `notifier_message_trimmed_total{node_id}`：累计被本地消息窗口裁剪的消息数。
 - `notifier_clock_offset_ms{node_id,peer_node_id}`：最近一次可信校时偏移。
 - `notifier_write_gate_ready{node_id}`：本节点是否允许本地写入。集群模式下为 `0` 通常表示尚未完成可信校时。
+
+当前版本暂未单独暴露瞬时包路由指标。排查时优先结合 `/ops/status`、peer 连通性和应用层日志定位。
 
 ## 日志配置
 
@@ -90,3 +100,4 @@ file_path = "./data/notifier.log"
 - `notifier_peer_origin_unconfirmed_events` 持续升高：检查对端是否在线、是否能应用该 origin 的事件、日志中是否有 HMAC、HLC 或 schema 错误。
 - `notifier_peer_pending_snapshot_partitions` 长期非零：检查快照版本是否一致、消息窗口大小是否一致、目标用户是否已被墓碑删除。
 - `notifier_clock_offset_ms` 接近阈值：检查 NTP 或宿主机时间源，必要时先修复系统时间再恢复写入。
+- 节点入口瞬时包未送达：先确认目标用户是否在线，再检查目标节点是否仍可达；如果业务需要离线补发，不应使用 `(node_id, 3)` 瞬时包模式。

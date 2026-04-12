@@ -293,9 +293,79 @@ func TestClientWebSocketSeenCursorAndSendMessage(t *testing.T) {
 		},
 	})
 	sendResp := readServerEnvelope(t, conn).GetSendMessageResponse()
-	if sendResp == nil || sendResp.RequestId != 42 || string(sendResp.Message.GetBody()) != string([]byte{0x00, 0x01, 0xfe}) {
+	if sendResp == nil || sendResp.RequestId != 42 || string(sendResp.GetMessage().GetBody()) != string([]byte{0x00, 0x01, 0xfe}) {
 		t.Fatalf("unexpected send response: %+v", sendResp)
 	}
+}
+
+func TestNodeIngressHTTPAndWebSocketTransientPacket(t *testing.T) {
+	t.Parallel()
+
+	testAPI := newAuthenticatedTestAPI(t)
+	server := httptest.NewServer(testAPI.handler)
+	defer server.Close()
+
+	adminKey := store.UserKey{NodeID: testNodeID(1), UserID: store.BootstrapAdminUserID}
+	adminToken := loginToken(t, testAPI.handler, adminKey, "root-password")
+	aliceKey := createUserAs(t, testAPI.handler, adminToken, "alice", "alice-password", store.RoleUser)
+	aliceToken := loginToken(t, testAPI.handler, aliceKey, "alice-password")
+
+	conn := dialClientWebSocket(t, server.URL)
+	defer conn.Close()
+	writeClientEnvelope(t, conn, &internalproto.ClientEnvelope{
+		Body: &internalproto.ClientEnvelope_Login{
+			Login: &internalproto.LoginRequest{
+				NodeId:   aliceKey.NodeID,
+				UserId:   aliceKey.UserID,
+				Password: "alice-password",
+			},
+		},
+	})
+	if loginResp := readServerEnvelope(t, conn).GetLoginResponse(); loginResp == nil {
+		t.Fatalf("expected login response")
+	}
+
+	var accepted struct {
+		Mode         string `json:"mode"`
+		PacketID     uint64 `json:"packet_id"`
+		TargetNodeID int64  `json:"target_node_id"`
+	}
+	mustJSON(t, doJSONWithHeaders(t, testAPI.handler, http.MethodPost, userMessagesPath(testNodeID(1), store.NodeIngressUserID), map[string]any{
+		"sender": "relay",
+		"body":   []byte("transient"),
+		"relay_target": map[string]any{
+			"node_id": aliceKey.NodeID,
+			"user_id": aliceKey.UserID,
+		},
+		"delivery_mode": string(store.DeliveryModeBestEffort),
+	}, map[string]string{
+		"Authorization": "Bearer " + aliceToken,
+	}, http.StatusAccepted), &accepted)
+	if accepted.Mode != "transient" || accepted.PacketID == 0 || accepted.TargetNodeID != aliceKey.NodeID {
+		t.Fatalf("unexpected accepted response: %+v", accepted)
+	}
+
+	packet := readServerEnvelope(t, conn).GetPacketPushed()
+	if packet == nil || packet.Packet == nil || string(packet.Packet.GetBody()) != "transient" || packet.Packet.GetRelayTarget().GetUserId() != aliceKey.UserID {
+		t.Fatalf("unexpected packet push: %+v", packet)
+	}
+}
+
+func TestNodeIngressRequiresRelayTarget(t *testing.T) {
+	t.Parallel()
+
+	testAPI := newAuthenticatedTestAPI(t)
+	adminKey := store.UserKey{NodeID: testNodeID(1), UserID: store.BootstrapAdminUserID}
+	adminToken := loginToken(t, testAPI.handler, adminKey, "root-password")
+	aliceKey := createUserAs(t, testAPI.handler, adminToken, "alice", "alice-password", store.RoleUser)
+	aliceToken := loginToken(t, testAPI.handler, aliceKey, "alice-password")
+
+	doJSONWithHeaders(t, testAPI.handler, http.MethodPost, userMessagesPath(testNodeID(1), store.NodeIngressUserID), map[string]any{
+		"sender": "relay",
+		"body":   []byte("transient"),
+	}, map[string]string{
+		"Authorization": "Bearer " + aliceToken,
+	}, http.StatusBadRequest)
 }
 
 func loginToken(t *testing.T, handler http.Handler, key store.UserKey, password string) string {

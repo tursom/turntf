@@ -21,6 +21,55 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+type ClientDeliveryMode int32
+
+const (
+	ClientDeliveryMode_CLIENT_DELIVERY_MODE_UNSPECIFIED ClientDeliveryMode = 0
+	ClientDeliveryMode_CLIENT_DELIVERY_MODE_BEST_EFFORT ClientDeliveryMode = 1
+	ClientDeliveryMode_CLIENT_DELIVERY_MODE_ROUTE_RETRY ClientDeliveryMode = 2
+)
+
+// Enum value maps for ClientDeliveryMode.
+var (
+	ClientDeliveryMode_name = map[int32]string{
+		0: "CLIENT_DELIVERY_MODE_UNSPECIFIED",
+		1: "CLIENT_DELIVERY_MODE_BEST_EFFORT",
+		2: "CLIENT_DELIVERY_MODE_ROUTE_RETRY",
+	}
+	ClientDeliveryMode_value = map[string]int32{
+		"CLIENT_DELIVERY_MODE_UNSPECIFIED": 0,
+		"CLIENT_DELIVERY_MODE_BEST_EFFORT": 1,
+		"CLIENT_DELIVERY_MODE_ROUTE_RETRY": 2,
+	}
+)
+
+func (x ClientDeliveryMode) Enum() *ClientDeliveryMode {
+	p := new(ClientDeliveryMode)
+	*p = x
+	return p
+}
+
+func (x ClientDeliveryMode) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (ClientDeliveryMode) Descriptor() protoreflect.EnumDescriptor {
+	return file_client_proto_enumTypes[0].Descriptor()
+}
+
+func (ClientDeliveryMode) Type() protoreflect.EnumType {
+	return &file_client_proto_enumTypes[0]
+}
+
+func (x ClientDeliveryMode) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use ClientDeliveryMode.Descriptor instead.
+func (ClientDeliveryMode) EnumDescriptor() ([]byte, []int) {
+	return file_client_proto_rawDescGZIP(), []int{0}
+}
+
 type ClientEnvelope struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Types that are valid to be assigned to Body:
@@ -144,6 +193,7 @@ type ServerEnvelope struct {
 	//	*ServerEnvelope_SendMessageResponse
 	//	*ServerEnvelope_Error
 	//	*ServerEnvelope_Pong
+	//	*ServerEnvelope_PacketPushed
 	Body          isServerEnvelope_Body `protobuf_oneof:"body"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -231,6 +281,15 @@ func (x *ServerEnvelope) GetPong() *Pong {
 	return nil
 }
 
+func (x *ServerEnvelope) GetPacketPushed() *PacketPushed {
+	if x != nil {
+		if x, ok := x.Body.(*ServerEnvelope_PacketPushed); ok {
+			return x.PacketPushed
+		}
+	}
+	return nil
+}
+
 type isServerEnvelope_Body interface {
 	isServerEnvelope_Body()
 }
@@ -255,6 +314,10 @@ type ServerEnvelope_Pong struct {
 	Pong *Pong `protobuf:"bytes,5,opt,name=pong,proto3,oneof"`
 }
 
+type ServerEnvelope_PacketPushed struct {
+	PacketPushed *PacketPushed `protobuf:"bytes,6,opt,name=packet_pushed,json=packetPushed,proto3,oneof"`
+}
+
 func (*ServerEnvelope_LoginResponse) isServerEnvelope_Body() {}
 
 func (*ServerEnvelope_MessagePushed) isServerEnvelope_Body() {}
@@ -264,6 +327,8 @@ func (*ServerEnvelope_SendMessageResponse) isServerEnvelope_Body() {}
 func (*ServerEnvelope_Error) isServerEnvelope_Body() {}
 
 func (*ServerEnvelope_Pong) isServerEnvelope_Body() {}
+
+func (*ServerEnvelope_PacketPushed) isServerEnvelope_Body() {}
 
 type LoginRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -391,6 +456,8 @@ type SendMessageRequest struct {
 	Target        *UserRef               `protobuf:"bytes,2,opt,name=target,proto3" json:"target,omitempty"`
 	Sender        string                 `protobuf:"bytes,3,opt,name=sender,proto3" json:"sender,omitempty"`
 	Body          []byte                 `protobuf:"bytes,4,opt,name=body,proto3" json:"body,omitempty"`
+	RelayTarget   *UserRef               `protobuf:"bytes,5,opt,name=relay_target,json=relayTarget,proto3" json:"relay_target,omitempty"`
+	DeliveryMode  ClientDeliveryMode     `protobuf:"varint,6,opt,name=delivery_mode,json=deliveryMode,proto3,enum=notifier.client.v1.ClientDeliveryMode" json:"delivery_mode,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -453,10 +520,28 @@ func (x *SendMessageRequest) GetBody() []byte {
 	return nil
 }
 
+func (x *SendMessageRequest) GetRelayTarget() *UserRef {
+	if x != nil {
+		return x.RelayTarget
+	}
+	return nil
+}
+
+func (x *SendMessageRequest) GetDeliveryMode() ClientDeliveryMode {
+	if x != nil {
+		return x.DeliveryMode
+	}
+	return ClientDeliveryMode_CLIENT_DELIVERY_MODE_UNSPECIFIED
+}
+
 type SendMessageResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	RequestId     uint64                 `protobuf:"varint,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
-	Message       *Message               `protobuf:"bytes,2,opt,name=message,proto3" json:"message,omitempty"`
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	RequestId uint64                 `protobuf:"varint,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
+	// Types that are valid to be assigned to Body:
+	//
+	//	*SendMessageResponse_Message
+	//	*SendMessageResponse_RelayAccepted
+	Body          isSendMessageResponse_Body `protobuf_oneof:"body"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -498,12 +583,46 @@ func (x *SendMessageResponse) GetRequestId() uint64 {
 	return 0
 }
 
-func (x *SendMessageResponse) GetMessage() *Message {
+func (x *SendMessageResponse) GetBody() isSendMessageResponse_Body {
 	if x != nil {
-		return x.Message
+		return x.Body
 	}
 	return nil
 }
+
+func (x *SendMessageResponse) GetMessage() *Message {
+	if x != nil {
+		if x, ok := x.Body.(*SendMessageResponse_Message); ok {
+			return x.Message
+		}
+	}
+	return nil
+}
+
+func (x *SendMessageResponse) GetRelayAccepted() *RelayAccepted {
+	if x != nil {
+		if x, ok := x.Body.(*SendMessageResponse_RelayAccepted); ok {
+			return x.RelayAccepted
+		}
+	}
+	return nil
+}
+
+type isSendMessageResponse_Body interface {
+	isSendMessageResponse_Body()
+}
+
+type SendMessageResponse_Message struct {
+	Message *Message `protobuf:"bytes,2,opt,name=message,proto3,oneof"`
+}
+
+type SendMessageResponse_RelayAccepted struct {
+	RelayAccepted *RelayAccepted `protobuf:"bytes,3,opt,name=relay_accepted,json=relayAccepted,proto3,oneof"`
+}
+
+func (*SendMessageResponse_Message) isSendMessageResponse_Body() {}
+
+func (*SendMessageResponse_RelayAccepted) isSendMessageResponse_Body() {}
 
 type MessagePushed struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -549,6 +668,126 @@ func (x *MessagePushed) GetMessage() *Message {
 	return nil
 }
 
+type PacketPushed struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Packet        *Packet                `protobuf:"bytes,1,opt,name=packet,proto3" json:"packet,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PacketPushed) Reset() {
+	*x = PacketPushed{}
+	mi := &file_client_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PacketPushed) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PacketPushed) ProtoMessage() {}
+
+func (x *PacketPushed) ProtoReflect() protoreflect.Message {
+	mi := &file_client_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PacketPushed.ProtoReflect.Descriptor instead.
+func (*PacketPushed) Descriptor() ([]byte, []int) {
+	return file_client_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *PacketPushed) GetPacket() *Packet {
+	if x != nil {
+		return x.Packet
+	}
+	return nil
+}
+
+type RelayAccepted struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	PacketId      uint64                 `protobuf:"varint,1,opt,name=packet_id,json=packetId,proto3" json:"packet_id,omitempty"`
+	SourceNodeId  int64                  `protobuf:"varint,2,opt,name=source_node_id,json=sourceNodeId,proto3" json:"source_node_id,omitempty"`
+	TargetNodeId  int64                  `protobuf:"varint,3,opt,name=target_node_id,json=targetNodeId,proto3" json:"target_node_id,omitempty"`
+	RelayTarget   *UserRef               `protobuf:"bytes,4,opt,name=relay_target,json=relayTarget,proto3" json:"relay_target,omitempty"`
+	DeliveryMode  ClientDeliveryMode     `protobuf:"varint,5,opt,name=delivery_mode,json=deliveryMode,proto3,enum=notifier.client.v1.ClientDeliveryMode" json:"delivery_mode,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RelayAccepted) Reset() {
+	*x = RelayAccepted{}
+	mi := &file_client_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RelayAccepted) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RelayAccepted) ProtoMessage() {}
+
+func (x *RelayAccepted) ProtoReflect() protoreflect.Message {
+	mi := &file_client_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RelayAccepted.ProtoReflect.Descriptor instead.
+func (*RelayAccepted) Descriptor() ([]byte, []int) {
+	return file_client_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *RelayAccepted) GetPacketId() uint64 {
+	if x != nil {
+		return x.PacketId
+	}
+	return 0
+}
+
+func (x *RelayAccepted) GetSourceNodeId() int64 {
+	if x != nil {
+		return x.SourceNodeId
+	}
+	return 0
+}
+
+func (x *RelayAccepted) GetTargetNodeId() int64 {
+	if x != nil {
+		return x.TargetNodeId
+	}
+	return 0
+}
+
+func (x *RelayAccepted) GetRelayTarget() *UserRef {
+	if x != nil {
+		return x.RelayTarget
+	}
+	return nil
+}
+
+func (x *RelayAccepted) GetDeliveryMode() ClientDeliveryMode {
+	if x != nil {
+		return x.DeliveryMode
+	}
+	return ClientDeliveryMode_CLIENT_DELIVERY_MODE_UNSPECIFIED
+}
+
 type AckMessage struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Cursor        *MessageCursor         `protobuf:"bytes,1,opt,name=cursor,proto3" json:"cursor,omitempty"`
@@ -558,7 +797,7 @@ type AckMessage struct {
 
 func (x *AckMessage) Reset() {
 	*x = AckMessage{}
-	mi := &file_client_proto_msgTypes[7]
+	mi := &file_client_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -570,7 +809,7 @@ func (x *AckMessage) String() string {
 func (*AckMessage) ProtoMessage() {}
 
 func (x *AckMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_client_proto_msgTypes[7]
+	mi := &file_client_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -583,7 +822,7 @@ func (x *AckMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AckMessage.ProtoReflect.Descriptor instead.
 func (*AckMessage) Descriptor() ([]byte, []int) {
-	return file_client_proto_rawDescGZIP(), []int{7}
+	return file_client_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *AckMessage) GetCursor() *MessageCursor {
@@ -602,7 +841,7 @@ type Ping struct {
 
 func (x *Ping) Reset() {
 	*x = Ping{}
-	mi := &file_client_proto_msgTypes[8]
+	mi := &file_client_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -614,7 +853,7 @@ func (x *Ping) String() string {
 func (*Ping) ProtoMessage() {}
 
 func (x *Ping) ProtoReflect() protoreflect.Message {
-	mi := &file_client_proto_msgTypes[8]
+	mi := &file_client_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -627,7 +866,7 @@ func (x *Ping) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Ping.ProtoReflect.Descriptor instead.
 func (*Ping) Descriptor() ([]byte, []int) {
-	return file_client_proto_rawDescGZIP(), []int{8}
+	return file_client_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *Ping) GetRequestId() uint64 {
@@ -646,7 +885,7 @@ type Pong struct {
 
 func (x *Pong) Reset() {
 	*x = Pong{}
-	mi := &file_client_proto_msgTypes[9]
+	mi := &file_client_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -658,7 +897,7 @@ func (x *Pong) String() string {
 func (*Pong) ProtoMessage() {}
 
 func (x *Pong) ProtoReflect() protoreflect.Message {
-	mi := &file_client_proto_msgTypes[9]
+	mi := &file_client_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -671,7 +910,7 @@ func (x *Pong) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Pong.ProtoReflect.Descriptor instead.
 func (*Pong) Descriptor() ([]byte, []int) {
-	return file_client_proto_rawDescGZIP(), []int{9}
+	return file_client_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *Pong) GetRequestId() uint64 {
@@ -692,7 +931,7 @@ type Error struct {
 
 func (x *Error) Reset() {
 	*x = Error{}
-	mi := &file_client_proto_msgTypes[10]
+	mi := &file_client_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -704,7 +943,7 @@ func (x *Error) String() string {
 func (*Error) ProtoMessage() {}
 
 func (x *Error) ProtoReflect() protoreflect.Message {
-	mi := &file_client_proto_msgTypes[10]
+	mi := &file_client_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -717,7 +956,7 @@ func (x *Error) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Error.ProtoReflect.Descriptor instead.
 func (*Error) Descriptor() ([]byte, []int) {
-	return file_client_proto_rawDescGZIP(), []int{10}
+	return file_client_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *Error) GetCode() string {
@@ -751,7 +990,7 @@ type MessageCursor struct {
 
 func (x *MessageCursor) Reset() {
 	*x = MessageCursor{}
-	mi := &file_client_proto_msgTypes[11]
+	mi := &file_client_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -763,7 +1002,7 @@ func (x *MessageCursor) String() string {
 func (*MessageCursor) ProtoMessage() {}
 
 func (x *MessageCursor) ProtoReflect() protoreflect.Message {
-	mi := &file_client_proto_msgTypes[11]
+	mi := &file_client_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -776,7 +1015,7 @@ func (x *MessageCursor) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MessageCursor.ProtoReflect.Descriptor instead.
 func (*MessageCursor) Descriptor() ([]byte, []int) {
-	return file_client_proto_rawDescGZIP(), []int{11}
+	return file_client_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *MessageCursor) GetNodeId() int64 {
@@ -803,7 +1042,7 @@ type UserRef struct {
 
 func (x *UserRef) Reset() {
 	*x = UserRef{}
-	mi := &file_client_proto_msgTypes[12]
+	mi := &file_client_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -815,7 +1054,7 @@ func (x *UserRef) String() string {
 func (*UserRef) ProtoMessage() {}
 
 func (x *UserRef) ProtoReflect() protoreflect.Message {
-	mi := &file_client_proto_msgTypes[12]
+	mi := &file_client_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -828,7 +1067,7 @@ func (x *UserRef) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UserRef.ProtoReflect.Descriptor instead.
 func (*UserRef) Descriptor() ([]byte, []int) {
-	return file_client_proto_rawDescGZIP(), []int{12}
+	return file_client_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *UserRef) GetNodeId() int64 {
@@ -857,7 +1096,7 @@ type User struct {
 
 func (x *User) Reset() {
 	*x = User{}
-	mi := &file_client_proto_msgTypes[13]
+	mi := &file_client_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -869,7 +1108,7 @@ func (x *User) String() string {
 func (*User) ProtoMessage() {}
 
 func (x *User) ProtoReflect() protoreflect.Message {
-	mi := &file_client_proto_msgTypes[13]
+	mi := &file_client_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -882,7 +1121,7 @@ func (x *User) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use User.ProtoReflect.Descriptor instead.
 func (*User) Descriptor() ([]byte, []int) {
-	return file_client_proto_rawDescGZIP(), []int{13}
+	return file_client_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *User) GetNodeId() int64 {
@@ -928,7 +1167,7 @@ type Message struct {
 
 func (x *Message) Reset() {
 	*x = Message{}
-	mi := &file_client_proto_msgTypes[14]
+	mi := &file_client_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -940,7 +1179,7 @@ func (x *Message) String() string {
 func (*Message) ProtoMessage() {}
 
 func (x *Message) ProtoReflect() protoreflect.Message {
-	mi := &file_client_proto_msgTypes[14]
+	mi := &file_client_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -953,7 +1192,7 @@ func (x *Message) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Message.ProtoReflect.Descriptor instead.
 func (*Message) Descriptor() ([]byte, []int) {
-	return file_client_proto_rawDescGZIP(), []int{14}
+	return file_client_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *Message) GetUserNodeId() int64 {
@@ -1005,6 +1244,98 @@ func (x *Message) GetCreatedAtHlc() string {
 	return ""
 }
 
+type Packet struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	PacketId      uint64                 `protobuf:"varint,1,opt,name=packet_id,json=packetId,proto3" json:"packet_id,omitempty"`
+	SourceNodeId  int64                  `protobuf:"varint,2,opt,name=source_node_id,json=sourceNodeId,proto3" json:"source_node_id,omitempty"`
+	TargetNodeId  int64                  `protobuf:"varint,3,opt,name=target_node_id,json=targetNodeId,proto3" json:"target_node_id,omitempty"`
+	RelayTarget   *UserRef               `protobuf:"bytes,4,opt,name=relay_target,json=relayTarget,proto3" json:"relay_target,omitempty"`
+	Sender        string                 `protobuf:"bytes,5,opt,name=sender,proto3" json:"sender,omitempty"`
+	Body          []byte                 `protobuf:"bytes,6,opt,name=body,proto3" json:"body,omitempty"`
+	DeliveryMode  ClientDeliveryMode     `protobuf:"varint,7,opt,name=delivery_mode,json=deliveryMode,proto3,enum=notifier.client.v1.ClientDeliveryMode" json:"delivery_mode,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Packet) Reset() {
+	*x = Packet{}
+	mi := &file_client_proto_msgTypes[17]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Packet) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Packet) ProtoMessage() {}
+
+func (x *Packet) ProtoReflect() protoreflect.Message {
+	mi := &file_client_proto_msgTypes[17]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Packet.ProtoReflect.Descriptor instead.
+func (*Packet) Descriptor() ([]byte, []int) {
+	return file_client_proto_rawDescGZIP(), []int{17}
+}
+
+func (x *Packet) GetPacketId() uint64 {
+	if x != nil {
+		return x.PacketId
+	}
+	return 0
+}
+
+func (x *Packet) GetSourceNodeId() int64 {
+	if x != nil {
+		return x.SourceNodeId
+	}
+	return 0
+}
+
+func (x *Packet) GetTargetNodeId() int64 {
+	if x != nil {
+		return x.TargetNodeId
+	}
+	return 0
+}
+
+func (x *Packet) GetRelayTarget() *UserRef {
+	if x != nil {
+		return x.RelayTarget
+	}
+	return nil
+}
+
+func (x *Packet) GetSender() string {
+	if x != nil {
+		return x.Sender
+	}
+	return ""
+}
+
+func (x *Packet) GetBody() []byte {
+	if x != nil {
+		return x.Body
+	}
+	return nil
+}
+
+func (x *Packet) GetDeliveryMode() ClientDeliveryMode {
+	if x != nil {
+		return x.DeliveryMode
+	}
+	return ClientDeliveryMode_CLIENT_DELIVERY_MODE_UNSPECIFIED
+}
+
 var File_client_proto protoreflect.FileDescriptor
 
 const file_client_proto_rawDesc = "" +
@@ -1016,13 +1347,14 @@ const file_client_proto_rawDesc = "" +
 	"\vack_message\x18\x03 \x01(\v2\x1e.notifier.client.v1.AckMessageH\x00R\n" +
 	"ackMessage\x12.\n" +
 	"\x04ping\x18\x04 \x01(\v2\x18.notifier.client.v1.PingH\x00R\x04pingB\x06\n" +
-	"\x04body\"\xf2\x02\n" +
+	"\x04body\"\xbb\x03\n" +
 	"\x0eServerEnvelope\x12J\n" +
 	"\x0elogin_response\x18\x01 \x01(\v2!.notifier.client.v1.LoginResponseH\x00R\rloginResponse\x12J\n" +
 	"\x0emessage_pushed\x18\x02 \x01(\v2!.notifier.client.v1.MessagePushedH\x00R\rmessagePushed\x12]\n" +
 	"\x15send_message_response\x18\x03 \x01(\v2'.notifier.client.v1.SendMessageResponseH\x00R\x13sendMessageResponse\x121\n" +
 	"\x05error\x18\x04 \x01(\v2\x19.notifier.client.v1.ErrorH\x00R\x05error\x12.\n" +
-	"\x04pong\x18\x05 \x01(\v2\x18.notifier.client.v1.PongH\x00R\x04pongB\x06\n" +
+	"\x04pong\x18\x05 \x01(\v2\x18.notifier.client.v1.PongH\x00R\x04pong\x12G\n" +
+	"\rpacket_pushed\x18\x06 \x01(\v2 .notifier.client.v1.PacketPushedH\x00R\fpacketPushedB\x06\n" +
 	"\x04body\"\xa4\x01\n" +
 	"\fLoginRequest\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\x03R\x06nodeId\x12\x17\n" +
@@ -1031,19 +1363,31 @@ const file_client_proto_rawDesc = "" +
 	"\rseen_messages\x18\x04 \x03(\v2!.notifier.client.v1.MessageCursorR\fseenMessages\"h\n" +
 	"\rLoginResponse\x12,\n" +
 	"\x04user\x18\x01 \x01(\v2\x18.notifier.client.v1.UserR\x04user\x12)\n" +
-	"\x10protocol_version\x18\x02 \x01(\tR\x0fprotocolVersion\"\x94\x01\n" +
+	"\x10protocol_version\x18\x02 \x01(\tR\x0fprotocolVersion\"\xa1\x02\n" +
 	"\x12SendMessageRequest\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\x04R\trequestId\x123\n" +
 	"\x06target\x18\x02 \x01(\v2\x1b.notifier.client.v1.UserRefR\x06target\x12\x16\n" +
 	"\x06sender\x18\x03 \x01(\tR\x06sender\x12\x12\n" +
-	"\x04body\x18\x04 \x01(\fR\x04body\"k\n" +
+	"\x04body\x18\x04 \x01(\fR\x04body\x12>\n" +
+	"\frelay_target\x18\x05 \x01(\v2\x1b.notifier.client.v1.UserRefR\vrelayTarget\x12K\n" +
+	"\rdelivery_mode\x18\x06 \x01(\x0e2&.notifier.client.v1.ClientDeliveryModeR\fdeliveryMode\"\xc1\x01\n" +
 	"\x13SendMessageResponse\x12\x1d\n" +
 	"\n" +
-	"request_id\x18\x01 \x01(\x04R\trequestId\x125\n" +
-	"\amessage\x18\x02 \x01(\v2\x1b.notifier.client.v1.MessageR\amessage\"F\n" +
+	"request_id\x18\x01 \x01(\x04R\trequestId\x127\n" +
+	"\amessage\x18\x02 \x01(\v2\x1b.notifier.client.v1.MessageH\x00R\amessage\x12J\n" +
+	"\x0erelay_accepted\x18\x03 \x01(\v2!.notifier.client.v1.RelayAcceptedH\x00R\rrelayAcceptedB\x06\n" +
+	"\x04body\"F\n" +
 	"\rMessagePushed\x125\n" +
-	"\amessage\x18\x01 \x01(\v2\x1b.notifier.client.v1.MessageR\amessage\"G\n" +
+	"\amessage\x18\x01 \x01(\v2\x1b.notifier.client.v1.MessageR\amessage\"B\n" +
+	"\fPacketPushed\x122\n" +
+	"\x06packet\x18\x01 \x01(\v2\x1a.notifier.client.v1.PacketR\x06packet\"\x85\x02\n" +
+	"\rRelayAccepted\x12\x1b\n" +
+	"\tpacket_id\x18\x01 \x01(\x04R\bpacketId\x12$\n" +
+	"\x0esource_node_id\x18\x02 \x01(\x03R\fsourceNodeId\x12$\n" +
+	"\x0etarget_node_id\x18\x03 \x01(\x03R\ftargetNodeId\x12>\n" +
+	"\frelay_target\x18\x04 \x01(\v2\x1b.notifier.client.v1.UserRefR\vrelayTarget\x12K\n" +
+	"\rdelivery_mode\x18\x05 \x01(\x0e2&.notifier.client.v1.ClientDeliveryModeR\fdeliveryMode\"G\n" +
 	"\n" +
 	"AckMessage\x129\n" +
 	"\x06cursor\x18\x01 \x01(\v2!.notifier.client.v1.MessageCursorR\x06cursor\"%\n" +
@@ -1077,7 +1421,19 @@ const file_client_proto_rawDesc = "" +
 	"\x03seq\x18\x04 \x01(\x03R\x03seq\x12\x16\n" +
 	"\x06sender\x18\x05 \x01(\tR\x06sender\x12\x12\n" +
 	"\x04body\x18\x06 \x01(\fR\x04body\x12$\n" +
-	"\x0ecreated_at_hlc\x18\a \x01(\tR\fcreatedAtHlcB\x1fZ\x1dnotifier/internal/proto;protob\x06proto3"
+	"\x0ecreated_at_hlc\x18\a \x01(\tR\fcreatedAtHlc\"\xaa\x02\n" +
+	"\x06Packet\x12\x1b\n" +
+	"\tpacket_id\x18\x01 \x01(\x04R\bpacketId\x12$\n" +
+	"\x0esource_node_id\x18\x02 \x01(\x03R\fsourceNodeId\x12$\n" +
+	"\x0etarget_node_id\x18\x03 \x01(\x03R\ftargetNodeId\x12>\n" +
+	"\frelay_target\x18\x04 \x01(\v2\x1b.notifier.client.v1.UserRefR\vrelayTarget\x12\x16\n" +
+	"\x06sender\x18\x05 \x01(\tR\x06sender\x12\x12\n" +
+	"\x04body\x18\x06 \x01(\fR\x04body\x12K\n" +
+	"\rdelivery_mode\x18\a \x01(\x0e2&.notifier.client.v1.ClientDeliveryModeR\fdeliveryMode*\x86\x01\n" +
+	"\x12ClientDeliveryMode\x12$\n" +
+	" CLIENT_DELIVERY_MODE_UNSPECIFIED\x10\x00\x12$\n" +
+	" CLIENT_DELIVERY_MODE_BEST_EFFORT\x10\x01\x12$\n" +
+	" CLIENT_DELIVERY_MODE_ROUTE_RETRY\x10\x02B\x1fZ\x1dnotifier/internal/proto;protob\x06proto3"
 
 var (
 	file_client_proto_rawDescOnce sync.Once
@@ -1091,45 +1447,59 @@ func file_client_proto_rawDescGZIP() []byte {
 	return file_client_proto_rawDescData
 }
 
-var file_client_proto_msgTypes = make([]protoimpl.MessageInfo, 15)
+var file_client_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
+var file_client_proto_msgTypes = make([]protoimpl.MessageInfo, 18)
 var file_client_proto_goTypes = []any{
-	(*ClientEnvelope)(nil),      // 0: notifier.client.v1.ClientEnvelope
-	(*ServerEnvelope)(nil),      // 1: notifier.client.v1.ServerEnvelope
-	(*LoginRequest)(nil),        // 2: notifier.client.v1.LoginRequest
-	(*LoginResponse)(nil),       // 3: notifier.client.v1.LoginResponse
-	(*SendMessageRequest)(nil),  // 4: notifier.client.v1.SendMessageRequest
-	(*SendMessageResponse)(nil), // 5: notifier.client.v1.SendMessageResponse
-	(*MessagePushed)(nil),       // 6: notifier.client.v1.MessagePushed
-	(*AckMessage)(nil),          // 7: notifier.client.v1.AckMessage
-	(*Ping)(nil),                // 8: notifier.client.v1.Ping
-	(*Pong)(nil),                // 9: notifier.client.v1.Pong
-	(*Error)(nil),               // 10: notifier.client.v1.Error
-	(*MessageCursor)(nil),       // 11: notifier.client.v1.MessageCursor
-	(*UserRef)(nil),             // 12: notifier.client.v1.UserRef
-	(*User)(nil),                // 13: notifier.client.v1.User
-	(*Message)(nil),             // 14: notifier.client.v1.Message
+	(ClientDeliveryMode)(0),     // 0: notifier.client.v1.ClientDeliveryMode
+	(*ClientEnvelope)(nil),      // 1: notifier.client.v1.ClientEnvelope
+	(*ServerEnvelope)(nil),      // 2: notifier.client.v1.ServerEnvelope
+	(*LoginRequest)(nil),        // 3: notifier.client.v1.LoginRequest
+	(*LoginResponse)(nil),       // 4: notifier.client.v1.LoginResponse
+	(*SendMessageRequest)(nil),  // 5: notifier.client.v1.SendMessageRequest
+	(*SendMessageResponse)(nil), // 6: notifier.client.v1.SendMessageResponse
+	(*MessagePushed)(nil),       // 7: notifier.client.v1.MessagePushed
+	(*PacketPushed)(nil),        // 8: notifier.client.v1.PacketPushed
+	(*RelayAccepted)(nil),       // 9: notifier.client.v1.RelayAccepted
+	(*AckMessage)(nil),          // 10: notifier.client.v1.AckMessage
+	(*Ping)(nil),                // 11: notifier.client.v1.Ping
+	(*Pong)(nil),                // 12: notifier.client.v1.Pong
+	(*Error)(nil),               // 13: notifier.client.v1.Error
+	(*MessageCursor)(nil),       // 14: notifier.client.v1.MessageCursor
+	(*UserRef)(nil),             // 15: notifier.client.v1.UserRef
+	(*User)(nil),                // 16: notifier.client.v1.User
+	(*Message)(nil),             // 17: notifier.client.v1.Message
+	(*Packet)(nil),              // 18: notifier.client.v1.Packet
 }
 var file_client_proto_depIdxs = []int32{
-	2,  // 0: notifier.client.v1.ClientEnvelope.login:type_name -> notifier.client.v1.LoginRequest
-	4,  // 1: notifier.client.v1.ClientEnvelope.send_message:type_name -> notifier.client.v1.SendMessageRequest
-	7,  // 2: notifier.client.v1.ClientEnvelope.ack_message:type_name -> notifier.client.v1.AckMessage
-	8,  // 3: notifier.client.v1.ClientEnvelope.ping:type_name -> notifier.client.v1.Ping
-	3,  // 4: notifier.client.v1.ServerEnvelope.login_response:type_name -> notifier.client.v1.LoginResponse
-	6,  // 5: notifier.client.v1.ServerEnvelope.message_pushed:type_name -> notifier.client.v1.MessagePushed
-	5,  // 6: notifier.client.v1.ServerEnvelope.send_message_response:type_name -> notifier.client.v1.SendMessageResponse
-	10, // 7: notifier.client.v1.ServerEnvelope.error:type_name -> notifier.client.v1.Error
-	9,  // 8: notifier.client.v1.ServerEnvelope.pong:type_name -> notifier.client.v1.Pong
-	11, // 9: notifier.client.v1.LoginRequest.seen_messages:type_name -> notifier.client.v1.MessageCursor
-	13, // 10: notifier.client.v1.LoginResponse.user:type_name -> notifier.client.v1.User
-	12, // 11: notifier.client.v1.SendMessageRequest.target:type_name -> notifier.client.v1.UserRef
-	14, // 12: notifier.client.v1.SendMessageResponse.message:type_name -> notifier.client.v1.Message
-	14, // 13: notifier.client.v1.MessagePushed.message:type_name -> notifier.client.v1.Message
-	11, // 14: notifier.client.v1.AckMessage.cursor:type_name -> notifier.client.v1.MessageCursor
-	15, // [15:15] is the sub-list for method output_type
-	15, // [15:15] is the sub-list for method input_type
-	15, // [15:15] is the sub-list for extension type_name
-	15, // [15:15] is the sub-list for extension extendee
-	0,  // [0:15] is the sub-list for field type_name
+	3,  // 0: notifier.client.v1.ClientEnvelope.login:type_name -> notifier.client.v1.LoginRequest
+	5,  // 1: notifier.client.v1.ClientEnvelope.send_message:type_name -> notifier.client.v1.SendMessageRequest
+	10, // 2: notifier.client.v1.ClientEnvelope.ack_message:type_name -> notifier.client.v1.AckMessage
+	11, // 3: notifier.client.v1.ClientEnvelope.ping:type_name -> notifier.client.v1.Ping
+	4,  // 4: notifier.client.v1.ServerEnvelope.login_response:type_name -> notifier.client.v1.LoginResponse
+	7,  // 5: notifier.client.v1.ServerEnvelope.message_pushed:type_name -> notifier.client.v1.MessagePushed
+	6,  // 6: notifier.client.v1.ServerEnvelope.send_message_response:type_name -> notifier.client.v1.SendMessageResponse
+	13, // 7: notifier.client.v1.ServerEnvelope.error:type_name -> notifier.client.v1.Error
+	12, // 8: notifier.client.v1.ServerEnvelope.pong:type_name -> notifier.client.v1.Pong
+	8,  // 9: notifier.client.v1.ServerEnvelope.packet_pushed:type_name -> notifier.client.v1.PacketPushed
+	14, // 10: notifier.client.v1.LoginRequest.seen_messages:type_name -> notifier.client.v1.MessageCursor
+	16, // 11: notifier.client.v1.LoginResponse.user:type_name -> notifier.client.v1.User
+	15, // 12: notifier.client.v1.SendMessageRequest.target:type_name -> notifier.client.v1.UserRef
+	15, // 13: notifier.client.v1.SendMessageRequest.relay_target:type_name -> notifier.client.v1.UserRef
+	0,  // 14: notifier.client.v1.SendMessageRequest.delivery_mode:type_name -> notifier.client.v1.ClientDeliveryMode
+	17, // 15: notifier.client.v1.SendMessageResponse.message:type_name -> notifier.client.v1.Message
+	9,  // 16: notifier.client.v1.SendMessageResponse.relay_accepted:type_name -> notifier.client.v1.RelayAccepted
+	17, // 17: notifier.client.v1.MessagePushed.message:type_name -> notifier.client.v1.Message
+	18, // 18: notifier.client.v1.PacketPushed.packet:type_name -> notifier.client.v1.Packet
+	15, // 19: notifier.client.v1.RelayAccepted.relay_target:type_name -> notifier.client.v1.UserRef
+	0,  // 20: notifier.client.v1.RelayAccepted.delivery_mode:type_name -> notifier.client.v1.ClientDeliveryMode
+	14, // 21: notifier.client.v1.AckMessage.cursor:type_name -> notifier.client.v1.MessageCursor
+	15, // 22: notifier.client.v1.Packet.relay_target:type_name -> notifier.client.v1.UserRef
+	0,  // 23: notifier.client.v1.Packet.delivery_mode:type_name -> notifier.client.v1.ClientDeliveryMode
+	24, // [24:24] is the sub-list for method output_type
+	24, // [24:24] is the sub-list for method input_type
+	24, // [24:24] is the sub-list for extension type_name
+	24, // [24:24] is the sub-list for extension extendee
+	0,  // [0:24] is the sub-list for field type_name
 }
 
 func init() { file_client_proto_init() }
@@ -1149,19 +1519,25 @@ func file_client_proto_init() {
 		(*ServerEnvelope_SendMessageResponse)(nil),
 		(*ServerEnvelope_Error)(nil),
 		(*ServerEnvelope_Pong)(nil),
+		(*ServerEnvelope_PacketPushed)(nil),
+	}
+	file_client_proto_msgTypes[5].OneofWrappers = []any{
+		(*SendMessageResponse_Message)(nil),
+		(*SendMessageResponse_RelayAccepted)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_client_proto_rawDesc), len(file_client_proto_rawDesc)),
-			NumEnums:      0,
-			NumMessages:   15,
+			NumEnums:      1,
+			NumMessages:   18,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
 		GoTypes:           file_client_proto_goTypes,
 		DependencyIndexes: file_client_proto_depIdxs,
+		EnumInfos:         file_client_proto_enumTypes,
 		MessageInfos:      file_client_proto_msgTypes,
 	}.Build()
 	File_client_proto = out.File

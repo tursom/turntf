@@ -23,19 +23,25 @@ import (
 )
 
 const (
-	websocketPath        = "/internal/cluster/ws"
-	writeWait            = 10 * time.Second
-	pingInterval         = 15 * time.Second
-	readTimeout          = 45 * time.Second
-	outboundQueueSize    = 128
-	managerPublishQueue  = 256
-	pullBatchSize        = 128
-	timeSyncSampleCount  = 5
-	timeSyncInterval     = 30 * time.Second
-	timeSyncTimeout      = 3 * time.Second
-	catchupRetryInterval = time.Second
-	antiEntropyInterval  = 60 * time.Second
-	writeGateGrace       = 90 * time.Second
+	websocketPath            = "/internal/cluster/ws"
+	writeWait                = 10 * time.Second
+	pingInterval             = 15 * time.Second
+	readTimeout              = 45 * time.Second
+	outboundQueueSize        = 128
+	managerPublishQueue      = 256
+	pullBatchSize            = 128
+	timeSyncSampleCount      = 5
+	timeSyncInterval         = 30 * time.Second
+	timeSyncTimeout          = 3 * time.Second
+	catchupRetryInterval     = time.Second
+	antiEntropyInterval      = 60 * time.Second
+	writeGateGrace           = 90 * time.Second
+	routingUpdateInterval    = 5 * time.Second
+	routeRetryInterval       = 200 * time.Millisecond
+	packetSeenTTL            = 30 * time.Second
+	routeRetryTTL            = 3 * time.Second
+	defaultPacketTTLHops     = 8
+	routingSwitchThresholdMs = 15
 )
 
 var marshalOptions = proto.MarshalOptions{Deterministic: true}
@@ -63,6 +69,11 @@ type Manager struct {
 
 	lastSuccessfulClockSync time.Time
 	timeSyncer              func(*session) (timeSyncSample, error)
+	transientHandler        func(store.TransientPacket) bool
+	routingGeneration       uint64
+	routingTable            map[int64]routeEntry
+	seenPackets             map[string]time.Time
+	retryQueue              map[string]queuedPacket
 }
 
 type configuredPeer struct {
@@ -76,6 +87,8 @@ type peerState struct {
 	trustedSession *session
 	clockOffsetMs  int64
 	lastClockSync  time.Time
+	sessions       map[uint64]*session
+	routeAdverts   map[int64]routeAdvertisement
 
 	snapshotDigestsSent     uint64
 	snapshotDigestsReceived uint64
@@ -92,6 +105,7 @@ type session struct {
 
 	configuredPeer *configuredPeer
 	peerID         int64
+	connectionID   uint64
 
 	send chan *internalproto.Envelope
 
@@ -109,6 +123,37 @@ type session struct {
 	nextPullRequestID       uint64
 	pendingTimeSync         map[uint64]chan timeSyncResult
 	clockOffsetMs           int64
+	supportsRouting         bool
+	smoothedRTTMs           int64
+	jitterPenaltyMs         int64
+	lastRTTUpdate           time.Time
+}
+
+type routeAdvertisement struct {
+	destinationNodeID int64
+	reachable         bool
+	totalCostMs       int64
+	residualCostMs    int64
+	residualJitterMs  int64
+}
+
+type routeEntry struct {
+	destinationNodeID    int64
+	nextHopPeer          int64
+	selectedConnectionID uint64
+	totalCostMs          int64
+	residualCostMs       int64
+	residualJitterMs     int64
+	learnedFromPeer      int64
+	generation           uint64
+	updatedAt            time.Time
+}
+
+type queuedPacket struct {
+	packet      store.TransientPacket
+	queuedAt    time.Time
+	nextAttempt time.Time
+	attempts    int
 }
 
 type pendingPullState struct {
@@ -155,6 +200,9 @@ func NewManager(cfg Config, st *store.Store) (*Manager, error) {
 		dialer:          websocket.DefaultDialer,
 		peers:           make(map[int64]*peerState, len(cfg.Peers)),
 		configuredPeers: configuredPeers,
+		routingTable:    make(map[int64]routeEntry),
+		seenPackets:     make(map[string]time.Time),
+		retryQueue:      make(map[string]queuedPacket),
 	}
 	mgr.mux.HandleFunc("GET "+cfg.AdvertisePath, mgr.handleWebSocket)
 	return mgr, nil
@@ -174,6 +222,8 @@ func (m *Manager) Start(parent context.Context) {
 
 		m.wg.Add(1)
 		go m.publishLoop()
+		m.wg.Add(1)
+		go m.routingLoop()
 
 		for _, peer := range m.configuredPeers {
 			peer := peer
@@ -224,6 +274,26 @@ func (m *Manager) Publish(event store.Event) {
 	}
 }
 
+func (m *Manager) SetTransientHandler(handler func(store.TransientPacket) bool) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.transientHandler = handler
+}
+
+func (m *Manager) RouteTransientPacket(_ context.Context, packet store.TransientPacket) error {
+	if m == nil {
+		return nil
+	}
+	if packet.TTLHops <= 0 {
+		packet.TTLHops = defaultPacketTTLHops
+	}
+	m.routeOrQueueTransient(packet)
+	return nil
+}
+
 func (m *Manager) publishLoop() {
 	defer m.wg.Done()
 
@@ -233,6 +303,26 @@ func (m *Manager) publishLoop() {
 			return
 		case event := <-m.publishCh:
 			m.broadcastEvent(event)
+		}
+	}
+}
+
+func (m *Manager) routingLoop() {
+	defer m.wg.Done()
+
+	updateTicker := time.NewTicker(routingUpdateInterval)
+	retryTicker := time.NewTicker(routeRetryInterval)
+	defer updateTicker.Stop()
+	defer retryTicker.Stop()
+
+	for {
+		select {
+		case <-m.ctx.Done():
+			return
+		case <-updateTicker.C:
+			m.broadcastRoutingUpdate()
+		case <-retryTicker.C:
+			m.retryTransientPackets()
 		}
 	}
 }
@@ -335,15 +425,21 @@ func (m *Manager) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 }
 
 func (m *Manager) newSession(conn *websocket.Conn, outbound bool, configuredPeer *configuredPeer) *session {
+	m.mu.Lock()
+	m.routingGeneration++
+	connectionID := m.routingGeneration
+	m.mu.Unlock()
 	return &session{
 		manager:              m,
 		conn:                 conn,
 		outbound:             outbound,
 		configuredPeer:       configuredPeer,
+		connectionID:         connectionID,
 		send:                 make(chan *internalproto.Envelope, outboundQueueSize),
 		remoteOriginProgress: make(map[int64]uint64),
 		pendingPulls:         make(map[int64]pendingPullState),
 		pendingTimeSync:      make(map[uint64]chan timeSyncResult),
+		supportsRouting:      true,
 	}
 }
 
@@ -357,7 +453,7 @@ func (m *Manager) runSession(sess *session) {
 		return sess.conn.SetReadDeadline(time.Now().Add(readTimeout))
 	})
 
-	hello, err := m.buildHelloEnvelope()
+	hello, err := m.buildHelloEnvelope(sess)
 	if err != nil {
 		log.Warn().Err(err).Str("component", "cluster").Str("event", "build_hello_failed").Msg("build hello failed")
 		return
@@ -374,7 +470,11 @@ func (m *Manager) runSession(sess *session) {
 	<-writeDone
 }
 
-func (m *Manager) buildHelloEnvelope() (*internalproto.Envelope, error) {
+func (m *Manager) buildHelloEnvelope(sessions ...*session) (*internalproto.Envelope, error) {
+	var sess *session
+	if len(sessions) > 0 {
+		sess = sessions[0]
+	}
 	originProgress, err := m.store.ListOriginProgress(context.Background())
 	if err != nil {
 		return nil, err
@@ -398,6 +498,8 @@ func (m *Manager) buildHelloEnvelope() (*internalproto.Envelope, error) {
 				OriginProgress:    progress,
 				SnapshotVersion:   internalproto.SnapshotVersion,
 				MessageWindowSize: uint32(m.cfg.MessageWindowSize),
+				SupportsRouting:   true,
+				ConnectionId:      connectionIDForHello(sess),
 			},
 		},
 	}, nil
@@ -489,6 +591,14 @@ func (m *Manager) readLoop(sess *session) {
 			if err := m.handleSnapshotChunk(sess, &envelope); err != nil {
 				return
 			}
+		case *internalproto.Envelope_RoutingUpdate:
+			if err := m.handleRoutingUpdate(sess, &envelope); err != nil {
+				return
+			}
+		case *internalproto.Envelope_TransientPacket:
+			if err := m.handleTransientPacket(sess, &envelope); err != nil {
+				return
+			}
 		default:
 			return
 		}
@@ -546,6 +656,12 @@ func (m *Manager) handleHello(sess *session, envelope *internalproto.Envelope) e
 
 	sess.remoteSnapshotVersion = hello.SnapshotVersion
 	sess.remoteMessageWindowSize = int(hello.MessageWindowSize)
+	sess.supportsRouting = hello.SupportsRouting
+	if hello.ConnectionId != 0 {
+		sess.connectionID = hello.ConnectionId
+	}
+	sess.smoothedRTTMs = int64(hello.SmoothedRttMs)
+	sess.jitterPenaltyMs = int64(hello.JitterPenaltyMs)
 	sess.noteRemoteOriginProgress(hello.OriginProgress)
 
 	if !sess.beginBootstrap() {
@@ -932,6 +1048,7 @@ func (m *Manager) performTimeSync(sess *session) error {
 	}
 
 	sess.setClockOffset(best.offsetMs)
+	sess.observeRTT(best.rttMs)
 	if m.cfg.MaxClockSkewMs > 0 && absInt64(best.offsetMs) > m.cfg.MaxClockSkewMs {
 		return fmt.Errorf("clock offset %dms exceeds max skew %dms", best.offsetMs, m.cfg.MaxClockSkewMs)
 	}
@@ -1085,6 +1202,13 @@ func (m *Manager) markPeerClockSynced(sess *session, offsetMs int64) {
 	peer.clockOffsetMs = offsetMs
 	peer.lastClockSync = time.Now()
 	m.lastSuccessfulClockSync = peer.lastClockSync
+	if sess.smoothedRTTMs <= 0 {
+		sess.smoothedRTTMs = 1
+	}
+	if peer.sessions != nil {
+		peer.sessions[sess.connectionID] = sess
+	}
+	m.recomputeRoutesLocked()
 	m.recomputeClockOffsetLocked()
 }
 
@@ -1101,6 +1225,7 @@ func (m *Manager) clearPeerClockSync(sess *session) {
 		peer.clockOffsetMs = 0
 		peer.lastClockSync = time.Time{}
 	}
+	m.recomputeRoutesLocked()
 	m.recomputeClockOffsetLocked()
 }
 
@@ -1223,9 +1348,17 @@ func (m *Manager) activateSession(sess *session) bool {
 
 	if peer.active == nil {
 		peer.active = sess
+		if peer.sessions == nil {
+			peer.sessions = make(map[uint64]*session)
+		}
+		peer.sessions[sess.connectionID] = sess
 		return true
 	}
 	if peer.active == sess {
+		if peer.sessions == nil {
+			peer.sessions = make(map[uint64]*session)
+		}
+		peer.sessions[sess.connectionID] = sess
 		return true
 	}
 
@@ -1237,6 +1370,10 @@ func (m *Manager) activateSession(sess *session) bool {
 
 	old := peer.active
 	peer.active = sess
+	if peer.sessions == nil {
+		peer.sessions = make(map[uint64]*session)
+	}
+	peer.sessions[sess.connectionID] = sess
 	go old.close()
 	return true
 }
@@ -1251,11 +1388,18 @@ func (m *Manager) deactivateSession(sess *session) {
 	if ok && peer.active == sess {
 		peer.active = nil
 	}
+	if ok && peer.sessions != nil {
+		delete(peer.sessions, sess.connectionID)
+	}
 	if ok && peer.trustedSession == sess {
 		peer.trustedSession = nil
 		peer.clockOffsetMs = 0
 		peer.lastClockSync = time.Time{}
 	}
+	if ok && len(peer.sessions) == 0 {
+		peer.routeAdverts = nil
+	}
+	m.recomputeRoutesLocked()
 	m.recomputeClockOffsetLocked()
 	m.mu.Unlock()
 }
@@ -1504,6 +1648,24 @@ func (s *session) clockOffset() int64 {
 	return s.clockOffsetMs
 }
 
+func (s *session) observeRTT(rttMs int64) {
+	if rttMs < 0 {
+		rttMs = 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.smoothedRTTMs == 0 {
+		s.smoothedRTTMs = rttMs
+		s.jitterPenaltyMs = 0
+		s.lastRTTUpdate = time.Now().UTC()
+		return
+	}
+	diff := absInt64(rttMs - s.smoothedRTTMs)
+	s.jitterPenaltyMs = (3*s.jitterPenaltyMs + diff) / 4
+	s.smoothedRTTMs = (7*s.smoothedRTTMs + rttMs) / 8
+	s.lastRTTUpdate = time.Now().UTC()
+}
+
 func (s *session) beginSnapshotRequest(partition string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1564,6 +1726,13 @@ func absInt64(value int64) int64 {
 	return value
 }
 
+func connectionIDForHello(sess *session) uint64 {
+	if sess == nil {
+		return 0
+	}
+	return sess.connectionID
+}
+
 func (m *Manager) hasActivePeer(peerID int64) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -1606,7 +1775,11 @@ func (m *Manager) bindPeerIdentity(sess *session, peerID int64) error {
 
 	sess.peerID = peerID
 	if _, ok := m.peers[peerID]; !ok {
-		m.peers[peerID] = &peerState{}
+		m.peers[peerID] = &peerState{
+			sessions:     make(map[uint64]*session),
+			routeAdverts: make(map[int64]routeAdvertisement),
+		}
 	}
+	m.peers[peerID].sessions[sess.connectionID] = sess
 	return nil
 }

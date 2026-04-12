@@ -62,6 +62,8 @@ func (h *HTTP) handleClientWebSocket(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	h.registerClientSession(sess.principal.User.Key(), sess)
+	defer h.unregisterClientSession(sess.principal.User.Key(), sess)
 
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
@@ -246,6 +248,38 @@ func (s *clientWSSession) handleSendMessage(ctx context.Context, req *internalpr
 	if err := s.http.authorizeCreateMessage(ctx, s.principal, target); err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
+	if target.UserID == store.NodeIngressUserID {
+		if req.RelayTarget == nil || req.RelayTarget.NodeId <= 0 || req.RelayTarget.UserId <= 0 {
+			return s.writeStoreOrRequestError(req.RequestId, fmt.Errorf("%w: relay_target is required", store.ErrInvalidInput))
+		}
+		mode, err := store.NormalizeDeliveryMode(clientDeliveryModeString(req.DeliveryMode))
+		if err != nil {
+			return s.writeStoreOrRequestError(req.RequestId, err)
+		}
+		packet, err := s.http.service.DispatchTransientPacket(ctx, target, store.UserKey{
+			NodeID: req.RelayTarget.NodeId,
+			UserID: req.RelayTarget.UserId,
+		}, req.Sender, req.Body, mode)
+		if err != nil {
+			return s.writeStoreOrRequestError(req.RequestId, err)
+		}
+		return s.writeEnvelope(&internalproto.ServerEnvelope{
+			Body: &internalproto.ServerEnvelope_SendMessageResponse{
+				SendMessageResponse: &internalproto.SendMessageResponse{
+					RequestId: req.RequestId,
+					Body: &internalproto.SendMessageResponse_RelayAccepted{
+						RelayAccepted: clientProtoRelayAccepted(packet),
+					},
+				},
+			},
+		})
+	}
+	if req.RelayTarget != nil {
+		return s.writeStoreOrRequestError(req.RequestId, fmt.Errorf("%w: relay_target is only allowed for node ingress messages", store.ErrInvalidInput))
+	}
+	if req.DeliveryMode != internalproto.ClientDeliveryMode_CLIENT_DELIVERY_MODE_UNSPECIFIED {
+		return s.writeStoreOrRequestError(req.RequestId, fmt.Errorf("%w: delivery_mode is only allowed for node ingress messages", store.ErrInvalidInput))
+	}
 	message, _, err := s.http.service.CreateMessage(ctx, store.CreateMessageParams{
 		UserKey: target,
 		Sender:  req.Sender,
@@ -259,7 +293,9 @@ func (s *clientWSSession) handleSendMessage(ctx context.Context, req *internalpr
 		Body: &internalproto.ServerEnvelope_SendMessageResponse{
 			SendMessageResponse: &internalproto.SendMessageResponse{
 				RequestId: req.RequestId,
-				Message:   clientProtoMessage(message),
+				Body: &internalproto.SendMessageResponse_Message{
+					Message: clientProtoMessage(message),
+				},
 			},
 		},
 	})
@@ -302,6 +338,14 @@ func (s *clientWSSession) pushMessage(message store.Message) error {
 	return s.writeEnvelope(&internalproto.ServerEnvelope{
 		Body: &internalproto.ServerEnvelope_MessagePushed{
 			MessagePushed: &internalproto.MessagePushed{Message: clientProtoMessage(message)},
+		},
+	})
+}
+
+func (s *clientWSSession) pushPacket(packet store.TransientPacket) error {
+	return s.writeEnvelope(&internalproto.ServerEnvelope{
+		Body: &internalproto.ServerEnvelope_PacketPushed{
+			PacketPushed: &internalproto.PacketPushed{Packet: clientProtoPacket(packet)},
 		},
 	})
 }
@@ -377,6 +421,48 @@ func clientProtoMessage(message store.Message) *internalproto.Message {
 		Sender:       message.Sender,
 		Body:         append([]byte(nil), message.Body...),
 		CreatedAtHlc: message.CreatedAt.String(),
+	}
+}
+
+func clientProtoPacket(packet store.TransientPacket) *internalproto.Packet {
+	return &internalproto.Packet{
+		PacketId:     packet.PacketID,
+		SourceNodeId: packet.SourceNodeID,
+		TargetNodeId: packet.TargetNodeID,
+		RelayTarget:  &internalproto.UserRef{NodeId: packet.RelayTarget.NodeID, UserId: packet.RelayTarget.UserID},
+		Sender:       packet.Sender,
+		Body:         append([]byte(nil), packet.Body...),
+		DeliveryMode: clientDeliveryModeProto(packet.DeliveryMode),
+	}
+}
+
+func clientProtoRelayAccepted(packet store.TransientPacket) *internalproto.RelayAccepted {
+	return &internalproto.RelayAccepted{
+		PacketId:     packet.PacketID,
+		SourceNodeId: packet.SourceNodeID,
+		TargetNodeId: packet.TargetNodeID,
+		RelayTarget:  &internalproto.UserRef{NodeId: packet.RelayTarget.NodeID, UserId: packet.RelayTarget.UserID},
+		DeliveryMode: clientDeliveryModeProto(packet.DeliveryMode),
+	}
+}
+
+func clientDeliveryModeProto(mode store.DeliveryMode) internalproto.ClientDeliveryMode {
+	switch mode {
+	case store.DeliveryModeRouteRetry:
+		return internalproto.ClientDeliveryMode_CLIENT_DELIVERY_MODE_ROUTE_RETRY
+	default:
+		return internalproto.ClientDeliveryMode_CLIENT_DELIVERY_MODE_BEST_EFFORT
+	}
+}
+
+func clientDeliveryModeString(mode internalproto.ClientDeliveryMode) string {
+	switch mode {
+	case internalproto.ClientDeliveryMode_CLIENT_DELIVERY_MODE_ROUTE_RETRY:
+		return string(store.DeliveryModeRouteRetry)
+	case internalproto.ClientDeliveryMode_CLIENT_DELIVERY_MODE_BEST_EFFORT, internalproto.ClientDeliveryMode_CLIENT_DELIVERY_MODE_UNSPECIFIED:
+		return string(store.DeliveryModeBestEffort)
+	default:
+		return ""
 	}
 }
 

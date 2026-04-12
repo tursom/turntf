@@ -60,14 +60,17 @@
 当前同步实现已经收紧到以下边界：
 
 - 集群模式必须同时提供 `cluster.advertise_path`、`cluster.secret`
-- 节点间启用 `Envelope`、`Hello`、`Ack`、`EventBatch`、`PullEvents`
+- 节点间启用 `Envelope`、`Hello`、`Ack`、`EventBatch`、`PullEvents`，并为瞬时包启用 `RoutingUpdate`、`TransientPacket`
 - `Envelope`：集群协议的统一外层消息，里面再装握手、确认、事件批次或补拉请求
-- `Hello`：连接建立后的第一条握手消息，用于交换节点身份、协议版本、快照版本、广播路径、当前本地按 `origin_node_id` 聚合的 `origin_progress` 和 `message_window_size`
+- `Hello`：连接建立后的第一条握手消息，用于交换节点身份、协议版本、快照版本、广播路径、当前本地按 `origin_node_id` 聚合的 `origin_progress`、`message_window_size`，以及该连接的 routing 能力与链路观测摘要
 - `TimeSyncRequest` / `TimeSyncResponse`：握手后的校时消息，用来估算节点时钟偏移并决定是否允许该 peer 进入可信复制状态
 - `EventBatch`：事件批次消息，既用于在线广播，也用于按 `origin_node_id` 的增量补发；补拉响应会携带 `pull_request_id`
 - `Ack`：确认消息，表示“我已经应用到了某个 `origin_node_id` 的哪条 `event_id`”；它会写入 `peer_ack_cursors`
+- `RoutingUpdate`：节点间交换目的节点可达性、累计代价和残余代价的动态路由摘要，仅服务瞬时包
+- `TransientPacket`：发往 `(node_id, 3)` 的非持久化数据包，可经动态路由多跳转发到目标节点在线用户
 - `peer_ack_cursors` / `origin_cursors`：前者记录“某 peer 已确认到哪个 origin/event_id”，后者记录“本地对某 origin 已应用到哪个 event_id”，供重连后继续追平
 - WebSocket 连接具备握手校验、心跳保活、自动重连和单连接方向裁决
+- 同一 `peer_node_id` 允许存在多条并行连接；瞬时包路由会按连接观测的延迟和抖动择优选出口
 - 集群模式下，节点首次成功校时前会拒绝本地写请求，避免未校准时钟污染字段级 LWW
 - 节点重连后会按持久化游标自动补拉缺失事件，并通过 `applied_events` 做幂等去重
 - `applied_events`：本地已应用复制事件的去重表，用 `(source_node_id, event_id)` 组合键避免广播和补拉重叠时重复执行
@@ -190,11 +193,13 @@ url = "ws://127.0.0.1:9081/internal/cluster/ws"
 - `GET /nodes/{node_id}/users/{user_id}` 允许本人或管理员访问
 - `GET /nodes/{node_id}/users/{user_id}/messages` 对可登录用户允许本人或管理员访问；对 `role=channel` 或 `role=broadcast` 地址仅管理员可直接查询原始消息
 - `POST /nodes/{node_id}/users/{user_id}/messages` 需要登录；普通用户只能给自己或已订阅的 `role=channel` 地址写消息，管理员可给任意地址写消息，包括广播地址
+- 当目标是 `(node_id, 3)` 时，请求进入“节点入口瞬时包”模式：`relay_target` 必填，任意已登录用户都可以发送；该数据包不会持久化，只会尽力转发给目标节点上当前在线的指定用户
 - 订阅接口允许普通用户维护自己的 channel 订阅，管理员可维护任意用户订阅
 - 登录请求固定使用 `node_id + user_id + password`
 - HTTP JSON 消息接口的 `body` 是 base64 编码字节；客户端 WebSocket 和集群协议中的 `body` 是 protobuf `bytes`
 - 用户身份由 `(node_id, user_id)` 二元组定位；`user_id = 1` 是每个节点的 root 候选，当前已存储且 `node_id` 最小的 root 候选是唯一受保护保底超级管理员，不可删除、不可降权、不可改名，允许修改密码
 - `user_id = 2` 是每个节点的系统广播地址，启动时会创建/修复为 `role=broadcast`，不可登录、不可删除、不可由外部 API 创建或修改为该角色
+- `user_id = 3` 是每个节点的系统节点入口地址，启动时会创建/修复为 `role=node`，不可登录、不可删除、不可由外部 API 创建或修改为该角色
 - 每个节点的前 `1024` 个 `user_id` 都作为保留用户区间，普通用户和普通 channel 会从 `1025` 开始分配
 - `role=channel` 是不可登录的组播地址，管理员可通过 `POST /users` 创建，其他用户订阅后可接收订阅时间之后发送到该 channel 的消息
 
@@ -203,6 +208,7 @@ url = "ws://127.0.0.1:9081/internal/cluster/ws"
 - 本地 `POST /users`、`PATCH /nodes/{node_id}/users/{user_id}`、`DELETE /nodes/{node_id}/users/{user_id}`、订阅变更、`POST /nodes/{node_id}/users/{user_id}/messages` 成功后，会异步广播对应事件
 - 对端节点成功应用事件后返回 `Ack`
 - 两节点在线时，创建用户和写消息可以自动同步
+- 发往 `(node_id, 3)` 的瞬时包不会写入事件日志，不参与 `Ack`、补拉、快照和消息窗口；它们只在内存中经 `RoutingUpdate` 维护的动态路由表转发
 - 集群模式下，节点只有在首次成功校时后才接受本地写入；未校时时写接口会返回 `503`
 - 节点短时离线后重连，会按 `origin_cursors` 对比远端 `origin_progress`，逐个 `origin_node_id` 自动补拉未追平的事件
 - 节点会在握手完成后和运行过程中进行反熵摘要比对；用户快照使用全量单分片 `users/full`，消息快照按生产节点 `messages/{node_id}` 分片
@@ -218,6 +224,8 @@ url = "ws://127.0.0.1:9081/internal/cluster/ws"
 - 广播消息发送到任意 `role=broadcast` 地址后只存一份；普通用户读取消息时会动态合并所有广播地址的消息，因此未来新用户也能看到仍在本地窗口内的广播消息
 - 当集群所有节点使用相同的 `message_window_size` 时，同一用户的最近 N 条消息会收敛到相同结果
 - 任意节点签发的登录 token 都可以在其他节点使用，只要它们共享同一 `auth.token_secret`
+- 瞬时包动态路由只服务 `(node_id, 3)` 地址，主代价按链路平滑 RTT 加抖动惩罚计算；hop 数仅用于 TTL 防环，不作为主选路指标
+- 瞬时包支持 `best_effort` 和 `route_retry` 两种模式；`route_retry` 只使用内存 TTL 重试队列，节点重启后即丢失
 - 所有集群 `Envelope` 在收发两端都使用 `cluster.secret` 做 HMAC 鉴权
 - `/ops/status` 提供管理员可访问的本节点运维快照，包括 peer 状态、未确认事件、反熵进度、冲突数和消息裁剪统计
 - `/metrics` 提供无额外依赖的 Prometheus 文本指标，指标名使用 `notifier_*` 前缀

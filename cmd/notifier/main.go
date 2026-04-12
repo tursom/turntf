@@ -111,6 +111,9 @@ func runServe(args []string, stdout io.Writer) error {
 		Signer:   signer,
 		TokenTTL: time.Duration(cfg.Auth.TokenTTLMinutes) * time.Minute,
 	})
+	if manager != nil {
+		manager.SetTransientHandler(httpAPI.ReceiveTransientPacket)
+	}
 	apiServer := &http.Server{
 		Addr:              cfg.APIAddr,
 		Handler:           serveHandler(httpAPI.Handler(), manager, cfg.Cluster.AdvertisePath),

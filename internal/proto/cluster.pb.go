@@ -73,6 +73,55 @@ func (SnapshotPartitionKind) EnumDescriptor() ([]byte, []int) {
 	return file_cluster_proto_rawDescGZIP(), []int{0}
 }
 
+type ClusterDeliveryMode int32
+
+const (
+	ClusterDeliveryMode_CLUSTER_DELIVERY_MODE_UNSPECIFIED ClusterDeliveryMode = 0
+	ClusterDeliveryMode_CLUSTER_DELIVERY_MODE_BEST_EFFORT ClusterDeliveryMode = 1
+	ClusterDeliveryMode_CLUSTER_DELIVERY_MODE_ROUTE_RETRY ClusterDeliveryMode = 2
+)
+
+// Enum value maps for ClusterDeliveryMode.
+var (
+	ClusterDeliveryMode_name = map[int32]string{
+		0: "CLUSTER_DELIVERY_MODE_UNSPECIFIED",
+		1: "CLUSTER_DELIVERY_MODE_BEST_EFFORT",
+		2: "CLUSTER_DELIVERY_MODE_ROUTE_RETRY",
+	}
+	ClusterDeliveryMode_value = map[string]int32{
+		"CLUSTER_DELIVERY_MODE_UNSPECIFIED": 0,
+		"CLUSTER_DELIVERY_MODE_BEST_EFFORT": 1,
+		"CLUSTER_DELIVERY_MODE_ROUTE_RETRY": 2,
+	}
+)
+
+func (x ClusterDeliveryMode) Enum() *ClusterDeliveryMode {
+	p := new(ClusterDeliveryMode)
+	*p = x
+	return p
+}
+
+func (x ClusterDeliveryMode) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (ClusterDeliveryMode) Descriptor() protoreflect.EnumDescriptor {
+	return file_cluster_proto_enumTypes[1].Descriptor()
+}
+
+func (ClusterDeliveryMode) Type() protoreflect.EnumType {
+	return &file_cluster_proto_enumTypes[1]
+}
+
+func (x ClusterDeliveryMode) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use ClusterDeliveryMode.Descriptor instead.
+func (ClusterDeliveryMode) EnumDescriptor() ([]byte, []int) {
+	return file_cluster_proto_rawDescGZIP(), []int{1}
+}
+
 type Envelope struct {
 	state     protoimpl.MessageState `protogen:"open.v1"`
 	NodeId    int64                  `protobuf:"varint,1,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
@@ -88,6 +137,8 @@ type Envelope struct {
 	//	*Envelope_SnapshotChunk
 	//	*Envelope_TimeSyncRequest
 	//	*Envelope_TimeSyncResponse
+	//	*Envelope_RoutingUpdate
+	//	*Envelope_TransientPacket
 	Body          isEnvelope_Body `protobuf_oneof:"body"`
 	Hmac          []byte          `protobuf:"bytes,12,opt,name=hmac,proto3" json:"hmac,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -224,6 +275,24 @@ func (x *Envelope) GetTimeSyncResponse() *TimeSyncResponse {
 	return nil
 }
 
+func (x *Envelope) GetRoutingUpdate() *RoutingUpdate {
+	if x != nil {
+		if x, ok := x.Body.(*Envelope_RoutingUpdate); ok {
+			return x.RoutingUpdate
+		}
+	}
+	return nil
+}
+
+func (x *Envelope) GetTransientPacket() *TransientPacket {
+	if x != nil {
+		if x, ok := x.Body.(*Envelope_TransientPacket); ok {
+			return x.TransientPacket
+		}
+	}
+	return nil
+}
+
 func (x *Envelope) GetHmac() []byte {
 	if x != nil {
 		return x.Hmac
@@ -267,6 +336,14 @@ type Envelope_TimeSyncResponse struct {
 	TimeSyncResponse *TimeSyncResponse `protobuf:"bytes,11,opt,name=time_sync_response,json=timeSyncResponse,proto3,oneof"`
 }
 
+type Envelope_RoutingUpdate struct {
+	RoutingUpdate *RoutingUpdate `protobuf:"bytes,13,opt,name=routing_update,json=routingUpdate,proto3,oneof"`
+}
+
+type Envelope_TransientPacket struct {
+	TransientPacket *TransientPacket `protobuf:"bytes,14,opt,name=transient_packet,json=transientPacket,proto3,oneof"`
+}
+
 func (*Envelope_Hello) isEnvelope_Body() {}
 
 func (*Envelope_Ack) isEnvelope_Body() {}
@@ -283,6 +360,10 @@ func (*Envelope_TimeSyncRequest) isEnvelope_Body() {}
 
 func (*Envelope_TimeSyncResponse) isEnvelope_Body() {}
 
+func (*Envelope_RoutingUpdate) isEnvelope_Body() {}
+
+func (*Envelope_TransientPacket) isEnvelope_Body() {}
+
 type Hello struct {
 	state             protoimpl.MessageState `protogen:"open.v1"`
 	NodeId            int64                  `protobuf:"varint,1,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
@@ -291,6 +372,10 @@ type Hello struct {
 	OriginProgress    []*OriginProgress      `protobuf:"bytes,4,rep,name=origin_progress,json=originProgress,proto3" json:"origin_progress,omitempty"`
 	SnapshotVersion   string                 `protobuf:"bytes,5,opt,name=snapshot_version,json=snapshotVersion,proto3" json:"snapshot_version,omitempty"`
 	MessageWindowSize uint32                 `protobuf:"varint,6,opt,name=message_window_size,json=messageWindowSize,proto3" json:"message_window_size,omitempty"`
+	SupportsRouting   bool                   `protobuf:"varint,7,opt,name=supports_routing,json=supportsRouting,proto3" json:"supports_routing,omitempty"`
+	ConnectionId      uint64                 `protobuf:"varint,8,opt,name=connection_id,json=connectionId,proto3" json:"connection_id,omitempty"`
+	SmoothedRttMs     uint32                 `protobuf:"varint,9,opt,name=smoothed_rtt_ms,json=smoothedRttMs,proto3" json:"smoothed_rtt_ms,omitempty"`
+	JitterPenaltyMs   uint32                 `protobuf:"varint,10,opt,name=jitter_penalty_ms,json=jitterPenaltyMs,proto3" json:"jitter_penalty_ms,omitempty"`
 	unknownFields     protoimpl.UnknownFields
 	sizeCache         protoimpl.SizeCache
 }
@@ -363,6 +448,34 @@ func (x *Hello) GetSnapshotVersion() string {
 func (x *Hello) GetMessageWindowSize() uint32 {
 	if x != nil {
 		return x.MessageWindowSize
+	}
+	return 0
+}
+
+func (x *Hello) GetSupportsRouting() bool {
+	if x != nil {
+		return x.SupportsRouting
+	}
+	return false
+}
+
+func (x *Hello) GetConnectionId() uint64 {
+	if x != nil {
+		return x.ConnectionId
+	}
+	return 0
+}
+
+func (x *Hello) GetSmoothedRttMs() uint32 {
+	if x != nil {
+		return x.SmoothedRttMs
+	}
+	return 0
+}
+
+func (x *Hello) GetJitterPenaltyMs() uint32 {
+	if x != nil {
+		return x.JitterPenaltyMs
 	}
 	return 0
 }
@@ -2295,11 +2408,255 @@ func (x *TimeSyncResponse) GetServerSendTimeMs() int64 {
 	return 0
 }
 
+type RoutingUpdate struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	OriginNodeId  int64                  `protobuf:"varint,1,opt,name=origin_node_id,json=originNodeId,proto3" json:"origin_node_id,omitempty"`
+	Generation    uint64                 `protobuf:"varint,2,opt,name=generation,proto3" json:"generation,omitempty"`
+	Routes        []*RouteAdvertisement  `protobuf:"bytes,3,rep,name=routes,proto3" json:"routes,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RoutingUpdate) Reset() {
+	*x = RoutingUpdate{}
+	mi := &file_cluster_proto_msgTypes[23]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RoutingUpdate) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RoutingUpdate) ProtoMessage() {}
+
+func (x *RoutingUpdate) ProtoReflect() protoreflect.Message {
+	mi := &file_cluster_proto_msgTypes[23]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RoutingUpdate.ProtoReflect.Descriptor instead.
+func (*RoutingUpdate) Descriptor() ([]byte, []int) {
+	return file_cluster_proto_rawDescGZIP(), []int{23}
+}
+
+func (x *RoutingUpdate) GetOriginNodeId() int64 {
+	if x != nil {
+		return x.OriginNodeId
+	}
+	return 0
+}
+
+func (x *RoutingUpdate) GetGeneration() uint64 {
+	if x != nil {
+		return x.Generation
+	}
+	return 0
+}
+
+func (x *RoutingUpdate) GetRoutes() []*RouteAdvertisement {
+	if x != nil {
+		return x.Routes
+	}
+	return nil
+}
+
+type RouteAdvertisement struct {
+	state             protoimpl.MessageState `protogen:"open.v1"`
+	DestinationNodeId int64                  `protobuf:"varint,1,opt,name=destination_node_id,json=destinationNodeId,proto3" json:"destination_node_id,omitempty"`
+	Reachable         bool                   `protobuf:"varint,2,opt,name=reachable,proto3" json:"reachable,omitempty"`
+	TotalCostMs       uint32                 `protobuf:"varint,3,opt,name=total_cost_ms,json=totalCostMs,proto3" json:"total_cost_ms,omitempty"`
+	ResidualCostMs    uint32                 `protobuf:"varint,4,opt,name=residual_cost_ms,json=residualCostMs,proto3" json:"residual_cost_ms,omitempty"`
+	ResidualJitterMs  uint32                 `protobuf:"varint,5,opt,name=residual_jitter_ms,json=residualJitterMs,proto3" json:"residual_jitter_ms,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *RouteAdvertisement) Reset() {
+	*x = RouteAdvertisement{}
+	mi := &file_cluster_proto_msgTypes[24]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RouteAdvertisement) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RouteAdvertisement) ProtoMessage() {}
+
+func (x *RouteAdvertisement) ProtoReflect() protoreflect.Message {
+	mi := &file_cluster_proto_msgTypes[24]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RouteAdvertisement.ProtoReflect.Descriptor instead.
+func (*RouteAdvertisement) Descriptor() ([]byte, []int) {
+	return file_cluster_proto_rawDescGZIP(), []int{24}
+}
+
+func (x *RouteAdvertisement) GetDestinationNodeId() int64 {
+	if x != nil {
+		return x.DestinationNodeId
+	}
+	return 0
+}
+
+func (x *RouteAdvertisement) GetReachable() bool {
+	if x != nil {
+		return x.Reachable
+	}
+	return false
+}
+
+func (x *RouteAdvertisement) GetTotalCostMs() uint32 {
+	if x != nil {
+		return x.TotalCostMs
+	}
+	return 0
+}
+
+func (x *RouteAdvertisement) GetResidualCostMs() uint32 {
+	if x != nil {
+		return x.ResidualCostMs
+	}
+	return 0
+}
+
+func (x *RouteAdvertisement) GetResidualJitterMs() uint32 {
+	if x != nil {
+		return x.ResidualJitterMs
+	}
+	return 0
+}
+
+type TransientPacket struct {
+	state             protoimpl.MessageState `protogen:"open.v1"`
+	PacketId          uint64                 `protobuf:"varint,1,opt,name=packet_id,json=packetId,proto3" json:"packet_id,omitempty"`
+	SourceNodeId      int64                  `protobuf:"varint,2,opt,name=source_node_id,json=sourceNodeId,proto3" json:"source_node_id,omitempty"`
+	TargetNodeId      int64                  `protobuf:"varint,3,opt,name=target_node_id,json=targetNodeId,proto3" json:"target_node_id,omitempty"`
+	RelayTargetNodeId int64                  `protobuf:"varint,4,opt,name=relay_target_node_id,json=relayTargetNodeId,proto3" json:"relay_target_node_id,omitempty"`
+	RelayTargetUserId int64                  `protobuf:"varint,5,opt,name=relay_target_user_id,json=relayTargetUserId,proto3" json:"relay_target_user_id,omitempty"`
+	Sender            string                 `protobuf:"bytes,6,opt,name=sender,proto3" json:"sender,omitempty"`
+	Body              []byte                 `protobuf:"bytes,7,opt,name=body,proto3" json:"body,omitempty"`
+	DeliveryMode      ClusterDeliveryMode    `protobuf:"varint,8,opt,name=delivery_mode,json=deliveryMode,proto3,enum=notifier.cluster.v1.ClusterDeliveryMode" json:"delivery_mode,omitempty"`
+	TtlHops           uint32                 `protobuf:"varint,9,opt,name=ttl_hops,json=ttlHops,proto3" json:"ttl_hops,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *TransientPacket) Reset() {
+	*x = TransientPacket{}
+	mi := &file_cluster_proto_msgTypes[25]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TransientPacket) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TransientPacket) ProtoMessage() {}
+
+func (x *TransientPacket) ProtoReflect() protoreflect.Message {
+	mi := &file_cluster_proto_msgTypes[25]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TransientPacket.ProtoReflect.Descriptor instead.
+func (*TransientPacket) Descriptor() ([]byte, []int) {
+	return file_cluster_proto_rawDescGZIP(), []int{25}
+}
+
+func (x *TransientPacket) GetPacketId() uint64 {
+	if x != nil {
+		return x.PacketId
+	}
+	return 0
+}
+
+func (x *TransientPacket) GetSourceNodeId() int64 {
+	if x != nil {
+		return x.SourceNodeId
+	}
+	return 0
+}
+
+func (x *TransientPacket) GetTargetNodeId() int64 {
+	if x != nil {
+		return x.TargetNodeId
+	}
+	return 0
+}
+
+func (x *TransientPacket) GetRelayTargetNodeId() int64 {
+	if x != nil {
+		return x.RelayTargetNodeId
+	}
+	return 0
+}
+
+func (x *TransientPacket) GetRelayTargetUserId() int64 {
+	if x != nil {
+		return x.RelayTargetUserId
+	}
+	return 0
+}
+
+func (x *TransientPacket) GetSender() string {
+	if x != nil {
+		return x.Sender
+	}
+	return ""
+}
+
+func (x *TransientPacket) GetBody() []byte {
+	if x != nil {
+		return x.Body
+	}
+	return nil
+}
+
+func (x *TransientPacket) GetDeliveryMode() ClusterDeliveryMode {
+	if x != nil {
+		return x.DeliveryMode
+	}
+	return ClusterDeliveryMode_CLUSTER_DELIVERY_MODE_UNSPECIFIED
+}
+
+func (x *TransientPacket) GetTtlHops() uint32 {
+	if x != nil {
+		return x.TtlHops
+	}
+	return 0
+}
+
 var File_cluster_proto protoreflect.FileDescriptor
 
 const file_cluster_proto_rawDesc = "" +
 	"\n" +
-	"\rcluster.proto\x12\x13notifier.cluster.v1\"\xad\x05\n" +
+	"\rcluster.proto\x12\x13notifier.cluster.v1\"\xcd\x06\n" +
 	"\bEnvelope\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\x03R\x06nodeId\x12\x1a\n" +
 	"\bsequence\x18\x02 \x01(\x04R\bsequence\x12\x1e\n" +
@@ -2314,16 +2671,23 @@ const file_cluster_proto_rawDesc = "" +
 	"\x0esnapshot_chunk\x18\t \x01(\v2\".notifier.cluster.v1.SnapshotChunkH\x00R\rsnapshotChunk\x12R\n" +
 	"\x11time_sync_request\x18\n" +
 	" \x01(\v2$.notifier.cluster.v1.TimeSyncRequestH\x00R\x0ftimeSyncRequest\x12U\n" +
-	"\x12time_sync_response\x18\v \x01(\v2%.notifier.cluster.v1.TimeSyncResponseH\x00R\x10timeSyncResponse\x12\x12\n" +
+	"\x12time_sync_response\x18\v \x01(\v2%.notifier.cluster.v1.TimeSyncResponseH\x00R\x10timeSyncResponse\x12K\n" +
+	"\x0erouting_update\x18\r \x01(\v2\".notifier.cluster.v1.RoutingUpdateH\x00R\rroutingUpdate\x12Q\n" +
+	"\x10transient_packet\x18\x0e \x01(\v2$.notifier.cluster.v1.TransientPacketH\x00R\x0ftransientPacket\x12\x12\n" +
 	"\x04hmac\x18\f \x01(\fR\x04hmacB\x06\n" +
-	"\x04body\"\x9b\x02\n" +
+	"\x04body\"\xbf\x03\n" +
 	"\x05Hello\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\x03R\x06nodeId\x12%\n" +
 	"\x0eadvertise_addr\x18\x02 \x01(\tR\radvertiseAddr\x12)\n" +
 	"\x10protocol_version\x18\x03 \x01(\tR\x0fprotocolVersion\x12L\n" +
 	"\x0forigin_progress\x18\x04 \x03(\v2#.notifier.cluster.v1.OriginProgressR\x0eoriginProgress\x12)\n" +
 	"\x10snapshot_version\x18\x05 \x01(\tR\x0fsnapshotVersion\x12.\n" +
-	"\x13message_window_size\x18\x06 \x01(\rR\x11messageWindowSize\"Z\n" +
+	"\x13message_window_size\x18\x06 \x01(\rR\x11messageWindowSize\x12)\n" +
+	"\x10supports_routing\x18\a \x01(\bR\x0fsupportsRouting\x12#\n" +
+	"\rconnection_id\x18\b \x01(\x04R\fconnectionId\x12&\n" +
+	"\x0fsmoothed_rtt_ms\x18\t \x01(\rR\rsmoothedRttMs\x12*\n" +
+	"\x11jitter_penalty_ms\x18\n" +
+	" \x01(\rR\x0fjitterPenaltyMs\"Z\n" +
 	"\x0eOriginProgress\x12$\n" +
 	"\x0eorigin_node_id\x18\x01 \x01(\x03R\foriginNodeId\x12\"\n" +
 	"\rlast_event_id\x18\x02 \x01(\x04R\vlastEventId\"j\n" +
@@ -2493,12 +2857,38 @@ const file_cluster_proto_rawDesc = "" +
 	"request_id\x18\x01 \x01(\x04R\trequestId\x12-\n" +
 	"\x13client_send_time_ms\x18\x02 \x01(\x03R\x10clientSendTimeMs\x123\n" +
 	"\x16server_receive_time_ms\x18\x03 \x01(\x03R\x13serverReceiveTimeMs\x12-\n" +
-	"\x13server_send_time_ms\x18\x04 \x01(\x03R\x10serverSendTimeMs*\xb4\x01\n" +
+	"\x13server_send_time_ms\x18\x04 \x01(\x03R\x10serverSendTimeMs\"\x96\x01\n" +
+	"\rRoutingUpdate\x12$\n" +
+	"\x0eorigin_node_id\x18\x01 \x01(\x03R\foriginNodeId\x12\x1e\n" +
+	"\n" +
+	"generation\x18\x02 \x01(\x04R\n" +
+	"generation\x12?\n" +
+	"\x06routes\x18\x03 \x03(\v2'.notifier.cluster.v1.RouteAdvertisementR\x06routes\"\xde\x01\n" +
+	"\x12RouteAdvertisement\x12.\n" +
+	"\x13destination_node_id\x18\x01 \x01(\x03R\x11destinationNodeId\x12\x1c\n" +
+	"\treachable\x18\x02 \x01(\bR\treachable\x12\"\n" +
+	"\rtotal_cost_ms\x18\x03 \x01(\rR\vtotalCostMs\x12(\n" +
+	"\x10residual_cost_ms\x18\x04 \x01(\rR\x0eresidualCostMs\x12,\n" +
+	"\x12residual_jitter_ms\x18\x05 \x01(\rR\x10residualJitterMs\"\xf2\x02\n" +
+	"\x0fTransientPacket\x12\x1b\n" +
+	"\tpacket_id\x18\x01 \x01(\x04R\bpacketId\x12$\n" +
+	"\x0esource_node_id\x18\x02 \x01(\x03R\fsourceNodeId\x12$\n" +
+	"\x0etarget_node_id\x18\x03 \x01(\x03R\ftargetNodeId\x12/\n" +
+	"\x14relay_target_node_id\x18\x04 \x01(\x03R\x11relayTargetNodeId\x12/\n" +
+	"\x14relay_target_user_id\x18\x05 \x01(\x03R\x11relayTargetUserId\x12\x16\n" +
+	"\x06sender\x18\x06 \x01(\tR\x06sender\x12\x12\n" +
+	"\x04body\x18\a \x01(\fR\x04body\x12M\n" +
+	"\rdelivery_mode\x18\b \x01(\x0e2(.notifier.cluster.v1.ClusterDeliveryModeR\fdeliveryMode\x12\x19\n" +
+	"\bttl_hops\x18\t \x01(\rR\attlHops*\xb4\x01\n" +
 	"\x15SnapshotPartitionKind\x12'\n" +
 	"#SNAPSHOT_PARTITION_KIND_UNSPECIFIED\x10\x00\x12!\n" +
 	"\x1dSNAPSHOT_PARTITION_KIND_USERS\x10\x01\x12$\n" +
 	" SNAPSHOT_PARTITION_KIND_MESSAGES\x10\x02\x12)\n" +
-	"%SNAPSHOT_PARTITION_KIND_SUBSCRIPTIONS\x10\x03B\x1fZ\x1dnotifier/internal/proto;protob\x06proto3"
+	"%SNAPSHOT_PARTITION_KIND_SUBSCRIPTIONS\x10\x03*\x8a\x01\n" +
+	"\x13ClusterDeliveryMode\x12%\n" +
+	"!CLUSTER_DELIVERY_MODE_UNSPECIFIED\x10\x00\x12%\n" +
+	"!CLUSTER_DELIVERY_MODE_BEST_EFFORT\x10\x01\x12%\n" +
+	"!CLUSTER_DELIVERY_MODE_ROUTE_RETRY\x10\x02B\x1fZ\x1dnotifier/internal/proto;protob\x06proto3"
 
 var (
 	file_cluster_proto_rawDescOnce sync.Once
@@ -2512,64 +2902,72 @@ func file_cluster_proto_rawDescGZIP() []byte {
 	return file_cluster_proto_rawDescData
 }
 
-var file_cluster_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_cluster_proto_msgTypes = make([]protoimpl.MessageInfo, 23)
+var file_cluster_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
+var file_cluster_proto_msgTypes = make([]protoimpl.MessageInfo, 26)
 var file_cluster_proto_goTypes = []any{
 	(SnapshotPartitionKind)(0),       // 0: notifier.cluster.v1.SnapshotPartitionKind
-	(*Envelope)(nil),                 // 1: notifier.cluster.v1.Envelope
-	(*Hello)(nil),                    // 2: notifier.cluster.v1.Hello
-	(*OriginProgress)(nil),           // 3: notifier.cluster.v1.OriginProgress
-	(*Ack)(nil),                      // 4: notifier.cluster.v1.Ack
-	(*EventBatch)(nil),               // 5: notifier.cluster.v1.EventBatch
-	(*ReplicatedEvent)(nil),          // 6: notifier.cluster.v1.ReplicatedEvent
-	(*UserCreatedEvent)(nil),         // 7: notifier.cluster.v1.UserCreatedEvent
-	(*UserUpdatedEvent)(nil),         // 8: notifier.cluster.v1.UserUpdatedEvent
-	(*UserDeletedEvent)(nil),         // 9: notifier.cluster.v1.UserDeletedEvent
-	(*MessageCreatedEvent)(nil),      // 10: notifier.cluster.v1.MessageCreatedEvent
-	(*ChannelSubscribedEvent)(nil),   // 11: notifier.cluster.v1.ChannelSubscribedEvent
-	(*ChannelUnsubscribedEvent)(nil), // 12: notifier.cluster.v1.ChannelUnsubscribedEvent
-	(*PullEvents)(nil),               // 13: notifier.cluster.v1.PullEvents
-	(*SnapshotDigest)(nil),           // 14: notifier.cluster.v1.SnapshotDigest
-	(*SnapshotChunk)(nil),            // 15: notifier.cluster.v1.SnapshotChunk
-	(*SnapshotPartitionDigest)(nil),  // 16: notifier.cluster.v1.SnapshotPartitionDigest
-	(*SnapshotRow)(nil),              // 17: notifier.cluster.v1.SnapshotRow
-	(*SnapshotUserRow)(nil),          // 18: notifier.cluster.v1.SnapshotUserRow
-	(*SnapshotTombstoneRow)(nil),     // 19: notifier.cluster.v1.SnapshotTombstoneRow
-	(*SnapshotMessageRow)(nil),       // 20: notifier.cluster.v1.SnapshotMessageRow
-	(*SnapshotSubscriptionRow)(nil),  // 21: notifier.cluster.v1.SnapshotSubscriptionRow
-	(*TimeSyncRequest)(nil),          // 22: notifier.cluster.v1.TimeSyncRequest
-	(*TimeSyncResponse)(nil),         // 23: notifier.cluster.v1.TimeSyncResponse
+	(ClusterDeliveryMode)(0),         // 1: notifier.cluster.v1.ClusterDeliveryMode
+	(*Envelope)(nil),                 // 2: notifier.cluster.v1.Envelope
+	(*Hello)(nil),                    // 3: notifier.cluster.v1.Hello
+	(*OriginProgress)(nil),           // 4: notifier.cluster.v1.OriginProgress
+	(*Ack)(nil),                      // 5: notifier.cluster.v1.Ack
+	(*EventBatch)(nil),               // 6: notifier.cluster.v1.EventBatch
+	(*ReplicatedEvent)(nil),          // 7: notifier.cluster.v1.ReplicatedEvent
+	(*UserCreatedEvent)(nil),         // 8: notifier.cluster.v1.UserCreatedEvent
+	(*UserUpdatedEvent)(nil),         // 9: notifier.cluster.v1.UserUpdatedEvent
+	(*UserDeletedEvent)(nil),         // 10: notifier.cluster.v1.UserDeletedEvent
+	(*MessageCreatedEvent)(nil),      // 11: notifier.cluster.v1.MessageCreatedEvent
+	(*ChannelSubscribedEvent)(nil),   // 12: notifier.cluster.v1.ChannelSubscribedEvent
+	(*ChannelUnsubscribedEvent)(nil), // 13: notifier.cluster.v1.ChannelUnsubscribedEvent
+	(*PullEvents)(nil),               // 14: notifier.cluster.v1.PullEvents
+	(*SnapshotDigest)(nil),           // 15: notifier.cluster.v1.SnapshotDigest
+	(*SnapshotChunk)(nil),            // 16: notifier.cluster.v1.SnapshotChunk
+	(*SnapshotPartitionDigest)(nil),  // 17: notifier.cluster.v1.SnapshotPartitionDigest
+	(*SnapshotRow)(nil),              // 18: notifier.cluster.v1.SnapshotRow
+	(*SnapshotUserRow)(nil),          // 19: notifier.cluster.v1.SnapshotUserRow
+	(*SnapshotTombstoneRow)(nil),     // 20: notifier.cluster.v1.SnapshotTombstoneRow
+	(*SnapshotMessageRow)(nil),       // 21: notifier.cluster.v1.SnapshotMessageRow
+	(*SnapshotSubscriptionRow)(nil),  // 22: notifier.cluster.v1.SnapshotSubscriptionRow
+	(*TimeSyncRequest)(nil),          // 23: notifier.cluster.v1.TimeSyncRequest
+	(*TimeSyncResponse)(nil),         // 24: notifier.cluster.v1.TimeSyncResponse
+	(*RoutingUpdate)(nil),            // 25: notifier.cluster.v1.RoutingUpdate
+	(*RouteAdvertisement)(nil),       // 26: notifier.cluster.v1.RouteAdvertisement
+	(*TransientPacket)(nil),          // 27: notifier.cluster.v1.TransientPacket
 }
 var file_cluster_proto_depIdxs = []int32{
-	2,  // 0: notifier.cluster.v1.Envelope.hello:type_name -> notifier.cluster.v1.Hello
-	4,  // 1: notifier.cluster.v1.Envelope.ack:type_name -> notifier.cluster.v1.Ack
-	5,  // 2: notifier.cluster.v1.Envelope.event_batch:type_name -> notifier.cluster.v1.EventBatch
-	13, // 3: notifier.cluster.v1.Envelope.pull_events:type_name -> notifier.cluster.v1.PullEvents
-	14, // 4: notifier.cluster.v1.Envelope.snapshot_digest:type_name -> notifier.cluster.v1.SnapshotDigest
-	15, // 5: notifier.cluster.v1.Envelope.snapshot_chunk:type_name -> notifier.cluster.v1.SnapshotChunk
-	22, // 6: notifier.cluster.v1.Envelope.time_sync_request:type_name -> notifier.cluster.v1.TimeSyncRequest
-	23, // 7: notifier.cluster.v1.Envelope.time_sync_response:type_name -> notifier.cluster.v1.TimeSyncResponse
-	3,  // 8: notifier.cluster.v1.Hello.origin_progress:type_name -> notifier.cluster.v1.OriginProgress
-	6,  // 9: notifier.cluster.v1.EventBatch.events:type_name -> notifier.cluster.v1.ReplicatedEvent
-	7,  // 10: notifier.cluster.v1.ReplicatedEvent.user_created:type_name -> notifier.cluster.v1.UserCreatedEvent
-	8,  // 11: notifier.cluster.v1.ReplicatedEvent.user_updated:type_name -> notifier.cluster.v1.UserUpdatedEvent
-	9,  // 12: notifier.cluster.v1.ReplicatedEvent.user_deleted:type_name -> notifier.cluster.v1.UserDeletedEvent
-	10, // 13: notifier.cluster.v1.ReplicatedEvent.message_created:type_name -> notifier.cluster.v1.MessageCreatedEvent
-	11, // 14: notifier.cluster.v1.ReplicatedEvent.channel_subscribed:type_name -> notifier.cluster.v1.ChannelSubscribedEvent
-	12, // 15: notifier.cluster.v1.ReplicatedEvent.channel_unsubscribed:type_name -> notifier.cluster.v1.ChannelUnsubscribedEvent
-	16, // 16: notifier.cluster.v1.SnapshotDigest.partitions:type_name -> notifier.cluster.v1.SnapshotPartitionDigest
-	17, // 17: notifier.cluster.v1.SnapshotChunk.rows:type_name -> notifier.cluster.v1.SnapshotRow
-	0,  // 18: notifier.cluster.v1.SnapshotChunk.kind:type_name -> notifier.cluster.v1.SnapshotPartitionKind
-	0,  // 19: notifier.cluster.v1.SnapshotPartitionDigest.kind:type_name -> notifier.cluster.v1.SnapshotPartitionKind
-	18, // 20: notifier.cluster.v1.SnapshotRow.user:type_name -> notifier.cluster.v1.SnapshotUserRow
-	19, // 21: notifier.cluster.v1.SnapshotRow.tombstone:type_name -> notifier.cluster.v1.SnapshotTombstoneRow
-	20, // 22: notifier.cluster.v1.SnapshotRow.message:type_name -> notifier.cluster.v1.SnapshotMessageRow
-	21, // 23: notifier.cluster.v1.SnapshotRow.subscription:type_name -> notifier.cluster.v1.SnapshotSubscriptionRow
-	24, // [24:24] is the sub-list for method output_type
-	24, // [24:24] is the sub-list for method input_type
-	24, // [24:24] is the sub-list for extension type_name
-	24, // [24:24] is the sub-list for extension extendee
-	0,  // [0:24] is the sub-list for field type_name
+	3,  // 0: notifier.cluster.v1.Envelope.hello:type_name -> notifier.cluster.v1.Hello
+	5,  // 1: notifier.cluster.v1.Envelope.ack:type_name -> notifier.cluster.v1.Ack
+	6,  // 2: notifier.cluster.v1.Envelope.event_batch:type_name -> notifier.cluster.v1.EventBatch
+	14, // 3: notifier.cluster.v1.Envelope.pull_events:type_name -> notifier.cluster.v1.PullEvents
+	15, // 4: notifier.cluster.v1.Envelope.snapshot_digest:type_name -> notifier.cluster.v1.SnapshotDigest
+	16, // 5: notifier.cluster.v1.Envelope.snapshot_chunk:type_name -> notifier.cluster.v1.SnapshotChunk
+	23, // 6: notifier.cluster.v1.Envelope.time_sync_request:type_name -> notifier.cluster.v1.TimeSyncRequest
+	24, // 7: notifier.cluster.v1.Envelope.time_sync_response:type_name -> notifier.cluster.v1.TimeSyncResponse
+	25, // 8: notifier.cluster.v1.Envelope.routing_update:type_name -> notifier.cluster.v1.RoutingUpdate
+	27, // 9: notifier.cluster.v1.Envelope.transient_packet:type_name -> notifier.cluster.v1.TransientPacket
+	4,  // 10: notifier.cluster.v1.Hello.origin_progress:type_name -> notifier.cluster.v1.OriginProgress
+	7,  // 11: notifier.cluster.v1.EventBatch.events:type_name -> notifier.cluster.v1.ReplicatedEvent
+	8,  // 12: notifier.cluster.v1.ReplicatedEvent.user_created:type_name -> notifier.cluster.v1.UserCreatedEvent
+	9,  // 13: notifier.cluster.v1.ReplicatedEvent.user_updated:type_name -> notifier.cluster.v1.UserUpdatedEvent
+	10, // 14: notifier.cluster.v1.ReplicatedEvent.user_deleted:type_name -> notifier.cluster.v1.UserDeletedEvent
+	11, // 15: notifier.cluster.v1.ReplicatedEvent.message_created:type_name -> notifier.cluster.v1.MessageCreatedEvent
+	12, // 16: notifier.cluster.v1.ReplicatedEvent.channel_subscribed:type_name -> notifier.cluster.v1.ChannelSubscribedEvent
+	13, // 17: notifier.cluster.v1.ReplicatedEvent.channel_unsubscribed:type_name -> notifier.cluster.v1.ChannelUnsubscribedEvent
+	17, // 18: notifier.cluster.v1.SnapshotDigest.partitions:type_name -> notifier.cluster.v1.SnapshotPartitionDigest
+	18, // 19: notifier.cluster.v1.SnapshotChunk.rows:type_name -> notifier.cluster.v1.SnapshotRow
+	0,  // 20: notifier.cluster.v1.SnapshotChunk.kind:type_name -> notifier.cluster.v1.SnapshotPartitionKind
+	0,  // 21: notifier.cluster.v1.SnapshotPartitionDigest.kind:type_name -> notifier.cluster.v1.SnapshotPartitionKind
+	19, // 22: notifier.cluster.v1.SnapshotRow.user:type_name -> notifier.cluster.v1.SnapshotUserRow
+	20, // 23: notifier.cluster.v1.SnapshotRow.tombstone:type_name -> notifier.cluster.v1.SnapshotTombstoneRow
+	21, // 24: notifier.cluster.v1.SnapshotRow.message:type_name -> notifier.cluster.v1.SnapshotMessageRow
+	22, // 25: notifier.cluster.v1.SnapshotRow.subscription:type_name -> notifier.cluster.v1.SnapshotSubscriptionRow
+	26, // 26: notifier.cluster.v1.RoutingUpdate.routes:type_name -> notifier.cluster.v1.RouteAdvertisement
+	1,  // 27: notifier.cluster.v1.TransientPacket.delivery_mode:type_name -> notifier.cluster.v1.ClusterDeliveryMode
+	28, // [28:28] is the sub-list for method output_type
+	28, // [28:28] is the sub-list for method input_type
+	28, // [28:28] is the sub-list for extension type_name
+	28, // [28:28] is the sub-list for extension extendee
+	0,  // [0:28] is the sub-list for field type_name
 }
 
 func init() { file_cluster_proto_init() }
@@ -2586,6 +2984,8 @@ func file_cluster_proto_init() {
 		(*Envelope_SnapshotChunk)(nil),
 		(*Envelope_TimeSyncRequest)(nil),
 		(*Envelope_TimeSyncResponse)(nil),
+		(*Envelope_RoutingUpdate)(nil),
+		(*Envelope_TransientPacket)(nil),
 	}
 	file_cluster_proto_msgTypes[5].OneofWrappers = []any{
 		(*ReplicatedEvent_UserCreated)(nil),
@@ -2606,8 +3006,8 @@ func file_cluster_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_cluster_proto_rawDesc), len(file_cluster_proto_rawDesc)),
-			NumEnums:      1,
-			NumMessages:   23,
+			NumEnums:      2,
+			NumMessages:   26,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

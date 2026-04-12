@@ -482,6 +482,16 @@ func TestEnsureBootstrapAdminCreatesAndProtectsReservedUser(t *testing.T) {
 	if _, err := st.AuthenticateUser(ctx, broadcast.Key(), "anything"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("expected broadcast login to fail with not found, got %v", err)
 	}
+	nodeIngress, err := st.GetUser(ctx, UserKey{NodeID: st.NodeID(), UserID: NodeIngressUserID})
+	if err != nil {
+		t.Fatalf("get node ingress user: %v", err)
+	}
+	if nodeIngress.Username != "node" || nodeIngress.Role != RoleNode || !nodeIngress.SystemReserved {
+		t.Fatalf("unexpected node ingress user: %+v", nodeIngress)
+	}
+	if _, err := st.AuthenticateUser(ctx, nodeIngress.Key(), "anything"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected node ingress login to fail with not found, got %v", err)
+	}
 
 	newPasswordHash := "hash-root-2"
 	updated, _, err := st.UpdateUser(ctx, UpdateUserParams{
@@ -513,6 +523,15 @@ func TestEnsureBootstrapAdminCreatesAndProtectsReservedUser(t *testing.T) {
 
 	if _, err := st.DeleteUser(ctx, bootstrapKey(st)); err == nil || !errors.Is(err, ErrForbidden) {
 		t.Fatalf("expected delete bootstrap admin to fail with forbidden, got %v", err)
+	}
+	if _, _, err := st.UpdateUser(ctx, UpdateUserParams{
+		Key:      nodeIngress.Key(),
+		Username: &newUsername,
+	}); err == nil || !errors.Is(err, ErrForbidden) {
+		t.Fatalf("expected rename node ingress user to fail with forbidden, got %v", err)
+	}
+	if _, err := st.DeleteUser(ctx, nodeIngress.Key()); err == nil || !errors.Is(err, ErrForbidden) {
+		t.Fatalf("expected delete node ingress user to fail with forbidden, got %v", err)
 	}
 
 	normal, _, err := st.CreateUser(ctx, CreateUserParams{

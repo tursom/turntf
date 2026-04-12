@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"notifier/internal/app"
@@ -18,11 +19,13 @@ import (
 )
 
 type HTTP struct {
-	service  *Service
-	mux      *http.ServeMux
-	nodeID   int64
-	signer   *auth.Signer
-	tokenTTL time.Duration
+	service    *Service
+	mux        *http.ServeMux
+	nodeID     int64
+	signer     *auth.Signer
+	tokenTTL   time.Duration
+	sessionsMu sync.RWMutex
+	sessions   map[store.UserKey]map[*clientWSSession]struct{}
 }
 
 type HTTPOptions struct {
@@ -46,8 +49,10 @@ type updateUserRequest struct {
 }
 
 type createMessageRequest struct {
-	Sender string `json:"sender"`
-	Body   []byte `json:"body"`
+	Sender       string         `json:"sender"`
+	Body         []byte         `json:"body"`
+	RelayTarget  *store.UserKey `json:"relay_target,omitempty"`
+	DeliveryMode string         `json:"delivery_mode,omitempty"`
 }
 
 type subscriptionRequest struct {
@@ -81,6 +86,10 @@ func NewHTTP(service *Service, opts ...HTTPOptions) *HTTP {
 		nodeID:   resolved.NodeID,
 		signer:   resolved.Signer,
 		tokenTTL: tokenTTL,
+		sessions: make(map[store.UserKey]map[*clientWSSession]struct{}),
+	}
+	if service != nil {
+		service.SetTransientPacketReceiver(h)
 	}
 	h.routes()
 	return h
@@ -306,6 +315,33 @@ func (h *HTTP) handleCreateMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if key.UserID == store.NodeIngressUserID {
+		if req.RelayTarget == nil {
+			writeStoreError(w, fmt.Errorf("%w: relay_target is required", store.ErrInvalidInput))
+			return
+		}
+		mode, err := store.NormalizeDeliveryMode(req.DeliveryMode)
+		if err != nil {
+			writeStoreError(w, err)
+			return
+		}
+		packet, err := h.service.DispatchTransientPacket(r.Context(), key, *req.RelayTarget, req.Sender, req.Body, mode)
+		if err != nil {
+			writeStoreError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusAccepted, transientPacketAcceptedResponse(packet))
+		return
+	}
+	if req.RelayTarget != nil {
+		writeStoreError(w, fmt.Errorf("%w: relay_target is only allowed for node ingress messages", store.ErrInvalidInput))
+		return
+	}
+	if strings.TrimSpace(req.DeliveryMode) != "" {
+		writeStoreError(w, fmt.Errorf("%w: delivery_mode is only allowed for node ingress messages", store.ErrInvalidInput))
+		return
+	}
+
 	message, _, err := h.service.CreateMessage(r.Context(), store.CreateMessageParams{
 		UserKey: key,
 		Sender:  req.Sender,
@@ -320,7 +356,7 @@ func (h *HTTP) handleCreateMessage(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *HTTP) authorizeCreateMessage(ctx context.Context, principal *requestPrincipal, key store.UserKey) error {
-	if principal == nil || isAdminRole(principal.User.Role) || principal.User.Key() == key {
+	if principal == nil || key.UserID == store.NodeIngressUserID || isAdminRole(principal.User.Role) || principal.User.Key() == key {
 		return nil
 	}
 	target, err := h.service.GetUser(ctx, key)
@@ -554,6 +590,15 @@ type messageResponse struct {
 	CreatedAt  string `json:"created_at"`
 }
 
+type transientPacketResponse struct {
+	Mode         string        `json:"mode"`
+	PacketID     uint64        `json:"packet_id"`
+	SourceNodeID int64         `json:"source_node_id"`
+	TargetNodeID int64         `json:"target_node_id"`
+	RelayTarget  store.UserKey `json:"relay_target"`
+	DeliveryMode string        `json:"delivery_mode"`
+}
+
 type subscriptionResponse struct {
 	SubscriberNodeID int64  `json:"subscriber_node_id"`
 	SubscriberUserID int64  `json:"subscriber_user_id"`
@@ -601,6 +646,67 @@ func messageResponseFromStore(message store.Message) messageResponse {
 		Body:       message.Body,
 		CreatedAt:  message.CreatedAt.String(),
 	}
+}
+
+func transientPacketAcceptedResponse(packet store.TransientPacket) transientPacketResponse {
+	return transientPacketResponse{
+		Mode:         "transient",
+		PacketID:     packet.PacketID,
+		SourceNodeID: packet.SourceNodeID,
+		TargetNodeID: packet.TargetNodeID,
+		RelayTarget:  packet.RelayTarget,
+		DeliveryMode: string(packet.DeliveryMode),
+	}
+}
+
+func (h *HTTP) registerClientSession(key store.UserKey, sess *clientWSSession) {
+	if h == nil || sess == nil {
+		return
+	}
+	h.sessionsMu.Lock()
+	defer h.sessionsMu.Unlock()
+	bucket := h.sessions[key]
+	if bucket == nil {
+		bucket = make(map[*clientWSSession]struct{})
+		h.sessions[key] = bucket
+	}
+	bucket[sess] = struct{}{}
+}
+
+func (h *HTTP) unregisterClientSession(key store.UserKey, sess *clientWSSession) {
+	if h == nil || sess == nil {
+		return
+	}
+	h.sessionsMu.Lock()
+	defer h.sessionsMu.Unlock()
+	bucket := h.sessions[key]
+	if bucket == nil {
+		return
+	}
+	delete(bucket, sess)
+	if len(bucket) == 0 {
+		delete(h.sessions, key)
+	}
+}
+
+func (h *HTTP) ReceiveTransientPacket(packet store.TransientPacket) bool {
+	h.sessionsMu.RLock()
+	bucket := h.sessions[packet.RelayTarget]
+	sessions := make([]*clientWSSession, 0, len(bucket))
+	for sess := range bucket {
+		sessions = append(sessions, sess)
+	}
+	h.sessionsMu.RUnlock()
+	if len(sessions) == 0 {
+		return false
+	}
+	delivered := false
+	for _, sess := range sessions {
+		if err := sess.pushPacket(packet); err == nil {
+			delivered = true
+		}
+	}
+	return delivered
 }
 
 func subscriptionResponseFromStore(subscription store.Subscription) subscriptionResponse {

@@ -39,8 +39,10 @@ const (
 	RoleUser             = "user"
 	RoleChannel          = "channel"
 	RoleBroadcast        = "broadcast"
+	RoleNode             = "node"
 	BootstrapAdminUserID = int64(1)
 	BroadcastUserID      = int64(2)
+	NodeIngressUserID    = int64(3)
 	ReservedUserIDMax    = int64(1024)
 	defaultSchemaVersion = "12"
 	schemaMetaNodeIDKey  = "node_id"
@@ -184,6 +186,36 @@ type CreateMessageParams struct {
 	UserKey UserKey
 	Sender  string
 	Body    []byte
+}
+
+type DeliveryMode string
+
+const (
+	DeliveryModeBestEffort DeliveryMode = "best_effort"
+	DeliveryModeRouteRetry DeliveryMode = "route_retry"
+)
+
+type TransientPacket struct {
+	PacketID      uint64       `json:"packet_id"`
+	SourceNodeID  int64        `json:"source_node_id"`
+	TargetNodeID  int64        `json:"target_node_id"`
+	RelayTarget   UserKey      `json:"relay_target"`
+	Sender        string       `json:"sender"`
+	Body          []byte       `json:"body"`
+	DeliveryMode  DeliveryMode `json:"delivery_mode"`
+	TTLHops       int32        `json:"ttl_hops"`
+	RouteRetryTTL int64        `json:"route_retry_ttl_ms,omitempty"`
+}
+
+func NormalizeDeliveryMode(raw string) (DeliveryMode, error) {
+	switch DeliveryMode(strings.TrimSpace(raw)) {
+	case "", DeliveryModeBestEffort:
+		return DeliveryModeBestEffort, nil
+	case DeliveryModeRouteRetry:
+		return DeliveryModeRouteRetry, nil
+	default:
+		return "", fmt.Errorf("%w: unsupported delivery mode %q", ErrInvalidInput, raw)
+	}
 }
 
 type ChannelSubscriptionParams struct {
@@ -669,6 +701,9 @@ func (s *Store) UpdateUser(ctx context.Context, params UpdateUserParams) (User, 
 	if current.isProtectedBroadcastUser() {
 		return User{}, Event{}, fmt.Errorf("%w: broadcast user cannot be updated", ErrForbidden)
 	}
+	if current.isProtectedNodeIngressUser() {
+		return User{}, Event{}, fmt.Errorf("%w: node ingress user cannot be updated", ErrForbidden)
+	}
 
 	now := s.clock.Now()
 	changed := false
@@ -788,6 +823,9 @@ func (s *Store) DeleteUser(ctx context.Context, key UserKey) (Event, error) {
 	}
 	if user.isProtectedBroadcastUser() {
 		return Event{}, fmt.Errorf("%w: broadcast user cannot be deleted", ErrForbidden)
+	}
+	if user.isProtectedNodeIngressUser() {
+		return Event{}, fmt.Errorf("%w: node ingress user cannot be deleted", ErrForbidden)
 	}
 
 	now := s.clock.Now()
@@ -1739,6 +1777,9 @@ WHERE node_id = ? AND user_id = ?
 	if err := s.ensureBroadcastUserTx(ctx, tx, now); err != nil {
 		return err
 	}
+	if err := s.ensureNodeIngressUserTx(ctx, tx, now); err != nil {
+		return err
+	}
 
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit ensure bootstrap admin: %w", err)
@@ -1753,7 +1794,7 @@ func normalizeAnyRole(role string) (string, error) {
 		return RoleUser, nil
 	}
 	switch normalized {
-	case RoleSuperAdmin, RoleAdmin, RoleUser, RoleChannel, RoleBroadcast:
+	case RoleSuperAdmin, RoleAdmin, RoleUser, RoleChannel, RoleBroadcast, RoleNode:
 		return normalized, nil
 	default:
 		return "", fmt.Errorf("%w: unsupported role %q", ErrInvalidInput, role)
@@ -1771,16 +1812,25 @@ func normalizeMutableRole(role string) (string, error) {
 	if normalized == RoleBroadcast {
 		return "", fmt.Errorf("%w: role %q cannot be assigned through this API", ErrInvalidInput, role)
 	}
+	if normalized == RoleNode {
+		return "", fmt.Errorf("%w: role %q cannot be assigned through this API", ErrInvalidInput, role)
+	}
 	return normalized, nil
 }
 
 func isLoginRole(role string) bool {
-	return role != RoleChannel && role != RoleBroadcast
+	return role != RoleChannel && role != RoleBroadcast && role != RoleNode
 }
 
 func (s *Store) applyReservedUserInvariants(user User) User {
 	if user.ID == BroadcastUserID && user.SystemReserved {
 		user.Role = RoleBroadcast
+		user.SystemReserved = true
+		user.PasswordHash = disabledPasswordHash
+		return user
+	}
+	if user.ID == NodeIngressUserID && user.SystemReserved {
+		user.Role = RoleNode
 		user.SystemReserved = true
 		user.PasswordHash = disabledPasswordHash
 		return user
@@ -1803,6 +1853,10 @@ func (u User) isProtectedBootstrapAdmin() bool {
 
 func (u User) isProtectedBroadcastUser() bool {
 	return u.ID == BroadcastUserID && u.SystemReserved && u.Role == RoleBroadcast
+}
+
+func (u User) isProtectedNodeIngressUser() bool {
+	return u.ID == NodeIngressUserID && u.SystemReserved && u.Role == RoleNode
 }
 
 func (s *Store) ensureBroadcastUserTx(ctx context.Context, tx *sql.Tx, now clock.Timestamp) error {
@@ -1894,6 +1948,109 @@ WHERE node_id = ? AND user_id = ?
 		updated.VersionPasswordHash.String(), updated.VersionProfile.String(), updated.VersionRole.String(),
 		updated.OriginNodeID, updated.NodeID, updated.ID); err != nil {
 		return fmt.Errorf("repair broadcast user: %w", err)
+	}
+	if _, err := s.insertEvent(ctx, tx, Event{
+		EventType:       EventTypeUserUpdated,
+		Aggregate:       "user",
+		AggregateNodeID: updated.NodeID,
+		AggregateID:     updated.ID,
+		HLC:             updated.UpdatedAt,
+		Body:            userUpdatedProtoFromUser(updated),
+	}); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *Store) ensureNodeIngressUserTx(ctx context.Context, tx *sql.Tx, now clock.Timestamp) error {
+	key := UserKey{NodeID: s.nodeID, UserID: NodeIngressUserID}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM tombstones WHERE entity_type = 'user' AND entity_node_id = ? AND entity_id = ?`, key.NodeID, key.UserID); err != nil {
+		return fmt.Errorf("delete node ingress user tombstone: %w", err)
+	}
+
+	current, err := s.getUserTx(ctx, tx, key, true)
+	switch {
+	case errors.Is(err, ErrNotFound):
+		user := User{
+			NodeID:              s.nodeID,
+			ID:                  NodeIngressUserID,
+			Username:            "node",
+			PasswordHash:        disabledPasswordHash,
+			Profile:             "{}",
+			Role:                RoleNode,
+			SystemReserved:      true,
+			CreatedAt:           now,
+			UpdatedAt:           now,
+			VersionUsername:     now,
+			VersionPasswordHash: now,
+			VersionProfile:      now,
+			VersionRole:         now,
+			OriginNodeID:        s.nodeID,
+		}
+		if _, err := tx.ExecContext(ctx, `
+INSERT INTO users(
+    node_id, user_id, username, password_hash, profile, role, system_reserved, created_at_hlc, updated_at_hlc,
+    deleted_at_hlc, version_username, version_password_hash, version_profile,
+    version_role, version_deleted, origin_node_id
+)
+VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, NULL, ?)
+`, user.NodeID, user.ID, user.Username, user.PasswordHash, user.Profile, user.Role, boolToInt(user.SystemReserved),
+			user.CreatedAt.String(), user.UpdatedAt.String(), user.VersionUsername.String(),
+			user.VersionPasswordHash.String(), user.VersionProfile.String(), user.VersionRole.String(),
+			user.OriginNodeID); err != nil {
+			return fmt.Errorf("insert node ingress user: %w", err)
+		}
+		if _, err := s.insertEvent(ctx, tx, Event{
+			EventType:       EventTypeUserCreated,
+			Aggregate:       "user",
+			AggregateNodeID: user.NodeID,
+			AggregateID:     user.ID,
+			HLC:             now,
+			Body:            userCreatedProtoFromUser(user),
+		}); err != nil {
+			return err
+		}
+		return nil
+	case err != nil:
+		return err
+	}
+
+	changed := current.Username != "node" ||
+		current.PasswordHash != disabledPasswordHash ||
+		current.Profile == "" ||
+		current.Role != RoleNode ||
+		!current.SystemReserved ||
+		current.DeletedAt != nil ||
+		current.VersionDeleted != nil
+	if !changed {
+		return nil
+	}
+
+	updated := current
+	updated.Username = "node"
+	updated.PasswordHash = disabledPasswordHash
+	updated.Profile = defaultJSON(updated.Profile)
+	updated.Role = RoleNode
+	updated.SystemReserved = true
+	updated.DeletedAt = nil
+	updated.VersionDeleted = nil
+	updated.UpdatedAt = now
+	updated.VersionUsername = now
+	updated.VersionPasswordHash = now
+	updated.VersionProfile = now
+	updated.VersionRole = now
+	updated.OriginNodeID = s.nodeID
+	if _, err := tx.ExecContext(ctx, `
+UPDATE users
+SET username = ?, password_hash = ?, profile = ?, role = ?, system_reserved = ?, created_at_hlc = ?, updated_at_hlc = ?,
+    deleted_at_hlc = NULL, version_username = ?, version_password_hash = ?, version_profile = ?,
+    version_role = ?, version_deleted = NULL, origin_node_id = ?
+WHERE node_id = ? AND user_id = ?
+`, updated.Username, updated.PasswordHash, updated.Profile, updated.Role, boolToInt(updated.SystemReserved),
+		updated.CreatedAt.String(), updated.UpdatedAt.String(), updated.VersionUsername.String(),
+		updated.VersionPasswordHash.String(), updated.VersionProfile.String(), updated.VersionRole.String(),
+		updated.OriginNodeID, updated.NodeID, updated.ID); err != nil {
+		return fmt.Errorf("repair node ingress user: %w", err)
 	}
 	if _, err := s.insertEvent(ctx, tx, Event{
 		EventType:       EventTypeUserUpdated,

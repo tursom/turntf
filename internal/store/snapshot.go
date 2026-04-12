@@ -18,10 +18,12 @@ import (
 )
 
 const (
-	SnapshotUsersPartition       = "users/full"
-	SnapshotMessagesPrefix       = "messages/"
-	snapshotPartitionKindUsers   = clusterproto.SnapshotPartitionKind_SNAPSHOT_PARTITION_KIND_USERS
-	snapshotPartitionKindMessage = clusterproto.SnapshotPartitionKind_SNAPSHOT_PARTITION_KIND_MESSAGES
+	SnapshotUsersPartition            = "users/full"
+	SnapshotSubscriptionsPartition    = "subscriptions/full"
+	SnapshotMessagesPrefix            = "messages/"
+	snapshotPartitionKindUsers        = clusterproto.SnapshotPartitionKind_SNAPSHOT_PARTITION_KIND_USERS
+	snapshotPartitionKindMessage      = clusterproto.SnapshotPartitionKind_SNAPSHOT_PARTITION_KIND_MESSAGES
+	snapshotPartitionKindSubscription = clusterproto.SnapshotPartitionKind_SNAPSHOT_PARTITION_KIND_SUBSCRIPTIONS
 )
 
 func MessageSnapshotPartition(originNodeID int64) string {
@@ -44,6 +46,21 @@ func (s *Store) BuildSnapshotDigest(ctx context.Context, producerNodeIDs []int64
 		Kind:      snapshotPartitionKindUsers,
 		RowCount:  uint64(len(userRows)),
 		Hash:      userHash,
+	})
+
+	subscriptionRows, err := s.buildSubscriptionSnapshotRows(ctx)
+	if err != nil {
+		return nil, err
+	}
+	subscriptionHash, err := hashSnapshotRows(subscriptionRows)
+	if err != nil {
+		return nil, err
+	}
+	partitions = append(partitions, &clusterproto.SnapshotPartitionDigest{
+		Partition: SnapshotSubscriptionsPartition,
+		Kind:      snapshotPartitionKindSubscription,
+		RowCount:  uint64(len(subscriptionRows)),
+		Hash:      subscriptionHash,
 	})
 
 	for _, producer := range normalizeProducerNodeIDs(producerNodeIDs) {
@@ -77,6 +94,16 @@ func (s *Store) BuildSnapshotChunk(ctx context.Context, partition string) (*clus
 		return &clusterproto.SnapshotChunk{
 			Partition: partition,
 			Kind:      snapshotPartitionKindUsers,
+			Rows:      rows,
+		}, nil
+	case partition == SnapshotSubscriptionsPartition:
+		rows, err := s.buildSubscriptionSnapshotRows(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return &clusterproto.SnapshotChunk{
+			Partition: partition,
+			Kind:      snapshotPartitionKindSubscription,
 			Rows:      rows,
 		}, nil
 	case strings.HasPrefix(partition, SnapshotMessagesPrefix):
@@ -120,6 +147,15 @@ func (s *Store) ApplySnapshotChunk(ctx context.Context, chunk *clusterproto.Snap
 		}
 		for _, row := range chunk.Rows {
 			if err := s.applyUserSnapshotRowTx(ctx, tx, row); err != nil {
+				return err
+			}
+		}
+	case partition == SnapshotSubscriptionsPartition:
+		if chunk.Kind != snapshotPartitionKindSubscription {
+			return fmt.Errorf("%w: subscriptions snapshot chunk has kind %s", ErrInvalidInput, chunk.Kind)
+		}
+		for _, row := range chunk.Rows {
+			if err := s.applySubscriptionSnapshotRowTx(ctx, tx, row); err != nil {
 				return err
 			}
 		}
@@ -243,6 +279,31 @@ ORDER BY user_node_id ASC, user_id ASC, created_at_hlc DESC, node_id ASC, seq DE
 	return snapshotRows, nil
 }
 
+func (s *Store) buildSubscriptionSnapshotRows(ctx context.Context) ([]*clusterproto.SnapshotRow, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT subscriber_node_id, subscriber_user_id, channel_node_id, channel_user_id, subscribed_at_hlc, deleted_at_hlc, origin_node_id
+FROM channel_subscriptions
+ORDER BY subscriber_node_id ASC, subscriber_user_id ASC, channel_node_id ASC, channel_user_id ASC
+`)
+	if err != nil {
+		return nil, fmt.Errorf("query snapshot subscriptions: %w", err)
+	}
+	defer rows.Close()
+
+	snapshotRows := make([]*clusterproto.SnapshotRow, 0)
+	for rows.Next() {
+		subscription, err := scanSubscription(rows)
+		if err != nil {
+			return nil, err
+		}
+		snapshotRows = append(snapshotRows, snapshotRowFromSubscription(subscription))
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate snapshot subscriptions: %w", err)
+	}
+	return snapshotRows, nil
+}
+
 func (s *Store) applyUserSnapshotRowTx(ctx context.Context, tx *sql.Tx, row *clusterproto.SnapshotRow) error {
 	if row == nil {
 		return fmt.Errorf("%w: snapshot row cannot be nil", ErrInvalidInput)
@@ -334,6 +395,42 @@ VALUES(?, ?, ?, ?, ?, ?, ?, ?)
 	return key, nil
 }
 
+func (s *Store) applySubscriptionSnapshotRowTx(ctx context.Context, tx *sql.Tx, row *clusterproto.SnapshotRow) error {
+	if row == nil {
+		return fmt.Errorf("%w: snapshot row cannot be nil", ErrInvalidInput)
+	}
+	subscriptionRow := row.GetSubscription()
+	if subscriptionRow == nil {
+		return fmt.Errorf("%w: subscriptions snapshot contains non-subscription row", ErrInvalidInput)
+	}
+	subscription, err := subscriptionFromSnapshotRow(subscriptionRow)
+	if err != nil {
+		return err
+	}
+	if subscription.DeletedAt == nil {
+		if err := s.validateSubscriptionUsersTx(ctx, tx, subscription.Subscriber, subscription.Channel); err != nil {
+			if errors.Is(err, ErrNotFound) {
+				return nil
+			}
+			return err
+		}
+	} else {
+		if _, err := s.getUserByIDTx(ctx, tx, subscription.Subscriber, false); err != nil {
+			if errors.Is(err, ErrNotFound) {
+				return nil
+			}
+			return err
+		}
+		if _, err := s.getUserByIDTx(ctx, tx, subscription.Channel, false); err != nil {
+			if errors.Is(err, ErrNotFound) {
+				return nil
+			}
+			return err
+		}
+	}
+	return s.upsertSubscriptionTx(ctx, tx, subscription)
+}
+
 func snapshotRowFromUser(user User) *clusterproto.SnapshotRow {
 	return &clusterproto.SnapshotRow{
 		Body: &clusterproto.SnapshotRow_User{
@@ -372,6 +469,25 @@ func snapshotRowFromMessage(message Message) *clusterproto.SnapshotRow {
 				Metadata:     message.Metadata,
 				CreatedAtHlc: message.CreatedAt.String(),
 			},
+		},
+	}
+}
+
+func snapshotRowFromSubscription(subscription Subscription) *clusterproto.SnapshotRow {
+	row := &clusterproto.SnapshotSubscriptionRow{
+		SubscriberNodeId: subscription.Subscriber.NodeID,
+		SubscriberUserId: subscription.Subscriber.UserID,
+		ChannelNodeId:    subscription.Channel.NodeID,
+		ChannelUserId:    subscription.Channel.UserID,
+		SubscribedAtHlc:  subscription.SubscribedAt.String(),
+		OriginNodeId:     subscription.OriginNodeID,
+	}
+	if subscription.DeletedAt != nil {
+		row.DeletedAtHlc = subscription.DeletedAt.String()
+	}
+	return &clusterproto.SnapshotRow{
+		Body: &clusterproto.SnapshotRow_Subscription{
+			Subscription: row,
 		},
 	}
 }
@@ -442,6 +558,39 @@ func userFromSnapshotRow(row *clusterproto.SnapshotUserRow) (User, error) {
 	}
 	user.SystemReserved = user.SystemReserved && user.ID == BootstrapAdminUserID
 	return user, nil
+}
+
+func subscriptionFromSnapshotRow(row *clusterproto.SnapshotSubscriptionRow) (Subscription, error) {
+	if row == nil {
+		return Subscription{}, fmt.Errorf("%w: snapshot subscription cannot be nil", ErrInvalidInput)
+	}
+	subscription := Subscription{
+		Subscriber:   UserKey{NodeID: row.SubscriberNodeId, UserID: row.SubscriberUserId},
+		Channel:      UserKey{NodeID: row.ChannelNodeId, UserID: row.ChannelUserId},
+		OriginNodeID: row.OriginNodeId,
+	}
+	if err := subscription.Subscriber.Validate(); err != nil {
+		return Subscription{}, err
+	}
+	if err := subscription.Channel.Validate(); err != nil {
+		return Subscription{}, err
+	}
+	subscribedAt, err := parseRequiredTimestamp(row.SubscribedAtHlc, "snapshot subscription subscribed_at")
+	if err != nil {
+		return Subscription{}, err
+	}
+	subscription.SubscribedAt = subscribedAt
+	if strings.TrimSpace(row.DeletedAtHlc) != "" {
+		deletedAt, err := parseRequiredTimestamp(row.DeletedAtHlc, "snapshot subscription deleted_at")
+		if err != nil {
+			return Subscription{}, err
+		}
+		subscription.DeletedAt = &deletedAt
+	}
+	if subscription.OriginNodeID <= 0 {
+		return Subscription{}, fmt.Errorf("%w: snapshot subscription origin node id is required", ErrInvalidInput)
+	}
+	return subscription, nil
 }
 
 func timestampSnapshotString(ts *clock.Timestamp) string {

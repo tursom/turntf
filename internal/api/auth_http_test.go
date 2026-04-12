@@ -83,6 +83,78 @@ func TestAuthenticatedHTTPLoginAndAuthorization(t *testing.T) {
 	}, map[string]string{
 		"Authorization": "Bearer " + aliceToken,
 	}, http.StatusForbidden)
+
+	var channel struct {
+		NodeID int64  `json:"node_id"`
+		UserID int64  `json:"user_id"`
+		Role   string `json:"role"`
+	}
+	mustJSON(t, doJSONWithHeaders(t, testAPI.handler, http.MethodPost, "/users", map[string]any{
+		"username": "alerts",
+		"role":     store.RoleChannel,
+	}, map[string]string{
+		"Authorization": "Bearer " + adminToken,
+	}, http.StatusCreated), &channel)
+	if channel.Role != store.RoleChannel {
+		t.Fatalf("expected channel role, got %+v", channel)
+	}
+
+	doJSONWithHeaders(t, testAPI.handler, http.MethodPost, "/auth/login", map[string]any{
+		"node_id":  channel.NodeID,
+		"user_id":  channel.UserID,
+		"password": "anything",
+	}, nil, http.StatusUnauthorized)
+
+	doJSONWithHeaders(t, testAPI.handler, http.MethodPost, userMessagesPath(channel.NodeID, channel.UserID), map[string]any{
+		"sender": "alice",
+		"body":   "not subscribed",
+	}, map[string]string{
+		"Authorization": "Bearer " + aliceToken,
+	}, http.StatusForbidden)
+
+	doJSONWithHeaders(t, testAPI.handler, http.MethodPost, subscriptionsPath(aliceKey.NodeID, aliceKey.UserID), map[string]any{
+		"channel_node_id": channel.NodeID,
+		"channel_user_id": channel.UserID,
+	}, map[string]string{
+		"Authorization": "Bearer " + aliceToken,
+	}, http.StatusCreated)
+
+	doJSONWithHeaders(t, testAPI.handler, http.MethodPost, userMessagesPath(channel.NodeID, channel.UserID), map[string]any{
+		"sender": "alice",
+		"body":   "channel message",
+	}, map[string]string{
+		"Authorization": "Bearer " + aliceToken,
+	}, http.StatusCreated)
+
+	broadcastPath := userMessagesPath(testNodeID(1), store.BroadcastUserID)
+	doJSONWithHeaders(t, testAPI.handler, http.MethodPost, broadcastPath, map[string]any{
+		"sender": "alice",
+		"body":   "ordinary broadcast",
+	}, map[string]string{
+		"Authorization": "Bearer " + aliceToken,
+	}, http.StatusForbidden)
+	doJSONWithHeaders(t, testAPI.handler, http.MethodPost, broadcastPath, map[string]any{
+		"sender": "admin",
+		"body":   "admin broadcast",
+	}, map[string]string{
+		"Authorization": "Bearer " + adminToken,
+	}, http.StatusCreated)
+
+	var aliceMessages struct {
+		Items []authMessageItem `json:"items"`
+	}
+	mustJSON(t, doJSONWithHeaders(t, testAPI.handler, http.MethodGet, userMessagesPath(aliceKey.NodeID, aliceKey.UserID)+"?limit=20", nil, map[string]string{
+		"Authorization": "Bearer " + aliceToken,
+	}, http.StatusOK), &aliceMessages)
+	if !responseMessagesContainBody(aliceMessages.Items, "channel message") || !responseMessagesContainBody(aliceMessages.Items, "admin broadcast") {
+		t.Fatalf("expected alice message list to include channel and broadcast: %+v", aliceMessages)
+	}
+	doJSONWithHeaders(t, testAPI.handler, http.MethodGet, userMessagesPath(channel.NodeID, channel.UserID), nil, map[string]string{
+		"Authorization": "Bearer " + aliceToken,
+	}, http.StatusForbidden)
+	doJSONWithHeaders(t, testAPI.handler, http.MethodGet, userMessagesPath(channel.NodeID, channel.UserID), nil, map[string]string{
+		"Authorization": "Bearer " + adminToken,
+	}, http.StatusOK)
 }
 
 func newAuthenticatedTestAPI(t *testing.T) authenticatedTestAPI {
@@ -158,6 +230,23 @@ func createUserAs(t *testing.T, handler http.Handler, token, username, password,
 		t.Fatalf("expected created user id")
 	}
 	return key
+}
+
+func subscriptionsPath(nodeID, userID int64) string {
+	return userPath(nodeID, userID) + "/subscriptions"
+}
+
+type authMessageItem struct {
+	Body string `json:"body"`
+}
+
+func responseMessagesContainBody(messages []authMessageItem, body string) bool {
+	for _, message := range messages {
+		if message.Body == body {
+			return true
+		}
+	}
+	return false
 }
 
 func mustHashPassword(t *testing.T, password string) string {

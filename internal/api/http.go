@@ -51,6 +51,11 @@ type createMessageRequest struct {
 	Metadata json.RawMessage `json:"metadata,omitempty"`
 }
 
+type subscriptionRequest struct {
+	ChannelNodeID int64 `json:"channel_node_id"`
+	ChannelUserID int64 `json:"channel_user_id"`
+}
+
 type loginRequest struct {
 	NodeID   int64  `json:"node_id"`
 	UserID   int64  `json:"user_id"`
@@ -95,6 +100,9 @@ func (h *HTTP) routes() {
 	h.mux.HandleFunc("DELETE /nodes/{node_id}/users/{user_id}", h.handleDeleteUser)
 	h.mux.HandleFunc("GET /nodes/{node_id}/users/{user_id}/messages", h.handleListMessagesByUser)
 	h.mux.HandleFunc("POST /nodes/{node_id}/users/{user_id}/messages", h.handleCreateMessage)
+	h.mux.HandleFunc("GET /nodes/{node_id}/users/{user_id}/subscriptions", h.handleListSubscriptions)
+	h.mux.HandleFunc("POST /nodes/{node_id}/users/{user_id}/subscriptions", h.handleSubscribeChannel)
+	h.mux.HandleFunc("DELETE /nodes/{node_id}/users/{user_id}/subscriptions/{channel_node_id}/{channel_user_id}", h.handleUnsubscribeChannel)
 	h.mux.HandleFunc("GET /events", h.handleListEvents)
 	h.mux.HandleFunc("GET /ops/status", h.handleOpsStatus)
 	h.mux.HandleFunc("GET /metrics", h.handleMetrics)
@@ -166,10 +174,14 @@ func (h *HTTP) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "profile must be valid JSON")
 		return
 	}
-	passwordHash, err := auth.HashPassword(req.Password)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
+	passwordHash := ""
+	if strings.TrimSpace(req.Role) != store.RoleChannel {
+		var err error
+		passwordHash, err = auth.HashPassword(req.Password)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 	}
 
 	user, _, err := h.service.CreateUser(r.Context(), store.CreateUserParams{
@@ -290,8 +302,23 @@ func (h *HTTP) handleCreateMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if principal != nil && !isAdminRole(principal.User.Role) && principal.User.Key() != key {
-		writeError(w, http.StatusForbidden, "forbidden")
-		return
+		target, err := h.service.GetUser(r.Context(), key)
+		if err != nil {
+			writeStoreError(w, err)
+			return
+		}
+		subscribed := false
+		if target.Role == store.RoleChannel {
+			subscribed, err = h.service.IsSubscribedToChannel(r.Context(), principal.User.Key(), key)
+			if err != nil {
+				writeStoreError(w, err)
+				return
+			}
+		}
+		if !subscribed {
+			writeError(w, http.StatusForbidden, "forbidden")
+			return
+		}
 	}
 
 	metadata, err := normalizeJSONValue(req.Metadata, "")
@@ -319,7 +346,16 @@ func (h *HTTP) handleListMessagesByUser(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
-	if _, ok := h.requireSelfOrAdmin(w, r, key); !ok {
+	target, err := h.service.GetUser(r.Context(), key)
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	if target.CanLogin() {
+		if _, ok := h.requireSelfOrAdmin(w, r, key); !ok {
+			return
+		}
+	} else if _, ok := h.requireAdmin(w, r); !ok {
 		return
 	}
 
@@ -344,6 +380,82 @@ func (h *HTTP) handleListMessagesByUser(w http.ResponseWriter, r *http.Request) 
 		items = append(items, messageResponseFromStore(message))
 	}
 
+	writeJSON(w, http.StatusOK, map[string]any{
+		"items": items,
+		"count": len(items),
+	})
+}
+
+func (h *HTTP) handleSubscribeChannel(w http.ResponseWriter, r *http.Request) {
+	subscriber, ok := parsePathUserKey(w, r)
+	if !ok {
+		return
+	}
+	if _, ok := h.requireSelfOrAdmin(w, r, subscriber); !ok {
+		return
+	}
+
+	var req subscriptionRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	channel := store.UserKey{NodeID: req.ChannelNodeID, UserID: req.ChannelUserID}
+	subscription, _, err := h.service.SubscribeChannel(r.Context(), store.ChannelSubscriptionParams{
+		Subscriber: subscriber,
+		Channel:    channel,
+	})
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, subscriptionResponseFromStore(subscription))
+}
+
+func (h *HTTP) handleUnsubscribeChannel(w http.ResponseWriter, r *http.Request) {
+	subscriber, ok := parsePathUserKey(w, r)
+	if !ok {
+		return
+	}
+	if _, ok := h.requireSelfOrAdmin(w, r, subscriber); !ok {
+		return
+	}
+	channelNodeID, ok := parsePositivePathInt(w, r, "channel_node_id")
+	if !ok {
+		return
+	}
+	channelUserID, ok := parsePositivePathInt(w, r, "channel_user_id")
+	if !ok {
+		return
+	}
+	subscription, _, err := h.service.UnsubscribeChannel(r.Context(), store.ChannelSubscriptionParams{
+		Subscriber: subscriber,
+		Channel:    store.UserKey{NodeID: channelNodeID, UserID: channelUserID},
+	})
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, subscriptionResponseFromStore(subscription))
+}
+
+func (h *HTTP) handleListSubscriptions(w http.ResponseWriter, r *http.Request) {
+	subscriber, ok := parsePathUserKey(w, r)
+	if !ok {
+		return
+	}
+	if _, ok := h.requireSelfOrAdmin(w, r, subscriber); !ok {
+		return
+	}
+	subscriptions, err := h.service.ListChannelSubscriptions(r.Context(), subscriber)
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	items := make([]subscriptionResponse, 0, len(subscriptions))
+	for _, subscription := range subscriptions {
+		items = append(items, subscriptionResponseFromStore(subscription))
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"items": items,
 		"count": len(items),
@@ -444,6 +556,16 @@ type messageResponse struct {
 	CreatedAt  string          `json:"created_at"`
 }
 
+type subscriptionResponse struct {
+	SubscriberNodeID int64  `json:"subscriber_node_id"`
+	SubscriberUserID int64  `json:"subscriber_user_id"`
+	ChannelNodeID    int64  `json:"channel_node_id"`
+	ChannelUserID    int64  `json:"channel_user_id"`
+	SubscribedAt     string `json:"subscribed_at"`
+	DeletedAt        string `json:"deleted_at,omitempty"`
+	OriginNodeID     int64  `json:"origin_node_id"`
+}
+
 type eventResponse struct {
 	Sequence        int64           `json:"sequence"`
 	EventID         int64           `json:"event_id"`
@@ -486,6 +608,21 @@ func messageResponseFromStore(message store.Message) messageResponse {
 		Metadata:   metadata,
 		CreatedAt:  message.CreatedAt.String(),
 	}
+}
+
+func subscriptionResponseFromStore(subscription store.Subscription) subscriptionResponse {
+	response := subscriptionResponse{
+		SubscriberNodeID: subscription.Subscriber.NodeID,
+		SubscriberUserID: subscription.Subscriber.UserID,
+		ChannelNodeID:    subscription.Channel.NodeID,
+		ChannelUserID:    subscription.Channel.UserID,
+		SubscribedAt:     subscription.SubscribedAt.String(),
+		OriginNodeID:     subscription.OriginNodeID,
+	}
+	if subscription.DeletedAt != nil {
+		response.DeletedAt = subscription.DeletedAt.String()
+	}
+	return response
 }
 
 func eventResponseFromStore(event store.Event) eventResponse {

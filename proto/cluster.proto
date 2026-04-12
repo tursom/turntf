@@ -72,6 +72,7 @@ enum SnapshotPartitionKind {
   SNAPSHOT_PARTITION_KIND_UNSPECIFIED = 0;
   SNAPSHOT_PARTITION_KIND_USERS = 1;
   SNAPSHOT_PARTITION_KIND_MESSAGES = 2;
+  SNAPSHOT_PARTITION_KIND_SUBSCRIPTIONS = 3;
 }
 
 message SnapshotPartitionDigest {
@@ -86,6 +87,7 @@ message SnapshotRow {
     SnapshotUserRow user = 1;
     SnapshotTombstoneRow tombstone = 2;
     SnapshotMessageRow message = 3;
+    SnapshotSubscriptionRow subscription = 4;
   }
 }
 
@@ -125,6 +127,16 @@ message SnapshotMessageRow {
   string metadata = 5;
   string created_at_hlc = 6;
   int64 seq = 7;
+}
+
+message SnapshotSubscriptionRow {
+  int64 subscriber_node_id = 1;
+  int64 subscriber_user_id = 2;
+  int64 channel_node_id = 3;
+  int64 channel_user_id = 4;
+  string subscribed_at_hlc = 5;
+  string deleted_at_hlc = 6;
+  int64 origin_node_id = 7;
 }
 
 message TimeSyncRequest {

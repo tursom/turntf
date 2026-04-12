@@ -66,6 +66,9 @@
 - `GET /nodes/{node_id}/users/{user_id}`
 - `POST /nodes/{node_id}/users/{user_id}/messages`
 - `GET /nodes/{node_id}/users/{user_id}/messages?limit=N`
+- `POST /nodes/{node_id}/users/{user_id}/subscriptions`
+- `DELETE /nodes/{node_id}/users/{user_id}/subscriptions/{channel_node_id}/{channel_user_id}`
+- `GET /nodes/{node_id}/users/{user_id}/subscriptions`
 
 ### 内部 Protobuf 协议
 
@@ -100,6 +103,7 @@
 - `applied_events`
 - `user_conflicts`
 - `tombstones`
+- `channel_subscriptions`
 
 其中：
 
@@ -107,6 +111,7 @@
 - `peer_cursors` 记录每个 peer 的确认进度。
 - `applied_events` 用于幂等去重。
 - `tombstones` 用于删除传播和离线节点恢复。
+- `channel_subscriptions` 记录可登录用户对 `role=channel` 地址的订阅关系。
 
 ### 用户记录字段
 
@@ -123,6 +128,8 @@
 - `version_profile`
 - `version_deleted`
 - `origin_node_id`
+
+`role=channel` 表示不可登录的组播地址，`role=broadcast` 表示不可登录的广播地址。每个节点的 `user_id = 2` 在启动时创建/修复为 `role=broadcast`；`user_id = 1` 仍按现有规则参与全局唯一保底超级管理员收敛；每个节点前 `1024` 个 `user_id` 都保留给系统地址，普通用户和普通 channel 从 `1025` 开始分配。
 
 ### 消息记录字段
 

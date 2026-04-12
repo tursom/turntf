@@ -86,6 +86,14 @@ func (m *Manager) handleSnapshotDigest(sess *session, envelope *internalproto.En
 		m.requestSnapshotPartition(sess, remoteUsers)
 		return nil
 	}
+	remoteSubscriptions, ok := remote[store.SnapshotSubscriptionsPartition]
+	if !ok {
+		return fmt.Errorf("snapshot digest missing %s partition", store.SnapshotSubscriptionsPartition)
+	}
+	if !snapshotPartitionDigestEqual(local[store.SnapshotSubscriptionsPartition], remoteSubscriptions) {
+		m.requestSnapshotPartition(sess, remoteSubscriptions)
+		return nil
+	}
 	if sess.remoteMessageWindowSize != m.cfg.MessageWindowSize {
 		return nil
 	}
@@ -93,6 +101,9 @@ func (m *Manager) handleSnapshotDigest(sess *session, envelope *internalproto.En
 	partitions := make([]string, 0, len(remote))
 	for partition := range remote {
 		if partition == store.SnapshotUsersPartition {
+			continue
+		}
+		if partition == store.SnapshotSubscriptionsPartition {
 			continue
 		}
 		partitions = append(partitions, partition)

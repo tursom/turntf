@@ -165,6 +165,9 @@ url = "ws://127.0.0.1:9081/internal/cluster/ws"
 - `DELETE /nodes/{node_id}/users/{user_id}`
 - `POST /nodes/{node_id}/users/{user_id}/messages`
 - `GET /nodes/{node_id}/users/{user_id}/messages?limit=N`
+- `POST /nodes/{node_id}/users/{user_id}/subscriptions`
+- `DELETE /nodes/{node_id}/users/{user_id}/subscriptions/{channel_node_id}/{channel_user_id}`
+- `GET /nodes/{node_id}/users/{user_id}/subscriptions`
 - `GET /events?after=0&limit=100`
 - `GET /ops/status`
 - `GET /metrics`
@@ -175,14 +178,19 @@ url = "ws://127.0.0.1:9081/internal/cluster/ws"
 
 - `GET /healthz` 和 `POST /auth/login` 公开
 - `POST /users`、`PATCH /nodes/{node_id}/users/{user_id}`、`DELETE /nodes/{node_id}/users/{user_id}`、`GET /events`、`GET /ops/status`、`GET /metrics` 需要管理员或保底超级管理员
-- `GET /nodes/{node_id}/users/{user_id}`、`GET /nodes/{node_id}/users/{user_id}/messages` 允许本人或管理员访问
-- `POST /nodes/{node_id}/users/{user_id}/messages` 需要登录；普通用户只能给自己的 `(node_id, user_id)` 写消息，管理员可给任意用户写消息
+- `GET /nodes/{node_id}/users/{user_id}` 允许本人或管理员访问
+- `GET /nodes/{node_id}/users/{user_id}/messages` 对可登录用户允许本人或管理员访问；对 `role=channel` 或 `role=broadcast` 地址仅管理员可直接查询原始消息
+- `POST /nodes/{node_id}/users/{user_id}/messages` 需要登录；普通用户只能给自己或已订阅的 `role=channel` 地址写消息，管理员可给任意地址写消息，包括广播地址
+- 订阅接口允许普通用户维护自己的 channel 订阅，管理员可维护任意用户订阅
 - 登录请求固定使用 `node_id + user_id + password`
 - 用户身份由 `(node_id, user_id)` 二元组定位；`user_id = 1` 是每个节点的 root 候选，当前已存储且 `node_id` 最小的 root 候选是唯一受保护保底超级管理员，不可删除、不可降权、不可改名，允许修改密码
+- `user_id = 2` 是每个节点的系统广播地址，启动时会创建/修复为 `role=broadcast`，不可登录、不可删除、不可由外部 API 创建或修改为该角色
+- 每个节点的前 `1024` 个 `user_id` 都作为保留用户区间，普通用户和普通 channel 会从 `1025` 开始分配
+- `role=channel` 是不可登录的组播地址，管理员可通过 `POST /users` 创建，其他用户订阅后可接收订阅时间之后发送到该 channel 的消息
 
 当前集群同步行为：
 
-- 本地 `POST /users`、`PATCH /nodes/{node_id}/users/{user_id}`、`DELETE /nodes/{node_id}/users/{user_id}`、`POST /nodes/{node_id}/users/{user_id}/messages` 成功后，会异步广播对应事件
+- 本地 `POST /users`、`PATCH /nodes/{node_id}/users/{user_id}`、`DELETE /nodes/{node_id}/users/{user_id}`、订阅变更、`POST /nodes/{node_id}/users/{user_id}/messages` 成功后，会异步广播对应事件
 - 对端节点成功应用事件后返回 `Ack`
 - 两节点在线时，创建用户和写消息可以自动同步
 - 集群模式下，节点只有在首次成功校时后才接受本地写入；未校时时写接口会返回 `503`
@@ -193,9 +201,11 @@ url = "ws://127.0.0.1:9081/internal/cluster/ws"
 - 拉取重放与实时广播重叠时，重复事件会被 `applied_events` 幂等吸收
 - 用户复制按 `(node_id, user_id)` 做字段级 LWW 合并，用户名允许重复
 - 删除通过 `tombstones` 传播，旧的创建/更新事件不会把已删除用户重新复活
+- channel 订阅关系通过事件日志和快照复制；订阅后只合并订阅时间之后的 channel 消息，取消订阅后不再合并该 channel 消息
 - 启用了 `cluster.max_clock_skew_ms` 时，时钟偏差超限或未来时间戳事件会导致该 peer 被拒绝/断开，避免污染 LWW
 - `tombstones`：删除墓碑表，用来记录“这个对象已经被删过”，避免旧事件在延迟到达时把数据错误复活
 - 消息复制按 `(user_node_id, user_id, node_id, seq)` 幂等去重，并在本地和复制应用时都裁剪到最近 N 条
+- 广播消息发送到任意 `role=broadcast` 地址后只存一份；普通用户读取消息时会动态合并所有广播地址的消息，因此未来新用户也能看到仍在本地窗口内的广播消息
 - 当集群所有节点使用相同的 `message_window_size` 时，同一用户的最近 N 条消息会收敛到相同结果
 - 任意节点签发的登录 token 都可以在其他节点使用，只要它们共享同一 `auth.token_secret`
 - 所有集群 `Envelope` 在收发两端都使用 `cluster.secret` 做 HMAC 鉴权

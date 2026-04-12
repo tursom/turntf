@@ -100,6 +100,36 @@ func (s *Service) ListMessagesByUser(ctx context.Context, key store.UserKey, lim
 	return s.store.ListMessagesByUser(ctx, key, limit)
 }
 
+func (s *Service) SubscribeChannel(ctx context.Context, params store.ChannelSubscriptionParams) (store.Subscription, store.Event, error) {
+	if err := s.allowWrite(ctx); err != nil {
+		return store.Subscription{}, store.Event{}, err
+	}
+	subscription, event, err := s.store.SubscribeChannel(ctx, params)
+	if err == nil {
+		s.eventSink.Publish(event)
+	}
+	return subscription, event, err
+}
+
+func (s *Service) UnsubscribeChannel(ctx context.Context, params store.ChannelSubscriptionParams) (store.Subscription, store.Event, error) {
+	if err := s.allowWrite(ctx); err != nil {
+		return store.Subscription{}, store.Event{}, err
+	}
+	subscription, event, err := s.store.UnsubscribeChannel(ctx, params)
+	if err == nil {
+		s.eventSink.Publish(event)
+	}
+	return subscription, event, err
+}
+
+func (s *Service) ListChannelSubscriptions(ctx context.Context, key store.UserKey) ([]store.Subscription, error) {
+	return s.store.ListChannelSubscriptions(ctx, key)
+}
+
+func (s *Service) IsSubscribedToChannel(ctx context.Context, subscriber, channel store.UserKey) (bool, error) {
+	return s.store.IsSubscribedToChannel(ctx, subscriber, channel)
+}
+
 func (s *Service) ListEvents(ctx context.Context, afterSequence int64, limit int) ([]store.Event, error) {
 	return s.store.ListEvents(ctx, afterSequence, limit)
 }

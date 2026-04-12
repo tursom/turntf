@@ -100,3 +100,47 @@ func TestSnapshotMessageRowRoundTripUsesTripleIdentity(t *testing.T) {
 		t.Fatalf("unexpected snapshot message identity: %+v", message)
 	}
 }
+
+func TestSnapshotSubscriptionRowRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	envelope := &Envelope{
+		NodeId: testNodeID,
+		Body: &Envelope_SnapshotChunk{
+			SnapshotChunk: &SnapshotChunk{
+				SnapshotVersion: SnapshotVersion,
+				Partition:       "subscriptions/full",
+				Kind:            SnapshotPartitionKind_SNAPSHOT_PARTITION_KIND_SUBSCRIPTIONS,
+				Rows: []*SnapshotRow{
+					{
+						Body: &SnapshotRow_Subscription{
+							Subscription: &SnapshotSubscriptionRow{
+								SubscriberNodeId: testNodeID,
+								SubscriberUserId: 42,
+								ChannelNodeId:    testNodeID,
+								ChannelUserId:    99,
+								SubscribedAtHlc:  "1740000000000-00001-00001",
+								OriginNodeId:     testNodeID,
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	data, err := gproto.Marshal(envelope)
+	if err != nil {
+		t.Fatalf("marshal envelope: %v", err)
+	}
+
+	var decoded Envelope
+	if err := gproto.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal envelope: %v", err)
+	}
+
+	subscription := decoded.GetSnapshotChunk().GetRows()[0].GetSubscription()
+	if subscription.GetSubscriberUserId() != 42 || subscription.GetChannelUserId() != 99 {
+		t.Fatalf("unexpected snapshot subscription: %+v", subscription)
+	}
+}

@@ -56,6 +56,20 @@ type replicatedMessageEnvelope struct {
 	Message replicatedMessagePayload `json:"message"`
 }
 
+type replicatedSubscriptionPayload struct {
+	SubscriberNodeID int64  `json:"subscriber_node_id"`
+	SubscriberUserID int64  `json:"subscriber_user_id"`
+	ChannelNodeID    int64  `json:"channel_node_id"`
+	ChannelUserID    int64  `json:"channel_user_id"`
+	SubscribedAt     string `json:"subscribed_at"`
+	DeletedAt        string `json:"deleted_at,omitempty"`
+	OriginNodeID     int64  `json:"origin_node_id"`
+}
+
+type replicatedSubscriptionEnvelope struct {
+	Subscription replicatedSubscriptionPayload `json:"subscription"`
+}
+
 func encodeCreateUserPayload(user User) (string, error) {
 	return marshalPayload(replicatedUserEnvelope{
 		User: replicatedUserPayload{
@@ -124,6 +138,21 @@ func encodeCreateMessagePayload(message Message) (string, error) {
 			CreatedAt:  message.CreatedAt.String(),
 		},
 	})
+}
+
+func encodeChannelSubscriptionPayload(subscription Subscription) (string, error) {
+	payload := replicatedSubscriptionPayload{
+		SubscriberNodeID: subscription.Subscriber.NodeID,
+		SubscriberUserID: subscription.Subscriber.UserID,
+		ChannelNodeID:    subscription.Channel.NodeID,
+		ChannelUserID:    subscription.Channel.UserID,
+		SubscribedAt:     subscription.SubscribedAt.String(),
+		OriginNodeID:     subscription.OriginNodeID,
+	}
+	if subscription.DeletedAt != nil {
+		payload.DeletedAt = subscription.DeletedAt.String()
+	}
+	return marshalPayload(replicatedSubscriptionEnvelope{Subscription: payload})
 }
 
 func marshalPayload(value any) (string, error) {
@@ -195,6 +224,10 @@ func (s *Store) ApplyReplicatedEvent(ctx context.Context, event *clusterproto.Re
 		}
 	case "message.created":
 		if err := s.applyReplicatedMessageCreated(ctx, tx, event); err != nil {
+			return err
+		}
+	case "channel.subscribed", "channel.unsubscribed":
+		if err := s.applyReplicatedChannelSubscription(ctx, tx, event); err != nil {
 			return err
 		}
 	default:
@@ -291,6 +324,75 @@ VALUES(?, ?, ?, ?, ?, ?, ?, ?)
 		return err
 	}
 	return nil
+}
+
+func (s *Store) applyReplicatedChannelSubscription(ctx context.Context, tx *sql.Tx, event *clusterproto.ReplicatedEvent) error {
+	var payload replicatedSubscriptionEnvelope
+	if err := json.Unmarshal(event.Payload, &payload); err != nil {
+		return fmt.Errorf("decode %s payload: %w", event.Kind, err)
+	}
+	subscription, err := subscriptionFromReplicatedPayload(payload.Subscription)
+	if err != nil {
+		return err
+	}
+	if event.Kind == "channel.unsubscribed" && subscription.DeletedAt == nil {
+		return fmt.Errorf("%w: channel.unsubscribed missing deleted_at", ErrInvalidInput)
+	}
+	if event.Kind == "channel.subscribed" && subscription.DeletedAt != nil {
+		return fmt.Errorf("%w: channel.subscribed cannot include deleted_at", ErrInvalidInput)
+	}
+	if event.OriginNodeId != 0 && event.OriginNodeId != subscription.OriginNodeID {
+		return fmt.Errorf("%w: subscription origin node id %d does not match event origin %d", ErrInvalidInput, subscription.OriginNodeID, event.OriginNodeId)
+	}
+	if subscription.DeletedAt == nil {
+		if err := s.validateSubscriptionUsersTx(ctx, tx, subscription.Subscriber, subscription.Channel); err != nil {
+			return err
+		}
+	} else {
+		if _, err := s.getUserByIDTx(ctx, tx, subscription.Subscriber, false); err != nil {
+			if errors.Is(err, ErrNotFound) {
+				return nil
+			}
+			return err
+		}
+		if _, err := s.getUserByIDTx(ctx, tx, subscription.Channel, false); err != nil {
+			if errors.Is(err, ErrNotFound) {
+				return nil
+			}
+			return err
+		}
+	}
+	return s.upsertSubscriptionTx(ctx, tx, subscription)
+}
+
+func subscriptionFromReplicatedPayload(payload replicatedSubscriptionPayload) (Subscription, error) {
+	subscription := Subscription{
+		Subscriber:   UserKey{NodeID: payload.SubscriberNodeID, UserID: payload.SubscriberUserID},
+		Channel:      UserKey{NodeID: payload.ChannelNodeID, UserID: payload.ChannelUserID},
+		OriginNodeID: payload.OriginNodeID,
+	}
+	if err := subscription.Subscriber.Validate(); err != nil {
+		return Subscription{}, err
+	}
+	if err := subscription.Channel.Validate(); err != nil {
+		return Subscription{}, err
+	}
+	subscribedAt, err := parseRequiredTimestamp(payload.SubscribedAt, "subscription subscribed_at")
+	if err != nil {
+		return Subscription{}, err
+	}
+	subscription.SubscribedAt = subscribedAt
+	if strings.TrimSpace(payload.DeletedAt) != "" {
+		deletedAt, err := parseRequiredTimestamp(payload.DeletedAt, "subscription deleted_at")
+		if err != nil {
+			return Subscription{}, err
+		}
+		subscription.DeletedAt = &deletedAt
+	}
+	if subscription.OriginNodeID <= 0 {
+		return Subscription{}, fmt.Errorf("%w: subscription origin node id is required", ErrInvalidInput)
+	}
+	return subscription, nil
 }
 
 func (s *Store) isEventAppliedTx(ctx context.Context, tx *sql.Tx, eventID int64) (bool, error) {
@@ -429,6 +531,7 @@ func (s *Store) applyReplicatedUserUpsert(ctx context.Context, tx *sql.Tx, event
 	} else if exists {
 		return nil
 	}
+	incoming = s.applyReservedUserInvariants(incoming)
 
 	current, err := s.getUserByIDTx(ctx, tx, key, true)
 	switch {

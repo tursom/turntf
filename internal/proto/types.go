@@ -1,5 +1,5 @@
 package proto
 
-const ProtocolVersion = "v1alpha7"
+const ProtocolVersion = "v1alpha8"
 
-const SnapshotVersion = "snapshot-v1alpha5"
+const SnapshotVersion = "snapshot-v1alpha6"

@@ -29,10 +29,16 @@ const (
 	RoleSuperAdmin       = "super_admin"
 	RoleAdmin            = "admin"
 	RoleUser             = "user"
+	RoleChannel          = "channel"
+	RoleBroadcast        = "broadcast"
 	BootstrapAdminUserID = int64(1)
-	defaultSchemaVersion = "4"
+	BroadcastUserID      = int64(2)
+	ReservedUserIDMax    = int64(1024)
+	defaultSchemaVersion = "5"
 	schemaMetaNodeIDKey  = "node_id"
 )
+
+const disabledPasswordHash = "!"
 
 type Options struct {
 	// NodeID seeds schema_meta.node_id for deterministic tests; production leaves it empty.
@@ -87,6 +93,10 @@ func (u User) Key() UserKey {
 	return UserKey{NodeID: u.NodeID, UserID: u.ID}
 }
 
+func (u User) CanLogin() bool {
+	return isLoginRole(u.Role)
+}
+
 type Message struct {
 	UserNodeID int64           `json:"user_node_id"`
 	UserID     int64           `json:"user_id"`
@@ -100,6 +110,14 @@ type Message struct {
 
 func (m Message) UserKey() UserKey {
 	return UserKey{NodeID: m.UserNodeID, UserID: m.UserID}
+}
+
+type Subscription struct {
+	Subscriber   UserKey          `json:"subscriber"`
+	Channel      UserKey          `json:"channel"`
+	SubscribedAt clock.Timestamp  `json:"subscribed_at"`
+	DeletedAt    *clock.Timestamp `json:"deleted_at,omitempty"`
+	OriginNodeID int64            `json:"origin_node_id"`
 }
 
 type Event struct {
@@ -141,6 +159,11 @@ type CreateMessageParams struct {
 	Sender   string
 	Body     string
 	Metadata string
+}
+
+type ChannelSubscriptionParams struct {
+	Subscriber UserKey
+	Channel    UserKey
 }
 
 type BootstrapAdminConfig struct {
@@ -233,6 +256,19 @@ CREATE TABLE IF NOT EXISTS messages (
     PRIMARY KEY(user_node_id, user_id, node_id, seq)
 );
 
+CREATE TABLE IF NOT EXISTS channel_subscriptions (
+    subscriber_node_id INTEGER NOT NULL,
+    subscriber_user_id INTEGER NOT NULL,
+    channel_node_id INTEGER NOT NULL,
+    channel_user_id INTEGER NOT NULL,
+    subscribed_at_hlc TEXT NOT NULL,
+    deleted_at_hlc TEXT,
+    origin_node_id INTEGER NOT NULL,
+    FOREIGN KEY(subscriber_node_id, subscriber_user_id) REFERENCES users(node_id, user_id),
+    FOREIGN KEY(channel_node_id, channel_user_id) REFERENCES users(node_id, user_id),
+    PRIMARY KEY(subscriber_node_id, subscriber_user_id, channel_node_id, channel_user_id)
+);
+
 CREATE TABLE IF NOT EXISTS event_log (
     sequence INTEGER PRIMARY KEY AUTOINCREMENT,
     event_id INTEGER NOT NULL UNIQUE,
@@ -292,6 +328,8 @@ CREATE TABLE IF NOT EXISTS message_trim_stats (
 	if _, err := s.db.ExecContext(ctx, `
 CREATE INDEX IF NOT EXISTS idx_messages_user_created ON messages(user_node_id, user_id, created_at_hlc DESC, node_id ASC, seq DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_node ON messages(node_id, user_node_id, user_id, seq);
+CREATE INDEX IF NOT EXISTS idx_subscriptions_subscriber ON channel_subscriptions(subscriber_node_id, subscriber_user_id, deleted_at_hlc);
+CREATE INDEX IF NOT EXISTS idx_subscriptions_channel ON channel_subscriptions(channel_node_id, channel_user_id, deleted_at_hlc);
 `); err != nil {
 		return fmt.Errorf("init message indexes: %w", err)
 	}
@@ -390,9 +428,6 @@ func (s *Store) CreateUser(ctx context.Context, params CreateUserParams) (User, 
 	if username == "" {
 		return User{}, Event{}, fmt.Errorf("%w: username cannot be empty", ErrInvalidInput)
 	}
-	if strings.TrimSpace(params.PasswordHash) == "" {
-		return User{}, Event{}, fmt.Errorf("%w: password hash cannot be empty", ErrInvalidInput)
-	}
 
 	profile := strings.TrimSpace(params.Profile)
 	if profile == "" {
@@ -401,6 +436,13 @@ func (s *Store) CreateUser(ctx context.Context, params CreateUserParams) (User, 
 	role, err := normalizeMutableRole(params.Role)
 	if err != nil {
 		return User{}, Event{}, err
+	}
+	passwordHash := strings.TrimSpace(params.PasswordHash)
+	if isLoginRole(role) && passwordHash == "" {
+		return User{}, Event{}, fmt.Errorf("%w: password hash cannot be empty", ErrInvalidInput)
+	}
+	if !isLoginRole(role) {
+		passwordHash = disabledPasswordHash
 	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -418,7 +460,7 @@ func (s *Store) CreateUser(ctx context.Context, params CreateUserParams) (User, 
 		NodeID:              s.nodeID,
 		ID:                  userID,
 		Username:            username,
-		PasswordHash:        params.PasswordHash,
+		PasswordHash:        passwordHash,
 		Profile:             profile,
 		Role:                role,
 		SystemReserved:      false,
@@ -479,6 +521,9 @@ func (s *Store) UpdateUser(ctx context.Context, params UpdateUserParams) (User, 
 	if err != nil {
 		return User{}, Event{}, err
 	}
+	if current.isProtectedBroadcastUser() {
+		return User{}, Event{}, fmt.Errorf("%w: broadcast user cannot be updated", ErrForbidden)
+	}
 
 	now := s.clock.Now()
 	changed := false
@@ -499,6 +544,9 @@ func (s *Store) UpdateUser(ctx context.Context, params UpdateUserParams) (User, 
 	}
 
 	if params.PasswordHash != nil {
+		if !current.CanLogin() {
+			return User{}, Event{}, fmt.Errorf("%w: channel users cannot set passwords", ErrForbidden)
+		}
 		nextHash := strings.TrimSpace(*params.PasswordHash)
 		if nextHash == "" {
 			return User{}, Event{}, fmt.Errorf("%w: password hash cannot be empty", ErrInvalidInput)
@@ -530,6 +578,9 @@ func (s *Store) UpdateUser(ctx context.Context, params UpdateUserParams) (User, 
 			return User{}, Event{}, err
 		}
 		if nextRole != current.Role {
+			if isLoginRole(nextRole) && !isLoginRole(current.Role) && strings.TrimSpace(current.PasswordHash) == disabledPasswordHash {
+				return User{}, Event{}, fmt.Errorf("%w: password hash is required before enabling login", ErrInvalidInput)
+			}
 			current.Role = nextRole
 			current.VersionRole = now
 			changed = true
@@ -586,6 +637,9 @@ func (s *Store) DeleteUser(ctx context.Context, key UserKey) (Event, error) {
 	}
 	if user.isProtectedBootstrapAdmin() {
 		return Event{}, fmt.Errorf("%w: bootstrap admin cannot be deleted", ErrForbidden)
+	}
+	if user.isProtectedBroadcastUser() {
+		return Event{}, fmt.Errorf("%w: broadcast user cannot be deleted", ErrForbidden)
 	}
 
 	now := s.clock.Now()
@@ -714,13 +768,39 @@ func (s *Store) ListMessagesByUser(ctx context.Context, key UserKey, limit int) 
 		limit = 100
 	}
 
+	user, err := s.GetUser(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+	if !user.CanLogin() {
+		return s.listRawMessagesByUser(ctx, key, limit)
+	}
+
 	rows, err := s.db.QueryContext(ctx, `
 SELECT user_node_id, user_id, node_id, seq, sender, body, COALESCE(metadata, ''), created_at_hlc
 FROM messages
-WHERE user_node_id = ? AND user_id = ?
+WHERE (user_node_id = ? AND user_id = ?)
+   OR EXISTS (
+        SELECT 1
+        FROM users broadcast_users
+        WHERE broadcast_users.node_id = messages.user_node_id
+          AND broadcast_users.user_id = messages.user_id
+          AND broadcast_users.role = ?
+          AND broadcast_users.deleted_at_hlc IS NULL
+   )
+   OR EXISTS (
+        SELECT 1
+        FROM channel_subscriptions subscriptions
+        WHERE subscriptions.subscriber_node_id = ?
+          AND subscriptions.subscriber_user_id = ?
+          AND subscriptions.channel_node_id = messages.user_node_id
+          AND subscriptions.channel_user_id = messages.user_id
+          AND subscriptions.deleted_at_hlc IS NULL
+          AND messages.created_at_hlc >= subscriptions.subscribed_at_hlc
+   )
 ORDER BY created_at_hlc DESC, node_id ASC, seq DESC
 LIMIT ?
-`, key.NodeID, key.UserID, limit)
+`, key.NodeID, key.UserID, RoleBroadcast, key.NodeID, key.UserID, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list messages: %w", err)
 	}
@@ -738,6 +818,175 @@ LIMIT ?
 		return nil, fmt.Errorf("iterate messages: %w", err)
 	}
 	return messages, nil
+}
+
+func (s *Store) listRawMessagesByUser(ctx context.Context, key UserKey, limit int) ([]Message, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT user_node_id, user_id, node_id, seq, sender, body, COALESCE(metadata, ''), created_at_hlc
+FROM messages
+WHERE user_node_id = ? AND user_id = ?
+ORDER BY created_at_hlc DESC, node_id ASC, seq DESC
+LIMIT ?
+`, key.NodeID, key.UserID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list raw messages: %w", err)
+	}
+	defer rows.Close()
+
+	var messages []Message
+	for rows.Next() {
+		message, err := scanMessage(rows)
+		if err != nil {
+			return nil, err
+		}
+		messages = append(messages, message)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate raw messages: %w", err)
+	}
+	return messages, nil
+}
+
+func (s *Store) SubscribeChannel(ctx context.Context, params ChannelSubscriptionParams) (Subscription, Event, error) {
+	if err := params.Subscriber.Validate(); err != nil {
+		return Subscription{}, Event{}, err
+	}
+	if err := params.Channel.Validate(); err != nil {
+		return Subscription{}, Event{}, err
+	}
+	if params.Subscriber == params.Channel {
+		return Subscription{}, Event{}, fmt.Errorf("%w: subscriber cannot subscribe to itself", ErrInvalidInput)
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Subscription{}, Event{}, fmt.Errorf("begin subscribe channel: %w", err)
+	}
+	defer tx.Rollback()
+
+	if err := s.validateSubscriptionUsersTx(ctx, tx, params.Subscriber, params.Channel); err != nil {
+		return Subscription{}, Event{}, err
+	}
+
+	now := s.clock.Now()
+	subscription := Subscription{
+		Subscriber:   params.Subscriber,
+		Channel:      params.Channel,
+		SubscribedAt: now,
+		OriginNodeID: s.nodeID,
+	}
+	if err := s.upsertSubscriptionTx(ctx, tx, subscription); err != nil {
+		return Subscription{}, Event{}, err
+	}
+
+	payload, err := encodeChannelSubscriptionPayload(subscription)
+	if err != nil {
+		return Subscription{}, Event{}, fmt.Errorf("marshal channel subscribed event: %w", err)
+	}
+	event, err := s.insertEvent(ctx, tx, "channel.subscribed", "subscription", params.Subscriber.NodeID, params.Subscriber.UserID, now, payload)
+	if err != nil {
+		return Subscription{}, Event{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Subscription{}, Event{}, fmt.Errorf("commit subscribe channel: %w", err)
+	}
+	return subscription, event, nil
+}
+
+func (s *Store) UnsubscribeChannel(ctx context.Context, params ChannelSubscriptionParams) (Subscription, Event, error) {
+	if err := params.Subscriber.Validate(); err != nil {
+		return Subscription{}, Event{}, err
+	}
+	if err := params.Channel.Validate(); err != nil {
+		return Subscription{}, Event{}, err
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Subscription{}, Event{}, fmt.Errorf("begin unsubscribe channel: %w", err)
+	}
+	defer tx.Rollback()
+
+	current, err := s.getSubscriptionTx(ctx, tx, params.Subscriber, params.Channel)
+	if err != nil {
+		return Subscription{}, Event{}, err
+	}
+	if current.DeletedAt != nil {
+		return Subscription{}, Event{}, ErrNotFound
+	}
+
+	now := s.clock.Now()
+	current.DeletedAt = &now
+	current.OriginNodeID = s.nodeID
+	if err := s.upsertSubscriptionTx(ctx, tx, current); err != nil {
+		return Subscription{}, Event{}, err
+	}
+
+	payload, err := encodeChannelSubscriptionPayload(current)
+	if err != nil {
+		return Subscription{}, Event{}, fmt.Errorf("marshal channel unsubscribed event: %w", err)
+	}
+	event, err := s.insertEvent(ctx, tx, "channel.unsubscribed", "subscription", params.Subscriber.NodeID, params.Subscriber.UserID, now, payload)
+	if err != nil {
+		return Subscription{}, Event{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Subscription{}, Event{}, fmt.Errorf("commit unsubscribe channel: %w", err)
+	}
+	return current, event, nil
+}
+
+func (s *Store) ListChannelSubscriptions(ctx context.Context, subscriber UserKey) ([]Subscription, error) {
+	if err := subscriber.Validate(); err != nil {
+		return nil, err
+	}
+	if _, err := s.GetUser(ctx, subscriber); err != nil {
+		return nil, err
+	}
+
+	rows, err := s.db.QueryContext(ctx, `
+SELECT subscriber_node_id, subscriber_user_id, channel_node_id, channel_user_id, subscribed_at_hlc, deleted_at_hlc, origin_node_id
+FROM channel_subscriptions
+WHERE subscriber_node_id = ? AND subscriber_user_id = ? AND deleted_at_hlc IS NULL
+ORDER BY channel_node_id ASC, channel_user_id ASC
+`, subscriber.NodeID, subscriber.UserID)
+	if err != nil {
+		return nil, fmt.Errorf("list channel subscriptions: %w", err)
+	}
+	defer rows.Close()
+
+	var subscriptions []Subscription
+	for rows.Next() {
+		subscription, err := scanSubscription(rows)
+		if err != nil {
+			return nil, err
+		}
+		subscriptions = append(subscriptions, subscription)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate channel subscriptions: %w", err)
+	}
+	return subscriptions, nil
+}
+
+func (s *Store) IsSubscribedToChannel(ctx context.Context, subscriber, channel UserKey) (bool, error) {
+	if err := subscriber.Validate(); err != nil {
+		return false, err
+	}
+	if err := channel.Validate(); err != nil {
+		return false, err
+	}
+	var count int
+	if err := s.db.QueryRowContext(ctx, `
+SELECT COUNT(*)
+FROM channel_subscriptions
+WHERE subscriber_node_id = ? AND subscriber_user_id = ?
+  AND channel_node_id = ? AND channel_user_id = ?
+  AND deleted_at_hlc IS NULL
+`, subscriber.NodeID, subscriber.UserID, channel.NodeID, channel.UserID).Scan(&count); err != nil {
+		return false, fmt.Errorf("check channel subscription: %w", err)
+	}
+	return count > 0, nil
 }
 
 func (s *Store) ListEvents(ctx context.Context, afterSequence int64, limit int) ([]Event, error) {
@@ -855,10 +1104,13 @@ func (s *Store) nextUserIDTx(ctx context.Context, tx *sql.Tx, nodeID int64) (int
 	}
 	var userID int64
 	if err := tx.QueryRowContext(ctx, `
-SELECT COALESCE(MAX(user_id), ?) + 1
+SELECT CASE
+    WHEN COALESCE(MAX(user_id), 0) < ? THEN ?
+    ELSE MAX(user_id)
+END + 1
 FROM users
 WHERE node_id = ?
-`, BootstrapAdminUserID, nodeID).Scan(&userID); err != nil {
+`, ReservedUserIDMax, ReservedUserIDMax, nodeID).Scan(&userID); err != nil {
 		return 0, fmt.Errorf("read next user id: %w", err)
 	}
 	return userID, nil
@@ -881,6 +1133,93 @@ WHERE user_node_id = ? AND user_id = ? AND node_id = ?
 		return 0, fmt.Errorf("read next message sequence: %w", err)
 	}
 	return seq, nil
+}
+
+func (s *Store) validateSubscriptionUsersTx(ctx context.Context, tx *sql.Tx, subscriberKey, channelKey UserKey) error {
+	subscriber, err := s.getUserByIDTx(ctx, tx, subscriberKey, false)
+	if err != nil {
+		return err
+	}
+	if !subscriber.CanLogin() {
+		return fmt.Errorf("%w: subscriber must be a login user", ErrInvalidInput)
+	}
+	channel, err := s.getUserByIDTx(ctx, tx, channelKey, false)
+	if err != nil {
+		return err
+	}
+	if channel.Role != RoleChannel {
+		return fmt.Errorf("%w: subscription target must be a channel", ErrInvalidInput)
+	}
+	return nil
+}
+
+func (s *Store) getSubscriptionTx(ctx context.Context, tx *sql.Tx, subscriber, channel UserKey) (Subscription, error) {
+	row := tx.QueryRowContext(ctx, `
+SELECT subscriber_node_id, subscriber_user_id, channel_node_id, channel_user_id, subscribed_at_hlc, deleted_at_hlc, origin_node_id
+FROM channel_subscriptions
+WHERE subscriber_node_id = ? AND subscriber_user_id = ? AND channel_node_id = ? AND channel_user_id = ?
+`, subscriber.NodeID, subscriber.UserID, channel.NodeID, channel.UserID)
+	subscription, err := scanSubscription(row)
+	if err == sql.ErrNoRows {
+		return Subscription{}, ErrNotFound
+	}
+	if err != nil {
+		return Subscription{}, err
+	}
+	return subscription, nil
+}
+
+func (s *Store) upsertSubscriptionTx(ctx context.Context, tx *sql.Tx, subscription Subscription) error {
+	if err := subscription.Subscriber.Validate(); err != nil {
+		return err
+	}
+	if err := subscription.Channel.Validate(); err != nil {
+		return err
+	}
+	if subscription.SubscribedAt == (clock.Timestamp{}) {
+		return fmt.Errorf("%w: subscribed_at is required", ErrInvalidInput)
+	}
+	if subscription.OriginNodeID <= 0 {
+		return fmt.Errorf("%w: subscription origin node id is required", ErrInvalidInput)
+	}
+
+	deletedAt := nullableTimestampString(subscription.DeletedAt)
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO channel_subscriptions(
+    subscriber_node_id, subscriber_user_id, channel_node_id, channel_user_id,
+    subscribed_at_hlc, deleted_at_hlc, origin_node_id
+)
+VALUES(?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(subscriber_node_id, subscriber_user_id, channel_node_id, channel_user_id) DO UPDATE SET
+    subscribed_at_hlc = CASE
+        WHEN excluded.deleted_at_hlc IS NULL AND (
+            channel_subscriptions.deleted_at_hlc IS NULL OR excluded.subscribed_at_hlc > channel_subscriptions.deleted_at_hlc
+        ) AND excluded.subscribed_at_hlc > channel_subscriptions.subscribed_at_hlc THEN excluded.subscribed_at_hlc
+        ELSE channel_subscriptions.subscribed_at_hlc
+    END,
+    deleted_at_hlc = CASE
+        WHEN excluded.deleted_at_hlc IS NULL AND (
+            channel_subscriptions.deleted_at_hlc IS NULL OR excluded.subscribed_at_hlc > channel_subscriptions.deleted_at_hlc
+        ) THEN NULL
+        WHEN excluded.deleted_at_hlc IS NOT NULL AND (
+            channel_subscriptions.deleted_at_hlc IS NULL OR excluded.deleted_at_hlc > channel_subscriptions.deleted_at_hlc
+        ) AND excluded.deleted_at_hlc >= channel_subscriptions.subscribed_at_hlc THEN excluded.deleted_at_hlc
+        ELSE channel_subscriptions.deleted_at_hlc
+    END,
+    origin_node_id = CASE
+        WHEN excluded.deleted_at_hlc IS NULL AND (
+            channel_subscriptions.deleted_at_hlc IS NULL OR excluded.subscribed_at_hlc > channel_subscriptions.deleted_at_hlc
+        ) AND excluded.subscribed_at_hlc >= channel_subscriptions.subscribed_at_hlc THEN excluded.origin_node_id
+        WHEN excluded.deleted_at_hlc IS NOT NULL AND (
+            channel_subscriptions.deleted_at_hlc IS NULL OR excluded.deleted_at_hlc > channel_subscriptions.deleted_at_hlc
+        ) THEN excluded.origin_node_id
+        ELSE channel_subscriptions.origin_node_id
+    END
+`, subscription.Subscriber.NodeID, subscription.Subscriber.UserID, subscription.Channel.NodeID, subscription.Channel.UserID,
+		subscription.SubscribedAt.String(), deletedAt, subscription.OriginNodeID); err != nil {
+		return fmt.Errorf("upsert channel subscription: %w", err)
+	}
+	return nil
 }
 
 func validateMessageIdentity(key UserKey, nodeID int64, seq int64) error {
@@ -978,6 +1317,12 @@ func (s *Store) applyUserDeleteTx(ctx context.Context, tx *sql.Tx, key UserKey, 
 		if user.isProtectedBootstrapAdmin() {
 			if requireActive {
 				return fmt.Errorf("%w: bootstrap admin cannot be deleted", ErrForbidden)
+			}
+			return nil
+		}
+		if user.isProtectedBroadcastUser() {
+			if requireActive {
+				return fmt.Errorf("%w: broadcast user cannot be deleted", ErrForbidden)
 			}
 			return nil
 		}
@@ -1119,6 +1464,40 @@ func scanMessage(scanner interface {
 	return message, nil
 }
 
+func scanSubscription(scanner interface {
+	Scan(dest ...any) error
+}) (Subscription, error) {
+	var subscription Subscription
+	var subscribedAtRaw string
+	var deletedAtRaw sql.NullString
+
+	if err := scanner.Scan(
+		&subscription.Subscriber.NodeID,
+		&subscription.Subscriber.UserID,
+		&subscription.Channel.NodeID,
+		&subscription.Channel.UserID,
+		&subscribedAtRaw,
+		&deletedAtRaw,
+		&subscription.OriginNodeID,
+	); err != nil {
+		return Subscription{}, err
+	}
+
+	subscribedAt, err := clock.ParseTimestamp(subscribedAtRaw)
+	if err != nil {
+		return Subscription{}, fmt.Errorf("parse subscription subscribed_at: %w", err)
+	}
+	subscription.SubscribedAt = subscribedAt
+	if deletedAtRaw.Valid {
+		deletedAt, err := clock.ParseTimestamp(deletedAtRaw.String)
+		if err != nil {
+			return Subscription{}, fmt.Errorf("parse subscription deleted_at: %w", err)
+		}
+		subscription.DeletedAt = &deletedAt
+	}
+	return subscription, nil
+}
+
 func scanEvent(scanner interface {
 	Scan(dest ...any) error
 }) (Event, error) {
@@ -1171,6 +1550,9 @@ func (s *Store) AuthenticateUser(ctx context.Context, key UserKey, password stri
 	user, err := s.GetUser(ctx, key)
 	if err != nil {
 		return User{}, err
+	}
+	if !user.CanLogin() {
+		return User{}, ErrNotFound
 	}
 	if err := auth.VerifyPassword(user.PasswordHash, password); err != nil {
 		return User{}, ErrNotFound
@@ -1290,6 +1672,9 @@ WHERE node_id = ? AND user_id = ?
 	if err := s.reconcileBootstrapAdminsTx(ctx, tx); err != nil {
 		return err
 	}
+	if err := s.ensureBroadcastUserTx(ctx, tx, now); err != nil {
+		return err
+	}
 
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit ensure bootstrap admin: %w", err)
@@ -1303,7 +1688,7 @@ func normalizeAnyRole(role string) (string, error) {
 		return RoleUser, nil
 	}
 	switch normalized {
-	case RoleSuperAdmin, RoleAdmin, RoleUser:
+	case RoleSuperAdmin, RoleAdmin, RoleUser, RoleChannel, RoleBroadcast:
 		return normalized, nil
 	default:
 		return "", fmt.Errorf("%w: unsupported role %q", ErrInvalidInput, role)
@@ -1318,10 +1703,23 @@ func normalizeMutableRole(role string) (string, error) {
 	if normalized == RoleSuperAdmin {
 		return "", fmt.Errorf("%w: role %q cannot be assigned through this API", ErrInvalidInput, role)
 	}
+	if normalized == RoleBroadcast {
+		return "", fmt.Errorf("%w: role %q cannot be assigned through this API", ErrInvalidInput, role)
+	}
 	return normalized, nil
 }
 
+func isLoginRole(role string) bool {
+	return role != RoleChannel && role != RoleBroadcast
+}
+
 func (s *Store) applyReservedUserInvariants(user User) User {
+	if user.ID == BroadcastUserID && user.SystemReserved {
+		user.Role = RoleBroadcast
+		user.SystemReserved = true
+		user.PasswordHash = disabledPasswordHash
+		return user
+	}
 	if user.ID != BootstrapAdminUserID || !user.SystemReserved {
 		user.SystemReserved = false
 		return user
@@ -1336,6 +1734,107 @@ func (s *Store) applyReservedUserInvariants(user User) User {
 
 func (u User) isProtectedBootstrapAdmin() bool {
 	return u.ID == BootstrapAdminUserID && u.SystemReserved
+}
+
+func (u User) isProtectedBroadcastUser() bool {
+	return u.ID == BroadcastUserID && u.SystemReserved && u.Role == RoleBroadcast
+}
+
+func (s *Store) ensureBroadcastUserTx(ctx context.Context, tx *sql.Tx, now clock.Timestamp) error {
+	key := UserKey{NodeID: s.nodeID, UserID: BroadcastUserID}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM tombstones WHERE entity_type = 'user' AND entity_node_id = ? AND entity_id = ?`, key.NodeID, key.UserID); err != nil {
+		return fmt.Errorf("delete broadcast user tombstone: %w", err)
+	}
+
+	current, err := s.getUserTx(ctx, tx, key, true)
+	switch {
+	case errors.Is(err, ErrNotFound):
+		user := User{
+			NodeID:              s.nodeID,
+			ID:                  BroadcastUserID,
+			Username:            "broadcast",
+			PasswordHash:        disabledPasswordHash,
+			Profile:             "{}",
+			Role:                RoleBroadcast,
+			SystemReserved:      true,
+			CreatedAt:           now,
+			UpdatedAt:           now,
+			VersionUsername:     now,
+			VersionPasswordHash: now,
+			VersionProfile:      now,
+			VersionRole:         now,
+			OriginNodeID:        s.nodeID,
+		}
+		if _, err := tx.ExecContext(ctx, `
+INSERT INTO users(
+    node_id, user_id, username, password_hash, profile, role, system_reserved, created_at_hlc, updated_at_hlc,
+    deleted_at_hlc, version_username, version_password_hash, version_profile,
+    version_role, version_deleted, origin_node_id
+)
+VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, NULL, ?)
+`, user.NodeID, user.ID, user.Username, user.PasswordHash, user.Profile, user.Role, boolToInt(user.SystemReserved),
+			user.CreatedAt.String(), user.UpdatedAt.String(), user.VersionUsername.String(),
+			user.VersionPasswordHash.String(), user.VersionProfile.String(), user.VersionRole.String(),
+			user.OriginNodeID); err != nil {
+			return fmt.Errorf("insert broadcast user: %w", err)
+		}
+		payload, err := encodeCreateUserPayload(user)
+		if err != nil {
+			return fmt.Errorf("marshal broadcast user create event: %w", err)
+		}
+		if _, err := s.insertEvent(ctx, tx, "user.created", "user", user.NodeID, user.ID, now, payload); err != nil {
+			return err
+		}
+		return nil
+	case err != nil:
+		return err
+	}
+
+	changed := current.Username != "broadcast" ||
+		current.PasswordHash != disabledPasswordHash ||
+		current.Profile == "" ||
+		current.Role != RoleBroadcast ||
+		!current.SystemReserved ||
+		current.DeletedAt != nil ||
+		current.VersionDeleted != nil
+	if !changed {
+		return nil
+	}
+
+	updated := current
+	updated.Username = "broadcast"
+	updated.PasswordHash = disabledPasswordHash
+	updated.Profile = defaultJSON(updated.Profile)
+	updated.Role = RoleBroadcast
+	updated.SystemReserved = true
+	updated.DeletedAt = nil
+	updated.VersionDeleted = nil
+	updated.UpdatedAt = now
+	updated.VersionUsername = now
+	updated.VersionPasswordHash = now
+	updated.VersionProfile = now
+	updated.VersionRole = now
+	updated.OriginNodeID = s.nodeID
+	if _, err := tx.ExecContext(ctx, `
+UPDATE users
+SET username = ?, password_hash = ?, profile = ?, role = ?, system_reserved = ?, created_at_hlc = ?, updated_at_hlc = ?,
+    deleted_at_hlc = NULL, version_username = ?, version_password_hash = ?, version_profile = ?,
+    version_role = ?, version_deleted = NULL, origin_node_id = ?
+WHERE node_id = ? AND user_id = ?
+`, updated.Username, updated.PasswordHash, updated.Profile, updated.Role, boolToInt(updated.SystemReserved),
+		updated.CreatedAt.String(), updated.UpdatedAt.String(), updated.VersionUsername.String(),
+		updated.VersionPasswordHash.String(), updated.VersionProfile.String(), updated.VersionRole.String(),
+		updated.OriginNodeID, updated.NodeID, updated.ID); err != nil {
+		return fmt.Errorf("repair broadcast user: %w", err)
+	}
+	payload, err := encodeUpdateUserPayload(updated)
+	if err != nil {
+		return fmt.Errorf("marshal broadcast user update event: %w", err)
+	}
+	if _, err := s.insertEvent(ctx, tx, "user.updated", "user", updated.NodeID, updated.ID, updated.UpdatedAt, payload); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (s *Store) reconcileBootstrapAdminsTx(ctx context.Context, tx *sql.Tx) error {

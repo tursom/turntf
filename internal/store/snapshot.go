@@ -328,15 +328,7 @@ func (s *Store) applyUserSnapshotRowTx(ctx context.Context, tx *sql.Tx, row *clu
 		return s.applyUserDeleteTx(ctx, tx, user.Key(), *deletedAt, user.OriginNodeID, false)
 	}
 
-	payload, err := encodeUpdateUserPayload(user)
-	if err != nil {
-		return fmt.Errorf("marshal snapshot user payload: %w", err)
-	}
-	return s.applyReplicatedUserUpsert(ctx, tx, &clusterproto.ReplicatedEvent{
-		Kind:         "snapshot.user",
-		OriginNodeId: user.OriginNodeID,
-		Payload:      []byte(payload),
-	}, "snapshot.user")
+	return s.applyReplicatedUserUpsert(ctx, tx, userUpdatedProtoFromUser(user))
 }
 
 func (s *Store) applySnapshotTombstoneTx(ctx context.Context, tx *sql.Tx, row *clusterproto.SnapshotTombstoneRow) error {

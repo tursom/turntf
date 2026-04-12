@@ -49,7 +49,7 @@ func TestServicePublishesOnlySuccessfulWrites(t *testing.T) {
 	if len(sink.events) != 1 {
 		t.Fatalf("expected one published event, got %d", len(sink.events))
 	}
-	if sink.events[0].EventID != userEvent.EventID || sink.events[0].Kind != "user.created" {
+	if sink.events[0].EventID != userEvent.EventID || sink.events[0].EventType != store.EventTypeUserCreated {
 		t.Fatalf("unexpected published user event: %+v", sink.events[0])
 	}
 
@@ -66,7 +66,7 @@ func TestServicePublishesOnlySuccessfulWrites(t *testing.T) {
 	if len(sink.events) != 2 {
 		t.Fatalf("expected duplicate create to publish, got %d events", len(sink.events))
 	}
-	if sink.events[1].EventID != duplicateEvent.EventID || sink.events[1].Kind != "user.created" {
+	if sink.events[1].EventID != duplicateEvent.EventID || sink.events[1].EventType != store.EventTypeUserCreated {
 		t.Fatalf("unexpected published duplicate user event: %+v", sink.events[1])
 	}
 
@@ -84,7 +84,7 @@ func TestServicePublishesOnlySuccessfulWrites(t *testing.T) {
 	if len(sink.events) != 3 {
 		t.Fatalf("expected successful message publish, got %d events", len(sink.events))
 	}
-	if sink.events[2].EventID != messageEvent.EventID || sink.events[2].Kind != "message.created" {
+	if sink.events[2].EventID != messageEvent.EventID || sink.events[2].EventType != store.EventTypeMessageCreated {
 		t.Fatalf("unexpected published message event: %+v", sink.events[2])
 	}
 

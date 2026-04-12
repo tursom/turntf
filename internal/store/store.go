@@ -11,9 +11,11 @@ import (
 	"strings"
 
 	_ "github.com/mattn/go-sqlite3"
+	gproto "google.golang.org/protobuf/proto"
 
 	"notifier/internal/auth"
 	"notifier/internal/clock"
+	internalproto "notifier/internal/proto"
 )
 
 var (
@@ -34,7 +36,7 @@ const (
 	BootstrapAdminUserID = int64(1)
 	BroadcastUserID      = int64(2)
 	ReservedUserIDMax    = int64(1024)
-	defaultSchemaVersion = "6"
+	defaultSchemaVersion = "9"
 	schemaMetaNodeIDKey  = "node_id"
 )
 
@@ -120,15 +122,15 @@ type Subscription struct {
 }
 
 type Event struct {
-	Sequence        int64           `json:"sequence"`
-	EventID         int64           `json:"event_id"`
-	Kind            string          `json:"kind"`
-	Aggregate       string          `json:"aggregate"`
-	AggregateNodeID int64           `json:"aggregate_node_id"`
-	AggregateID     int64           `json:"aggregate_id"`
-	HLC             clock.Timestamp `json:"hlc"`
-	OriginNodeID    int64           `json:"origin_node_id"`
-	Payload         string          `json:"payload"`
+	Sequence        int64                   `json:"sequence"`
+	EventID         int64                   `json:"event_id"`
+	EventType       EventType               `json:"event_type"`
+	Aggregate       string                  `json:"aggregate"`
+	AggregateNodeID int64                   `json:"aggregate_node_id"`
+	AggregateID     int64                   `json:"aggregate_id"`
+	HLC             clock.Timestamp         `json:"hlc"`
+	OriginNodeID    int64                   `json:"origin_node_id"`
+	Body            internalproto.EventBody `json:"-"`
 }
 
 type PeerCursor struct {
@@ -267,13 +269,8 @@ CREATE TABLE IF NOT EXISTS channel_subscriptions (
 CREATE TABLE IF NOT EXISTS event_log (
     sequence INTEGER PRIMARY KEY AUTOINCREMENT,
     event_id INTEGER NOT NULL,
-    kind TEXT NOT NULL,
-    aggregate_type TEXT NOT NULL,
-    aggregate_node_id INTEGER NOT NULL,
-    aggregate_id INTEGER NOT NULL,
-    hlc TEXT NOT NULL,
     origin_node_id INTEGER NOT NULL,
-    payload TEXT NOT NULL,
+    value BLOB NOT NULL,
     UNIQUE(origin_node_id, event_id)
 );
 
@@ -500,12 +497,14 @@ VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, NULL, ?)
 		return User{}, Event{}, fmt.Errorf("insert user: %w", err)
 	}
 
-	payload, err := encodeCreateUserPayload(user)
-	if err != nil {
-		return User{}, Event{}, fmt.Errorf("marshal create user event: %w", err)
-	}
-
-	event, err := s.insertEvent(ctx, tx, "user.created", "user", user.NodeID, user.ID, now, string(payload))
+	event, err := s.insertEvent(ctx, tx, Event{
+		EventType:       EventTypeUserCreated,
+		Aggregate:       "user",
+		AggregateNodeID: user.NodeID,
+		AggregateID:     user.ID,
+		HLC:             now,
+		Body:            userCreatedProtoFromUser(user),
+	})
 	if err != nil {
 		return User{}, Event{}, err
 	}
@@ -617,12 +616,14 @@ WHERE node_id = ? AND user_id = ? AND deleted_at_hlc IS NULL
 		return User{}, Event{}, fmt.Errorf("update user: %w", err)
 	}
 
-	payload, err := encodeUpdateUserPayload(current)
-	if err != nil {
-		return User{}, Event{}, fmt.Errorf("marshal update user event: %w", err)
-	}
-
-	event, err := s.insertEvent(ctx, tx, "user.updated", "user", current.NodeID, current.ID, now, string(payload))
+	event, err := s.insertEvent(ctx, tx, Event{
+		EventType:       EventTypeUserUpdated,
+		Aggregate:       "user",
+		AggregateNodeID: current.NodeID,
+		AggregateID:     current.ID,
+		HLC:             now,
+		Body:            userUpdatedProtoFromUser(current),
+	})
 	if err != nil {
 		return User{}, Event{}, err
 	}
@@ -660,12 +661,14 @@ func (s *Store) DeleteUser(ctx context.Context, key UserKey) (Event, error) {
 		return Event{}, err
 	}
 
-	payload, err := encodeDeleteUserPayload(key, now.String())
-	if err != nil {
-		return Event{}, fmt.Errorf("marshal delete user event: %w", err)
-	}
-
-	event, err := s.insertEvent(ctx, tx, "user.deleted", "user", key.NodeID, key.UserID, now, string(payload))
+	event, err := s.insertEvent(ctx, tx, Event{
+		EventType:       EventTypeUserDeleted,
+		Aggregate:       "user",
+		AggregateNodeID: key.NodeID,
+		AggregateID:     key.UserID,
+		HLC:             now,
+		Body:            userDeletedProtoFromKey(key, now),
+	})
 	if err != nil {
 		return Event{}, err
 	}
@@ -753,12 +756,14 @@ VALUES(?, ?, ?, ?, ?, ?, ?, ?)
 		return Message{}, Event{}, fmt.Errorf("insert message: %w", err)
 	}
 
-	payload, err := encodeCreateMessagePayload(message)
-	if err != nil {
-		return Message{}, Event{}, fmt.Errorf("marshal create message event: %w", err)
-	}
-
-	event, err := s.insertEvent(ctx, tx, "message.created", "message", message.NodeID, message.Seq, now, string(payload))
+	event, err := s.insertEvent(ctx, tx, Event{
+		EventType:       EventTypeMessageCreated,
+		Aggregate:       "message",
+		AggregateNodeID: message.NodeID,
+		AggregateID:     message.Seq,
+		HLC:             now,
+		Body:            messageCreatedProtoFromMessage(message),
+	})
 	if err != nil {
 		return Message{}, Event{}, err
 	}
@@ -892,11 +897,14 @@ func (s *Store) SubscribeChannel(ctx context.Context, params ChannelSubscription
 		return Subscription{}, Event{}, err
 	}
 
-	payload, err := encodeChannelSubscriptionPayload(subscription)
-	if err != nil {
-		return Subscription{}, Event{}, fmt.Errorf("marshal channel subscribed event: %w", err)
-	}
-	event, err := s.insertEvent(ctx, tx, "channel.subscribed", "subscription", params.Subscriber.NodeID, params.Subscriber.UserID, now, payload)
+	event, err := s.insertEvent(ctx, tx, Event{
+		EventType:       EventTypeChannelSubscribed,
+		Aggregate:       "subscription",
+		AggregateNodeID: params.Subscriber.NodeID,
+		AggregateID:     params.Subscriber.UserID,
+		HLC:             now,
+		Body:            channelSubscribedProtoFromSubscription(subscription),
+	})
 	if err != nil {
 		return Subscription{}, Event{}, err
 	}
@@ -935,11 +943,14 @@ func (s *Store) UnsubscribeChannel(ctx context.Context, params ChannelSubscripti
 		return Subscription{}, Event{}, err
 	}
 
-	payload, err := encodeChannelSubscriptionPayload(current)
-	if err != nil {
-		return Subscription{}, Event{}, fmt.Errorf("marshal channel unsubscribed event: %w", err)
-	}
-	event, err := s.insertEvent(ctx, tx, "channel.unsubscribed", "subscription", params.Subscriber.NodeID, params.Subscriber.UserID, now, payload)
+	event, err := s.insertEvent(ctx, tx, Event{
+		EventType:       EventTypeChannelUnsubscribed,
+		Aggregate:       "subscription",
+		AggregateNodeID: params.Subscriber.NodeID,
+		AggregateID:     params.Subscriber.UserID,
+		HLC:             now,
+		Body:            channelUnsubscribedProtoFromSubscription(current),
+	})
 	if err != nil {
 		return Subscription{}, Event{}, err
 	}
@@ -1008,7 +1019,7 @@ func (s *Store) ListEvents(ctx context.Context, afterSequence int64, limit int) 
 	}
 
 	rows, err := s.db.QueryContext(ctx, `
-SELECT sequence, event_id, kind, aggregate_type, aggregate_node_id, aggregate_id, hlc, origin_node_id, payload
+SELECT sequence, event_id, origin_node_id, value
 FROM event_log
 WHERE sequence > ?
 ORDER BY sequence ASC
@@ -1083,23 +1094,19 @@ WHERE node_id = ? AND user_id = ?`
 	return user, nil
 }
 
-func (s *Store) insertEvent(ctx context.Context, tx *sql.Tx, kind, aggregate string, aggregateNodeID, aggregateID int64, hlc clock.Timestamp, payload string) (Event, error) {
-	event := Event{
-		EventID:         s.ids.Next(),
-		Kind:            kind,
-		Aggregate:       aggregate,
-		AggregateNodeID: aggregateNodeID,
-		AggregateID:     aggregateID,
-		HLC:             hlc,
-		OriginNodeID:    s.nodeID,
-		Payload:         payload,
+func (s *Store) insertEvent(ctx context.Context, tx *sql.Tx, event Event) (Event, error) {
+	event.EventID = s.ids.Next()
+	event.OriginNodeID = s.nodeID
+
+	value, err := eventLogValue(event)
+	if err != nil {
+		return Event{}, err
 	}
 
 	result, err := tx.ExecContext(ctx, `
-INSERT INTO event_log(event_id, kind, aggregate_type, aggregate_node_id, aggregate_id, hlc, origin_node_id, payload)
-VALUES(?, ?, ?, ?, ?, ?, ?, ?)
-`, event.EventID, event.Kind, event.Aggregate, event.AggregateNodeID, event.AggregateID, event.HLC.String(),
-		event.OriginNodeID, event.Payload)
+INSERT INTO event_log(event_id, origin_node_id, value)
+VALUES(?, ?, ?)
+`, event.EventID, event.OriginNodeID, value)
 	if err != nil {
 		return Event{}, fmt.Errorf("insert event: %w", err)
 	}
@@ -1514,29 +1521,45 @@ func scanSubscription(scanner interface {
 func scanEvent(scanner interface {
 	Scan(dest ...any) error
 }) (Event, error) {
-	var event Event
-	var hlcRaw string
+	var sequence int64
+	var eventID int64
+	var originNodeID int64
+	var value []byte
 
 	if err := scanner.Scan(
-		&event.Sequence,
-		&event.EventID,
-		&event.Kind,
-		&event.Aggregate,
-		&event.AggregateNodeID,
-		&event.AggregateID,
-		&hlcRaw,
-		&event.OriginNodeID,
-		&event.Payload,
+		&sequence,
+		&eventID,
+		&originNodeID,
+		&value,
 	); err != nil {
 		return Event{}, err
 	}
 
-	hlc, err := clock.ParseTimestamp(hlcRaw)
-	if err != nil {
-		return Event{}, fmt.Errorf("parse event hlc: %w", err)
+	var replicated internalproto.ReplicatedEvent
+	if err := gproto.Unmarshal(value, &replicated); err != nil {
+		return Event{}, fmt.Errorf("unmarshal event value: %w", err)
 	}
-	event.HLC = hlc
+
+	event, err := eventFromReplicatedEvent(&replicated)
+	if err != nil {
+		return Event{}, err
+	}
+	event.Sequence = sequence
+	event.EventID = eventID
+	event.OriginNodeID = originNodeID
 	return event, nil
+}
+
+func eventLogValue(event Event) ([]byte, error) {
+	replicated := ToReplicatedEvent(event)
+	if replicated == nil {
+		return nil, fmt.Errorf("%w: event cannot be marshaled", ErrInvalidInput)
+	}
+	value, err := gproto.Marshal(replicated)
+	if err != nil {
+		return nil, fmt.Errorf("marshal event value: %w", err)
+	}
+	return value, nil
 }
 
 func nullIfEmpty(value string) any {
@@ -1628,11 +1651,14 @@ VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, NULL, ?)
 			user.OriginNodeID); err != nil {
 			return fmt.Errorf("insert bootstrap admin: %w", err)
 		}
-		payload, err := encodeCreateUserPayload(user)
-		if err != nil {
-			return fmt.Errorf("marshal bootstrap admin create event: %w", err)
-		}
-		if _, err := s.insertEvent(ctx, tx, "user.created", "user", user.NodeID, user.ID, now, payload); err != nil {
+		if _, err := s.insertEvent(ctx, tx, Event{
+			EventType:       EventTypeUserCreated,
+			Aggregate:       "user",
+			AggregateNodeID: user.NodeID,
+			AggregateID:     user.ID,
+			HLC:             now,
+			Body:            userCreatedProtoFromUser(user),
+		}); err != nil {
 			return err
 		}
 	case err != nil:
@@ -1673,11 +1699,14 @@ WHERE node_id = ? AND user_id = ?
 				updated.OriginNodeID, updated.NodeID, updated.ID); err != nil {
 				return fmt.Errorf("repair bootstrap admin: %w", err)
 			}
-			payload, err := encodeUpdateUserPayload(updated)
-			if err != nil {
-				return fmt.Errorf("marshal bootstrap admin update event: %w", err)
-			}
-			if _, err := s.insertEvent(ctx, tx, "user.updated", "user", updated.NodeID, updated.ID, updated.UpdatedAt, payload); err != nil {
+			if _, err := s.insertEvent(ctx, tx, Event{
+				EventType:       EventTypeUserUpdated,
+				Aggregate:       "user",
+				AggregateNodeID: updated.NodeID,
+				AggregateID:     updated.ID,
+				HLC:             updated.UpdatedAt,
+				Body:            userUpdatedProtoFromUser(updated),
+			}); err != nil {
 				return err
 			}
 		}
@@ -1791,11 +1820,14 @@ VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, NULL, ?)
 			user.OriginNodeID); err != nil {
 			return fmt.Errorf("insert broadcast user: %w", err)
 		}
-		payload, err := encodeCreateUserPayload(user)
-		if err != nil {
-			return fmt.Errorf("marshal broadcast user create event: %w", err)
-		}
-		if _, err := s.insertEvent(ctx, tx, "user.created", "user", user.NodeID, user.ID, now, payload); err != nil {
+		if _, err := s.insertEvent(ctx, tx, Event{
+			EventType:       EventTypeUserCreated,
+			Aggregate:       "user",
+			AggregateNodeID: user.NodeID,
+			AggregateID:     user.ID,
+			HLC:             now,
+			Body:            userCreatedProtoFromUser(user),
+		}); err != nil {
 			return err
 		}
 		return nil
@@ -1840,11 +1872,14 @@ WHERE node_id = ? AND user_id = ?
 		updated.OriginNodeID, updated.NodeID, updated.ID); err != nil {
 		return fmt.Errorf("repair broadcast user: %w", err)
 	}
-	payload, err := encodeUpdateUserPayload(updated)
-	if err != nil {
-		return fmt.Errorf("marshal broadcast user update event: %w", err)
-	}
-	if _, err := s.insertEvent(ctx, tx, "user.updated", "user", updated.NodeID, updated.ID, updated.UpdatedAt, payload); err != nil {
+	if _, err := s.insertEvent(ctx, tx, Event{
+		EventType:       EventTypeUserUpdated,
+		Aggregate:       "user",
+		AggregateNodeID: updated.NodeID,
+		AggregateID:     updated.ID,
+		HLC:             updated.UpdatedAt,
+		Body:            userUpdatedProtoFromUser(updated),
+	}); err != nil {
 		return err
 	}
 	return nil

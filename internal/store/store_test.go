@@ -2,12 +2,16 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"path/filepath"
 	"strconv"
 	"testing"
 
+	gproto "google.golang.org/protobuf/proto"
+
 	"notifier/internal/clock"
+	proto "notifier/internal/proto"
 )
 
 func testNodeID(slot uint16) int64 {
@@ -33,8 +37,8 @@ func TestLocalUserCRUDAndEventLog(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create user: %v", err)
 	}
-	if createEvent.Kind != "user.created" {
-		t.Fatalf("unexpected create event kind: %s", createEvent.Kind)
+	if createEvent.EventType != EventTypeUserCreated {
+		t.Fatalf("unexpected create event type: %s", createEvent.EventType)
 	}
 
 	loaded, err := st.GetUser(ctx, user.Key())
@@ -57,8 +61,8 @@ func TestLocalUserCRUDAndEventLog(t *testing.T) {
 	if err != nil {
 		t.Fatalf("update user: %v", err)
 	}
-	if updateEvent.Kind != "user.updated" {
-		t.Fatalf("unexpected update event kind: %s", updateEvent.Kind)
+	if updateEvent.EventType != EventTypeUserUpdated {
+		t.Fatalf("unexpected update event type: %s", updateEvent.EventType)
 	}
 	if updated.Username != newUsername || updated.Profile != newProfile || updated.PasswordHash != newPasswordHash {
 		t.Fatalf("unexpected updated user: %+v", updated)
@@ -76,8 +80,8 @@ func TestLocalUserCRUDAndEventLog(t *testing.T) {
 	if err != nil {
 		t.Fatalf("delete user: %v", err)
 	}
-	if deleteEvent.Kind != "user.deleted" {
-		t.Fatalf("unexpected delete event kind: %s", deleteEvent.Kind)
+	if deleteEvent.EventType != EventTypeUserDeleted {
+		t.Fatalf("unexpected delete event type: %s", deleteEvent.EventType)
 	}
 
 	if _, err := st.GetUser(ctx, user.Key()); err != ErrNotFound {
@@ -93,6 +97,154 @@ func TestLocalUserCRUDAndEventLog(t *testing.T) {
 	}
 	if events[0].Sequence >= events[1].Sequence || events[1].Sequence >= events[2].Sequence {
 		t.Fatalf("events not ordered by sequence: %+v", events)
+	}
+}
+
+func TestListEventsIncludesMessageCreated(t *testing.T) {
+	t.Parallel()
+
+	st := openTestStore(t)
+	defer st.Close()
+
+	ctx := context.Background()
+	user, _, err := st.CreateUser(ctx, CreateUserParams{
+		Username:     "alice",
+		PasswordHash: "hash-1",
+	})
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	newUsername := "alice-updated"
+	if _, _, err := st.UpdateUser(ctx, UpdateUserParams{
+		Key:      user.Key(),
+		Username: &newUsername,
+	}); err != nil {
+		t.Fatalf("update user: %v", err)
+	}
+
+	if _, _, err := st.CreateMessage(ctx, CreateMessageParams{
+		UserKey: user.Key(),
+		Sender:  "orders",
+		Body:    "package shipped",
+	}); err != nil {
+		t.Fatalf("create message: %v", err)
+	}
+
+	events, err := st.ListEvents(ctx, 0, 10)
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	if len(events) != 3 {
+		t.Fatalf("expected 3 events, got %d", len(events))
+	}
+	if events[2].EventType != EventTypeMessageCreated {
+		t.Fatalf("unexpected message event type: %+v", events[2])
+	}
+}
+
+func TestEventLogStoresReplicatedEventBlob(t *testing.T) {
+	t.Parallel()
+
+	st := openTestStore(t)
+	defer st.Close()
+
+	ctx := context.Background()
+	user, event, err := st.CreateUser(ctx, CreateUserParams{
+		Username:     "blob-user",
+		PasswordHash: "hash-1",
+		Profile:      `{"display_name":"Blob User"}`,
+	})
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	var (
+		eventID      int64
+		originNodeID int64
+		value        []byte
+	)
+	if err := st.db.QueryRowContext(ctx, `
+SELECT event_id, origin_node_id, value
+FROM event_log
+WHERE sequence = ?
+`, event.Sequence).Scan(&eventID, &originNodeID, &value); err != nil {
+		t.Fatalf("read event log row: %v", err)
+	}
+	if eventID != event.EventID || originNodeID != event.OriginNodeID {
+		t.Fatalf("unexpected event log indexes: event_id=%d origin_node_id=%d", eventID, originNodeID)
+	}
+	if json.Valid(value) {
+		t.Fatalf("expected protobuf blob, got json-looking payload: %q", string(value))
+	}
+
+	var replicated proto.ReplicatedEvent
+	if err := gproto.Unmarshal(value, &replicated); err != nil {
+		t.Fatalf("unmarshal blob value: %v", err)
+	}
+	if !gproto.Equal(&replicated, ToReplicatedEvent(event)) {
+		t.Fatalf("unexpected replicated event blob: got=%+v want=%+v", &replicated, ToReplicatedEvent(event))
+	}
+
+	body, ok := replicated.GetTypedBody().(*proto.UserCreatedEvent)
+	if !ok {
+		t.Fatalf("expected user_created body, got %T", replicated.GetTypedBody())
+	}
+	if body.GetNodeId() != user.NodeID || body.GetUserId() != user.ID || body.GetUsername() != user.Username {
+		t.Fatalf("unexpected user_created body: %+v", body)
+	}
+}
+
+func TestApplyReplicatedEventRoundTripsStoredBlob(t *testing.T) {
+	t.Parallel()
+
+	source := openNamedTestStore(t, "node-a", 1)
+	defer source.Close()
+
+	target := openNamedTestStore(t, "node-b", 2)
+	defer target.Close()
+
+	ctx := context.Background()
+	_, sourceEvent, err := source.CreateUser(ctx, CreateUserParams{
+		Username:     "replicated-user",
+		PasswordHash: "hash-1",
+		Profile:      `{"display_name":"Replicated"}`,
+	})
+	if err != nil {
+		t.Fatalf("create source user: %v", err)
+	}
+
+	replicated := ToReplicatedEvent(sourceEvent)
+	if err := target.ApplyReplicatedEvent(ctx, replicated); err != nil {
+		t.Fatalf("apply replicated event: %v", err)
+	}
+
+	events, err := target.ListEvents(ctx, 0, 10)
+	if err != nil {
+		t.Fatalf("list target events: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 replicated event, got %d", len(events))
+	}
+	if !gproto.Equal(ToReplicatedEvent(events[0]), replicated) {
+		t.Fatalf("unexpected round-tripped event: got=%+v want=%+v", ToReplicatedEvent(events[0]), replicated)
+	}
+
+	var value []byte
+	if err := target.db.QueryRowContext(ctx, `
+SELECT value
+FROM event_log
+WHERE sequence = ?
+`, events[0].Sequence).Scan(&value); err != nil {
+		t.Fatalf("read replicated event log row: %v", err)
+	}
+
+	var stored proto.ReplicatedEvent
+	if err := gproto.Unmarshal(value, &stored); err != nil {
+		t.Fatalf("unmarshal stored blob: %v", err)
+	}
+	if !gproto.Equal(&stored, replicated) {
+		t.Fatalf("stored blob mismatch: got=%+v want=%+v", &stored, replicated)
 	}
 }
 
@@ -401,8 +553,8 @@ func TestLocalMessageWriteAndQuery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create first message: %v", err)
 	}
-	if firstEvent.Kind != "message.created" {
-		t.Fatalf("unexpected event kind: %s", firstEvent.Kind)
+	if firstEvent.EventType != EventTypeMessageCreated {
+		t.Fatalf("unexpected event type: %s", firstEvent.EventType)
 	}
 
 	second, _, err := st.CreateMessage(ctx, CreateMessageParams{
@@ -1142,56 +1294,43 @@ func TestReplicatedMessageTrimUsesNodeAndSeqForSameTimestamp(t *testing.T) {
 	firstEventID := target.ids.Next()
 	secondEventID := target.ids.Next()
 
-	firstPayload, err := marshalPayload(replicatedMessageEnvelope{
-		Message: replicatedMessagePayload{
-			UserNodeID: user.NodeID,
-			UserID:     user.ID,
-			NodeID:     testNodeID(1),
-			Seq:        1,
-			Sender:     "orders",
-			Body:       "older-seq",
-			CreatedAt:  sharedHLC.String(),
-		},
-	})
-	if err != nil {
-		t.Fatalf("marshal first payload: %v", err)
-	}
-	secondPayload, err := marshalPayload(replicatedMessageEnvelope{
-		Message: replicatedMessagePayload{
-			UserNodeID: user.NodeID,
-			UserID:     user.ID,
-			NodeID:     testNodeID(1),
-			Seq:        2,
-			Sender:     "orders",
-			Body:       "newer-seq",
-			CreatedAt:  sharedHLC.String(),
-		},
-	})
-	if err != nil {
-		t.Fatalf("marshal second payload: %v", err)
-	}
-
 	if err := target.ApplyReplicatedEvent(ctx, ToReplicatedEvent(Event{
 		EventID:         firstEventID,
-		Kind:            "message.created",
+		EventType:       EventTypeMessageCreated,
 		Aggregate:       "message",
 		AggregateNodeID: testNodeID(1),
 		AggregateID:     1,
 		HLC:             sharedHLC,
 		OriginNodeID:    testNodeID(1),
-		Payload:         firstPayload,
+		Body: &proto.MessageCreatedEvent{
+			UserNodeId:   user.NodeID,
+			UserId:       user.ID,
+			NodeId:       testNodeID(1),
+			Seq:          1,
+			Sender:       "orders",
+			Body:         "older-seq",
+			CreatedAtHlc: sharedHLC.String(),
+		},
 	})); err != nil {
 		t.Fatalf("apply first replicated event: %v", err)
 	}
 	if err := target.ApplyReplicatedEvent(ctx, ToReplicatedEvent(Event{
 		EventID:         secondEventID,
-		Kind:            "message.created",
+		EventType:       EventTypeMessageCreated,
 		Aggregate:       "message",
 		AggregateNodeID: testNodeID(1),
 		AggregateID:     2,
 		HLC:             sharedHLC,
 		OriginNodeID:    testNodeID(1),
-		Payload:         secondPayload,
+		Body: &proto.MessageCreatedEvent{
+			UserNodeId:   user.NodeID,
+			UserId:       user.ID,
+			NodeId:       testNodeID(1),
+			Seq:          2,
+			Sender:       "orders",
+			Body:         "newer-seq",
+			CreatedAtHlc: sharedHLC.String(),
+		},
 	})); err != nil {
 		t.Fatalf("apply second replicated event: %v", err)
 	}

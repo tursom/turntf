@@ -111,12 +111,18 @@ func TestUserAndMessageHTTPAPI(t *testing.T) {
 	var listEvents struct {
 		Count int `json:"count"`
 		Items []struct {
-			Kind string `json:"kind"`
+			EventType string `json:"event_type"`
 		} `json:"items"`
 	}
 	mustJSON(t, doJSON(t, handler, http.MethodGet, "/events?after=0&limit=10", nil, http.StatusOK), &listEvents)
 	if listEvents.Count != 3 {
 		t.Fatalf("expected 3 events, got %+v", listEvents)
+	}
+	if len(listEvents.Items) != 3 ||
+		listEvents.Items[0].EventType != "user_created" ||
+		listEvents.Items[1].EventType != "user_updated" ||
+		listEvents.Items[2].EventType != "message_created" {
+		t.Fatalf("unexpected events payload: %+v", listEvents)
 	}
 
 	var opsStatus struct {
@@ -188,6 +194,77 @@ func TestUpdateUserAllowsDuplicateUsername(t *testing.T) {
 	doJSON(t, handler, http.MethodPatch, userPath(second.NodeID, second.UserID), map[string]any{
 		"username": "alice",
 	}, http.StatusOK)
+}
+
+func TestListEventsReturnsTypedEventJSON(t *testing.T) {
+	t.Parallel()
+
+	handler := newTestHandler(t)
+
+	var createdUser struct {
+		NodeID   int64  `json:"node_id"`
+		UserID   int64  `json:"user_id"`
+		Username string `json:"username"`
+	}
+	mustJSON(t, doJSON(t, handler, http.MethodPost, "/users", map[string]any{
+		"username": "alice",
+		"password": "password-1",
+		"profile": map[string]any{
+			"display_name": "Alice",
+		},
+	}, http.StatusCreated), &createdUser)
+
+	mustJSON(t, doJSON(t, handler, http.MethodPost, userMessagesPath(createdUser.NodeID, createdUser.UserID), map[string]any{
+		"sender": "orders",
+		"body":   "package shipped",
+		"metadata": map[string]any{
+			"order_id": "A1001",
+		},
+	}, http.StatusCreated), &struct{}{})
+
+	var listEvents struct {
+		Count int `json:"count"`
+		Items []struct {
+			EventType string          `json:"event_type"`
+			Event     json.RawMessage `json:"event"`
+		} `json:"items"`
+	}
+	mustJSON(t, doJSON(t, handler, http.MethodGet, "/events?after=0&limit=10", nil, http.StatusOK), &listEvents)
+	if listEvents.Count != 2 || len(listEvents.Items) != 2 {
+		t.Fatalf("unexpected events payload: %+v", listEvents)
+	}
+
+	var userEvent struct {
+		NodeID       int64  `json:"node_id"`
+		UserID       int64  `json:"user_id"`
+		Username     string `json:"username"`
+		Profile      string `json:"profile"`
+		CreatedAtHLC string `json:"created_at_hlc"`
+	}
+	if listEvents.Items[0].EventType != "user_created" {
+		t.Fatalf("unexpected first event type: %+v", listEvents.Items[0])
+	}
+	mustJSON(t, listEvents.Items[0].Event, &userEvent)
+	if userEvent.NodeID != createdUser.NodeID || userEvent.UserID != createdUser.UserID || userEvent.Username != "alice" || userEvent.Profile != `{"display_name":"Alice"}` || userEvent.CreatedAtHLC == "" {
+		t.Fatalf("unexpected user_created event json: %+v", userEvent)
+	}
+
+	var messageEvent struct {
+		UserNodeID int64  `json:"user_node_id"`
+		UserID     int64  `json:"user_id"`
+		NodeID     int64  `json:"node_id"`
+		Seq        int64  `json:"seq"`
+		Sender     string `json:"sender"`
+		Body       string `json:"body"`
+		Metadata   string `json:"metadata"`
+	}
+	if listEvents.Items[1].EventType != "message_created" {
+		t.Fatalf("unexpected second event type: %+v", listEvents.Items[1])
+	}
+	mustJSON(t, listEvents.Items[1].Event, &messageEvent)
+	if messageEvent.UserNodeID != createdUser.NodeID || messageEvent.UserID != createdUser.UserID || messageEvent.NodeID != testNodeID(1) || messageEvent.Seq != 1 || messageEvent.Sender != "orders" || messageEvent.Body != "package shipped" || messageEvent.Metadata != `{"order_id":"A1001"}` {
+		t.Fatalf("unexpected message_created event json: %+v", messageEvent)
+	}
 }
 
 type gatingSink struct {

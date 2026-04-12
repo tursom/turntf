@@ -569,13 +569,13 @@ type subscriptionResponse struct {
 type eventResponse struct {
 	Sequence        int64           `json:"sequence"`
 	EventID         int64           `json:"event_id"`
-	Kind            string          `json:"kind"`
+	EventType       store.EventType `json:"event_type"`
 	Aggregate       string          `json:"aggregate"`
 	AggregateNodeID int64           `json:"aggregate_node_id"`
 	AggregateID     int64           `json:"aggregate_id"`
 	HLC             string          `json:"hlc"`
 	OriginNodeID    int64           `json:"origin_node_id"`
-	Payload         json.RawMessage `json:"payload"`
+	Event          any             `json:"event"`
 }
 
 func userResponseFromStore(user store.User) userResponse {
@@ -629,13 +629,13 @@ func eventResponseFromStore(event store.Event) eventResponse {
 	return eventResponse{
 		Sequence:        event.Sequence,
 		EventID:         event.EventID,
-		Kind:            event.Kind,
+		EventType:       event.EventType,
 		Aggregate:       event.Aggregate,
 		AggregateNodeID: event.AggregateNodeID,
 		AggregateID:     event.AggregateID,
 		HLC:             event.HLC.String(),
 		OriginNodeID:    event.OriginNodeID,
-		Payload:         json.RawMessage(event.Payload),
+		Event:           event.Body,
 	}
 }
 

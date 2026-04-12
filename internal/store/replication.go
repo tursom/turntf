@@ -3,191 +3,40 @@ package store
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 
+	gproto "google.golang.org/protobuf/proto"
+
 	"notifier/internal/clock"
-	clusterproto "notifier/internal/proto"
+	internalproto "notifier/internal/proto"
 )
 
-type replicatedUserPayload struct {
-	NodeID              int64  `json:"node_id"`
-	ID                  int64  `json:"id"`
-	Username            string `json:"username"`
-	PasswordHash        string `json:"password_hash"`
-	Profile             string `json:"profile"`
-	Role                string `json:"role"`
-	SystemReserved      bool   `json:"system_reserved"`
-	CreatedAt           string `json:"created_at"`
-	UpdatedAt           string `json:"updated_at"`
-	VersionUsername     string `json:"version_username"`
-	VersionPasswordHash string `json:"version_password_hash"`
-	VersionProfile      string `json:"version_profile"`
-	VersionRole         string `json:"version_role"`
-	VersionDeleted      string `json:"version_deleted,omitempty"`
-	DeletedAt           string `json:"deleted_at,omitempty"`
-	OriginNodeID        int64  `json:"origin_node_id"`
-}
-
-type replicatedUserEnvelope struct {
-	User replicatedUserPayload `json:"user"`
-}
-
-type replicatedDeletePayload struct {
-	NodeID       int64  `json:"node_id"`
-	UserID       int64  `json:"user_id"`
-	DeletedAtHLC string `json:"deleted_at_hlc"`
-}
-
-type replicatedMessagePayload struct {
-	UserNodeID int64  `json:"user_node_id"`
-	UserID     int64  `json:"user_id"`
-	NodeID     int64  `json:"node_id"`
-	Seq        int64  `json:"seq"`
-	Sender     string `json:"sender"`
-	Body       string `json:"body"`
-	Metadata   string `json:"metadata,omitempty"`
-	CreatedAt  string `json:"created_at"`
-}
-
-type replicatedMessageEnvelope struct {
-	Message replicatedMessagePayload `json:"message"`
-}
-
-type replicatedSubscriptionPayload struct {
-	SubscriberNodeID int64  `json:"subscriber_node_id"`
-	SubscriberUserID int64  `json:"subscriber_user_id"`
-	ChannelNodeID    int64  `json:"channel_node_id"`
-	ChannelUserID    int64  `json:"channel_user_id"`
-	SubscribedAt     string `json:"subscribed_at"`
-	DeletedAt        string `json:"deleted_at,omitempty"`
-	OriginNodeID     int64  `json:"origin_node_id"`
-}
-
-type replicatedSubscriptionEnvelope struct {
-	Subscription replicatedSubscriptionPayload `json:"subscription"`
-}
-
-func encodeCreateUserPayload(user User) (string, error) {
-	return marshalPayload(replicatedUserEnvelope{
-		User: replicatedUserPayload{
-			NodeID:              user.NodeID,
-			ID:                  user.ID,
-			Username:            user.Username,
-			PasswordHash:        user.PasswordHash,
-			Profile:             user.Profile,
-			Role:                user.Role,
-			SystemReserved:      user.SystemReserved,
-			CreatedAt:           user.CreatedAt.String(),
-			UpdatedAt:           user.UpdatedAt.String(),
-			VersionUsername:     user.VersionUsername.String(),
-			VersionPasswordHash: user.VersionPasswordHash.String(),
-			VersionProfile:      user.VersionProfile.String(),
-			VersionRole:         user.VersionRole.String(),
-			OriginNodeID:        user.OriginNodeID,
-		},
-	})
-}
-
-func encodeUpdateUserPayload(user User) (string, error) {
-	payload := replicatedUserPayload{
-		NodeID:              user.NodeID,
-		ID:                  user.ID,
-		Username:            user.Username,
-		PasswordHash:        user.PasswordHash,
-		Profile:             user.Profile,
-		Role:                user.Role,
-		SystemReserved:      user.SystemReserved,
-		CreatedAt:           user.CreatedAt.String(),
-		UpdatedAt:           user.UpdatedAt.String(),
-		VersionUsername:     user.VersionUsername.String(),
-		VersionPasswordHash: user.VersionPasswordHash.String(),
-		VersionProfile:      user.VersionProfile.String(),
-		VersionRole:         user.VersionRole.String(),
-		OriginNodeID:        user.OriginNodeID,
-	}
-	if user.VersionDeleted != nil {
-		payload.VersionDeleted = user.VersionDeleted.String()
-	}
-	if user.DeletedAt != nil {
-		payload.DeletedAt = user.DeletedAt.String()
-	}
-	return marshalPayload(replicatedUserEnvelope{User: payload})
-}
-
-func encodeDeleteUserPayload(key UserKey, deletedAt string) (string, error) {
-	return marshalPayload(replicatedDeletePayload{
-		NodeID:       key.NodeID,
-		UserID:       key.UserID,
-		DeletedAtHLC: deletedAt,
-	})
-}
-
-func encodeCreateMessagePayload(message Message) (string, error) {
-	return marshalPayload(replicatedMessageEnvelope{
-		Message: replicatedMessagePayload{
-			UserNodeID: message.UserNodeID,
-			UserID:     message.UserID,
-			NodeID:     message.NodeID,
-			Seq:        message.Seq,
-			Sender:     message.Sender,
-			Body:       message.Body,
-			Metadata:   message.Metadata,
-			CreatedAt:  message.CreatedAt.String(),
-		},
-	})
-}
-
-func encodeChannelSubscriptionPayload(subscription Subscription) (string, error) {
-	payload := replicatedSubscriptionPayload{
-		SubscriberNodeID: subscription.Subscriber.NodeID,
-		SubscriberUserID: subscription.Subscriber.UserID,
-		ChannelNodeID:    subscription.Channel.NodeID,
-		ChannelUserID:    subscription.Channel.UserID,
-		SubscribedAt:     subscription.SubscribedAt.String(),
-		OriginNodeID:     subscription.OriginNodeID,
-	}
-	if subscription.DeletedAt != nil {
-		payload.DeletedAt = subscription.DeletedAt.String()
-	}
-	return marshalPayload(replicatedSubscriptionEnvelope{Subscription: payload})
-}
-
-func marshalPayload(value any) (string, error) {
-	payload, err := json.Marshal(value)
-	if err != nil {
-		return "", err
-	}
-	return string(payload), nil
-}
-
-func ToReplicatedEvent(event Event) *clusterproto.ReplicatedEvent {
-	return &clusterproto.ReplicatedEvent{
+func ToReplicatedEvent(event Event) *internalproto.ReplicatedEvent {
+	replicated := &internalproto.ReplicatedEvent{
 		EventId:         event.EventID,
-		Kind:            event.Kind,
 		AggregateType:   event.Aggregate,
 		AggregateNodeId: event.AggregateNodeID,
 		AggregateId:     event.AggregateID,
 		Hlc:             event.HLC.String(),
 		OriginNodeId:    event.OriginNodeID,
-		Payload:         []byte(event.Payload),
 	}
+	if err := replicated.SetTypedBody(event.Body); err != nil {
+		return nil
+	}
+	return replicated
 }
 
-func (s *Store) ApplyReplicatedEvent(ctx context.Context, event *clusterproto.ReplicatedEvent) error {
+func (s *Store) ApplyReplicatedEvent(ctx context.Context, event *internalproto.ReplicatedEvent) error {
 	if event == nil {
 		return fmt.Errorf("%w: replicated event cannot be nil", ErrInvalidInput)
 	}
 	if event.EventId == 0 {
 		return fmt.Errorf("%w: event id cannot be empty", ErrInvalidInput)
 	}
-	if strings.TrimSpace(event.Kind) == "" {
-		return fmt.Errorf("%w: event kind cannot be empty", ErrInvalidInput)
-	}
 
-	hlc, err := parseRequiredTimestamp(event.Hlc, "event hlc")
+	decoded, err := eventFromReplicatedEvent(event)
 	if err != nil {
 		return err
 	}
@@ -209,35 +58,39 @@ func (s *Store) ApplyReplicatedEvent(ctx context.Context, event *clusterproto.Re
 		return nil
 	}
 
-	switch event.Kind {
-	case "user.created":
-		if err := s.applyReplicatedUserCreated(ctx, tx, event); err != nil {
+	switch body := decoded.Body.(type) {
+	case *internalproto.UserCreatedEvent, *internalproto.UserUpdatedEvent:
+		if err := s.applyReplicatedUserUpsert(ctx, tx, body); err != nil {
 			return err
 		}
-	case "user.updated":
-		if err := s.applyReplicatedUserUpdated(ctx, tx, event); err != nil {
+	case *internalproto.UserDeletedEvent:
+		if err := s.applyReplicatedUserDeleted(ctx, tx, body, decoded.OriginNodeID); err != nil {
 			return err
 		}
-	case "user.deleted":
-		if err := s.applyReplicatedUserDeleted(ctx, tx, event); err != nil {
+	case *internalproto.MessageCreatedEvent:
+		if err := s.applyReplicatedMessageCreated(ctx, tx, body, decoded.OriginNodeID); err != nil {
 			return err
 		}
-	case "message.created":
-		if err := s.applyReplicatedMessageCreated(ctx, tx, event); err != nil {
+	case *internalproto.ChannelSubscribedEvent:
+		if err := s.applyReplicatedChannelSubscription(ctx, tx, body, false, decoded.OriginNodeID); err != nil {
 			return err
 		}
-	case "channel.subscribed", "channel.unsubscribed":
-		if err := s.applyReplicatedChannelSubscription(ctx, tx, event); err != nil {
+	case *internalproto.ChannelUnsubscribedEvent:
+		if err := s.applyReplicatedChannelSubscription(ctx, tx, body, true, decoded.OriginNodeID); err != nil {
 			return err
 		}
 	default:
-		return fmt.Errorf("%w: unsupported event kind %q", ErrInvalidInput, event.Kind)
+		return fmt.Errorf("%w: unsupported replicated event body %T", ErrInvalidInput, decoded.Body)
 	}
 
+	value, err := gproto.Marshal(event)
+	if err != nil {
+		return fmt.Errorf("marshal replicated event: %w", err)
+	}
 	if _, err := tx.ExecContext(ctx, `
-INSERT INTO event_log(event_id, kind, aggregate_type, aggregate_node_id, aggregate_id, hlc, origin_node_id, payload)
-VALUES(?, ?, ?, ?, ?, ?, ?, ?)
-`, event.EventId, event.Kind, event.AggregateType, event.AggregateNodeId, event.AggregateId, hlc.String(), event.OriginNodeId, string(event.Payload)); err != nil {
+INSERT INTO event_log(event_id, origin_node_id, value)
+VALUES(?, ?, ?)
+`, event.EventId, event.OriginNodeId, value); err != nil {
 		if isUniqueConstraint(err) {
 			if err := tx.Commit(); err != nil {
 				return fmt.Errorf("commit duplicate event log entry: %w", err)
@@ -247,11 +100,11 @@ VALUES(?, ?, ?, ?, ?, ?, ?, ?)
 		return fmt.Errorf("insert replicated event log: %w", err)
 	}
 
-	appliedAt := s.clock.Observe(hlc)
+	appliedAt := s.clock.Observe(decoded.HLC)
 	if _, err := tx.ExecContext(ctx, `
 INSERT INTO applied_events(event_id, source_node_id, applied_at_hlc)
 VALUES(?, ?, ?)
-`, event.EventId, event.OriginNodeId, appliedAt.String()); err != nil {
+`, decoded.EventID, decoded.OriginNodeID, appliedAt.String()); err != nil {
 		if isUniqueConstraint(err) {
 			if err := tx.Commit(); err != nil {
 				return fmt.Errorf("commit duplicate applied event: %w", err)
@@ -267,43 +120,53 @@ VALUES(?, ?, ?)
 	return nil
 }
 
-func (s *Store) applyReplicatedUserCreated(ctx context.Context, tx *sql.Tx, event *clusterproto.ReplicatedEvent) error {
-	return s.applyReplicatedUserUpsert(ctx, tx, event, "user.created")
-}
-
-func (s *Store) applyReplicatedUserUpdated(ctx context.Context, tx *sql.Tx, event *clusterproto.ReplicatedEvent) error {
-	return s.applyReplicatedUserUpsert(ctx, tx, event, "user.updated")
-}
-
-func (s *Store) applyReplicatedUserDeleted(ctx context.Context, tx *sql.Tx, event *clusterproto.ReplicatedEvent) error {
-	var payload replicatedDeletePayload
-	if err := json.Unmarshal(event.Payload, &payload); err != nil {
-		return fmt.Errorf("decode user.deleted payload: %w", err)
+func eventFromReplicatedEvent(event *internalproto.ReplicatedEvent) (Event, error) {
+	hlc, err := parseRequiredTimestamp(event.Hlc, "event hlc")
+	if err != nil {
+		return Event{}, err
 	}
-	key := UserKey{NodeID: payload.NodeID, UserID: payload.UserID}
+	body := event.GetTypedBody()
+	if body == nil {
+		return Event{}, fmt.Errorf("%w: replicated event body cannot be empty", ErrInvalidInput)
+	}
+	return Event{
+		EventID:         event.EventId,
+		EventType:       EventType(internalproto.EventTypeFromBody(body)),
+		Aggregate:       event.AggregateType,
+		AggregateNodeID: event.AggregateNodeId,
+		AggregateID:     event.AggregateId,
+		HLC:             hlc,
+		OriginNodeID:    event.OriginNodeId,
+		Body:            body,
+	}, nil
+}
+
+func (s *Store) applyReplicatedUserDeleted(ctx context.Context, tx *sql.Tx, body *internalproto.UserDeletedEvent, originNodeID int64) error {
+	if body == nil {
+		return fmt.Errorf("%w: user deleted event cannot be nil", ErrInvalidInput)
+	}
+	key := UserKey{NodeID: body.NodeId, UserID: body.UserId}
 	if err := key.Validate(); err != nil {
 		return err
 	}
 
-	deletedAt, err := parseRequiredTimestamp(payload.DeletedAtHLC, "deleted_at_hlc")
+	deletedAt, err := parseRequiredTimestamp(body.DeletedAtHlc, "deleted_at_hlc")
 	if err != nil {
 		return err
 	}
-	return s.applyUserDeleteTx(ctx, tx, key, deletedAt, event.OriginNodeId, false)
+	return s.applyUserDeleteTx(ctx, tx, key, deletedAt, originNodeID, false)
 }
 
-func (s *Store) applyReplicatedMessageCreated(ctx context.Context, tx *sql.Tx, event *clusterproto.ReplicatedEvent) error {
-	var payload replicatedMessageEnvelope
-	if err := json.Unmarshal(event.Payload, &payload); err != nil {
-		return fmt.Errorf("decode message.created payload: %w", err)
+func (s *Store) applyReplicatedMessageCreated(ctx context.Context, tx *sql.Tx, body *internalproto.MessageCreatedEvent, originNodeID int64) error {
+	if body == nil {
+		return fmt.Errorf("%w: message created event cannot be nil", ErrInvalidInput)
 	}
-	message := payload.Message
-	key := UserKey{NodeID: message.UserNodeID, UserID: message.UserID}
-	if err := validateMessageIdentity(key, message.NodeID, message.Seq); err != nil {
+	key := UserKey{NodeID: body.UserNodeId, UserID: body.UserId}
+	if err := validateMessageIdentity(key, body.NodeId, body.Seq); err != nil {
 		return err
 	}
-	if event.OriginNodeId != 0 && event.OriginNodeId != message.NodeID {
-		return fmt.Errorf("%w: message node id %d does not match event origin %d", ErrInvalidInput, message.NodeID, event.OriginNodeId)
+	if originNodeID != 0 && originNodeID != body.NodeId {
+		return fmt.Errorf("%w: message node id %d does not match event origin %d", ErrInvalidInput, body.NodeId, originNodeID)
 	}
 
 	if _, err := s.getUserByIDTx(ctx, tx, key, false); err != nil {
@@ -313,8 +176,7 @@ func (s *Store) applyReplicatedMessageCreated(ctx context.Context, tx *sql.Tx, e
 	if _, err := tx.ExecContext(ctx, `
 INSERT INTO messages(user_node_id, user_id, node_id, seq, sender, body, metadata, created_at_hlc)
 VALUES(?, ?, ?, ?, ?, ?, ?, ?)
-`, message.UserNodeID, message.UserID, message.NodeID, message.Seq, message.Sender, message.Body, nullIfEmpty(message.Metadata),
-		message.CreatedAt); err != nil {
+`, body.UserNodeId, body.UserId, body.NodeId, body.Seq, body.Sender, body.Body, nullIfEmpty(body.Metadata), body.CreatedAtHlc); err != nil {
 		if isUniqueConstraint(err) {
 			return nil
 		}
@@ -326,24 +188,23 @@ VALUES(?, ?, ?, ?, ?, ?, ?, ?)
 	return nil
 }
 
-func (s *Store) applyReplicatedChannelSubscription(ctx context.Context, tx *sql.Tx, event *clusterproto.ReplicatedEvent) error {
-	var payload replicatedSubscriptionEnvelope
-	if err := json.Unmarshal(event.Payload, &payload); err != nil {
-		return fmt.Errorf("decode %s payload: %w", event.Kind, err)
-	}
-	subscription, err := subscriptionFromReplicatedPayload(payload.Subscription)
+func (s *Store) applyReplicatedChannelSubscription(ctx context.Context, tx *sql.Tx, body internalproto.EventBody, deleted bool, originNodeID int64) error {
+	subscription, err := subscriptionFromEventBody(body)
 	if err != nil {
 		return err
 	}
-	if event.Kind == "channel.unsubscribed" && subscription.DeletedAt == nil {
-		return fmt.Errorf("%w: channel.unsubscribed missing deleted_at", ErrInvalidInput)
+	if originNodeID != 0 && originNodeID != subscription.OriginNodeID {
+		return fmt.Errorf("%w: subscription origin node id %d does not match event origin %d", ErrInvalidInput, subscription.OriginNodeID, originNodeID)
 	}
-	if event.Kind == "channel.subscribed" && subscription.DeletedAt != nil {
-		return fmt.Errorf("%w: channel.subscribed cannot include deleted_at", ErrInvalidInput)
+
+	if deleted {
+		if subscription.DeletedAt == nil {
+			return fmt.Errorf("%w: channel_unsubscribed missing deleted_at", ErrInvalidInput)
+		}
+	} else if subscription.DeletedAt != nil {
+		return fmt.Errorf("%w: channel_subscribed cannot include deleted_at", ErrInvalidInput)
 	}
-	if event.OriginNodeId != 0 && event.OriginNodeId != subscription.OriginNodeID {
-		return fmt.Errorf("%w: subscription origin node id %d does not match event origin %d", ErrInvalidInput, subscription.OriginNodeID, event.OriginNodeId)
-	}
+
 	if subscription.DeletedAt == nil {
 		if err := s.validateSubscriptionUsersTx(ctx, tx, subscription.Subscriber, subscription.Channel); err != nil {
 			return err
@@ -365,11 +226,22 @@ func (s *Store) applyReplicatedChannelSubscription(ctx context.Context, tx *sql.
 	return s.upsertSubscriptionTx(ctx, tx, subscription)
 }
 
-func subscriptionFromReplicatedPayload(payload replicatedSubscriptionPayload) (Subscription, error) {
+func subscriptionFromEventBody(body internalproto.EventBody) (Subscription, error) {
+	switch typed := body.(type) {
+	case *internalproto.ChannelSubscribedEvent:
+		return subscriptionFromChannelData(typed.SubscriberNodeId, typed.SubscriberUserId, typed.ChannelNodeId, typed.ChannelUserId, typed.SubscribedAtHlc, "", typed.OriginNodeId)
+	case *internalproto.ChannelUnsubscribedEvent:
+		return subscriptionFromChannelData(typed.SubscriberNodeId, typed.SubscriberUserId, typed.ChannelNodeId, typed.ChannelUserId, typed.SubscribedAtHlc, typed.DeletedAtHlc, typed.OriginNodeId)
+	default:
+		return Subscription{}, fmt.Errorf("%w: unsupported subscription body %T", ErrInvalidInput, body)
+	}
+}
+
+func subscriptionFromChannelData(subscriberNodeID, subscriberUserID, channelNodeID, channelUserID int64, subscribedAtRaw, deletedAtRaw string, originNodeID int64) (Subscription, error) {
 	subscription := Subscription{
-		Subscriber:   UserKey{NodeID: payload.SubscriberNodeID, UserID: payload.SubscriberUserID},
-		Channel:      UserKey{NodeID: payload.ChannelNodeID, UserID: payload.ChannelUserID},
-		OriginNodeID: payload.OriginNodeID,
+		Subscriber:   UserKey{NodeID: subscriberNodeID, UserID: subscriberUserID},
+		Channel:      UserKey{NodeID: channelNodeID, UserID: channelUserID},
+		OriginNodeID: originNodeID,
 	}
 	if err := subscription.Subscriber.Validate(); err != nil {
 		return Subscription{}, err
@@ -377,13 +249,13 @@ func subscriptionFromReplicatedPayload(payload replicatedSubscriptionPayload) (S
 	if err := subscription.Channel.Validate(); err != nil {
 		return Subscription{}, err
 	}
-	subscribedAt, err := parseRequiredTimestamp(payload.SubscribedAt, "subscription subscribed_at")
+	subscribedAt, err := parseRequiredTimestamp(subscribedAtRaw, "subscription subscribed_at")
 	if err != nil {
 		return Subscription{}, err
 	}
 	subscription.SubscribedAt = subscribedAt
-	if strings.TrimSpace(payload.DeletedAt) != "" {
-		deletedAt, err := parseRequiredTimestamp(payload.DeletedAt, "subscription deleted_at")
+	if strings.TrimSpace(deletedAtRaw) != "" {
+		deletedAt, err := parseRequiredTimestamp(deletedAtRaw, "subscription deleted_at")
 		if err != nil {
 			return Subscription{}, err
 		}
@@ -443,74 +315,98 @@ func isUniqueConstraint(err error) bool {
 	return strings.Contains(strings.ToLower(err.Error()), "unique")
 }
 
-func decodeReplicatedUser(userPayload []byte, kind string) (User, error) {
-	var envelope replicatedUserEnvelope
-	if err := json.Unmarshal(userPayload, &envelope); err != nil {
-		return User{}, fmt.Errorf("decode %s payload: %w", kind, err)
+func userFromCreatedEvent(data *internalproto.UserCreatedEvent, eventOriginNodeID int64) (User, error) {
+	if data == nil {
+		return User{}, fmt.Errorf("%w: user created event cannot be nil", ErrInvalidInput)
 	}
-
-	payload := envelope.User
-	key := UserKey{NodeID: payload.NodeID, UserID: payload.ID}
+	createdAt, err := parseRequiredTimestamp(data.CreatedAtHlc, "user created_at")
+	if err != nil {
+		return User{}, err
+	}
+	updatedAt, err := parseRequiredTimestamp(data.UpdatedAtHlc, "user updated_at")
+	if err != nil {
+		return User{}, err
+	}
+	versionUsername, err := parseRequiredTimestamp(data.VersionUsername, "user version_username")
+	if err != nil {
+		return User{}, err
+	}
+	versionPasswordHash, err := parseRequiredTimestamp(data.VersionPasswordHash, "user version_password_hash")
+	if err != nil {
+		return User{}, err
+	}
+	versionProfile, err := parseRequiredTimestamp(data.VersionProfile, "user version_profile")
+	if err != nil {
+		return User{}, err
+	}
+	versionRole, err := parseRequiredTimestamp(data.VersionRole, "user version_role")
+	if err != nil {
+		return User{}, err
+	}
+	role, err := normalizeAnyRole(data.Role)
+	if err != nil {
+		return User{}, err
+	}
+	if eventOriginNodeID != 0 && data.OriginNodeId != eventOriginNodeID {
+		return User{}, fmt.Errorf("%w: user origin node id %d does not match event origin %d", ErrInvalidInput, data.OriginNodeId, eventOriginNodeID)
+	}
+	key := UserKey{NodeID: data.NodeId, UserID: data.UserId}
 	if err := key.Validate(); err != nil {
 		return User{}, err
 	}
 
-	createdAt, err := parseRequiredTimestamp(payload.CreatedAt, "user created_at")
-	if err != nil {
-		return User{}, err
-	}
-	updatedAt, err := parseRequiredTimestamp(payload.UpdatedAt, "user updated_at")
-	if err != nil {
-		return User{}, err
-	}
-	versionUsername, err := parseRequiredTimestamp(payload.VersionUsername, "user version_username")
-	if err != nil {
-		return User{}, err
-	}
-	versionPasswordHash, err := parseRequiredTimestamp(payload.VersionPasswordHash, "user version_password_hash")
-	if err != nil {
-		return User{}, err
-	}
-	versionProfile, err := parseRequiredTimestamp(payload.VersionProfile, "user version_profile")
-	if err != nil {
-		return User{}, err
-	}
-	versionRole, err := parseRequiredTimestamp(payload.VersionRole, "user version_role")
-	if err != nil {
-		return User{}, err
-	}
-	role, err := normalizeAnyRole(payload.Role)
-	if err != nil {
-		return User{}, err
-	}
-
 	user := User{
-		NodeID:              payload.NodeID,
-		ID:                  payload.ID,
-		Username:            payload.Username,
-		PasswordHash:        payload.PasswordHash,
-		Profile:             defaultJSON(payload.Profile),
+		NodeID:              data.NodeId,
+		ID:                  data.UserId,
+		Username:            data.Username,
+		PasswordHash:        data.PasswordHash,
+		Profile:             defaultJSON(data.Profile),
 		Role:                role,
-		SystemReserved:      payload.SystemReserved,
+		SystemReserved:      data.SystemReserved,
 		CreatedAt:           createdAt,
 		UpdatedAt:           updatedAt,
 		VersionUsername:     versionUsername,
 		VersionPasswordHash: versionPasswordHash,
 		VersionProfile:      versionProfile,
 		VersionRole:         versionRole,
-		OriginNodeID:        payload.OriginNodeID,
+		OriginNodeID:        data.OriginNodeId,
 	}
 	user.SystemReserved = user.SystemReserved && user.ID == BootstrapAdminUserID
+	return user, nil
+}
 
-	if strings.TrimSpace(payload.VersionDeleted) != "" {
-		parsed, err := parseRequiredTimestamp(payload.VersionDeleted, "user version_deleted")
+func userFromUpdatedEvent(data *internalproto.UserUpdatedEvent, eventOriginNodeID int64) (User, error) {
+	if data == nil {
+		return User{}, fmt.Errorf("%w: user updated event cannot be nil", ErrInvalidInput)
+	}
+	user, err := userFromCreatedEvent(&internalproto.UserCreatedEvent{
+		NodeId:              data.NodeId,
+		UserId:              data.UserId,
+		Username:            data.Username,
+		PasswordHash:        data.PasswordHash,
+		Profile:             data.Profile,
+		Role:                data.Role,
+		SystemReserved:      data.SystemReserved,
+		CreatedAtHlc:        data.CreatedAtHlc,
+		UpdatedAtHlc:        data.UpdatedAtHlc,
+		VersionUsername:     data.VersionUsername,
+		VersionPasswordHash: data.VersionPasswordHash,
+		VersionProfile:      data.VersionProfile,
+		VersionRole:         data.VersionRole,
+		OriginNodeId:        data.OriginNodeId,
+	}, eventOriginNodeID)
+	if err != nil {
+		return User{}, err
+	}
+	if strings.TrimSpace(data.VersionDeleted) != "" {
+		parsed, err := parseRequiredTimestamp(data.VersionDeleted, "user version_deleted")
 		if err != nil {
 			return User{}, err
 		}
 		user.VersionDeleted = &parsed
 	}
-	if strings.TrimSpace(payload.DeletedAt) != "" {
-		parsed, err := parseRequiredTimestamp(payload.DeletedAt, "user deleted_at")
+	if strings.TrimSpace(data.DeletedAtHlc) != "" {
+		parsed, err := parseRequiredTimestamp(data.DeletedAtHlc, "user deleted_at")
 		if err != nil {
 			return User{}, err
 		}
@@ -519,8 +415,19 @@ func decodeReplicatedUser(userPayload []byte, kind string) (User, error) {
 	return user, nil
 }
 
-func (s *Store) applyReplicatedUserUpsert(ctx context.Context, tx *sql.Tx, event *clusterproto.ReplicatedEvent, kind string) error {
-	incoming, err := decodeReplicatedUser(event.Payload, kind)
+func (s *Store) applyReplicatedUserUpsert(ctx context.Context, tx *sql.Tx, body internalproto.EventBody) error {
+	var (
+		incoming User
+		err      error
+	)
+	switch typed := body.(type) {
+	case *internalproto.UserCreatedEvent:
+		incoming, err = userFromCreatedEvent(typed, typed.OriginNodeId)
+	case *internalproto.UserUpdatedEvent:
+		incoming, err = userFromUpdatedEvent(typed, typed.OriginNodeId)
+	default:
+		return fmt.Errorf("%w: unsupported user body %T", ErrInvalidInput, body)
+	}
 	if err != nil {
 		return err
 	}

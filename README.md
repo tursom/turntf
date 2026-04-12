@@ -223,7 +223,7 @@ url = "ws://127.0.0.1:9081/internal/cluster/ws"
 - `DELETE /nodes/{node_id}/users/{user_id}`
 - `POST /nodes/{node_id}/users/{user_id}/messages`
 - `GET /nodes/{node_id}/users/{user_id}/messages?limit=N`
-- `GET /ws/client` 作为客户端 WebSocket Protobuf 长连接端点；连接后第一帧必须发送 `LoginRequest`，接入流程见 [客户端全流程接入文档](/root/dev/sys/turntf/docs/client-flow.md)，协议见 [客户端 WebSocket 接口](/root/dev/sys/turntf/docs/client-websocket.md)
+- `GET /ws/client` 作为客户端 WebSocket Protobuf 长连接端点；连接后第一帧必须发送 `LoginRequest`。登录成功后，客户端可在同一连接上执行原先 HTTP JSON API 的全部已登录能力，包括消息收发、用户管理、订阅管理、历史查询和运维查询；接入流程见 [客户端全流程接入文档](/root/dev/sys/turntf/docs/client-flow.md)，协议见 [客户端 WebSocket 接口](/root/dev/sys/turntf/docs/client-websocket.md)
 - `POST /nodes/{node_id}/users/{user_id}/subscriptions`
 - `DELETE /nodes/{node_id}/users/{user_id}/subscriptions/{channel_node_id}/{channel_user_id}`
 - `GET /nodes/{node_id}/users/{user_id}/subscriptions`
@@ -243,6 +243,7 @@ url = "ws://127.0.0.1:9081/internal/cluster/ws"
 - 当目标是 `(node_id, 3)` 时，请求进入“节点入口瞬时包”模式：`relay_target` 必填，任意已登录用户都可以发送；该数据包不会持久化，只会尽力转发给目标节点上当前在线的指定用户
 - 订阅接口允许普通用户维护自己的 channel 订阅，管理员可维护任意用户订阅
 - 登录请求固定使用 `node_id + user_id + password`
+- `GET /ws/client` 登录后复用同一套权限边界：管理员可使用全部 WS RPC；普通用户只能访问本人、本人订阅和原有消息发送权限允许的资源
 - HTTP JSON 消息接口的 `body` 是 base64 编码字节；客户端 WebSocket 和集群协议中的 `body` 是 protobuf `bytes`
 - 用户身份由 `(node_id, user_id)` 二元组定位；`user_id = 1` 是每个节点的 root 候选，当前已存储且 `node_id` 最小的 root 候选是唯一受保护保底超级管理员，不可删除、不可降权、不可改名，允许修改密码
 - `user_id = 2` 是每个节点的系统广播地址，启动时会创建/修复为 `role=broadcast`，不可登录、不可删除、不可由外部 API 创建或修改为该角色

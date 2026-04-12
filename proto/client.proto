@@ -10,6 +10,17 @@ message ClientEnvelope {
     SendMessageRequest send_message = 2;
     AckMessage ack_message = 3;
     Ping ping = 4;
+    CreateUserRequest create_user = 5;
+    GetUserRequest get_user = 6;
+    UpdateUserRequest update_user = 7;
+    DeleteUserRequest delete_user = 8;
+    ListMessagesRequest list_messages = 9;
+    SubscribeChannelRequest subscribe_channel = 10;
+    UnsubscribeChannelRequest unsubscribe_channel = 11;
+    ListSubscriptionsRequest list_subscriptions = 12;
+    ListEventsRequest list_events = 13;
+    OperationsStatusRequest operations_status = 14;
+    MetricsRequest metrics = 15;
   }
 }
 
@@ -21,6 +32,17 @@ message ServerEnvelope {
     Error error = 4;
     Pong pong = 5;
     PacketPushed packet_pushed = 6;
+    CreateUserResponse create_user_response = 7;
+    GetUserResponse get_user_response = 8;
+    UpdateUserResponse update_user_response = 9;
+    DeleteUserResponse delete_user_response = 10;
+    ListMessagesResponse list_messages_response = 11;
+    SubscribeChannelResponse subscribe_channel_response = 12;
+    UnsubscribeChannelResponse unsubscribe_channel_response = 13;
+    ListSubscriptionsResponse list_subscriptions_response = 14;
+    ListEventsResponse list_events_response = 15;
+    OperationsStatusResponse operations_status_response = 16;
+    MetricsResponse metrics_response = 17;
   }
 }
 
@@ -87,6 +109,138 @@ message Error {
   uint64 request_id = 3;
 }
 
+message CreateUserRequest {
+  uint64 request_id = 1;
+  string username = 2;
+  string password = 3;
+  bytes profile_json = 4;
+  string role = 5;
+}
+
+message GetUserRequest {
+  uint64 request_id = 1;
+  UserRef user = 2;
+}
+
+message UpdateUserRequest {
+  uint64 request_id = 1;
+  UserRef user = 2;
+  StringField username = 3;
+  StringField password = 4;
+  BytesField profile_json = 5;
+  StringField role = 6;
+}
+
+message DeleteUserRequest {
+  uint64 request_id = 1;
+  UserRef user = 2;
+}
+
+message ListMessagesRequest {
+  uint64 request_id = 1;
+  UserRef user = 2;
+  int32 limit = 3;
+}
+
+message SubscribeChannelRequest {
+  uint64 request_id = 1;
+  UserRef subscriber = 2;
+  UserRef channel = 3;
+}
+
+message UnsubscribeChannelRequest {
+  uint64 request_id = 1;
+  UserRef subscriber = 2;
+  UserRef channel = 3;
+}
+
+message ListSubscriptionsRequest {
+  uint64 request_id = 1;
+  UserRef subscriber = 2;
+}
+
+message ListEventsRequest {
+  uint64 request_id = 1;
+  int64 after = 2;
+  int32 limit = 3;
+}
+
+message OperationsStatusRequest {
+  uint64 request_id = 1;
+}
+
+message MetricsRequest {
+  uint64 request_id = 1;
+}
+
+message CreateUserResponse {
+  uint64 request_id = 1;
+  User user = 2;
+}
+
+message GetUserResponse {
+  uint64 request_id = 1;
+  User user = 2;
+}
+
+message UpdateUserResponse {
+  uint64 request_id = 1;
+  User user = 2;
+}
+
+message DeleteUserResponse {
+  uint64 request_id = 1;
+  string status = 2;
+  int64 node_id = 3;
+  int64 user_id = 4;
+}
+
+message ListMessagesResponse {
+  uint64 request_id = 1;
+  repeated Message items = 2;
+  int32 count = 3;
+}
+
+message SubscribeChannelResponse {
+  uint64 request_id = 1;
+  Subscription subscription = 2;
+}
+
+message UnsubscribeChannelResponse {
+  uint64 request_id = 1;
+  Subscription subscription = 2;
+}
+
+message ListSubscriptionsResponse {
+  uint64 request_id = 1;
+  repeated Subscription items = 2;
+  int32 count = 3;
+}
+
+message ListEventsResponse {
+  uint64 request_id = 1;
+  repeated Event items = 2;
+  int32 count = 3;
+}
+
+message OperationsStatusResponse {
+  uint64 request_id = 1;
+  OperationsStatus status = 2;
+}
+
+message MetricsResponse {
+  uint64 request_id = 1;
+  string text = 2;
+}
+
+message StringField {
+  string value = 1;
+}
+
+message BytesField {
+  bytes value = 1;
+}
+
 message MessageCursor {
   int64 node_id = 1;
   int64 seq = 2;
@@ -108,6 +262,11 @@ message User {
   int64 user_id = 2;
   string username = 3;
   string role = 4;
+  bytes profile_json = 5;
+  bool system_reserved = 6;
+  string created_at = 7;
+  string updated_at = 8;
+  int64 origin_node_id = 9;
 }
 
 message Message {
@@ -128,4 +287,76 @@ message Packet {
   string sender = 5;
   bytes body = 6;
   ClientDeliveryMode delivery_mode = 7;
+}
+
+message Subscription {
+  int64 subscriber_node_id = 1;
+  int64 subscriber_user_id = 2;
+  int64 channel_node_id = 3;
+  int64 channel_user_id = 4;
+  string subscribed_at = 5;
+  string deleted_at = 6;
+  int64 origin_node_id = 7;
+}
+
+message Event {
+  int64 sequence = 1;
+  int64 event_id = 2;
+  string event_type = 3;
+  string aggregate = 4;
+  int64 aggregate_node_id = 5;
+  int64 aggregate_id = 6;
+  string hlc = 7;
+  int64 origin_node_id = 8;
+  bytes event_json = 9;
+}
+
+message OperationsStatus {
+  int64 node_id = 1;
+  int32 message_window_size = 2;
+  int64 last_event_sequence = 3;
+  bool write_gate_ready = 4;
+  int64 conflict_total = 5;
+  MessageTrimStatus message_trim = 6;
+  ProjectionStatus projection = 7;
+  repeated PeerStatus peers = 8;
+}
+
+message MessageTrimStatus {
+  int64 trimmed_total = 1;
+  string last_trimmed_at = 2;
+}
+
+message ProjectionStatus {
+  int64 pending_total = 1;
+  string last_failed_at = 2;
+}
+
+message PeerOriginStatus {
+  int64 origin_node_id = 1;
+  int64 acked_event_id = 2;
+  int64 applied_event_id = 3;
+  int64 unconfirmed_events = 4;
+  string cursor_updated_at = 5;
+  uint64 remote_last_event_id = 6;
+  bool pending_catchup = 7;
+}
+
+message PeerStatus {
+  int64 node_id = 1;
+  string configured_url = 2;
+  bool connected = 3;
+  string session_direction = 4;
+  repeated PeerOriginStatus origins = 5;
+  int32 pending_snapshot_partitions = 6;
+  string remote_snapshot_version = 7;
+  int32 remote_message_window_size = 8;
+  int64 clock_offset_ms = 9;
+  string last_clock_sync = 10;
+  uint64 snapshot_digests_sent_total = 11;
+  uint64 snapshot_digests_received_total = 12;
+  uint64 snapshot_chunks_sent_total = 13;
+  uint64 snapshot_chunks_received_total = 14;
+  string last_snapshot_digest_at = 15;
+  string last_snapshot_chunk_at = 16;
 }

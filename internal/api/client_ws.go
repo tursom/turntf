@@ -62,7 +62,6 @@ func (h *HTTP) handleClientWebSocket(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	h.registerClientSession(sess.principal.User.Key(), sess)
 	defer h.unregisterClientSession(sess.principal.User.Key(), sess)
 
 	ctx, cancel := context.WithCancel(r.Context())
@@ -103,6 +102,7 @@ func (s *clientWSSession) login(ctx context.Context) error {
 		s.markSeen(cursor.NodeId, cursor.Seq)
 	}
 	s.principal = &requestPrincipal{User: user}
+	s.http.registerClientSession(s.principal.User.Key(), s)
 	if err := s.writeEnvelope(&internalproto.ServerEnvelope{
 		Body: &internalproto.ServerEnvelope_LoginResponse{
 			LoginResponse: &internalproto.LoginResponse{
@@ -111,9 +111,14 @@ func (s *clientWSSession) login(ctx context.Context) error {
 			},
 		},
 	}); err != nil {
+		s.http.unregisterClientSession(s.principal.User.Key(), s)
 		return err
 	}
-	return s.pushInitialMessages(ctx)
+	if err := s.pushInitialMessages(ctx); err != nil {
+		s.http.unregisterClientSession(s.principal.User.Key(), s)
+		return err
+	}
+	return nil
 }
 
 func (s *clientWSSession) readLoop(ctx context.Context) error {
@@ -148,6 +153,50 @@ func (s *clientWSSession) readLoop(ctx context.Context) error {
 		switch body := envelope.Body.(type) {
 		case *internalproto.ClientEnvelope_SendMessage:
 			if err := s.handleSendMessage(ctx, body.SendMessage); err != nil {
+				return err
+			}
+		case *internalproto.ClientEnvelope_CreateUser:
+			if err := s.handleCreateUser(ctx, body.CreateUser); err != nil {
+				return err
+			}
+		case *internalproto.ClientEnvelope_GetUser:
+			if err := s.handleGetUser(ctx, body.GetUser); err != nil {
+				return err
+			}
+		case *internalproto.ClientEnvelope_UpdateUser:
+			if err := s.handleUpdateUser(ctx, body.UpdateUser); err != nil {
+				return err
+			}
+		case *internalproto.ClientEnvelope_DeleteUser:
+			if err := s.handleDeleteUser(ctx, body.DeleteUser); err != nil {
+				return err
+			}
+		case *internalproto.ClientEnvelope_ListMessages:
+			if err := s.handleListMessages(ctx, body.ListMessages); err != nil {
+				return err
+			}
+		case *internalproto.ClientEnvelope_SubscribeChannel:
+			if err := s.handleSubscribeChannel(ctx, body.SubscribeChannel); err != nil {
+				return err
+			}
+		case *internalproto.ClientEnvelope_UnsubscribeChannel:
+			if err := s.handleUnsubscribeChannel(ctx, body.UnsubscribeChannel); err != nil {
+				return err
+			}
+		case *internalproto.ClientEnvelope_ListSubscriptions:
+			if err := s.handleListSubscriptions(ctx, body.ListSubscriptions); err != nil {
+				return err
+			}
+		case *internalproto.ClientEnvelope_ListEvents:
+			if err := s.handleListEvents(ctx, body.ListEvents); err != nil {
+				return err
+			}
+		case *internalproto.ClientEnvelope_OperationsStatus:
+			if err := s.handleOperationsStatus(ctx, body.OperationsStatus); err != nil {
+				return err
+			}
+		case *internalproto.ClientEnvelope_Metrics:
+			if err := s.handleMetrics(ctx, body.Metrics); err != nil {
 				return err
 			}
 		case *internalproto.ClientEnvelope_AckMessage:
@@ -359,23 +408,6 @@ func (s *clientWSSession) markSeen(nodeID, seq int64) {
 	s.seen[clientMessageCursor{nodeID: nodeID, seq: seq}] = struct{}{}
 }
 
-func (s *clientWSSession) writeStoreOrRequestError(requestID uint64, err error) error {
-	code := "internal_error"
-	message := "internal server error"
-	switch {
-	case errors.Is(err, store.ErrForbidden):
-		code = "forbidden"
-		message = "forbidden"
-	case errors.Is(err, store.ErrInvalidInput):
-		code = "invalid_request"
-		message = err.Error()
-	case errors.Is(err, store.ErrNotFound):
-		code = "not_found"
-		message = "resource not found"
-	}
-	return s.writeError(code, message, requestID)
-}
-
 func (s *clientWSSession) writeError(code, message string, requestID uint64) error {
 	return s.writeEnvelope(&internalproto.ServerEnvelope{
 		Body: &internalproto.ServerEnvelope_Error{Error: clientWSError(code, message, requestID)},
@@ -405,10 +437,15 @@ func clientWSError(code, message string, requestID uint64) *internalproto.Error 
 
 func clientProtoUser(user store.User) *internalproto.User {
 	return &internalproto.User{
-		NodeId:   user.NodeID,
-		UserId:   user.ID,
-		Username: user.Username,
-		Role:     user.Role,
+		NodeId:         user.NodeID,
+		UserId:         user.ID,
+		Username:       user.Username,
+		Role:           user.Role,
+		ProfileJson:    []byte(user.Profile),
+		SystemReserved: user.SystemReserved,
+		CreatedAt:      user.CreatedAt.String(),
+		UpdatedAt:      user.UpdatedAt.String(),
+		OriginNodeId:   user.OriginNodeID,
 	}
 }
 

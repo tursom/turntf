@@ -2,6 +2,8 @@
 
 本文档描述业务客户端使用的 WebSocket + Protobuf 长连接接口。节点间集群同步仍使用 `GET /internal/cluster/ws`，不要和本文的客户端接口混用。完整接入步骤见 [客户端全流程接入文档](/root/dev/sys/turntf/docs/client-flow.md)。
 
+当前 `GET /ws/client` 已覆盖除 `POST /auth/login` 之外的全部 HTTP 客户端能力：既能收发消息，也能执行用户管理、订阅管理、历史查询和运维查询。
+
 ## 连接地址
 
 - 路径：`GET /ws/client`
@@ -217,6 +219,106 @@ ServerEnvelope {
 
 `relay_accepted` 只表示瞬时包已进入本地路由层，不代表目标用户已经收到。
 
+## 查询与管理 RPC
+
+登录成功后，客户端还可以在同一条 WS 连接上发送 RPC 请求，补齐原先 HTTP JSON API 的能力。所有这类请求都使用独立的 `request_id`，成功响应和 `ServerEnvelope.error` 都会原样回传该值。
+
+当前支持：
+
+- 用户管理：`create_user`、`get_user`、`update_user`、`delete_user`
+- 消息与订阅查询：`list_messages`、`list_subscriptions`
+- 订阅管理：`subscribe_channel`、`unsubscribe_channel`
+- 运维查询：`list_events`、`operations_status`、`metrics`
+
+示例：管理员创建用户
+
+```protobuf
+ClientEnvelope {
+  create_user: CreateUserRequest {
+    request_id: 1001
+    username: "alice"
+    password: "alice-password"
+    profile_json: "{\"display_name\":\"Alice\"}"
+    role: "user"
+  }
+}
+```
+
+```protobuf
+ServerEnvelope {
+  create_user_response: CreateUserResponse {
+    request_id: 1001
+    user: {
+      node_id: 4096
+      user_id: 1025
+      username: "alice"
+      role: "user"
+      profile_json: "{\"display_name\":\"Alice\"}"
+    }
+  }
+}
+```
+
+示例：查询自己的订阅列表
+
+```protobuf
+ClientEnvelope {
+  list_subscriptions: ListSubscriptionsRequest {
+    request_id: 1002
+    subscriber: { node_id: 4096, user_id: 1025 }
+  }
+}
+```
+
+```protobuf
+ServerEnvelope {
+  list_subscriptions_response: ListSubscriptionsResponse {
+    request_id: 1002
+    items: [
+      {
+        subscriber_node_id: 4096
+        subscriber_user_id: 1025
+        channel_node_id: 4096
+        channel_user_id: 1026
+        subscribed_at: "..."
+      }
+    ]
+    count: 1
+  }
+}
+```
+
+示例：管理员查询 metrics
+
+```protobuf
+ClientEnvelope {
+  metrics: MetricsRequest { request_id: 1003 }
+}
+```
+
+```protobuf
+ServerEnvelope {
+  metrics_response: MetricsResponse {
+    request_id: 1003
+    text: "# HELP notifier_event_log_last_sequence ..."
+  }
+}
+```
+
+权限边界与 HTTP 完全一致：
+
+- `create_user`、`update_user`、`delete_user`、`list_events`、`operations_status`、`metrics` 仅管理员可用。
+- `get_user` 允许本人或管理员。
+- `list_messages` 对可登录用户允许本人或管理员；对 channel/broadcast 目标仅管理员可直接查询。
+- `subscribe_channel`、`unsubscribe_channel`、`list_subscriptions` 允许本人或管理员。
+- `send_message` 的权限规则保持不变。
+
+字段约定：
+
+- `profile_json` 和 `event_json` 是原始 JSON 字节。
+- 列表响应统一包含 `items` 和 `count`。
+- `metrics_response.text` 直接返回 Prometheus 文本，与 HTTP `/metrics` 内容一致。
+
 ## Ping/Pong
 
 客户端可发送应用层 ping：
@@ -258,6 +360,9 @@ ServerEnvelope {
 - `already_authenticated`：登录成功后再次发送 login。
 - `invalid_request`：请求字段缺失、正文为空或参数非法。
 - `forbidden`：当前用户没有执行该操作的权限。
+- `not_found`：请求的用户、订阅或其他资源不存在。
+- `conflict`：资源状态冲突。
+- `service_unavailable`：当前节点暂时不可写，例如集群模式下仍未完成首轮校时。
 - `not_found`：目标资源不存在。
 - `internal_error`：服务端内部错误。
 

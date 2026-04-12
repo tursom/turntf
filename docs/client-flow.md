@@ -6,8 +6,8 @@
 
 客户端会用到两类接口：
 
-- HTTP JSON API：用于管理员初始化用户、创建 channel、维护订阅，也可用于调试查询历史消息。
-- WebSocket Protobuf API：用于普通客户端登录、接收历史补发、接收实时消息和发送消息。
+- HTTP JSON API：保留用于脚本、管理后台和调试。
+- WebSocket Protobuf API：现已覆盖除 HTTP 登录外的全部客户端能力，既可用于普通客户端收发消息，也可用于管理员执行用户、订阅、历史和运维查询。
 
 核心地址：
 
@@ -17,21 +17,22 @@
 - `GET /nodes/{node_id}/users/{user_id}/messages?limit=N`：HTTP 查询消息，`body` 是 base64 字节。
 - `POST /nodes/{node_id}/users/{user_id}/messages`：HTTP 写消息，`body` 是 base64 字节。
 - `POST /nodes/{node_id}/users/3/messages`：HTTP 发送节点入口瞬时包，需额外提供 `relay_target`。
-- `GET /ws/client`：客户端长连接，连接后第一帧必须是 protobuf `LoginRequest`。
+- `GET /ws/client`：客户端长连接，连接后第一帧必须是 protobuf `LoginRequest`；登录成功后还可继续发送用户管理、订阅管理、历史查询和运维查询 RPC。
 
 ## 端到端流程
 
-1. 服务端或管理后台创建登录用户。
+1. 服务端、管理后台或管理员 WS 客户端创建登录用户。
 2. 可选：管理员创建 channel 用户。
-3. 可选：用户订阅 channel。
+3. 可选：用户本人或管理员维护 channel 订阅。
 4. 客户端本地初始化消息表和游标表。
 5. 客户端连接 `GET /ws/client`。
 6. 客户端发送第一帧 `ClientEnvelope.login`，携带 `node_id`、`user_id`、`password` 和本地已持久化游标 `seen_messages`。
 7. 服务端返回 `LoginResponse`，随后补发当前用户可见且未见过的历史消息。
 8. 客户端收到 `MessagePushed` 后先落库，再保存 `(node_id, seq)` 游标，最后可选发送 `AckMessage`。
-9. 客户端通过同一条 WebSocket 发送 `SendMessageRequest` 写普通持久化消息。
-10. 如需向目标节点在线用户发送非持久化数据包，客户端把 `target.user_id` 设为 `3`，并提供 `relay_target` 与 `delivery_mode`。
-11. 网络断开后，客户端用本地游标重连，服务端按 `seen_messages` 跳过已持久化消息。
+9. 客户端可继续通过同一条 WebSocket 发送查询或管理 RPC，例如 `get_user`、`list_messages`、`subscribe_channel`、`list_events`、`metrics`。
+10. 客户端通过同一条 WebSocket 发送 `SendMessageRequest` 写普通持久化消息。
+11. 如需向目标节点在线用户发送非持久化数据包，客户端把 `target.user_id` 设为 `3`，并提供 `relay_target` 与 `delivery_mode`。
+12. 网络断开后，客户端用本地游标重连，服务端按 `seen_messages` 跳过已持久化消息。
 
 ## 服务端准备
 

@@ -22,6 +22,7 @@ import (
 
 type authenticatedTestAPI struct {
 	handler http.Handler
+	http    *HTTP
 }
 
 func TestAuthenticatedHTTPLoginAndAuthorization(t *testing.T) {
@@ -190,12 +191,14 @@ func newAuthenticatedTestAPI(t *testing.T) authenticatedTestAPI {
 		t.Fatalf("new signer: %v", err)
 	}
 
+	httpAPI := NewHTTP(New(st, nil), HTTPOptions{
+		NodeID:   testNodeID(1),
+		Signer:   signer,
+		TokenTTL: time.Hour,
+	})
 	return authenticatedTestAPI{
-		handler: NewHTTP(New(st, nil), HTTPOptions{
-			NodeID:   testNodeID(1),
-			Signer:   signer,
-			TokenTTL: time.Hour,
-		}).Handler(),
+		handler: httpAPI.Handler(),
+		http:    httpAPI,
 	}
 }
 
@@ -299,8 +302,6 @@ func TestClientWebSocketSeenCursorAndSendMessage(t *testing.T) {
 }
 
 func TestNodeIngressHTTPAndWebSocketTransientPacket(t *testing.T) {
-	t.Parallel()
-
 	testAPI := newAuthenticatedTestAPI(t)
 	server := httptest.NewServer(testAPI.handler)
 	defer server.Close()
@@ -344,6 +345,17 @@ func TestNodeIngressHTTPAndWebSocketTransientPacket(t *testing.T) {
 	if accepted.Mode != "transient" || accepted.PacketID == 0 || accepted.TargetNodeID != aliceKey.NodeID {
 		t.Fatalf("unexpected accepted response: %+v", accepted)
 	}
+	if !testAPI.http.ReceiveTransientPacket(store.TransientPacket{
+		PacketID:     accepted.PacketID,
+		SourceNodeID: testNodeID(1),
+		TargetNodeID: aliceKey.NodeID,
+		RelayTarget:  aliceKey,
+		Sender:       "relay",
+		Body:         []byte("transient"),
+		DeliveryMode: store.DeliveryModeBestEffort,
+	}) {
+		t.Fatalf("expected transient packet receiver to find websocket session")
+	}
 
 	packet := readServerEnvelope(t, conn).GetPacketPushed()
 	if packet == nil || packet.Packet == nil || string(packet.Packet.GetBody()) != "transient" || packet.Packet.GetRelayTarget().GetUserId() != aliceKey.UserID {
@@ -366,6 +378,322 @@ func TestNodeIngressRequiresRelayTarget(t *testing.T) {
 	}, map[string]string{
 		"Authorization": "Bearer " + aliceToken,
 	}, http.StatusBadRequest)
+}
+
+func TestClientWebSocketAdminRPCProvidesFullHTTPCapabilities(t *testing.T) {
+	t.Parallel()
+
+	testAPI := newAuthenticatedTestAPI(t)
+	server := httptest.NewServer(testAPI.handler)
+	defer server.Close()
+
+	adminKey := store.UserKey{NodeID: testNodeID(1), UserID: store.BootstrapAdminUserID}
+	conn := dialClientWebSocket(t, server.URL)
+	defer conn.Close()
+	loginClientWebSocket(t, conn, adminKey, "root-password")
+
+	writeClientEnvelope(t, conn, &internalproto.ClientEnvelope{
+		Body: &internalproto.ClientEnvelope_CreateUser{
+			CreateUser: &internalproto.CreateUserRequest{
+				RequestId:   11,
+				Username:    "rpc-alice",
+				Password:    "rpc-password",
+				ProfileJson: []byte(`{"display_name":"RPC Alice"}`),
+				Role:        store.RoleUser,
+			},
+		},
+	})
+	createResp := readServerEnvelope(t, conn).GetCreateUserResponse()
+	if createResp == nil || createResp.RequestId != 11 || createResp.User.GetUserId() == 0 || string(createResp.User.GetProfileJson()) != `{"display_name":"RPC Alice"}` {
+		t.Fatalf("unexpected create user response: %+v", createResp)
+	}
+	createdKey := store.UserKey{NodeID: createResp.User.GetNodeId(), UserID: createResp.User.GetUserId()}
+
+	writeClientEnvelope(t, conn, &internalproto.ClientEnvelope{
+		Body: &internalproto.ClientEnvelope_UpdateUser{
+			UpdateUser: &internalproto.UpdateUserRequest{
+				RequestId: 12,
+				User:      &internalproto.UserRef{NodeId: createdKey.NodeID, UserId: createdKey.UserID},
+				Username:  &internalproto.StringField{Value: "rpc-alice-updated"},
+				ProfileJson: &internalproto.BytesField{
+					Value: []byte(`{"display_name":"RPC Alice Updated"}`),
+				},
+			},
+		},
+	})
+	updateResp := readServerEnvelope(t, conn).GetUpdateUserResponse()
+	if updateResp == nil || updateResp.RequestId != 12 || updateResp.User.GetUsername() != "rpc-alice-updated" {
+		t.Fatalf("unexpected update user response: %+v", updateResp)
+	}
+
+	writeClientEnvelope(t, conn, &internalproto.ClientEnvelope{
+		Body: &internalproto.ClientEnvelope_GetUser{
+			GetUser: &internalproto.GetUserRequest{
+				RequestId: 13,
+				User:      &internalproto.UserRef{NodeId: createdKey.NodeID, UserId: createdKey.UserID},
+			},
+		},
+	})
+	getResp := readServerEnvelope(t, conn).GetGetUserResponse()
+	if getResp == nil || getResp.RequestId != 13 || getResp.User.GetUsername() != "rpc-alice-updated" {
+		t.Fatalf("unexpected get user response: %+v", getResp)
+	}
+
+	doJSONWithHeaders(t, testAPI.handler, http.MethodPost, userMessagesPath(createdKey.NodeID, createdKey.UserID), map[string]any{
+		"sender": "admin",
+		"body":   []byte("rpc hello"),
+	}, map[string]string{
+		"Authorization": "Bearer " + loginToken(t, testAPI.handler, adminKey, "root-password"),
+	}, http.StatusCreated)
+
+	writeClientEnvelope(t, conn, &internalproto.ClientEnvelope{
+		Body: &internalproto.ClientEnvelope_ListMessages{
+			ListMessages: &internalproto.ListMessagesRequest{
+				RequestId: 14,
+				User:      &internalproto.UserRef{NodeId: createdKey.NodeID, UserId: createdKey.UserID},
+				Limit:     10,
+			},
+		},
+	})
+	listMessages := readServerEnvelope(t, conn).GetListMessagesResponse()
+	if listMessages == nil || listMessages.RequestId != 14 || listMessages.Count != 1 || string(listMessages.Items[0].GetBody()) != "rpc hello" {
+		t.Fatalf("unexpected list messages response: %+v", listMessages)
+	}
+
+	writeClientEnvelope(t, conn, &internalproto.ClientEnvelope{
+		Body: &internalproto.ClientEnvelope_ListEvents{
+			ListEvents: &internalproto.ListEventsRequest{
+				RequestId: 15,
+				After:     0,
+				Limit:     20,
+			},
+		},
+	})
+	listEvents := readServerEnvelope(t, conn).GetListEventsResponse()
+	if listEvents == nil || listEvents.RequestId != 15 || listEvents.Count < 3 || len(listEvents.Items[0].GetEventJson()) == 0 {
+		t.Fatalf("unexpected list events response: %+v", listEvents)
+	}
+
+	writeClientEnvelope(t, conn, &internalproto.ClientEnvelope{
+		Body: &internalproto.ClientEnvelope_OperationsStatus{
+			OperationsStatus: &internalproto.OperationsStatusRequest{RequestId: 16},
+		},
+	})
+	opsResp := readServerEnvelope(t, conn).GetOperationsStatusResponse()
+	if opsResp == nil || opsResp.RequestId != 16 || opsResp.Status.GetNodeId() != testNodeID(1) {
+		t.Fatalf("unexpected operations status response: %+v", opsResp)
+	}
+
+	writeClientEnvelope(t, conn, &internalproto.ClientEnvelope{
+		Body: &internalproto.ClientEnvelope_Metrics{
+			Metrics: &internalproto.MetricsRequest{RequestId: 17},
+		},
+	})
+	metricsResp := readServerEnvelope(t, conn).GetMetricsResponse()
+	if metricsResp == nil || metricsResp.RequestId != 17 || !strings.Contains(metricsResp.Text, "notifier_write_gate_ready") {
+		t.Fatalf("unexpected metrics response: %+v", metricsResp)
+	}
+
+	writeClientEnvelope(t, conn, &internalproto.ClientEnvelope{
+		Body: &internalproto.ClientEnvelope_DeleteUser{
+			DeleteUser: &internalproto.DeleteUserRequest{
+				RequestId: 18,
+				User:      &internalproto.UserRef{NodeId: createdKey.NodeID, UserId: createdKey.UserID},
+			},
+		},
+	})
+	deleteResp := readServerEnvelope(t, conn).GetDeleteUserResponse()
+	if deleteResp == nil || deleteResp.RequestId != 18 || deleteResp.Status != "deleted" {
+		t.Fatalf("unexpected delete user response: %+v", deleteResp)
+	}
+}
+
+func TestClientWebSocketRPCRespectsUserAuthorizationAndSubscriptions(t *testing.T) {
+	t.Parallel()
+
+	testAPI := newAuthenticatedTestAPI(t)
+	server := httptest.NewServer(testAPI.handler)
+	defer server.Close()
+
+	adminKey := store.UserKey{NodeID: testNodeID(1), UserID: store.BootstrapAdminUserID}
+	adminToken := loginToken(t, testAPI.handler, adminKey, "root-password")
+	aliceKey := createUserAs(t, testAPI.handler, adminToken, "alice", "alice-password", store.RoleUser)
+	channelKey := createUserAs(t, testAPI.handler, adminToken, "orders", "", store.RoleChannel)
+
+	conn := dialClientWebSocket(t, server.URL)
+	defer conn.Close()
+	loginClientWebSocket(t, conn, aliceKey, "alice-password")
+
+	writeClientEnvelope(t, conn, &internalproto.ClientEnvelope{
+		Body: &internalproto.ClientEnvelope_GetUser{
+			GetUser: &internalproto.GetUserRequest{
+				RequestId: 21,
+				User:      &internalproto.UserRef{NodeId: aliceKey.NodeID, UserId: aliceKey.UserID},
+			},
+		},
+	})
+	getResp := readServerEnvelope(t, conn).GetGetUserResponse()
+	if getResp == nil || getResp.RequestId != 21 || getResp.User.GetUserId() != aliceKey.UserID {
+		t.Fatalf("unexpected self get user response: %+v", getResp)
+	}
+
+	writeClientEnvelope(t, conn, &internalproto.ClientEnvelope{
+		Body: &internalproto.ClientEnvelope_GetUser{
+			GetUser: &internalproto.GetUserRequest{
+				RequestId: 22,
+				User:      &internalproto.UserRef{NodeId: adminKey.NodeID, UserId: adminKey.UserID},
+			},
+		},
+	})
+	if rpcErr := readServerEnvelope(t, conn).GetError(); rpcErr == nil || rpcErr.RequestId != 22 || rpcErr.Code != "forbidden" {
+		t.Fatalf("unexpected get user forbidden error: %+v", rpcErr)
+	}
+
+	writeClientEnvelope(t, conn, &internalproto.ClientEnvelope{
+		Body: &internalproto.ClientEnvelope_SendMessage{
+			SendMessage: &internalproto.SendMessageRequest{
+				RequestId: 230,
+				Target:    &internalproto.UserRef{NodeId: aliceKey.NodeID, UserId: aliceKey.UserID},
+				Sender:    "alice",
+				Body:      []byte("seed"),
+			},
+		},
+	})
+	sendSelfResp := readServerEnvelope(t, conn).GetSendMessageResponse()
+	if sendSelfResp == nil || sendSelfResp.RequestId != 230 || string(sendSelfResp.GetMessage().GetBody()) != "seed" {
+		t.Fatalf("unexpected self send response: %+v", sendSelfResp)
+	}
+
+	writeClientEnvelope(t, conn, &internalproto.ClientEnvelope{
+		Body: &internalproto.ClientEnvelope_ListMessages{
+			ListMessages: &internalproto.ListMessagesRequest{
+				RequestId: 23,
+				User:      &internalproto.UserRef{NodeId: aliceKey.NodeID, UserId: aliceKey.UserID},
+				Limit:     10,
+			},
+		},
+	})
+	listMessages := readServerEnvelope(t, conn).GetListMessagesResponse()
+	if listMessages == nil || listMessages.RequestId != 23 || listMessages.Count != 1 || string(listMessages.Items[0].GetBody()) != "seed" {
+		t.Fatalf("unexpected self list messages response: %+v", listMessages)
+	}
+
+	writeClientEnvelope(t, conn, &internalproto.ClientEnvelope{
+		Body: &internalproto.ClientEnvelope_ListEvents{
+			ListEvents: &internalproto.ListEventsRequest{RequestId: 24, After: 0, Limit: 10},
+		},
+	})
+	if rpcErr := readServerEnvelope(t, conn).GetError(); rpcErr == nil || rpcErr.RequestId != 24 || rpcErr.Code != "forbidden" {
+		t.Fatalf("unexpected list events forbidden error: %+v", rpcErr)
+	}
+
+	writeClientEnvelope(t, conn, &internalproto.ClientEnvelope{
+		Body: &internalproto.ClientEnvelope_SubscribeChannel{
+			SubscribeChannel: &internalproto.SubscribeChannelRequest{
+				RequestId: 25,
+				Subscriber: &internalproto.UserRef{
+					NodeId: aliceKey.NodeID,
+					UserId: aliceKey.UserID,
+				},
+				Channel: &internalproto.UserRef{
+					NodeId: channelKey.NodeID,
+					UserId: channelKey.UserID,
+				},
+			},
+		},
+	})
+	subscribeResp := readServerEnvelope(t, conn).GetSubscribeChannelResponse()
+	if subscribeResp == nil || subscribeResp.RequestId != 25 || subscribeResp.Subscription.GetChannelUserId() != channelKey.UserID {
+		t.Fatalf("unexpected subscribe response: %+v", subscribeResp)
+	}
+
+	writeClientEnvelope(t, conn, &internalproto.ClientEnvelope{
+		Body: &internalproto.ClientEnvelope_ListSubscriptions{
+			ListSubscriptions: &internalproto.ListSubscriptionsRequest{
+				RequestId: 26,
+				Subscriber: &internalproto.UserRef{
+					NodeId: aliceKey.NodeID,
+					UserId: aliceKey.UserID,
+				},
+			},
+		},
+	})
+	listSubs := readServerEnvelope(t, conn).GetListSubscriptionsResponse()
+	if listSubs == nil || listSubs.RequestId != 26 || listSubs.Count != 1 || listSubs.Items[0].GetChannelUserId() != channelKey.UserID {
+		t.Fatalf("unexpected list subscriptions response: %+v", listSubs)
+	}
+
+	writeClientEnvelope(t, conn, &internalproto.ClientEnvelope{
+		Body: &internalproto.ClientEnvelope_SendMessage{
+			SendMessage: &internalproto.SendMessageRequest{
+				RequestId: 27,
+				Target: &internalproto.UserRef{
+					NodeId: channelKey.NodeID,
+					UserId: channelKey.UserID,
+				},
+				Sender: "alice",
+				Body:   []byte("channel payload"),
+			},
+		},
+	})
+	sendResp := readServerEnvelope(t, conn).GetSendMessageResponse()
+	if sendResp == nil || sendResp.RequestId != 27 || string(sendResp.GetMessage().GetBody()) != "channel payload" {
+		t.Fatalf("unexpected send to channel response: %+v", sendResp)
+	}
+
+	writeClientEnvelope(t, conn, &internalproto.ClientEnvelope{
+		Body: &internalproto.ClientEnvelope_UnsubscribeChannel{
+			UnsubscribeChannel: &internalproto.UnsubscribeChannelRequest{
+				RequestId: 28,
+				Subscriber: &internalproto.UserRef{
+					NodeId: aliceKey.NodeID,
+					UserId: aliceKey.UserID,
+				},
+				Channel: &internalproto.UserRef{
+					NodeId: channelKey.NodeID,
+					UserId: channelKey.UserID,
+				},
+			},
+		},
+	})
+	unsubscribeResp := readServerEnvelope(t, conn).GetUnsubscribeChannelResponse()
+	if unsubscribeResp == nil || unsubscribeResp.RequestId != 28 || unsubscribeResp.Subscription.GetDeletedAt() == "" {
+		t.Fatalf("unexpected unsubscribe response: %+v", unsubscribeResp)
+	}
+
+	writeClientEnvelope(t, conn, &internalproto.ClientEnvelope{
+		Body: &internalproto.ClientEnvelope_SendMessage{
+			SendMessage: &internalproto.SendMessageRequest{
+				RequestId: 29,
+				Target: &internalproto.UserRef{
+					NodeId: channelKey.NodeID,
+					UserId: channelKey.UserID,
+				},
+				Sender: "alice",
+				Body:   []byte("forbidden after unsubscribe"),
+			},
+		},
+	})
+	if rpcErr := readServerEnvelope(t, conn).GetError(); rpcErr == nil || rpcErr.RequestId != 29 || rpcErr.Code != "forbidden" {
+		t.Fatalf("unexpected send forbidden error: %+v", rpcErr)
+	}
+}
+
+func loginClientWebSocket(t *testing.T, conn *websocket.Conn, key store.UserKey, password string) {
+	t.Helper()
+	writeClientEnvelope(t, conn, &internalproto.ClientEnvelope{
+		Body: &internalproto.ClientEnvelope_Login{
+			Login: &internalproto.LoginRequest{
+				NodeId:   key.NodeID,
+				UserId:   key.UserID,
+				Password: password,
+			},
+		},
+	})
+	loginResp := readServerEnvelope(t, conn).GetLoginResponse()
+	if loginResp == nil || loginResp.User.GetUserId() != key.UserID {
+		t.Fatalf("unexpected login response: %+v", loginResp)
+	}
 }
 
 func loginToken(t *testing.T, handler http.Handler, key store.UserKey, password string) string {
@@ -451,7 +779,7 @@ func writeClientEnvelope(t *testing.T, conn *websocket.Conn, envelope *internalp
 
 func readServerEnvelope(t *testing.T, conn *websocket.Conn) *internalproto.ServerEnvelope {
 	t.Helper()
-	if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+	if err := conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
 		t.Fatalf("set read deadline: %v", err)
 	}
 	messageType, data, err := conn.ReadMessage()

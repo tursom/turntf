@@ -198,7 +198,7 @@ func (s *Store) ApplyReplicatedEvent(ctx context.Context, event *clusterproto.Re
 	}
 	defer tx.Rollback()
 
-	applied, err := s.isEventAppliedTx(ctx, tx, event.EventId)
+	applied, err := s.isEventAppliedTx(ctx, tx, event.OriginNodeId, event.EventId)
 	if err != nil {
 		return err
 	}
@@ -395,9 +395,9 @@ func subscriptionFromReplicatedPayload(payload replicatedSubscriptionPayload) (S
 	return subscription, nil
 }
 
-func (s *Store) isEventAppliedTx(ctx context.Context, tx *sql.Tx, eventID int64) (bool, error) {
+func (s *Store) isEventAppliedTx(ctx context.Context, tx *sql.Tx, sourceNodeID, eventID int64) (bool, error) {
 	var count int
-	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM applied_events WHERE event_id = ?`, eventID).Scan(&count); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM applied_events WHERE source_node_id = ? AND event_id = ?`, sourceNodeID, eventID).Scan(&count); err != nil {
 		return false, fmt.Errorf("check applied event: %w", err)
 	}
 	return count > 0, nil

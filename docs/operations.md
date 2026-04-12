@@ -4,7 +4,7 @@
 
 ## 小规模部署建议
 
-- 每个节点首次启动时会自动生成唯一的数字 `node_id` 并保存到 SQLite `schema_meta`；该 `node_id` 内嵌的 slot 会进入全局 ID 与 HLC 时间戳，同一集群内不能重复。
+- 每个节点首次启动时会自动生成唯一的数字 `node_id` 并保存到 SQLite `schema_meta`；该 `node_id` 会完整进入 HLC 时间戳，同一集群内不能重复。
 - 所有节点使用相同的 `auth.token_secret`，否则跨节点登录 token 无法互认。
 - 所有节点使用相同的 `cluster.secret`，并确保它不同于 `auth.token_secret`。
 - 生产环境建议所有节点使用相同的 `store.message_window_size`，避免消息反熵因窗口不一致而跳过消息分片修复。

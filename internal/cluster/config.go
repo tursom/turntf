@@ -3,8 +3,6 @@ package cluster
 import (
 	"fmt"
 	"strings"
-
-	"notifier/internal/clock"
 )
 
 type Peer struct {
@@ -14,7 +12,6 @@ type Peer struct {
 
 type Config struct {
 	NodeID            int64
-	NodeSlot          uint16
 	AdvertisePath     string
 	ClusterSecret     string
 	Peers             []Peer
@@ -31,16 +28,6 @@ func (c Config) Enabled() bool {
 func (c Config) Validate() error {
 	if c.NodeID <= 0 {
 		return fmt.Errorf("node id cannot be empty")
-	}
-	if c.NodeSlot > clock.MaxNodeID {
-		return fmt.Errorf("node slot %d exceeds max %d", c.NodeSlot, clock.MaxNodeID)
-	}
-	nodeSlot, err := clock.NodeSlotFromID(c.NodeID)
-	if err != nil {
-		return fmt.Errorf("node id %d is invalid: %w", c.NodeID, err)
-	}
-	if c.NodeSlot != 0 && c.NodeSlot != nodeSlot {
-		return fmt.Errorf("node slot %d does not match node id slot %d", c.NodeSlot, nodeSlot)
 	}
 	if c.MaxClockSkewMs < 0 {
 		return fmt.Errorf("cluster max clock skew must be non-negative")
@@ -71,13 +58,6 @@ func (c Config) Validate() error {
 		}
 		if _, ok := seenPeers[peer.NodeID]; ok {
 			return fmt.Errorf("duplicate peer node id %d", peer.NodeID)
-		}
-		peerSlot, err := clock.NodeSlotFromID(peer.NodeID)
-		if err != nil {
-			return fmt.Errorf("peer node id %d is invalid: %w", peer.NodeID, err)
-		}
-		if peerSlot == c.NodeSlot {
-			return fmt.Errorf("peer node id %d uses local node slot %d", peer.NodeID, c.NodeSlot)
 		}
 		seenPeers[peer.NodeID] = struct{}{}
 	}

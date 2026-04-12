@@ -34,7 +34,7 @@ const (
 	BootstrapAdminUserID = int64(1)
 	BroadcastUserID      = int64(2)
 	ReservedUserIDMax    = int64(1024)
-	defaultSchemaVersion = "5"
+	defaultSchemaVersion = "6"
 	schemaMetaNodeIDKey  = "node_id"
 )
 
@@ -52,7 +52,6 @@ type Store struct {
 	nodeID            int64
 	clock             *clock.Clock
 	ids               *clock.IDGenerator
-	nodeSlot          uint16
 	initialNodeID     int64
 	messageWindowSize int
 	bootstrapAdmin    BootstrapAdminConfig
@@ -203,10 +202,6 @@ func (s *Store) NodeID() int64 {
 	return s.nodeID
 }
 
-func (s *Store) NodeSlot() uint16 {
-	return s.nodeSlot
-}
-
 func (s *Store) MessageWindowSize() int {
 	return normalizeMessageWindowSize(s.messageWindowSize)
 }
@@ -271,14 +266,15 @@ CREATE TABLE IF NOT EXISTS channel_subscriptions (
 
 CREATE TABLE IF NOT EXISTS event_log (
     sequence INTEGER PRIMARY KEY AUTOINCREMENT,
-    event_id INTEGER NOT NULL UNIQUE,
+    event_id INTEGER NOT NULL,
     kind TEXT NOT NULL,
     aggregate_type TEXT NOT NULL,
     aggregate_node_id INTEGER NOT NULL,
     aggregate_id INTEGER NOT NULL,
     hlc TEXT NOT NULL,
     origin_node_id INTEGER NOT NULL,
-    payload TEXT NOT NULL
+    payload TEXT NOT NULL,
+    UNIQUE(origin_node_id, event_id)
 );
 
 CREATE TABLE IF NOT EXISTS peer_cursors (
@@ -289,9 +285,10 @@ CREATE TABLE IF NOT EXISTS peer_cursors (
 );
 
 CREATE TABLE IF NOT EXISTS applied_events (
-    event_id INTEGER PRIMARY KEY,
+    event_id INTEGER NOT NULL,
     source_node_id INTEGER NOT NULL,
-    applied_at_hlc TEXT NOT NULL
+    applied_at_hlc TEXT NOT NULL,
+    PRIMARY KEY(source_node_id, event_id)
 );
 
 CREATE TABLE IF NOT EXISTS user_conflicts (
@@ -302,6 +299,7 @@ CREATE TABLE IF NOT EXISTS user_conflicts (
     winner_user_id INTEGER NOT NULL,
     username TEXT NOT NULL,
     detected_at_hlc TEXT NOT NULL,
+    resolved_by_origin_node_id INTEGER,
     resolved_by_event_id INTEGER
 );
 
@@ -332,6 +330,10 @@ CREATE INDEX IF NOT EXISTS idx_subscriptions_subscriber ON channel_subscriptions
 CREATE INDEX IF NOT EXISTS idx_subscriptions_channel ON channel_subscriptions(channel_node_id, channel_user_id, deleted_at_hlc);
 `); err != nil {
 		return fmt.Errorf("init message indexes: %w", err)
+	}
+
+	if err := s.validateSchemaVersion(ctx); err != nil {
+		return err
 	}
 
 	if _, err := s.db.ExecContext(ctx, `
@@ -377,26 +379,37 @@ VALUES(?, ?)
 		return fmt.Errorf("node id %d does not match existing node id %d", s.initialNodeID, nodeID)
 	}
 
-	slot, err := clock.NodeSlotFromID(nodeID)
-	if err != nil {
-		return fmt.Errorf("load node id: %w", err)
-	}
-	ids, err := clock.NewIDGenerator(slot)
-	if err != nil {
-		return err
-	}
-
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit node identity init: %w", err)
 	}
 
 	s.nodeID = nodeID
-	s.nodeSlot = slot
-	s.ids = ids
+	s.ids = clock.NewIDGenerator()
 	if s.clock == nil {
-		s.clock = clock.NewClock(slot)
+		s.clock = clock.NewClock(nodeID)
 	}
 	return nil
+}
+
+func (s *Store) validateSchemaVersion(ctx context.Context) error {
+	var raw string
+	err := s.db.QueryRowContext(ctx, `
+SELECT value
+FROM schema_meta
+WHERE key = 'schema_version'
+`).Scan(&raw)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil
+		}
+		return fmt.Errorf("read schema version: %w", err)
+	}
+
+	version := strings.TrimSpace(raw)
+	if version == "" || version == defaultSchemaVersion {
+		return nil
+	}
+	return fmt.Errorf("unsupported schema version %q: rebuild the database with schema version %s", version, defaultSchemaVersion)
 }
 
 func readNodeIDTx(ctx context.Context, tx *sql.Tx) (int64, error) {

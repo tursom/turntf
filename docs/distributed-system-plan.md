@@ -109,7 +109,7 @@
 
 - `event_log` 是复制事实来源。
 - `peer_cursors` 记录每个 peer 的确认进度。
-- `applied_events` 用于幂等去重。
+- `applied_events` 用于按 `(source_node_id, event_id)` 幂等去重。
 - `tombstones` 用于删除传播和离线节点恢复。
 - `channel_subscriptions` 记录可登录用户对 `role=channel` 地址的订阅关系。
 

@@ -3,67 +3,33 @@ package clock
 import (
 	"crypto/rand"
 	"fmt"
+	"math"
 	"math/big"
 	"sync"
 	"time"
 )
 
 const (
-	MaxNodeID   = 1023
 	maxSequence = 4095
 	epochMs     = int64(1735689600000) // 2025-01-01T00:00:00Z
 )
 
 type IDGenerator struct {
 	mu       sync.Mutex
-	nodeID   uint16
 	lastMs   int64
 	sequence uint16
 }
 
 func GenerateNodeID() (int64, error) {
-	nodeID, err := randomUint16(1, MaxNodeID)
+	nodeID, err := randomInt64(1, math.MaxInt64)
 	if err != nil {
-		return 0, fmt.Errorf("generate node machine id: %w", err)
+		return 0, fmt.Errorf("generate node id: %w", err)
 	}
-	sequence, err := randomUint16(0, maxSequence)
-	if err != nil {
-		return 0, fmt.Errorf("generate node sequence: %w", err)
-	}
-
-	nowMs := time.Now().UTC().UnixMilli() - epochMs
-	if nowMs < 0 {
-		nowMs = 0
-	}
-	return (nowMs << 22) | (int64(nodeID) << 12) | int64(sequence), nil
+	return nodeID, nil
 }
 
-func NodeSlotFromID(id int64) (uint16, error) {
-	if id <= 0 {
-		return 0, fmt.Errorf("node id must be positive")
-	}
-	slot := uint16((id >> 12) & MaxNodeID)
-	if slot == 0 {
-		return 0, fmt.Errorf("node id %d has empty slot", id)
-	}
-	if slot > MaxNodeID {
-		return 0, fmt.Errorf("node id %d has slot %d exceeding max %d", id, slot, MaxNodeID)
-	}
-	return slot, nil
-}
-
-func NodeSequenceFromID(id int64) (uint16, error) {
-	if _, err := NodeSlotFromID(id); err != nil {
-		return 0, err
-	}
-	return uint16(id & maxSequence), nil
-}
-
-func NewIDGenerator(nodeID uint16) (*IDGenerator, error) {
-	if nodeID > MaxNodeID {
-		return nil, fmt.Errorf("node id %d exceeds max %d", nodeID, MaxNodeID)
-	}
-	return &IDGenerator{nodeID: nodeID}, nil
+func NewIDGenerator() *IDGenerator {
+	return &IDGenerator{}
 }
 
 func (g *IDGenerator) Next() int64 {
@@ -89,7 +55,7 @@ func (g *IDGenerator) Next() int64 {
 	}
 
 	g.lastMs = nowMs
-	return (nowMs << 22) | (int64(g.nodeID) << 12) | int64(g.sequence)
+	return (nowMs << 12) | int64(g.sequence)
 }
 
 func (g *IDGenerator) waitNextMsLocked(lastMs int64) int64 {
@@ -112,4 +78,16 @@ func randomUint16(minValue, maxValue int) (uint16, error) {
 		return 0, err
 	}
 	return uint16(value.Int64() + int64(minValue)), nil
+}
+
+func randomInt64(minValue, maxValue int64) (int64, error) {
+	if minValue < 0 || maxValue < minValue {
+		return 0, fmt.Errorf("invalid random range %d..%d", minValue, maxValue)
+	}
+	span := big.NewInt(maxValue - minValue + 1)
+	value, err := rand.Int(rand.Reader, span)
+	if err != nil {
+		return 0, err
+	}
+	return value.Int64() + minValue, nil
 }

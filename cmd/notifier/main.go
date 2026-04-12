@@ -86,7 +86,6 @@ func runServe(args []string, stdout io.Writer) error {
 		return err
 	}
 	cfg.Cluster.NodeID = st.NodeID()
-	cfg.Cluster.NodeSlot = st.NodeSlot()
 	if err := st.EnsureBootstrapAdmin(context.Background(), cfg.Auth.BootstrapAdmin); err != nil {
 		return err
 	}

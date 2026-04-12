@@ -8,7 +8,7 @@ func TestTimestampStringRoundTrip(t *testing.T) {
 	original := Timestamp{
 		WallTimeMs: 1740000000000,
 		Logical:    7,
-		NodeID:     42,
+		NodeID:     4200000000000000042,
 	}
 
 	parsed, err := ParseTimestamp(original.String())
@@ -87,10 +87,7 @@ func TestClockRemainsMonotonicWhenOffsetMovesBackward(t *testing.T) {
 func TestIDGeneratorMonotonicAndUnique(t *testing.T) {
 	t.Parallel()
 
-	gen, err := NewIDGenerator(21)
-	if err != nil {
-		t.Fatalf("new generator: %v", err)
-	}
+	gen := NewIDGenerator()
 
 	last := int64(-1)
 	seen := make(map[int64]struct{})
@@ -107,7 +104,7 @@ func TestIDGeneratorMonotonicAndUnique(t *testing.T) {
 	}
 }
 
-func TestGenerateNodeIDUsesDecodableRandomSlotAndSequence(t *testing.T) {
+func TestGenerateNodeIDReturnsPositiveOpaqueID(t *testing.T) {
 	t.Parallel()
 
 	nodeID, err := GenerateNodeID()
@@ -117,30 +114,25 @@ func TestGenerateNodeIDUsesDecodableRandomSlotAndSequence(t *testing.T) {
 	if nodeID <= 0 {
 		t.Fatalf("expected positive node id, got %d", nodeID)
 	}
+}
 
-	slot, err := NodeSlotFromID(nodeID)
-	if err != nil {
-		t.Fatalf("decode node slot: %v", err)
-	}
-	if slot == 0 || slot > MaxNodeID {
-		t.Fatalf("slot out of range: %d", slot)
-	}
+func TestParseTimestampRejectsLegacyWidth(t *testing.T) {
+	t.Parallel()
 
-	sequence, err := NodeSequenceFromID(nodeID)
-	if err != nil {
-		t.Fatalf("decode node sequence: %v", err)
-	}
-	if sequence > maxSequence {
-		t.Fatalf("sequence out of range: %d", sequence)
+	if _, err := ParseTimestamp("1740000000000-00001-00001"); err == nil {
+		t.Fatalf("expected legacy timestamp width to be rejected")
 	}
 }
 
-func TestNodeSlotFromIDRejectsInvalidIDs(t *testing.T) {
+func TestTimestampStringSortMatchesCompare(t *testing.T) {
 	t.Parallel()
 
-	for _, nodeID := range []int64{0, -1, 1} {
-		if _, err := NodeSlotFromID(nodeID); err == nil {
-			t.Fatalf("expected node id %d to be rejected", nodeID)
-		}
+	first := Timestamp{WallTimeMs: 1740000000000, Logical: 1, NodeID: 4096}
+	second := Timestamp{WallTimeMs: 1740000000000, Logical: 1, NodeID: 8192}
+	if first.Compare(second) >= 0 {
+		t.Fatalf("expected compare order to increase")
+	}
+	if first.String() >= second.String() {
+		t.Fatalf("expected lexical order to increase, first=%s second=%s", first.String(), second.String())
 	}
 }

@@ -43,7 +43,6 @@ func TestActivateSessionPrefersExpectedDirection(t *testing.T) {
 
 	mgr, err := NewManager(Config{
 		NodeID:            testNodeID(1),
-		NodeSlot:          1,
 		AdvertisePath:     websocketPath,
 		ClusterSecret:     "secret",
 		MessageWindowSize: store.DefaultMessageWindowSize,
@@ -180,7 +179,6 @@ func TestHandleHelloAllowsMismatchedMessageWindowSizes(t *testing.T) {
 
 	mgr, err := NewManager(Config{
 		NodeID:            testNodeID(1),
-		NodeSlot:          1,
 		AdvertisePath:     websocketPath,
 		ClusterSecret:     "secret",
 		MessageWindowSize: 5,
@@ -238,7 +236,7 @@ func TestVerifyEnvelopeRejectsInvalidHMAC(t *testing.T) {
 	eventBatch := &internalproto.Envelope{
 		NodeId:    testNodeID(2),
 		Sequence:  1,
-		SentAtHlc: clock.NewClock(2).Now().String(),
+		SentAtHlc: clock.NewClock(testNodeID(2)).Now().String(),
 		Body: &internalproto.Envelope_EventBatch{
 			EventBatch: &internalproto.EventBatch{
 				Events: []*internalproto.ReplicatedEvent{{
@@ -246,9 +244,9 @@ func TestVerifyEnvelopeRejectsInvalidHMAC(t *testing.T) {
 					Kind:          "user.created",
 					AggregateType: "user",
 					AggregateId:   1,
-					Hlc:           clock.NewClock(2).Now().String(),
+					Hlc:           clock.NewClock(testNodeID(2)).Now().String(),
 					OriginNodeId:  testNodeID(2),
-					Payload:       []byte(`{"user":{"id":1,"username":"root","password_hash":"hash-root","profile":"{}","role":"super_admin","system_reserved":true,"created_at":"1:0:1","updated_at":"1:0:1","version_username":"1:0:1","version_password_hash":"1:0:1","version_profile":"1:0:1","version_role":"1:0:1","origin_node_id":8192}}`),
+					Payload:       []byte(`{"user":{"id":1,"username":"root","password_hash":"hash-root","profile":"{}","role":"super_admin","system_reserved":true,"created_at":"0000000000001-00000-0000000000000008192","updated_at":"0000000000001-00000-0000000000000008192","version_username":"0000000000001-00000-0000000000000008192","version_password_hash":"0000000000001-00000-0000000000000008192","version_profile":"0000000000001-00000-0000000000000008192","version_role":"0000000000001-00000-0000000000000008192","origin_node_id":8192}}`),
 				}},
 			},
 		},
@@ -1552,7 +1550,7 @@ func newClusterTestNodeWithWindowAndSkew(t *testing.T, nodeID string, slot uint1
 
 	dbPath := filepath.Join(t.TempDir(), nodeID+".db")
 	numericNodeID := testNodeID(slot)
-	sharedClock := clock.NewClockWithSource(slot, func() int64 {
+	sharedClock := clock.NewClockWithSource(numericNodeID, func() int64 {
 		return time.Now().UTC().UnixMilli() + skewMs
 	})
 	st, err := store.Open(dbPath, store.Options{
@@ -1569,7 +1567,6 @@ func newClusterTestNodeWithWindowAndSkew(t *testing.T, nodeID string, slot uint1
 
 	manager, err := NewManager(Config{
 		NodeID:            numericNodeID,
-		NodeSlot:          slot,
 		AdvertisePath:     websocketPath,
 		ClusterSecret:     "secret",
 		Peers:             peers,
@@ -1739,7 +1736,6 @@ func newHandshakeTestManager(t *testing.T) *Manager {
 
 	mgr, err := NewManager(Config{
 		NodeID:            testNodeID(1),
-		NodeSlot:          1,
 		AdvertisePath:     websocketPath,
 		ClusterSecret:     "secret",
 		MessageWindowSize: store.DefaultMessageWindowSize,
@@ -1802,7 +1798,6 @@ func newReplicationTestManagerWithWindow(t *testing.T, st *store.Store, messageW
 
 	mgr, err := NewManager(Config{
 		NodeID:            testNodeID(2),
-		NodeSlot:          2,
 		AdvertisePath:     websocketPath,
 		ClusterSecret:     "secret",
 		MessageWindowSize: messageWindowSize,

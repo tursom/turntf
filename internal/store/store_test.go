@@ -108,12 +108,8 @@ func TestInitGeneratesAndPersistsNodeID(t *testing.T) {
 		t.Fatalf("init first store: %v", err)
 	}
 	nodeID := first.NodeID()
-	slot := first.NodeSlot()
 	if nodeID <= 0 {
 		t.Fatalf("expected generated node id, got %d", nodeID)
-	}
-	if slot == 0 || slot > clock.MaxNodeID {
-		t.Fatalf("unexpected generated slot: %d", slot)
 	}
 
 	var stored string
@@ -135,8 +131,8 @@ func TestInitGeneratesAndPersistsNodeID(t *testing.T) {
 	if err := second.Init(context.Background()); err != nil {
 		t.Fatalf("init second store: %v", err)
 	}
-	if second.NodeID() != nodeID || second.NodeSlot() != slot {
-		t.Fatalf("expected persisted node identity, got id=%d slot=%d want id=%d slot=%d", second.NodeID(), second.NodeSlot(), nodeID, slot)
+	if second.NodeID() != nodeID {
+		t.Fatalf("expected persisted node identity, got id=%d want id=%d", second.NodeID(), nodeID)
 	}
 }
 
@@ -161,6 +157,31 @@ INSERT INTO schema_meta(key, value) VALUES('node_id', 'not-an-int');
 
 	if err := st.Init(context.Background()); err == nil {
 		t.Fatalf("expected invalid stored node id to fail")
+	}
+}
+
+func TestInitRejectsUnsupportedSchemaVersion(t *testing.T) {
+	t.Parallel()
+
+	st, err := Open(filepath.Join(t.TempDir(), "old-schema.db"), Options{})
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	if _, err := st.db.Exec(`
+CREATE TABLE schema_meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+INSERT INTO schema_meta(key, value) VALUES('schema_version', '5');
+INSERT INTO schema_meta(key, value) VALUES('node_id', '4096');
+`); err != nil {
+		t.Fatalf("seed old schema version: %v", err)
+	}
+
+	if err := st.Init(context.Background()); err == nil {
+		t.Fatalf("expected unsupported schema version to fail")
 	}
 }
 
@@ -812,6 +833,60 @@ func TestApplyReplicatedEventIsIdempotent(t *testing.T) {
 	}
 	if len(events) != 1 {
 		t.Fatalf("expected 1 replicated event, got %d", len(events))
+	}
+}
+
+func TestApplyReplicatedEventsAllowsSameEventIDFromDifferentOrigins(t *testing.T) {
+	t.Parallel()
+
+	sourceA := openNamedTestStore(t, "node-a", 1)
+	defer sourceA.Close()
+
+	sourceB := openNamedTestStore(t, "node-b", 2)
+	defer sourceB.Close()
+
+	target := openNamedTestStore(t, "node-c", 3)
+	defer target.Close()
+
+	ctx := context.Background()
+	userA, eventA, err := sourceA.CreateUser(ctx, CreateUserParams{
+		Username:     "from-a",
+		PasswordHash: "hash-a",
+	})
+	if err != nil {
+		t.Fatalf("create source A user: %v", err)
+	}
+	userB, eventB, err := sourceB.CreateUser(ctx, CreateUserParams{
+		Username:     "from-b",
+		PasswordHash: "hash-b",
+	})
+	if err != nil {
+		t.Fatalf("create source B user: %v", err)
+	}
+
+	eventA.EventID = 7
+	eventB.EventID = 7
+
+	if err := target.ApplyReplicatedEvent(ctx, ToReplicatedEvent(eventA)); err != nil {
+		t.Fatalf("apply source A replicated event: %v", err)
+	}
+	if err := target.ApplyReplicatedEvent(ctx, ToReplicatedEvent(eventB)); err != nil {
+		t.Fatalf("apply source B replicated event: %v", err)
+	}
+
+	if _, err := target.GetUser(ctx, userA.Key()); err != nil {
+		t.Fatalf("get source A user: %v", err)
+	}
+	if _, err := target.GetUser(ctx, userB.Key()); err != nil {
+		t.Fatalf("get source B user: %v", err)
+	}
+
+	events, err := target.ListEvents(ctx, 0, 10)
+	if err != nil {
+		t.Fatalf("list replicated events: %v", err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("expected both replicated events to be stored, got %d", len(events))
 	}
 }
 

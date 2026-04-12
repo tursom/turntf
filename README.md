@@ -29,7 +29,7 @@
 ├── docs/operations.md              # 运维与上线手册
 ├── internal/api                    # 应用服务层
 ├── internal/auth                   # token 与鉴权
-├── internal/clock                  # HLC 和全局 ID
+├── internal/clock                  # HLC 和本地事件 ID
 ├── internal/cluster                # 集群配置与同步骨架
 ├── internal/proto                  # 集群协议类型
 ├── internal/store                  # SQLite 本地存储内核
@@ -39,8 +39,8 @@
 
 ## 术语速览
 
-- `slot`：节点的数值编号，用于参与本节点生成全局唯一 ID 和 HLC 时间戳。它不是对外展示名称，而是写进 ID 的机器编号位；同一集群内必须唯一。
-- `HLC`：Hybrid Logical Clock，混合逻辑时钟。它把物理时间和逻辑计数结合起来，既尽量贴近真实时间，又能在并发写入、时钟轻微漂移时提供稳定排序。
+- `node_id`：节点的稳定数字身份，首次启动时生成并保存在 SQLite `schema_meta` 中。它会完整写入 HLC 时间戳，同一集群内必须唯一。
+- `HLC`：Hybrid Logical Clock，混合逻辑时钟。它把物理时间、逻辑计数和完整 `node_id` 结合起来，既尽量贴近真实时间，又能在并发写入、时钟轻微漂移时提供稳定排序。
 - `最终一致`：写入不会要求所有节点同步成功后才返回，而是先在本地提交，再异步复制到其他节点；网络恢复后，数据应最终收敛到预期状态。
 - `收敛`：不同节点经过复制、重放、冲突处理后，最终得到相同或规则允许范围内一致的结果。这个项目里，用户数据追求完全收敛，消息数据按每节点窗口大小收敛。
 - `LWW`：Last Write Wins，最后写入获胜。这里是字段级 LWW，不是整行覆盖；例如用户名和资料字段会分别比较版本时间，较新的值覆盖较旧的值。
@@ -68,7 +68,7 @@
 - WebSocket 连接具备握手校验、心跳保活、自动重连和单连接方向裁决
 - 集群模式下，节点首次成功校时前会拒绝本地写请求，避免未校准时钟污染字段级 LWW
 - 节点重连后会按持久化游标自动补拉缺失事件，并通过 `applied_events` 做幂等去重
-- `applied_events`：本地已应用复制事件的去重表，用来避免同一事件在广播和补拉重叠时被重复执行
+- `applied_events`：本地已应用复制事件的去重表，用 `(source_node_id, event_id)` 组合键避免广播和补拉重叠时重复执行
 - 消息在本地写入和复制应用时都会按每用户最近 N 条裁剪，默认 `N=500`
 - 若 peer 的 `message_window_size` 不一致，连接会继续建立并记录告警；各节点最终按自己的 N 收敛
 
@@ -136,7 +136,7 @@ url = "ws://127.0.0.1:9081/internal/cluster/ws"
 
 字段说明：
 
-- 本地 `node_id`：节点首次启动时自动生成的稳定数字身份，保存到 SQLite `schema_meta` 的 `node_id` key；该 ID 内嵌的 slot 用于生成全局唯一 ID 和 HLC
+- 本地 `node_id`：节点首次启动时自动生成的稳定数字身份，保存到 SQLite `schema_meta` 的 `node_id` key；该 ID 会完整进入 HLC 时间戳
 - `api.listen_addr`：外部 HTTP API 监听地址，同时承载内部 `GET /internal/cluster/ws`
 - `store.db_path`：本地 SQLite 数据库路径。每个节点各自维护本地库，复制链路负责把状态传播到别的节点
 - `store.message_window_size`：每节点每用户本地保留的消息窗口，默认 `500`。超过窗口的旧消息会在本地写入或复制应用时被裁剪
@@ -198,7 +198,7 @@ url = "ws://127.0.0.1:9081/internal/cluster/ws"
 - 节点会在握手完成后和运行过程中进行反熵摘要比对；用户快照使用全量单分片 `users/full`，消息快照按生产节点 `messages/{node_id}` 分片
 - 摘要不一致时，节点会请求对应快照分片并增量合并到本地；用户仍按字段级 LWW 和墓碑删除优先收敛，消息仍按本地 `message_window_size` 裁剪
 - 当两个节点 `message_window_size` 不一致时，反熵只修复用户分片，避免不同窗口大小导致消息分片反复互拉
-- 拉取重放与实时广播重叠时，重复事件会被 `applied_events` 幂等吸收
+- 拉取重放与实时广播重叠时，重复事件会被 `applied_events` 按 `(source_node_id, event_id)` 幂等吸收
 - 用户复制按 `(node_id, user_id)` 做字段级 LWW 合并，用户名允许重复
 - 删除通过 `tombstones` 传播，旧的创建/更新事件不会把已删除用户重新复活
 - channel 订阅关系通过事件日志和快照复制；订阅后只合并订阅时间之后的 channel 消息，取消订阅后不再合并该 channel 消息

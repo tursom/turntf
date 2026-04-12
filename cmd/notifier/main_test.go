@@ -624,7 +624,6 @@ func TestServeHandlerMountsClusterRouteOnAPIListener(t *testing.T) {
 
 	manager, err := cluster.NewManager(cluster.Config{
 		NodeID:            int64(4096),
-		NodeSlot:          1,
 		AdvertisePath:     "/internal/cluster/ws",
 		ClusterSecret:     "secret",
 		MessageWindowSize: store.DefaultMessageWindowSize,

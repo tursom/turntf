@@ -119,13 +119,6 @@ type timeSyncSample struct {
 
 func NewManager(cfg Config, st *store.Store) (*Manager, error) {
 	cfg.MessageWindowSize = normalizedMessageWindowSize(cfg.MessageWindowSize)
-	if cfg.NodeSlot == 0 && cfg.NodeID > 0 {
-		slot, err := clock.NodeSlotFromID(cfg.NodeID)
-		if err != nil {
-			return nil, err
-		}
-		cfg.NodeSlot = slot
-	}
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
@@ -135,7 +128,7 @@ func NewManager(cfg Config, st *store.Store) (*Manager, error) {
 		peers[peer.NodeID] = &peerState{cfg: peer}
 	}
 
-	clockRef := clock.NewClock(cfg.NodeSlot)
+	clockRef := clock.NewClock(cfg.NodeID)
 	if st != nil && st.Clock() != nil {
 		clockRef = st.Clock()
 	}

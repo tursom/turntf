@@ -81,7 +81,6 @@ func messageCreatedProtoFromMessage(message Message) *internalproto.MessageCreat
 		Seq:          message.Seq,
 		Sender:       message.Sender,
 		Body:         message.Body,
-		Metadata:     message.Metadata,
 		CreatedAtHlc: message.CreatedAt.String(),
 	}
 }

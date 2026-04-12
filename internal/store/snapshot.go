@@ -247,7 +247,7 @@ ORDER BY entity_type ASC, entity_node_id ASC, entity_id ASC
 
 func (s *Store) buildMessageSnapshotRows(ctx context.Context, producer int64) ([]*clusterproto.SnapshotRow, error) {
 	rows, err := s.db.QueryContext(ctx, `
-SELECT user_node_id, user_id, node_id, seq, sender, body, COALESCE(metadata, ''), created_at_hlc
+SELECT user_node_id, user_id, node_id, seq, sender, body, created_at_hlc
 FROM messages
 WHERE node_id = ?
 ORDER BY user_node_id ASC, user_id ASC, created_at_hlc DESC, node_id ASC, seq DESC
@@ -367,10 +367,9 @@ func (s *Store) applyMessageSnapshotRowTx(ctx context.Context, tx *sql.Tx, produ
 	}
 
 	if _, err := tx.ExecContext(ctx, `
-INSERT INTO messages(user_node_id, user_id, node_id, seq, sender, body, metadata, created_at_hlc)
-VALUES(?, ?, ?, ?, ?, ?, ?, ?)
-`, messageRow.UserNodeId, messageRow.UserId, messageRow.NodeId, messageRow.Seq, messageRow.Sender, messageRow.Body, nullIfEmpty(messageRow.Metadata),
-		messageRow.CreatedAtHlc); err != nil {
+INSERT INTO messages(user_node_id, user_id, node_id, seq, sender, body, created_at_hlc)
+VALUES(?, ?, ?, ?, ?, ?, ?)
+`, messageRow.UserNodeId, messageRow.UserId, messageRow.NodeId, messageRow.Seq, messageRow.Sender, messageRow.Body, messageRow.CreatedAtHlc); err != nil {
 		if isUniqueConstraint(err) {
 			return key, nil
 		}
@@ -450,7 +449,6 @@ func snapshotRowFromMessage(message Message) *clusterproto.SnapshotRow {
 				Seq:          message.Seq,
 				Sender:       message.Sender,
 				Body:         message.Body,
-				Metadata:     message.Metadata,
 				CreatedAtHlc: message.CreatedAt.String(),
 			},
 		},

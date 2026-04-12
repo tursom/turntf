@@ -46,9 +46,8 @@ type updateUserRequest struct {
 }
 
 type createMessageRequest struct {
-	Sender   string          `json:"sender"`
-	Body     string          `json:"body"`
-	Metadata json.RawMessage `json:"metadata,omitempty"`
+	Sender string `json:"sender"`
+	Body   []byte `json:"body"`
 }
 
 type subscriptionRequest struct {
@@ -93,6 +92,7 @@ func (h *HTTP) Handler() http.Handler {
 
 func (h *HTTP) routes() {
 	h.mux.HandleFunc("GET /healthz", h.handleHealth)
+	h.mux.HandleFunc("GET /ws/client", h.handleClientWebSocket)
 	h.mux.HandleFunc("POST /auth/login", h.handleLogin)
 	h.mux.HandleFunc("POST /users", h.handleCreateUser)
 	h.mux.HandleFunc("GET /nodes/{node_id}/users/{user_id}", h.handleGetUser)
@@ -301,37 +301,15 @@ func (h *HTTP) handleCreateMessage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if principal != nil && !isAdminRole(principal.User.Role) && principal.User.Key() != key {
-		target, err := h.service.GetUser(r.Context(), key)
-		if err != nil {
-			writeStoreError(w, err)
-			return
-		}
-		subscribed := false
-		if target.Role == store.RoleChannel {
-			subscribed, err = h.service.IsSubscribedToChannel(r.Context(), principal.User.Key(), key)
-			if err != nil {
-				writeStoreError(w, err)
-				return
-			}
-		}
-		if !subscribed {
-			writeError(w, http.StatusForbidden, "forbidden")
-			return
-		}
-	}
-
-	metadata, err := normalizeJSONValue(req.Metadata, "")
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "metadata must be valid JSON")
+	if err := h.authorizeCreateMessage(r.Context(), principal, key); err != nil {
+		writeStoreError(w, err)
 		return
 	}
 
 	message, _, err := h.service.CreateMessage(r.Context(), store.CreateMessageParams{
-		UserKey:  key,
-		Sender:   req.Sender,
-		Body:     req.Body,
-		Metadata: metadata,
+		UserKey: key,
+		Sender:  req.Sender,
+		Body:    req.Body,
 	})
 	if err != nil {
 		writeStoreError(w, err)
@@ -339,6 +317,27 @@ func (h *HTTP) handleCreateMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusCreated, messageResponseFromStore(message))
+}
+
+func (h *HTTP) authorizeCreateMessage(ctx context.Context, principal *requestPrincipal, key store.UserKey) error {
+	if principal == nil || isAdminRole(principal.User.Role) || principal.User.Key() == key {
+		return nil
+	}
+	target, err := h.service.GetUser(ctx, key)
+	if err != nil {
+		return err
+	}
+	if target.Role != store.RoleChannel {
+		return store.ErrForbidden
+	}
+	subscribed, err := h.service.IsSubscribedToChannel(ctx, principal.User.Key(), key)
+	if err != nil {
+		return err
+	}
+	if !subscribed {
+		return store.ErrForbidden
+	}
+	return nil
 }
 
 func (h *HTTP) handleListMessagesByUser(w http.ResponseWriter, r *http.Request) {
@@ -546,14 +545,13 @@ type userResponse struct {
 }
 
 type messageResponse struct {
-	UserNodeID int64           `json:"user_node_id"`
-	UserID     int64           `json:"user_id"`
-	NodeID     int64           `json:"node_id"`
-	Seq        int64           `json:"seq"`
-	Sender     string          `json:"sender"`
-	Body       string          `json:"body"`
-	Metadata   json.RawMessage `json:"metadata,omitempty"`
-	CreatedAt  string          `json:"created_at"`
+	UserNodeID int64  `json:"user_node_id"`
+	UserID     int64  `json:"user_id"`
+	NodeID     int64  `json:"node_id"`
+	Seq        int64  `json:"seq"`
+	Sender     string `json:"sender"`
+	Body       []byte `json:"body"`
+	CreatedAt  string `json:"created_at"`
 }
 
 type subscriptionResponse struct {
@@ -575,7 +573,7 @@ type eventResponse struct {
 	AggregateID     int64           `json:"aggregate_id"`
 	HLC             string          `json:"hlc"`
 	OriginNodeID    int64           `json:"origin_node_id"`
-	Event          any             `json:"event"`
+	Event           any             `json:"event"`
 }
 
 func userResponseFromStore(user store.User) userResponse {
@@ -594,10 +592,6 @@ func userResponseFromStore(user store.User) userResponse {
 }
 
 func messageResponseFromStore(message store.Message) messageResponse {
-	var metadata json.RawMessage
-	if strings.TrimSpace(message.Metadata) != "" {
-		metadata = json.RawMessage(message.Metadata)
-	}
 	return messageResponse{
 		UserNodeID: message.UserNodeID,
 		UserID:     message.UserID,
@@ -605,7 +599,6 @@ func messageResponseFromStore(message store.Message) messageResponse {
 		Seq:        message.Seq,
 		Sender:     message.Sender,
 		Body:       message.Body,
-		Metadata:   metadata,
 		CreatedAt:  message.CreatedAt.String(),
 	}
 }

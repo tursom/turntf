@@ -126,7 +126,7 @@ func TestListEventsIncludesMessageCreated(t *testing.T) {
 	if _, _, err := st.CreateMessage(ctx, CreateMessageParams{
 		UserKey: user.Key(),
 		Sender:  "orders",
-		Body:    "package shipped",
+		Body:    []byte("package shipped"),
 	}); err != nil {
 		t.Fatalf("create message: %v", err)
 	}
@@ -272,7 +272,7 @@ func TestApplyReplicatedEventDefersFailedMessageProjectionForReplay(t *testing.T
 	_, messageEvent, err := source.CreateMessage(ctx, CreateMessageParams{
 		UserKey: user.Key(),
 		Sender:  "orders",
-		Body:    "package shipped",
+		Body:    []byte("package shipped"),
 	})
 	if err != nil {
 		t.Fatalf("create source message: %v", err)
@@ -321,7 +321,7 @@ func TestApplyReplicatedEventDefersFailedMessageProjectionForReplay(t *testing.T
 	if err != nil {
 		t.Fatalf("list target messages after replay: %v", err)
 	}
-	if len(messages) != 1 || messages[0].Body != "package shipped" {
+	if len(messages) != 1 || string(messages[0].Body) != "package shipped" {
 		t.Fatalf("unexpected messages after replay: %+v", messages)
 	}
 }
@@ -412,6 +412,42 @@ INSERT INTO schema_meta(key, value) VALUES('node_id', '4096');
 
 	if err := st.Init(context.Background()); err == nil {
 		t.Fatalf("expected unsupported schema version to fail")
+	}
+}
+
+func TestInitCreatesMessageBodyBlobWithoutMetadata(t *testing.T) {
+	t.Parallel()
+
+	st := openTestStore(t)
+	rows, err := st.db.Query(`PRAGMA table_info(messages)`)
+	if err != nil {
+		t.Fatalf("read messages schema: %v", err)
+	}
+	defer rows.Close()
+
+	columns := make(map[string]string)
+	for rows.Next() {
+		var (
+			cid      int
+			name     string
+			colType  string
+			notNull  int
+			defaultV any
+			primaryK int
+		)
+		if err := rows.Scan(&cid, &name, &colType, &notNull, &defaultV, &primaryK); err != nil {
+			t.Fatalf("scan messages schema: %v", err)
+		}
+		columns[name] = colType
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate messages schema: %v", err)
+	}
+	if columns["body"] != "BLOB" {
+		t.Fatalf("expected messages.body to be BLOB, got %q", columns["body"])
+	}
+	if _, ok := columns["metadata"]; ok {
+		t.Fatalf("messages.metadata should not exist")
 	}
 }
 
@@ -623,10 +659,9 @@ func TestLocalMessageWriteAndQuery(t *testing.T) {
 	}
 
 	first, firstEvent, err := st.CreateMessage(ctx, CreateMessageParams{
-		UserKey:  user.Key(),
-		Sender:   "orders",
-		Body:     "first message",
-		Metadata: `{"kind":"first"}`,
+		UserKey: user.Key(),
+		Sender:  "orders",
+		Body:    []byte("first message"),
 	})
 	if err != nil {
 		t.Fatalf("create first message: %v", err)
@@ -638,7 +673,7 @@ func TestLocalMessageWriteAndQuery(t *testing.T) {
 	second, _, err := st.CreateMessage(ctx, CreateMessageParams{
 		UserKey: user.Key(),
 		Sender:  "orders",
-		Body:    "second message",
+		Body:    []byte("second message"),
 	})
 	if err != nil {
 		t.Fatalf("create second message: %v", err)
@@ -686,7 +721,7 @@ func TestLocalMessagesTrimToConfiguredWindow(t *testing.T) {
 		if _, _, err := st.CreateMessage(ctx, CreateMessageParams{
 			UserKey: user.Key(),
 			Sender:  "orders",
-			Body:    "message-" + strconv.Itoa(i),
+			Body:    []byte("message-" + strconv.Itoa(i)),
 		}); err != nil {
 			t.Fatalf("create message %d: %v", i, err)
 		}
@@ -699,7 +734,7 @@ func TestLocalMessagesTrimToConfiguredWindow(t *testing.T) {
 	if len(messages) != 2 {
 		t.Fatalf("expected 2 messages after trim, got %d", len(messages))
 	}
-	if messages[0].Body != "message-3" || messages[1].Body != "message-2" {
+	if string(messages[0].Body) != "message-3" || string(messages[1].Body) != "message-2" {
 		t.Fatalf("unexpected trimmed messages: %+v", messages)
 	}
 
@@ -745,7 +780,7 @@ func TestCreateMessageDefersProjectionWhenApplyFails(t *testing.T) {
 	message, event, err := st.CreateMessage(ctx, CreateMessageParams{
 		UserKey: user.Key(),
 		Sender:  "orders",
-		Body:    "package shipped",
+		Body:    []byte("package shipped"),
 	})
 	if !errors.Is(err, ErrProjectionDeferred) {
 		t.Fatalf("expected projection deferred error, got %v", err)
@@ -803,7 +838,7 @@ func TestReplayPendingEventsProjectsDeferredMessages(t *testing.T) {
 	if _, _, err := st.CreateMessage(ctx, CreateMessageParams{
 		UserKey: user.Key(),
 		Sender:  "orders",
-		Body:    "package shipped",
+		Body:    []byte("package shipped"),
 	}); !errors.Is(err, ErrProjectionDeferred) {
 		t.Fatalf("expected deferred projection error, got %v", err)
 	}
@@ -820,7 +855,7 @@ func TestReplayPendingEventsProjectsDeferredMessages(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list messages after replay: %v", err)
 	}
-	if len(messages) != 1 || messages[0].Body != "package shipped" {
+	if len(messages) != 1 || string(messages[0].Body) != "package shipped" {
 		t.Fatalf("unexpected replayed messages: %+v", messages)
 	}
 
@@ -874,7 +909,7 @@ func TestChannelSubscriptionAndBroadcastMessageVisibility(t *testing.T) {
 	if _, _, err := st.CreateMessage(ctx, CreateMessageParams{
 		UserKey: channel.Key(),
 		Sender:  "system",
-		Body:    "before subscription",
+		Body:    []byte("before subscription"),
 	}); err != nil {
 		t.Fatalf("create pre-subscription channel message: %v", err)
 	}
@@ -887,14 +922,14 @@ func TestChannelSubscriptionAndBroadcastMessageVisibility(t *testing.T) {
 	if _, _, err := st.CreateMessage(ctx, CreateMessageParams{
 		UserKey: channel.Key(),
 		Sender:  "system",
-		Body:    "after subscription",
+		Body:    []byte("after subscription"),
 	}); err != nil {
 		t.Fatalf("create channel message: %v", err)
 	}
 	if _, _, err := st.CreateMessage(ctx, CreateMessageParams{
 		UserKey: UserKey{NodeID: st.NodeID(), UserID: BroadcastUserID},
 		Sender:  "system",
-		Body:    "broadcast message",
+		Body:    []byte("broadcast message"),
 	}); err != nil {
 		t.Fatalf("create broadcast message: %v", err)
 	}
@@ -950,7 +985,7 @@ func TestChannelSubscriptionAndBroadcastMessageVisibility(t *testing.T) {
 
 func messagesContainBody(messages []Message, body string) bool {
 	for _, message := range messages {
-		if message.Body == body {
+		if string(message.Body) == body {
 			return true
 		}
 	}
@@ -1099,7 +1134,7 @@ func TestOperationsStatsIncludesPeerCursorsConflictsAndTrimStats(t *testing.T) {
 		_, event, err := st.CreateMessage(ctx, CreateMessageParams{
 			UserKey: user.Key(),
 			Sender:  "orders",
-			Body:    "message-" + strconv.Itoa(i),
+			Body:    []byte("message-" + strconv.Itoa(i)),
 		})
 		if err != nil {
 			t.Fatalf("create message %d: %v", i, err)
@@ -1352,10 +1387,9 @@ func TestApplyReplicatedMessageIsIdempotent(t *testing.T) {
 	}
 
 	message, messageEvent, err := source.CreateMessage(ctx, CreateMessageParams{
-		UserKey:  user.Key(),
-		Sender:   "orders",
-		Body:     "hello cluster",
-		Metadata: `{"kind":"replicated"}`,
+		UserKey: user.Key(),
+		Sender:  "orders",
+		Body:    []byte("hello cluster"),
 	})
 	if err != nil {
 		t.Fatalf("create source message: %v", err)
@@ -1425,7 +1459,7 @@ func TestReplicatedChannelSubscriptionMakesChannelMessagesVisible(t *testing.T) 
 	_, messageEvent, err := source.CreateMessage(ctx, CreateMessageParams{
 		UserKey: channel.Key(),
 		Sender:  "alerts",
-		Body:    "replicated channel message",
+		Body:    []byte("replicated channel message"),
 	})
 	if err != nil {
 		t.Fatalf("create channel message: %v", err)
@@ -1467,7 +1501,7 @@ func TestReplicatedMessagesTrimToConfiguredWindow(t *testing.T) {
 		_, messageEvent, err := source.CreateMessage(ctx, CreateMessageParams{
 			UserKey: user.Key(),
 			Sender:  "orders",
-			Body:    "message-" + strconv.Itoa(i),
+			Body:    []byte("message-" + strconv.Itoa(i)),
 		})
 		if err != nil {
 			t.Fatalf("create source message %d: %v", i, err)
@@ -1484,7 +1518,7 @@ func TestReplicatedMessagesTrimToConfiguredWindow(t *testing.T) {
 	if len(messages) != 2 {
 		t.Fatalf("expected 2 messages after replicated trim, got %d", len(messages))
 	}
-	if messages[0].Body != "message-3" || messages[1].Body != "message-2" {
+	if string(messages[0].Body) != "message-3" || string(messages[1].Body) != "message-2" {
 		t.Fatalf("unexpected trimmed replicated messages: %+v", messages)
 	}
 }
@@ -1522,7 +1556,7 @@ func TestReplicatedMessageTrimUsesNodeAndSeqForSameTimestamp(t *testing.T) {
 			NodeId:       testNodeID(1),
 			Seq:          1,
 			Sender:       "orders",
-			Body:         "older-seq",
+			Body:         []byte("older-seq"),
 			CreatedAtHlc: sharedHLC.String(),
 		},
 	})); err != nil {
@@ -1542,7 +1576,7 @@ func TestReplicatedMessageTrimUsesNodeAndSeqForSameTimestamp(t *testing.T) {
 			NodeId:       testNodeID(1),
 			Seq:          2,
 			Sender:       "orders",
-			Body:         "newer-seq",
+			Body:         []byte("newer-seq"),
 			CreatedAtHlc: sharedHLC.String(),
 		},
 	})); err != nil {
@@ -1556,7 +1590,7 @@ func TestReplicatedMessageTrimUsesNodeAndSeqForSameTimestamp(t *testing.T) {
 	if len(messages) != 1 {
 		t.Fatalf("expected 1 message after trim, got %d", len(messages))
 	}
-	if messages[0].NodeID != testNodeID(1) || messages[0].Seq != 2 || messages[0].Body != "newer-seq" {
+	if messages[0].NodeID != testNodeID(1) || messages[0].Seq != 2 || string(messages[0].Body) != "newer-seq" {
 		t.Fatalf("expected higher seq to win tie, got %+v", messages[0])
 	}
 }
@@ -1849,7 +1883,7 @@ func TestSnapshotMessagesChunkIsIdempotentAndTrimsToLocalWindow(t *testing.T) {
 		if _, _, err := source.CreateMessage(ctx, CreateMessageParams{
 			UserKey: user.Key(),
 			Sender:  "orders",
-			Body:    "message-" + strconv.Itoa(i),
+			Body:    []byte("message-" + strconv.Itoa(i)),
 		}); err != nil {
 			t.Fatalf("create source message %d: %v", i, err)
 		}
@@ -1881,7 +1915,7 @@ func TestSnapshotMessagesChunkIsIdempotentAndTrimsToLocalWindow(t *testing.T) {
 	if len(messages) != 2 {
 		t.Fatalf("expected 2 messages after snapshot trim, got %d", len(messages))
 	}
-	if messages[0].Body != "message-3" || messages[1].Body != "message-2" {
+	if string(messages[0].Body) != "message-3" || string(messages[1].Body) != "message-2" {
 		t.Fatalf("unexpected snapshot messages: %+v", messages)
 	}
 }
@@ -1919,7 +1953,7 @@ func TestSnapshotSubscriptionsChunkRepairsSubscriptionVisibility(t *testing.T) {
 	if _, _, err := source.CreateMessage(ctx, CreateMessageParams{
 		UserKey: channel.Key(),
 		Sender:  "alerts",
-		Body:    "snapshot channel message",
+		Body:    []byte("snapshot channel message"),
 	}); err != nil {
 		t.Fatalf("create source channel message: %v", err)
 	}

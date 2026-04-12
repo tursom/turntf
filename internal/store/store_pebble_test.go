@@ -26,7 +26,7 @@ func TestPebbleStoreEventLogAndMessageProjection(t *testing.T) {
 		if _, _, err := st.CreateMessage(ctx, CreateMessageParams{
 			UserKey: user.Key(),
 			Sender:  "system",
-			Body:    body,
+			Body:    []byte(body),
 		}); err != nil {
 			t.Fatalf("create message %q: %v", body, err)
 		}
@@ -63,7 +63,7 @@ func TestPebbleStoreEventLogAndMessageProjection(t *testing.T) {
 	if len(messages) != 2 {
 		t.Fatalf("expected 2 messages after trim, got %d", len(messages))
 	}
-	if messages[0].Body != "message-3" || messages[1].Body != "message-2" {
+	if string(messages[0].Body) != "message-3" || string(messages[1].Body) != "message-2" {
 		t.Fatalf("unexpected messages after trim: %+v", messages)
 	}
 }
@@ -89,7 +89,7 @@ func TestPebbleMessageSnapshotRoundTrip(t *testing.T) {
 		if _, _, err := source.CreateMessage(ctx, CreateMessageParams{
 			UserKey: user.Key(),
 			Sender:  "system",
-			Body:    body,
+			Body:    []byte(body),
 		}); err != nil {
 			t.Fatalf("create message %q: %v", body, err)
 		}
@@ -113,7 +113,7 @@ func TestPebbleMessageSnapshotRoundTrip(t *testing.T) {
 	if len(messages) != 2 {
 		t.Fatalf("expected 2 messages after snapshot trim, got %d", len(messages))
 	}
-	if messages[0].Body != "message-3" || messages[1].Body != "message-2" {
+	if string(messages[0].Body) != "message-3" || string(messages[1].Body) != "message-2" {
 		t.Fatalf("unexpected target messages: %+v", messages)
 	}
 }

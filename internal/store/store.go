@@ -42,7 +42,7 @@ const (
 	BootstrapAdminUserID = int64(1)
 	BroadcastUserID      = int64(2)
 	ReservedUserIDMax    = int64(1024)
-	defaultSchemaVersion = "11"
+	defaultSchemaVersion = "12"
 	schemaMetaNodeIDKey  = "node_id"
 )
 
@@ -119,8 +119,7 @@ type Message struct {
 	NodeID     int64           `json:"node_id"`
 	Seq        int64           `json:"seq"`
 	Sender     string          `json:"sender"`
-	Body       string          `json:"body"`
-	Metadata   string          `json:"metadata,omitempty"`
+	Body       []byte          `json:"body"`
 	CreatedAt  clock.Timestamp `json:"created_at"`
 }
 
@@ -182,10 +181,9 @@ type UpdateUserParams struct {
 }
 
 type CreateMessageParams struct {
-	UserKey  UserKey
-	Sender   string
-	Body     string
-	Metadata string
+	UserKey UserKey
+	Sender  string
+	Body    []byte
 }
 
 type ChannelSubscriptionParams struct {
@@ -307,8 +305,7 @@ CREATE TABLE IF NOT EXISTS messages (
     node_id INTEGER NOT NULL,
     seq INTEGER NOT NULL,
     sender TEXT NOT NULL,
-    body TEXT NOT NULL,
-    metadata TEXT,
+    body BLOB NOT NULL,
     created_at_hlc TEXT NOT NULL,
     FOREIGN KEY(user_node_id, user_id) REFERENCES users(node_id, user_id),
     PRIMARY KEY(user_node_id, user_id, node_id, seq)
@@ -856,7 +853,7 @@ func (s *Store) CreateMessage(ctx context.Context, params CreateMessageParams) (
 	if strings.TrimSpace(params.Sender) == "" {
 		return Message{}, Event{}, fmt.Errorf("%w: sender cannot be empty", ErrInvalidInput)
 	}
-	if strings.TrimSpace(params.Body) == "" {
+	if len(params.Body) == 0 {
 		return Message{}, Event{}, fmt.Errorf("%w: body cannot be empty", ErrInvalidInput)
 	}
 
@@ -881,8 +878,7 @@ func (s *Store) CreateMessage(ctx context.Context, params CreateMessageParams) (
 		NodeID:     s.nodeID,
 		Seq:        seq,
 		Sender:     strings.TrimSpace(params.Sender),
-		Body:       strings.TrimSpace(params.Body),
-		Metadata:   strings.TrimSpace(params.Metadata),
+		Body:       append([]byte(nil), params.Body...),
 		CreatedAt:  now,
 	}
 
@@ -1497,7 +1493,6 @@ func scanMessage(scanner interface {
 		&message.Seq,
 		&message.Sender,
 		&message.Body,
-		&message.Metadata,
 		&createdAtRaw,
 	); err != nil {
 		return Message{}, err

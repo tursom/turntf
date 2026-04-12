@@ -71,17 +71,13 @@ func TestUserAndMessageHTTPAPI(t *testing.T) {
 
 	createMessageBody := map[string]any{
 		"sender": "orders",
-		"body":   "package shipped",
-		"metadata": map[string]any{
-			"order_id": "A1001",
-		},
+		"body":   []byte("package shipped"),
 	}
 	var createdMessage struct {
-		UserNodeID int64             `json:"user_node_id"`
-		UserID     int64             `json:"user_id"`
-		NodeID     int64             `json:"node_id"`
-		Seq        int64             `json:"seq"`
-		Metadata   map[string]string `json:"metadata"`
+		UserNodeID int64 `json:"user_node_id"`
+		UserID     int64 `json:"user_id"`
+		NodeID     int64 `json:"node_id"`
+		Seq        int64 `json:"seq"`
 	}
 	mustJSON(t, doJSON(t, handler, http.MethodPost, userMessagesPath(createdUser.NodeID, createdUser.UserID), createMessageBody, http.StatusCreated), &createdMessage)
 	if createdMessage.UserNodeID != createdUser.NodeID || createdMessage.UserID != createdUser.UserID || createdMessage.NodeID != testNodeID(1) || createdMessage.Seq != 1 {
@@ -95,7 +91,7 @@ func TestUserAndMessageHTTPAPI(t *testing.T) {
 			UserID     int64  `json:"user_id"`
 			NodeID     int64  `json:"node_id"`
 			Seq        int64  `json:"seq"`
-			Body       string `json:"body"`
+			Body       []byte `json:"body"`
 		} `json:"items"`
 	}
 	mustJSON(t, doJSON(t, handler, http.MethodGet, userMessagesPath(createdUser.NodeID, createdUser.UserID)+"?limit=10", nil, http.StatusOK), &listMessages)
@@ -104,7 +100,7 @@ func TestUserAndMessageHTTPAPI(t *testing.T) {
 		listMessages.Items[0].UserID != createdUser.UserID ||
 		listMessages.Items[0].NodeID != testNodeID(1) ||
 		listMessages.Items[0].Seq != 1 ||
-		listMessages.Items[0].Body != "package shipped" {
+		string(listMessages.Items[0].Body) != "package shipped" {
 		t.Fatalf("unexpected messages: %+v", listMessages)
 	}
 
@@ -216,10 +212,7 @@ func TestListEventsReturnsTypedEventJSON(t *testing.T) {
 
 	mustJSON(t, doJSON(t, handler, http.MethodPost, userMessagesPath(createdUser.NodeID, createdUser.UserID), map[string]any{
 		"sender": "orders",
-		"body":   "package shipped",
-		"metadata": map[string]any{
-			"order_id": "A1001",
-		},
+		"body":   []byte("package shipped"),
 	}, http.StatusCreated), &struct{}{})
 
 	var listEvents struct {
@@ -255,14 +248,13 @@ func TestListEventsReturnsTypedEventJSON(t *testing.T) {
 		NodeID     int64  `json:"node_id"`
 		Seq        int64  `json:"seq"`
 		Sender     string `json:"sender"`
-		Body       string `json:"body"`
-		Metadata   string `json:"metadata"`
+		Body       []byte `json:"body"`
 	}
 	if listEvents.Items[1].EventType != "message_created" {
 		t.Fatalf("unexpected second event type: %+v", listEvents.Items[1])
 	}
 	mustJSON(t, listEvents.Items[1].Event, &messageEvent)
-	if messageEvent.UserNodeID != createdUser.NodeID || messageEvent.UserID != createdUser.UserID || messageEvent.NodeID != testNodeID(1) || messageEvent.Seq != 1 || messageEvent.Sender != "orders" || messageEvent.Body != "package shipped" || messageEvent.Metadata != `{"order_id":"A1001"}` {
+	if messageEvent.UserNodeID != createdUser.NodeID || messageEvent.UserID != createdUser.UserID || messageEvent.NodeID != testNodeID(1) || messageEvent.Seq != 1 || messageEvent.Sender != "orders" || string(messageEvent.Body) != "package shipped" {
 		t.Fatalf("unexpected message_created event json: %+v", messageEvent)
 	}
 }
@@ -324,7 +316,7 @@ func TestWriteEndpointsReturn503WhenClockIsNotSynchronized(t *testing.T) {
 			path:   userMessagesPath(user.NodeID, user.ID),
 			body: map[string]any{
 				"sender": "orders",
-				"body":   "package shipped",
+				"body":   []byte("package shipped"),
 			},
 		},
 		{

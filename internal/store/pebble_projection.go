@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"math"
 	"sort"
-	"strings"
 	"sync"
 
 	"github.com/cockroachdb/pebble"
@@ -441,7 +440,6 @@ func (r *pebbleMessageProjectionRepository) applyMessageSnapshotRow(ctx context.
 		Seq:        messageRow.Seq,
 		Sender:     messageRow.Sender,
 		Body:       messageRow.Body,
-		Metadata:   strings.TrimSpace(messageRow.Metadata),
 		CreatedAt:  createdAt,
 	}
 	if ok, err := r.messageExists(message); err != nil {
@@ -571,7 +569,6 @@ func messageFromPebbleValue(value []byte) (Message, error) {
 		Seq:        messageRow.Seq,
 		Sender:     messageRow.Sender,
 		Body:       messageRow.Body,
-		Metadata:   messageRow.Metadata,
 		CreatedAt:  createdAt,
 	}, nil
 }
@@ -590,25 +587,25 @@ func eventFromPebbleValue(key, value []byte) (Event, error) {
 }
 
 func pebbleEventSeqKey(sequence int64) []byte {
-	return []byte(fmt.Sprintf("event/seq/%020d", sequence))
+	return fmt.Appendf(nil, "event/seq/%020d", sequence)
 }
 
 func pebbleEventOriginKey(originNodeID, eventID int64) []byte {
-	return []byte(fmt.Sprintf("event/origin/%020d/%020d", originNodeID, eventID))
+	return fmt.Appendf(nil, "event/origin/%020d/%020d", originNodeID, eventID)
 }
 
 func pebbleMessageIDKey(message Message) []byte {
-	return []byte(fmt.Sprintf("message/id/%020d/%020d/%020d/%020d", message.UserNodeID, message.UserID, message.NodeID, message.Seq))
+	return fmt.Appendf(nil, "message/id/%020d/%020d/%020d/%020d", message.UserNodeID, message.UserID, message.NodeID, message.Seq)
 }
 
 func pebbleMessageUserKey(message Message) []byte {
-	return []byte(fmt.Sprintf("message/user/%020d/%020d/%s/%020d/%020d",
-		message.UserNodeID, message.UserID, descendingString(message.CreatedAt.String()), message.NodeID, math.MaxInt64-message.Seq))
+	return fmt.Appendf(nil, "message/user/%020d/%020d/%s/%020d/%020d",
+		message.UserNodeID, message.UserID, descendingString(message.CreatedAt.String()), message.NodeID, math.MaxInt64-message.Seq)
 }
 
 func pebbleMessageProducerKey(message Message) []byte {
-	return []byte(fmt.Sprintf("message/producer/%020d/%020d/%020d/%s/%020d",
-		message.NodeID, message.UserNodeID, message.UserID, descendingString(message.CreatedAt.String()), math.MaxInt64-message.Seq))
+	return fmt.Appendf(nil, "message/producer/%020d/%020d/%020d/%s/%020d",
+		message.NodeID, message.UserNodeID, message.UserID, descendingString(message.CreatedAt.String()), math.MaxInt64-message.Seq)
 }
 
 func pebbleMessageKeys(message Message) [][]byte {

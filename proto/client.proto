@@ -1,0 +1,97 @@
+syntax = "proto3";
+
+package notifier.client.v1;
+
+option go_package = "notifier/internal/proto;proto";
+
+message ClientEnvelope {
+  oneof body {
+    LoginRequest login = 1;
+    SendMessageRequest send_message = 2;
+    AckMessage ack_message = 3;
+    Ping ping = 4;
+  }
+}
+
+message ServerEnvelope {
+  oneof body {
+    LoginResponse login_response = 1;
+    MessagePushed message_pushed = 2;
+    SendMessageResponse send_message_response = 3;
+    Error error = 4;
+    Pong pong = 5;
+  }
+}
+
+message LoginRequest {
+  int64 node_id = 1;
+  int64 user_id = 2;
+  string password = 3;
+  repeated MessageCursor seen_messages = 4;
+}
+
+message LoginResponse {
+  User user = 1;
+  string protocol_version = 2;
+}
+
+message SendMessageRequest {
+  uint64 request_id = 1;
+  UserRef target = 2;
+  string sender = 3;
+  bytes body = 4;
+}
+
+message SendMessageResponse {
+  uint64 request_id = 1;
+  Message message = 2;
+}
+
+message MessagePushed {
+  Message message = 1;
+}
+
+message AckMessage {
+  MessageCursor cursor = 1;
+}
+
+message Ping {
+  uint64 request_id = 1;
+}
+
+message Pong {
+  uint64 request_id = 1;
+}
+
+message Error {
+  string code = 1;
+  string message = 2;
+  uint64 request_id = 3;
+}
+
+message MessageCursor {
+  int64 node_id = 1;
+  int64 seq = 2;
+}
+
+message UserRef {
+  int64 node_id = 1;
+  int64 user_id = 2;
+}
+
+message User {
+  int64 node_id = 1;
+  int64 user_id = 2;
+  string username = 3;
+  string role = 4;
+}
+
+message Message {
+  int64 user_node_id = 1;
+  int64 user_id = 2;
+  int64 node_id = 3;
+  int64 seq = 4;
+  string sender = 5;
+  bytes body = 6;
+  string created_at_hlc = 7;
+}

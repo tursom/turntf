@@ -73,7 +73,7 @@ func TestServicePublishesOnlySuccessfulWrites(t *testing.T) {
 	message, messageEvent, err := svc.CreateMessage(context.Background(), store.CreateMessageParams{
 		UserKey: user.Key(),
 		Sender:  "orders",
-		Body:    "package shipped",
+		Body:    []byte("package shipped"),
 	})
 	if err != nil {
 		t.Fatalf("create message: %v", err)
@@ -91,7 +91,7 @@ func TestServicePublishesOnlySuccessfulWrites(t *testing.T) {
 	if _, _, err := svc.CreateMessage(context.Background(), store.CreateMessageParams{
 		UserKey: store.UserKey{NodeID: user.NodeID, UserID: 9999},
 		Sender:  "orders",
-		Body:    "missing user",
+		Body:    []byte("missing user"),
 	}); err != store.ErrNotFound {
 		t.Fatalf("expected create message not found, got %v", err)
 	}

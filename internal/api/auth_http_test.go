@@ -6,12 +6,17 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/gorilla/websocket"
+	gproto "google.golang.org/protobuf/proto"
+
 	"notifier/internal/auth"
+	internalproto "notifier/internal/proto"
 	"notifier/internal/store"
 )
 
@@ -72,14 +77,14 @@ func TestAuthenticatedHTTPLoginAndAuthorization(t *testing.T) {
 
 	doJSONWithHeaders(t, testAPI.handler, http.MethodPost, userMessagesPath(aliceKey.NodeID, aliceKey.UserID), map[string]any{
 		"sender": "alice",
-		"body":   "hello",
+		"body":   []byte("hello"),
 	}, map[string]string{
 		"Authorization": "Bearer " + aliceToken,
 	}, http.StatusCreated)
 
 	doJSONWithHeaders(t, testAPI.handler, http.MethodPost, userMessagesPath(adminKey.NodeID, adminKey.UserID), map[string]any{
 		"sender": "alice",
-		"body":   "forbidden",
+		"body":   []byte("forbidden"),
 	}, map[string]string{
 		"Authorization": "Bearer " + aliceToken,
 	}, http.StatusForbidden)
@@ -107,7 +112,7 @@ func TestAuthenticatedHTTPLoginAndAuthorization(t *testing.T) {
 
 	doJSONWithHeaders(t, testAPI.handler, http.MethodPost, userMessagesPath(channel.NodeID, channel.UserID), map[string]any{
 		"sender": "alice",
-		"body":   "not subscribed",
+		"body":   []byte("not subscribed"),
 	}, map[string]string{
 		"Authorization": "Bearer " + aliceToken,
 	}, http.StatusForbidden)
@@ -121,7 +126,7 @@ func TestAuthenticatedHTTPLoginAndAuthorization(t *testing.T) {
 
 	doJSONWithHeaders(t, testAPI.handler, http.MethodPost, userMessagesPath(channel.NodeID, channel.UserID), map[string]any{
 		"sender": "alice",
-		"body":   "channel message",
+		"body":   []byte("channel message"),
 	}, map[string]string{
 		"Authorization": "Bearer " + aliceToken,
 	}, http.StatusCreated)
@@ -129,13 +134,13 @@ func TestAuthenticatedHTTPLoginAndAuthorization(t *testing.T) {
 	broadcastPath := userMessagesPath(testNodeID(1), store.BroadcastUserID)
 	doJSONWithHeaders(t, testAPI.handler, http.MethodPost, broadcastPath, map[string]any{
 		"sender": "alice",
-		"body":   "ordinary broadcast",
+		"body":   []byte("ordinary broadcast"),
 	}, map[string]string{
 		"Authorization": "Bearer " + aliceToken,
 	}, http.StatusForbidden)
 	doJSONWithHeaders(t, testAPI.handler, http.MethodPost, broadcastPath, map[string]any{
 		"sender": "admin",
-		"body":   "admin broadcast",
+		"body":   []byte("admin broadcast"),
 	}, map[string]string{
 		"Authorization": "Bearer " + adminToken,
 	}, http.StatusCreated)
@@ -194,6 +199,105 @@ func newAuthenticatedTestAPI(t *testing.T) authenticatedTestAPI {
 	}
 }
 
+func TestClientWebSocketLoginAndPushesBytesMessages(t *testing.T) {
+	t.Parallel()
+
+	testAPI := newAuthenticatedTestAPI(t)
+	server := httptest.NewServer(testAPI.handler)
+	defer server.Close()
+
+	adminKey := store.UserKey{NodeID: testNodeID(1), UserID: store.BootstrapAdminUserID}
+	adminToken := loginToken(t, testAPI.handler, adminKey, "root-password")
+	aliceKey := createUserAs(t, testAPI.handler, adminToken, "alice", "alice-password", store.RoleUser)
+	body := []byte{0xff, 0x00, 'x'}
+	doJSONWithHeaders(t, testAPI.handler, http.MethodPost, userMessagesPath(aliceKey.NodeID, aliceKey.UserID), map[string]any{
+		"sender": "binary",
+		"body":   body,
+	}, map[string]string{
+		"Authorization": "Bearer " + adminToken,
+	}, http.StatusCreated)
+
+	conn := dialClientWebSocket(t, server.URL)
+	defer conn.Close()
+	writeClientEnvelope(t, conn, &internalproto.ClientEnvelope{
+		Body: &internalproto.ClientEnvelope_Login{
+			Login: &internalproto.LoginRequest{
+				NodeId:   aliceKey.NodeID,
+				UserId:   aliceKey.UserID,
+				Password: "alice-password",
+			},
+		},
+	})
+
+	loginResp := readServerEnvelope(t, conn).GetLoginResponse()
+	if loginResp == nil || loginResp.User.GetUserId() != aliceKey.UserID || loginResp.ProtocolVersion != internalproto.ClientProtocolVersion {
+		t.Fatalf("unexpected login response: %+v", loginResp)
+	}
+	pushed := readServerEnvelope(t, conn).GetMessagePushed()
+	if pushed == nil || pushed.Message.GetSender() != "binary" || string(pushed.Message.GetBody()) != string(body) {
+		t.Fatalf("unexpected pushed message: %+v", pushed)
+	}
+}
+
+func TestClientWebSocketSeenCursorAndSendMessage(t *testing.T) {
+	t.Parallel()
+
+	testAPI := newAuthenticatedTestAPI(t)
+	server := httptest.NewServer(testAPI.handler)
+	defer server.Close()
+
+	adminKey := store.UserKey{NodeID: testNodeID(1), UserID: store.BootstrapAdminUserID}
+	adminToken := loginToken(t, testAPI.handler, adminKey, "root-password")
+	aliceKey := createUserAs(t, testAPI.handler, adminToken, "alice", "alice-password", store.RoleUser)
+	var created struct {
+		NodeID int64 `json:"node_id"`
+		Seq    int64 `json:"seq"`
+	}
+	mustJSON(t, doJSONWithHeaders(t, testAPI.handler, http.MethodPost, userMessagesPath(aliceKey.NodeID, aliceKey.UserID), map[string]any{
+		"sender": "seed",
+		"body":   []byte("already seen"),
+	}, map[string]string{
+		"Authorization": "Bearer " + adminToken,
+	}, http.StatusCreated), &created)
+
+	conn := dialClientWebSocket(t, server.URL)
+	defer conn.Close()
+	writeClientEnvelope(t, conn, &internalproto.ClientEnvelope{
+		Body: &internalproto.ClientEnvelope_Login{
+			Login: &internalproto.LoginRequest{
+				NodeId:   aliceKey.NodeID,
+				UserId:   aliceKey.UserID,
+				Password: "alice-password",
+				SeenMessages: []*internalproto.MessageCursor{{
+					NodeId: created.NodeID,
+					Seq:    created.Seq,
+				}},
+			},
+		},
+	})
+	if loginResp := readServerEnvelope(t, conn).GetLoginResponse(); loginResp == nil {
+		t.Fatalf("expected login response")
+	}
+
+	writeClientEnvelope(t, conn, &internalproto.ClientEnvelope{
+		Body: &internalproto.ClientEnvelope_SendMessage{
+			SendMessage: &internalproto.SendMessageRequest{
+				RequestId: 42,
+				Target: &internalproto.UserRef{
+					NodeId: aliceKey.NodeID,
+					UserId: aliceKey.UserID,
+				},
+				Sender: "alice",
+				Body:   []byte{0x00, 0x01, 0xfe},
+			},
+		},
+	})
+	sendResp := readServerEnvelope(t, conn).GetSendMessageResponse()
+	if sendResp == nil || sendResp.RequestId != 42 || string(sendResp.Message.GetBody()) != string([]byte{0x00, 0x01, 0xfe}) {
+		t.Fatalf("unexpected send response: %+v", sendResp)
+	}
+}
+
 func loginToken(t *testing.T, handler http.Handler, key store.UserKey, password string) string {
 	t.Helper()
 
@@ -237,16 +341,61 @@ func subscriptionsPath(nodeID, userID int64) string {
 }
 
 type authMessageItem struct {
-	Body string `json:"body"`
+	Body []byte `json:"body"`
 }
 
 func responseMessagesContainBody(messages []authMessageItem, body string) bool {
 	for _, message := range messages {
-		if message.Body == body {
+		if string(message.Body) == body {
 			return true
 		}
 	}
 	return false
+}
+
+func dialClientWebSocket(t *testing.T, serverURL string) *websocket.Conn {
+	t.Helper()
+	parsed, err := url.Parse(serverURL)
+	if err != nil {
+		t.Fatalf("parse server url: %v", err)
+	}
+	parsed.Scheme = "ws"
+	parsed.Path = "/ws/client"
+	conn, _, err := websocket.DefaultDialer.Dial(parsed.String(), nil)
+	if err != nil {
+		t.Fatalf("dial client websocket: %v", err)
+	}
+	return conn
+}
+
+func writeClientEnvelope(t *testing.T, conn *websocket.Conn, envelope *internalproto.ClientEnvelope) {
+	t.Helper()
+	data, err := gproto.Marshal(envelope)
+	if err != nil {
+		t.Fatalf("marshal client envelope: %v", err)
+	}
+	if err := conn.WriteMessage(websocket.BinaryMessage, data); err != nil {
+		t.Fatalf("write client envelope: %v", err)
+	}
+}
+
+func readServerEnvelope(t *testing.T, conn *websocket.Conn) *internalproto.ServerEnvelope {
+	t.Helper()
+	if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("set read deadline: %v", err)
+	}
+	messageType, data, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("read server envelope: %v", err)
+	}
+	if messageType != websocket.BinaryMessage {
+		t.Fatalf("unexpected websocket message type: %d", messageType)
+	}
+	var envelope internalproto.ServerEnvelope
+	if err := gproto.Unmarshal(data, &envelope); err != nil {
+		t.Fatalf("unmarshal server envelope: %v", err)
+	}
+	return &envelope
 }
 
 func mustHashPassword(t *testing.T, password string) string {

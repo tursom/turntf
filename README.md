@@ -8,7 +8,7 @@
 - 用户数据最终完全一致
 - 消息数据按每节点配置的每用户最近 N 条最终一致；当各节点 N 相同，窗口内容也一致
 
-当前仓库已经完成实施计划的前 10 步：本地存储内核、单节点 HTTP/JSON API、WebSocket + Protobuf 的最小集群同步链路、断线后的事件日志补发、基于 `(node_id, user_id)` 的用户多主冲突收敛、消息窗口扩散与按节点 N 收敛、反熵同步与快照修复、认证与安全控制、核心一致性测试，以及最小运维观测能力。
+当前仓库已经完成实施计划的前 10 步：本地存储内核、单节点 HTTP/JSON API、客户端 WebSocket + Protobuf 接口、WebSocket + Protobuf 的最小集群同步链路、断线后的事件日志补发、基于 `(node_id, user_id)` 的用户多主冲突收敛、消息窗口扩散与按节点 N 收敛、反熵同步与快照修复、认证与安全控制、核心一致性测试，以及最小运维观测能力。
 
 ## 技术栈
 
@@ -32,9 +32,10 @@
 ├── internal/auth                   # token 与鉴权
 ├── internal/clock                  # HLC 和本地事件 ID
 ├── internal/cluster                # 集群配置与同步骨架
-├── internal/proto                  # 集群协议类型
+├── internal/proto                  # 集群与客户端 Protobuf 协议类型
 ├── internal/store                  # 本地存储内核，支持 SQLite/Pebble repository 后端
-├── proto/cluster.proto             # Protobuf 协议定义
+├── proto/cluster.proto             # 集群 Protobuf 协议定义
+├── proto/client.proto              # 客户端 WebSocket Protobuf 协议定义
 └── README.md
 ```
 
@@ -172,6 +173,7 @@ url = "ws://127.0.0.1:9081/internal/cluster/ws"
 - `DELETE /nodes/{node_id}/users/{user_id}`
 - `POST /nodes/{node_id}/users/{user_id}/messages`
 - `GET /nodes/{node_id}/users/{user_id}/messages?limit=N`
+- `GET /ws/client` 作为客户端 WebSocket Protobuf 长连接端点；连接后第一帧必须发送 `LoginRequest`，接入流程见 [客户端全流程接入文档](/root/dev/sys/turntf/docs/client-flow.md)，协议见 [客户端 WebSocket 接口](/root/dev/sys/turntf/docs/client-websocket.md)
 - `POST /nodes/{node_id}/users/{user_id}/subscriptions`
 - `DELETE /nodes/{node_id}/users/{user_id}/subscriptions/{channel_node_id}/{channel_user_id}`
 - `GET /nodes/{node_id}/users/{user_id}/subscriptions`
@@ -190,6 +192,7 @@ url = "ws://127.0.0.1:9081/internal/cluster/ws"
 - `POST /nodes/{node_id}/users/{user_id}/messages` 需要登录；普通用户只能给自己或已订阅的 `role=channel` 地址写消息，管理员可给任意地址写消息，包括广播地址
 - 订阅接口允许普通用户维护自己的 channel 订阅，管理员可维护任意用户订阅
 - 登录请求固定使用 `node_id + user_id + password`
+- HTTP JSON 消息接口的 `body` 是 base64 编码字节；客户端 WebSocket 和集群协议中的 `body` 是 protobuf `bytes`
 - 用户身份由 `(node_id, user_id)` 二元组定位；`user_id = 1` 是每个节点的 root 候选，当前已存储且 `node_id` 最小的 root 候选是唯一受保护保底超级管理员，不可删除、不可降权、不可改名，允许修改密码
 - `user_id = 2` 是每个节点的系统广播地址，启动时会创建/修复为 `role=broadcast`，不可登录、不可删除、不可由外部 API 创建或修改为该角色
 - 每个节点的前 `1024` 个 `user_id` 都作为保留用户区间，普通用户和普通 channel 会从 `1025` 开始分配

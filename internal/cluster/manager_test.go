@@ -608,14 +608,14 @@ func TestHandlePullEventsReturnsRequestedRange(t *testing.T) {
 	if _, _, err := sourceStore.CreateMessage(ctx, store.CreateMessageParams{
 		UserKey: user.Key(),
 		Sender:  "orders",
-		Body:    "first",
+		Body:    []byte("first"),
 	}); err != nil {
 		t.Fatalf("create first message: %v", err)
 	}
 	if _, _, err := sourceStore.CreateMessage(ctx, store.CreateMessageParams{
 		UserKey: user.Key(),
 		Sender:  "orders",
-		Body:    "second",
+		Body:    []byte("second"),
 	}); err != nil {
 		t.Fatalf("create second message: %v", err)
 	}
@@ -733,7 +733,7 @@ func TestHandleSnapshotDigestRequestsUsersBeforeMessages(t *testing.T) {
 	if _, _, err := sourceStore.CreateMessage(ctx, store.CreateMessageParams{
 		UserKey: user.Key(),
 		Sender:  "orders",
-		Body:    "snapshot message",
+		Body:    []byte("snapshot message"),
 	}); err != nil {
 		t.Fatalf("create source message: %v", err)
 	}
@@ -1034,16 +1034,13 @@ func TestTwoNodeReplicationOverWebSocket(t *testing.T) {
 
 	createMessageBody := map[string]any{
 		"sender": "orders",
-		"body":   "replicated payload",
-		"metadata": map[string]any{
-			"order_id": "A1001",
-		},
+		"body":   []byte("replicated payload"),
 	}
 	doJSON(t, nodeA.apiBaseURL, http.MethodPost, clusterUserMessagesPath(createdUser.NodeID, createdUser.UserID), createMessageBody, http.StatusCreated)
 
 	waitFor(t, 5*time.Second, func() bool {
 		messages, err := nodeB.store.ListMessagesByUser(context.Background(), clusterUserKey(createdUser.NodeID, createdUser.UserID), 10)
-		return err == nil && len(messages) == 1 && messages[0].Body == "replicated payload"
+		return err == nil && len(messages) == 1 && string(messages[0].Body) == "replicated payload"
 	})
 
 	waitFor(t, 5*time.Second, func() bool {
@@ -1097,7 +1094,7 @@ func TestTwoNodeMessageWindowConvergesWhenSizesMatch(t *testing.T) {
 	for i := 1; i <= 4; i++ {
 		doJSON(t, nodeA.apiBaseURL, http.MethodPost, clusterUserMessagesPath(createdUser.NodeID, createdUser.UserID), map[string]any{
 			"sender": "orders",
-			"body":   "message-" + strconv.Itoa(i),
+			"body":   []byte("message-" + strconv.Itoa(i)),
 		}, http.StatusCreated)
 	}
 
@@ -1109,7 +1106,7 @@ func TestTwoNodeMessageWindowConvergesWhenSizesMatch(t *testing.T) {
 				return false
 			}
 			for i, body := range expected {
-				if messages[i].Body != body {
+				if string(messages[i].Body) != body {
 					return false
 				}
 			}
@@ -1153,7 +1150,7 @@ func TestTwoNodeMessageWindowMismatchKeepsPerNodeWindows(t *testing.T) {
 	for i := 1; i <= 4; i++ {
 		doJSON(t, nodeA.apiBaseURL, http.MethodPost, clusterUserMessagesPath(createdUser.NodeID, createdUser.UserID), map[string]any{
 			"sender": "orders",
-			"body":   "message-" + strconv.Itoa(i),
+			"body":   []byte("message-" + strconv.Itoa(i)),
 		}, http.StatusCreated)
 	}
 
@@ -1166,11 +1163,11 @@ func TestTwoNodeMessageWindowMismatchKeepsPerNodeWindows(t *testing.T) {
 		if err != nil || len(bMessages) != 2 {
 			return false
 		}
-		return aMessages[0].Body == "message-4" &&
-			aMessages[1].Body == "message-3" &&
-			aMessages[2].Body == "message-2" &&
-			bMessages[0].Body == "message-4" &&
-			bMessages[1].Body == "message-3"
+		return string(aMessages[0].Body) == "message-4" &&
+			string(aMessages[1].Body) == "message-3" &&
+			string(aMessages[2].Body) == "message-2" &&
+			string(bMessages[0].Body) == "message-4" &&
+			string(bMessages[1].Body) == "message-3"
 	})
 }
 
@@ -1197,7 +1194,7 @@ func TestLateJoiningNodeCatchesUpWithoutDuplicates(t *testing.T) {
 	if _, _, err := nodeA.store.CreateMessage(context.Background(), store.CreateMessageParams{
 		UserKey: user.Key(),
 		Sender:  "orders",
-		Body:    "missed while offline",
+		Body:    []byte("missed while offline"),
 	}); err != nil {
 		t.Fatalf("create offline message: %v", err)
 	}
@@ -1210,7 +1207,7 @@ func TestLateJoiningNodeCatchesUpWithoutDuplicates(t *testing.T) {
 	})
 	waitFor(t, 5*time.Second, func() bool {
 		messages, err := nodeB.store.ListMessagesByUser(context.Background(), user.Key(), 10)
-		return err == nil && len(messages) == 1 && messages[0].Body == "missed while offline"
+		return err == nil && len(messages) == 1 && string(messages[0].Body) == "missed while offline"
 	})
 
 	events, err := nodeB.store.ListEvents(context.Background(), 0, 10)
@@ -1247,7 +1244,7 @@ func TestLateJoiningNodeCatchesUpAcrossMultiplePullBatches(t *testing.T) {
 		if _, _, err := nodeA.store.CreateMessage(ctx, store.CreateMessageParams{
 			UserKey: user.Key(),
 			Sender:  "orders",
-			Body:    "message-" + strconv.Itoa(i),
+			Body:    []byte("message-" + strconv.Itoa(i)),
 		}); err != nil {
 			t.Fatalf("create backlog message %d: %v", i, err)
 		}
@@ -1297,7 +1294,7 @@ func TestLateJoiningNodeTrimsCatchupToLocalWindow(t *testing.T) {
 		if _, _, err := nodeA.store.CreateMessage(context.Background(), store.CreateMessageParams{
 			UserKey: user.Key(),
 			Sender:  "orders",
-			Body:    "message-" + strconv.Itoa(i),
+			Body:    []byte("message-" + strconv.Itoa(i)),
 		}); err != nil {
 			t.Fatalf("create offline message %d: %v", i, err)
 		}
@@ -1310,7 +1307,7 @@ func TestLateJoiningNodeTrimsCatchupToLocalWindow(t *testing.T) {
 		if err != nil || len(messages) != 2 {
 			return false
 		}
-		return messages[0].Body == "message-5" && messages[1].Body == "message-4"
+		return string(messages[0].Body) == "message-5" && string(messages[1].Body) == "message-4"
 	})
 }
 
@@ -1337,7 +1334,7 @@ func TestSnapshotRepairOverWebSocketRepairsRowsOutsideEventLog(t *testing.T) {
 	if _, _, err := seedStore.CreateMessage(ctx, store.CreateMessageParams{
 		UserKey: user.Key(),
 		Sender:  "orders",
-		Body:    "snapshot-only-message",
+		Body:    []byte("snapshot-only-message"),
 	}); err != nil {
 		t.Fatalf("create seed message: %v", err)
 	}
@@ -1381,7 +1378,7 @@ func TestSnapshotRepairOverWebSocketRepairsRowsOutsideEventLog(t *testing.T) {
 			return false
 		}
 		messages, err := nodeB.store.ListMessagesByUser(ctx, user.Key(), 10)
-		return err == nil && len(messages) == 1 && messages[0].Body == "snapshot-only-message"
+		return err == nil && len(messages) == 1 && string(messages[0].Body) == "snapshot-only-message"
 	})
 
 	nodeBEvents, err := nodeB.store.ListEvents(ctx, 0, 10)

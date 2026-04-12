@@ -1112,8 +1112,7 @@ type MessageCreatedEvent struct {
 	NodeId        int64                  `protobuf:"varint,3,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
 	Seq           int64                  `protobuf:"varint,4,opt,name=seq,proto3" json:"seq,omitempty"`
 	Sender        string                 `protobuf:"bytes,5,opt,name=sender,proto3" json:"sender,omitempty"`
-	Body          string                 `protobuf:"bytes,6,opt,name=body,proto3" json:"body,omitempty"`
-	Metadata      string                 `protobuf:"bytes,7,opt,name=metadata,proto3" json:"metadata,omitempty"`
+	Body          []byte                 `protobuf:"bytes,6,opt,name=body,proto3" json:"body,omitempty"`
 	CreatedAtHlc  string                 `protobuf:"bytes,8,opt,name=created_at_hlc,json=createdAtHlc,proto3" json:"created_at_hlc,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -1184,18 +1183,11 @@ func (x *MessageCreatedEvent) GetSender() string {
 	return ""
 }
 
-func (x *MessageCreatedEvent) GetBody() string {
+func (x *MessageCreatedEvent) GetBody() []byte {
 	if x != nil {
 		return x.Body
 	}
-	return ""
-}
-
-func (x *MessageCreatedEvent) GetMetadata() string {
-	if x != nil {
-		return x.Metadata
-	}
-	return ""
+	return nil
 }
 
 func (x *MessageCreatedEvent) GetCreatedAtHlc() string {
@@ -2005,8 +1997,7 @@ type SnapshotMessageRow struct {
 	NodeId        int64                  `protobuf:"varint,2,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
 	UserNodeId    int64                  `protobuf:"varint,8,opt,name=user_node_id,json=userNodeId,proto3" json:"user_node_id,omitempty"`
 	Sender        string                 `protobuf:"bytes,3,opt,name=sender,proto3" json:"sender,omitempty"`
-	Body          string                 `protobuf:"bytes,4,opt,name=body,proto3" json:"body,omitempty"`
-	Metadata      string                 `protobuf:"bytes,5,opt,name=metadata,proto3" json:"metadata,omitempty"`
+	Body          []byte                 `protobuf:"bytes,4,opt,name=body,proto3" json:"body,omitempty"`
 	CreatedAtHlc  string                 `protobuf:"bytes,6,opt,name=created_at_hlc,json=createdAtHlc,proto3" json:"created_at_hlc,omitempty"`
 	Seq           int64                  `protobuf:"varint,7,opt,name=seq,proto3" json:"seq,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -2071,18 +2062,11 @@ func (x *SnapshotMessageRow) GetSender() string {
 	return ""
 }
 
-func (x *SnapshotMessageRow) GetBody() string {
+func (x *SnapshotMessageRow) GetBody() []byte {
 	if x != nil {
 		return x.Body
 	}
-	return ""
-}
-
-func (x *SnapshotMessageRow) GetMetadata() string {
-	if x != nil {
-		return x.Metadata
-	}
-	return ""
+	return nil
 }
 
 func (x *SnapshotMessageRow) GetCreatedAtHlc() string {
@@ -2404,7 +2388,7 @@ const file_cluster_proto_rawDesc = "" +
 	"\x10UserDeletedEvent\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\x03R\x06nodeId\x12\x17\n" +
 	"\auser_id\x18\x02 \x01(\x03R\x06userId\x12$\n" +
-	"\x0edeleted_at_hlc\x18\x03 \x01(\tR\fdeletedAtHlc\"\xe9\x01\n" +
+	"\x0edeleted_at_hlc\x18\x03 \x01(\tR\fdeletedAtHlc\"\xcd\x01\n" +
 	"\x13MessageCreatedEvent\x12 \n" +
 	"\fuser_node_id\x18\x01 \x01(\x03R\n" +
 	"userNodeId\x12\x17\n" +
@@ -2412,8 +2396,7 @@ const file_cluster_proto_rawDesc = "" +
 	"\anode_id\x18\x03 \x01(\x03R\x06nodeId\x12\x10\n" +
 	"\x03seq\x18\x04 \x01(\x03R\x03seq\x12\x16\n" +
 	"\x06sender\x18\x05 \x01(\tR\x06sender\x12\x12\n" +
-	"\x04body\x18\x06 \x01(\tR\x04body\x12\x1a\n" +
-	"\bmetadata\x18\a \x01(\tR\bmetadata\x12$\n" +
+	"\x04body\x18\x06 \x01(\fR\x04body\x12$\n" +
 	"\x0ecreated_at_hlc\x18\b \x01(\tR\fcreatedAtHlc\"\x96\x02\n" +
 	"\x16ChannelSubscribedEvent\x12,\n" +
 	"\x12subscriber_node_id\x18\x01 \x01(\x03R\x10subscriberNodeId\x12,\n" +
@@ -2483,15 +2466,14 @@ const file_cluster_proto_rawDesc = "" +
 	"\tentity_id\x18\x02 \x01(\x03R\bentityId\x12$\n" +
 	"\x0edeleted_at_hlc\x18\x03 \x01(\tR\fdeletedAtHlc\x12$\n" +
 	"\x0eorigin_node_id\x18\x04 \x01(\x03R\foriginNodeId\x12$\n" +
-	"\x0eentity_node_id\x18\x05 \x01(\x03R\fentityNodeId\"\xe8\x01\n" +
+	"\x0eentity_node_id\x18\x05 \x01(\x03R\fentityNodeId\"\xcc\x01\n" +
 	"\x12SnapshotMessageRow\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\x03R\x06userId\x12\x17\n" +
 	"\anode_id\x18\x02 \x01(\x03R\x06nodeId\x12 \n" +
 	"\fuser_node_id\x18\b \x01(\x03R\n" +
 	"userNodeId\x12\x16\n" +
 	"\x06sender\x18\x03 \x01(\tR\x06sender\x12\x12\n" +
-	"\x04body\x18\x04 \x01(\tR\x04body\x12\x1a\n" +
-	"\bmetadata\x18\x05 \x01(\tR\bmetadata\x12$\n" +
+	"\x04body\x18\x04 \x01(\fR\x04body\x12$\n" +
 	"\x0ecreated_at_hlc\x18\x06 \x01(\tR\fcreatedAtHlc\x12\x10\n" +
 	"\x03seq\x18\a \x01(\x03R\x03seq\"\xbd\x02\n" +
 	"\x17SnapshotSubscriptionRow\x12,\n" +

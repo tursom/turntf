@@ -112,8 +112,7 @@ message MessageCreatedEvent {
   int64 node_id = 3;
   int64 seq = 4;
   string sender = 5;
-  string body = 6;
-  string metadata = 7;
+  bytes body = 6;
   string created_at_hlc = 8;
 }
 
@@ -211,8 +210,7 @@ message SnapshotMessageRow {
   int64 node_id = 2;
   int64 user_node_id = 8;
   string sender = 3;
-  string body = 4;
-  string metadata = 5;
+  bytes body = 4;
   string created_at_hlc = 6;
   int64 seq = 7;
 }

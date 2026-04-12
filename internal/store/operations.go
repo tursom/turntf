@@ -16,6 +16,7 @@ type OperationsStats struct {
 	Peers              []PeerOperationsStats
 	UserConflictsTotal int64
 	MessageTrim        MessageTrimStats
+	Projection         ProjectionStats
 }
 
 type PeerOperationsStats struct {
@@ -61,6 +62,10 @@ func (s *Store) OperationsStats(ctx context.Context, peerNodeIDs []int64) (Opera
 	if err != nil {
 		return OperationsStats{}, err
 	}
+	projectionStats, err := s.projectionStats(ctx)
+	if err != nil {
+		return OperationsStats{}, err
+	}
 
 	return OperationsStats{
 		NodeID:             s.nodeID,
@@ -69,6 +74,7 @@ func (s *Store) OperationsStats(ctx context.Context, peerNodeIDs []int64) (Opera
 		Peers:              peerStats,
 		UserConflictsTotal: conflicts,
 		MessageTrim:        trimStats,
+		Projection:         projectionStats,
 	}, nil
 }
 

@@ -36,7 +36,7 @@ const (
 	BootstrapAdminUserID = int64(1)
 	BroadcastUserID      = int64(2)
 	ReservedUserIDMax    = int64(1024)
-	defaultSchemaVersion = "10"
+	defaultSchemaVersion = "11"
 	schemaMetaNodeIDKey  = "node_id"
 )
 
@@ -57,6 +57,9 @@ type Store struct {
 	initialNodeID     int64
 	messageWindowSize int
 	bootstrapAdmin    BootstrapAdminConfig
+	eventLog          EventLogRepository
+	userRepository    UserRepository
+	messageProjection MessageProjectionRepository
 }
 
 type UserKey struct {
@@ -199,12 +202,14 @@ func Open(dbPath string, opts Options) (*Store, error) {
 		return nil, fmt.Errorf("enable foreign keys: %w", err)
 	}
 
-	return &Store{
+	st := &Store{
 		db:                db,
 		initialNodeID:     opts.NodeID,
 		messageWindowSize: normalizeMessageWindowSize(opts.MessageWindowSize),
 		clock:             opts.Clock,
-	}, nil
+		userRepository:    &sqliteUserRepository{db: db},
+	}
+	return st, nil
 }
 
 func (s *Store) Clock() *clock.Clock {
@@ -333,6 +338,28 @@ CREATE TABLE IF NOT EXISTS message_trim_stats (
     trimmed_total INTEGER NOT NULL DEFAULT 0,
     last_trimmed_at_hlc TEXT
 );
+
+CREATE TABLE IF NOT EXISTS message_sequence_counters (
+    user_node_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    node_id INTEGER NOT NULL,
+    next_seq INTEGER NOT NULL,
+    PRIMARY KEY(user_node_id, user_id, node_id)
+);
+
+CREATE TABLE IF NOT EXISTS pending_projections (
+    origin_node_id INTEGER NOT NULL,
+    event_id INTEGER NOT NULL,
+    event_type TEXT NOT NULL,
+    aggregate_type TEXT NOT NULL,
+    aggregate_node_id INTEGER NOT NULL,
+    aggregate_id INTEGER NOT NULL,
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT NOT NULL,
+    first_failed_at_hlc TEXT NOT NULL,
+    last_failed_at_hlc TEXT NOT NULL,
+    PRIMARY KEY(origin_node_id, event_id)
+);
 `
 	if _, err := s.db.ExecContext(ctx, schema); err != nil {
 		return fmt.Errorf("init schema: %w", err)
@@ -344,6 +371,7 @@ CREATE INDEX IF NOT EXISTS idx_messages_node ON messages(node_id, user_node_id, 
 CREATE INDEX IF NOT EXISTS idx_subscriptions_subscriber ON channel_subscriptions(subscriber_node_id, subscriber_user_id, deleted_at_hlc);
 CREATE INDEX IF NOT EXISTS idx_subscriptions_channel ON channel_subscriptions(channel_node_id, channel_user_id, deleted_at_hlc);
 CREATE INDEX IF NOT EXISTS idx_event_log_origin_event ON event_log(origin_node_id, event_id);
+CREATE INDEX IF NOT EXISTS idx_pending_projections_failed ON pending_projections(last_failed_at_hlc, origin_node_id, event_id);
 `); err != nil {
 		return fmt.Errorf("init message indexes: %w", err)
 	}
@@ -403,6 +431,18 @@ VALUES(?, ?)
 	s.ids = clock.NewIDGenerator()
 	if s.clock == nil {
 		s.clock = clock.NewClock(nodeID)
+	}
+	s.messageProjection = &sqliteMessageProjectionRepository{
+		db:                s.db,
+		clock:             s.clock,
+		messageWindowSize: s.messageWindowSize,
+		userRepository:    s.userRepository,
+	}
+	s.eventLog = &sqliteEventLogRepository{
+		db:     s.db,
+		ids:    s.ids,
+		nodeID: s.nodeID,
+		clock:  s.clock,
 	}
 	return nil
 }
@@ -699,7 +739,7 @@ func (s *Store) DeleteUser(ctx context.Context, key UserKey) (Event, error) {
 }
 
 func (s *Store) GetUser(ctx context.Context, key UserKey) (User, error) {
-	return s.getUser(ctx, key, false)
+	return s.userRepository.GetUser(ctx, key, false)
 }
 
 func (s *Store) ListUsers(ctx context.Context) ([]User, error) {
@@ -767,14 +807,6 @@ func (s *Store) CreateMessage(ctx context.Context, params CreateMessageParams) (
 		CreatedAt:  now,
 	}
 
-	if _, err := tx.ExecContext(ctx, `
-INSERT INTO messages(user_node_id, user_id, node_id, seq, sender, body, metadata, created_at_hlc)
-VALUES(?, ?, ?, ?, ?, ?, ?, ?)
-`, message.UserNodeID, message.UserID, message.NodeID, message.Seq, message.Sender, message.Body, nullIfEmpty(message.Metadata),
-		message.CreatedAt.String()); err != nil {
-		return Message{}, Event{}, fmt.Errorf("insert message: %w", err)
-	}
-
 	event, err := s.insertEvent(ctx, tx, Event{
 		EventType:       EventTypeMessageCreated,
 		Aggregate:       "message",
@@ -787,101 +819,23 @@ VALUES(?, ?, ?, ?, ?, ?, ?, ?)
 		return Message{}, Event{}, err
 	}
 
-	if err := s.trimMessagesForUserTx(ctx, tx, message.UserKey()); err != nil {
-		return Message{}, Event{}, err
-	}
-
 	if err := tx.Commit(); err != nil {
 		return Message{}, Event{}, fmt.Errorf("commit create message: %w", err)
+	}
+	if err := s.projectMessageEvent(ctx, event); err != nil {
+		if recordErr := s.recordPendingProjection(ctx, event, err); recordErr != nil {
+			return Message{}, Event{}, fmt.Errorf("record deferred message projection: %w", recordErr)
+		}
+		return message, event, fmt.Errorf("%w: %v", ErrProjectionDeferred, err)
+	}
+	if err := s.clearPendingProjection(ctx, event.OriginNodeID, event.EventID); err != nil {
+		return Message{}, Event{}, err
 	}
 	return message, event, nil
 }
 
 func (s *Store) ListMessagesByUser(ctx context.Context, key UserKey, limit int) ([]Message, error) {
-	if err := key.Validate(); err != nil {
-		return nil, err
-	}
-	if limit <= 0 || limit > 1000 {
-		limit = 100
-	}
-
-	user, err := s.GetUser(ctx, key)
-	if err != nil {
-		return nil, err
-	}
-	if !user.CanLogin() {
-		return s.listRawMessagesByUser(ctx, key, limit)
-	}
-
-	rows, err := s.db.QueryContext(ctx, `
-SELECT user_node_id, user_id, node_id, seq, sender, body, COALESCE(metadata, ''), created_at_hlc
-FROM messages
-WHERE (user_node_id = ? AND user_id = ?)
-   OR EXISTS (
-        SELECT 1
-        FROM users broadcast_users
-        WHERE broadcast_users.node_id = messages.user_node_id
-          AND broadcast_users.user_id = messages.user_id
-          AND broadcast_users.role = ?
-          AND broadcast_users.deleted_at_hlc IS NULL
-   )
-   OR EXISTS (
-        SELECT 1
-        FROM channel_subscriptions subscriptions
-        WHERE subscriptions.subscriber_node_id = ?
-          AND subscriptions.subscriber_user_id = ?
-          AND subscriptions.channel_node_id = messages.user_node_id
-          AND subscriptions.channel_user_id = messages.user_id
-          AND subscriptions.deleted_at_hlc IS NULL
-          AND messages.created_at_hlc >= subscriptions.subscribed_at_hlc
-   )
-ORDER BY created_at_hlc DESC, node_id ASC, seq DESC
-LIMIT ?
-`, key.NodeID, key.UserID, RoleBroadcast, key.NodeID, key.UserID, limit)
-	if err != nil {
-		return nil, fmt.Errorf("list messages: %w", err)
-	}
-	defer rows.Close()
-
-	var messages []Message
-	for rows.Next() {
-		message, err := scanMessage(rows)
-		if err != nil {
-			return nil, err
-		}
-		messages = append(messages, message)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate messages: %w", err)
-	}
-	return messages, nil
-}
-
-func (s *Store) listRawMessagesByUser(ctx context.Context, key UserKey, limit int) ([]Message, error) {
-	rows, err := s.db.QueryContext(ctx, `
-SELECT user_node_id, user_id, node_id, seq, sender, body, COALESCE(metadata, ''), created_at_hlc
-FROM messages
-WHERE user_node_id = ? AND user_id = ?
-ORDER BY created_at_hlc DESC, node_id ASC, seq DESC
-LIMIT ?
-`, key.NodeID, key.UserID, limit)
-	if err != nil {
-		return nil, fmt.Errorf("list raw messages: %w", err)
-	}
-	defer rows.Close()
-
-	var messages []Message
-	for rows.Next() {
-		message, err := scanMessage(rows)
-		if err != nil {
-			return nil, err
-		}
-		messages = append(messages, message)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate raw messages: %w", err)
-	}
-	return messages, nil
+	return s.messageProjection.ListMessagesByUser(ctx, key, limit)
 }
 
 func (s *Store) SubscribeChannel(ctx context.Context, params ChannelSubscriptionParams) (Subscription, Event, error) {
@@ -1033,84 +987,15 @@ WHERE subscriber_node_id = ? AND subscriber_user_id = ?
 }
 
 func (s *Store) ListEvents(ctx context.Context, afterSequence int64, limit int) ([]Event, error) {
-	if limit <= 0 || limit > 1000 {
-		limit = 100
-	}
-
-	rows, err := s.db.QueryContext(ctx, `
-SELECT sequence, event_id, origin_node_id, value
-FROM event_log
-WHERE sequence > ?
-ORDER BY sequence ASC
-LIMIT ?
-`, afterSequence, limit)
-	if err != nil {
-		return nil, fmt.Errorf("list events: %w", err)
-	}
-	defer rows.Close()
-
-	var events []Event
-	for rows.Next() {
-		event, err := scanEvent(rows)
-		if err != nil {
-			return nil, err
-		}
-		events = append(events, event)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate events: %w", err)
-	}
-	return events, nil
+	return s.eventLog.ListEvents(ctx, afterSequence, limit)
 }
 
 func (s *Store) getUser(ctx context.Context, key UserKey, includeDeleted bool) (User, error) {
-	if err := key.Validate(); err != nil {
-		return User{}, err
-	}
-	query := `
-SELECT node_id, user_id, username, password_hash, profile, role, system_reserved, created_at_hlc, updated_at_hlc,
-       deleted_at_hlc, version_username, version_password_hash, version_profile,
-       version_role, version_deleted, origin_node_id
-FROM users
-WHERE node_id = ? AND user_id = ?`
-	if !includeDeleted {
-		query += ` AND deleted_at_hlc IS NULL`
-	}
-
-	row := s.db.QueryRowContext(ctx, query, key.NodeID, key.UserID)
-	user, err := scanUser(row)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return User{}, ErrNotFound
-		}
-		return User{}, err
-	}
-	return user, nil
+	return s.userRepository.GetUser(ctx, key, includeDeleted)
 }
 
 func (s *Store) getUserTx(ctx context.Context, tx *sql.Tx, key UserKey, includeDeleted bool) (User, error) {
-	if err := key.Validate(); err != nil {
-		return User{}, err
-	}
-	query := `
-SELECT node_id, user_id, username, password_hash, profile, role, system_reserved, created_at_hlc, updated_at_hlc,
-       deleted_at_hlc, version_username, version_password_hash, version_profile,
-       version_role, version_deleted, origin_node_id
-FROM users
-WHERE node_id = ? AND user_id = ?`
-	if !includeDeleted {
-		query += ` AND deleted_at_hlc IS NULL`
-	}
-
-	row := tx.QueryRowContext(ctx, query, key.NodeID, key.UserID)
-	user, err := scanUser(row)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return User{}, ErrNotFound
-		}
-		return User{}, err
-	}
-	return user, nil
+	return s.userRepository.GetUserTx(ctx, tx, key, includeDeleted)
 }
 
 func (s *Store) insertEvent(ctx context.Context, tx *sql.Tx, event Event) (Event, error) {
@@ -1167,12 +1052,31 @@ func (s *Store) nextMessageSeqTx(ctx context.Context, tx *sql.Tx, key UserKey, n
 	}
 
 	var seq int64
-	if err := tx.QueryRowContext(ctx, `
+	err := tx.QueryRowContext(ctx, `
+SELECT next_seq
+FROM message_sequence_counters
+WHERE user_node_id = ? AND user_id = ? AND node_id = ?
+`, key.NodeID, key.UserID, nodeID).Scan(&seq)
+	switch {
+	case err == nil:
+	case errors.Is(err, sql.ErrNoRows):
+		if err := tx.QueryRowContext(ctx, `
 SELECT COALESCE(MAX(seq), 0) + 1
 FROM messages
 WHERE user_node_id = ? AND user_id = ? AND node_id = ?
 `, key.NodeID, key.UserID, nodeID).Scan(&seq); err != nil {
+			return 0, fmt.Errorf("seed next message sequence: %w", err)
+		}
+	default:
 		return 0, fmt.Errorf("read next message sequence: %w", err)
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO message_sequence_counters(user_node_id, user_id, node_id, next_seq)
+VALUES(?, ?, ?, ?)
+ON CONFLICT(user_node_id, user_id, node_id) DO UPDATE SET next_seq = excluded.next_seq
+`, key.NodeID, key.UserID, nodeID, seq+1); err != nil {
+		return 0, fmt.Errorf("store next message sequence: %w", err)
 	}
 	return seq, nil
 }

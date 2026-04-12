@@ -248,6 +248,84 @@ WHERE sequence = ?
 	}
 }
 
+func TestApplyReplicatedEventDefersFailedMessageProjectionForReplay(t *testing.T) {
+	t.Parallel()
+
+	source := openNamedTestStore(t, "node-a", 1)
+	defer source.Close()
+
+	target := openNamedTestStore(t, "node-b", 2)
+	defer target.Close()
+
+	ctx := context.Background()
+	user, createEvent, err := source.CreateUser(ctx, CreateUserParams{
+		Username:     "replicated-user",
+		PasswordHash: "hash-1",
+	})
+	if err != nil {
+		t.Fatalf("create source user: %v", err)
+	}
+	if err := target.ApplyReplicatedEvent(ctx, ToReplicatedEvent(createEvent)); err != nil {
+		t.Fatalf("apply replicated user create: %v", err)
+	}
+
+	_, messageEvent, err := source.CreateMessage(ctx, CreateMessageParams{
+		UserKey: user.Key(),
+		Sender:  "orders",
+		Body:    "package shipped",
+	})
+	if err != nil {
+		t.Fatalf("create source message: %v", err)
+	}
+
+	originalProjection := target.messageProjection
+	target.messageProjection = failingMessageProjectionRepository{
+		delegate: originalProjection,
+		failType: EventTypeMessageCreated,
+		err:      errors.New("projection unavailable"),
+	}
+	if err := target.ApplyReplicatedEvent(ctx, ToReplicatedEvent(messageEvent)); err != nil {
+		t.Fatalf("apply replicated message with deferred projection: %v", err)
+	}
+
+	messages, err := target.ListMessagesByUser(ctx, user.Key(), 10)
+	if err != nil {
+		t.Fatalf("list target messages before replay: %v", err)
+	}
+	if len(messages) != 0 {
+		t.Fatalf("expected no projected messages before replay: %+v", messages)
+	}
+
+	events, err := target.ListEventsByOrigin(ctx, messageEvent.OriginNodeID, createEvent.EventID, 10)
+	if err != nil {
+		t.Fatalf("list replicated events: %v", err)
+	}
+	if len(events) != 1 || events[0].EventType != EventTypeMessageCreated {
+		t.Fatalf("unexpected replicated events after deferred projection: %+v", events)
+	}
+
+	stats, err := target.projectionStats(ctx)
+	if err != nil {
+		t.Fatalf("projection stats before replay: %v", err)
+	}
+	if stats.PendingTotal != 1 {
+		t.Fatalf("expected one pending projection before replay: %+v", stats)
+	}
+
+	target.messageProjection = originalProjection
+	if err := target.ReplayPendingEvents(ctx, 10); err != nil {
+		t.Fatalf("replay replicated pending events: %v", err)
+	}
+
+	messages, err = target.ListMessagesByUser(ctx, user.Key(), 10)
+	if err != nil {
+		t.Fatalf("list target messages after replay: %v", err)
+	}
+	if len(messages) != 1 || messages[0].Body != "package shipped" {
+		t.Fatalf("unexpected messages after replay: %+v", messages)
+	}
+}
+
 func TestInitGeneratesAndPersistsNodeID(t *testing.T) {
 	t.Parallel()
 
@@ -639,6 +717,119 @@ func TestLocalMessagesTrimToConfiguredWindow(t *testing.T) {
 	}
 	if stats.MessageTrim.TrimmedTotal != 1 || stats.MessageTrim.LastTrimmedAt == nil {
 		t.Fatalf("unexpected message trim stats: %+v", stats.MessageTrim)
+	}
+}
+
+func TestCreateMessageDefersProjectionWhenApplyFails(t *testing.T) {
+	t.Parallel()
+
+	st := openTestStore(t)
+	defer st.Close()
+
+	ctx := context.Background()
+	user, _, err := st.CreateUser(ctx, CreateUserParams{
+		Username:     "alice",
+		PasswordHash: "hash-1",
+	})
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	originalProjection := st.messageProjection
+	st.messageProjection = failingMessageProjectionRepository{
+		delegate: originalProjection,
+		failType: EventTypeMessageCreated,
+		err:      errors.New("projection unavailable"),
+	}
+
+	message, event, err := st.CreateMessage(ctx, CreateMessageParams{
+		UserKey: user.Key(),
+		Sender:  "orders",
+		Body:    "package shipped",
+	})
+	if !errors.Is(err, ErrProjectionDeferred) {
+		t.Fatalf("expected projection deferred error, got %v", err)
+	}
+	if message.Seq != 1 || event.EventType != EventTypeMessageCreated {
+		t.Fatalf("unexpected deferred write result: message=%+v event=%+v", message, event)
+	}
+
+	messages, err := st.ListMessagesByUser(ctx, user.Key(), 10)
+	if err != nil {
+		t.Fatalf("list messages after deferred projection: %v", err)
+	}
+	if len(messages) != 0 {
+		t.Fatalf("expected no projected messages, got %+v", messages)
+	}
+
+	events, err := st.ListEvents(ctx, 0, 10)
+	if err != nil {
+		t.Fatalf("list events after deferred projection: %v", err)
+	}
+	if len(events) != 2 || events[1].EventType != EventTypeMessageCreated {
+		t.Fatalf("unexpected event log after deferred projection: %+v", events)
+	}
+
+	stats, err := st.projectionStats(ctx)
+	if err != nil {
+		t.Fatalf("projection stats: %v", err)
+	}
+	if stats.PendingTotal != 1 || stats.LastFailedAt == nil {
+		t.Fatalf("unexpected projection stats: %+v", stats)
+	}
+}
+
+func TestReplayPendingEventsProjectsDeferredMessages(t *testing.T) {
+	t.Parallel()
+
+	st := openTestStore(t)
+	defer st.Close()
+
+	ctx := context.Background()
+	user, _, err := st.CreateUser(ctx, CreateUserParams{
+		Username:     "alice",
+		PasswordHash: "hash-1",
+	})
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	originalProjection := st.messageProjection
+	st.messageProjection = failingMessageProjectionRepository{
+		delegate: originalProjection,
+		failType: EventTypeMessageCreated,
+		err:      errors.New("projection unavailable"),
+	}
+	if _, _, err := st.CreateMessage(ctx, CreateMessageParams{
+		UserKey: user.Key(),
+		Sender:  "orders",
+		Body:    "package shipped",
+	}); !errors.Is(err, ErrProjectionDeferred) {
+		t.Fatalf("expected deferred projection error, got %v", err)
+	}
+
+	st.messageProjection = originalProjection
+	if err := st.ReplayPendingEvents(ctx, 10); err != nil {
+		t.Fatalf("replay pending events: %v", err)
+	}
+	if err := st.ReplayPendingEvents(ctx, 10); err != nil {
+		t.Fatalf("replay pending events idempotent run: %v", err)
+	}
+
+	messages, err := st.ListMessagesByUser(ctx, user.Key(), 10)
+	if err != nil {
+		t.Fatalf("list messages after replay: %v", err)
+	}
+	if len(messages) != 1 || messages[0].Body != "package shipped" {
+		t.Fatalf("unexpected replayed messages: %+v", messages)
+	}
+
+	stats, err := st.projectionStats(ctx)
+	if err != nil {
+		t.Fatalf("projection stats after replay: %v", err)
+	}
+	if stats.PendingTotal != 0 {
+		t.Fatalf("expected no pending projections after replay: %+v", stats)
 	}
 }
 
@@ -1790,4 +1981,29 @@ func openNamedTestStoreWithWindow(t *testing.T, nodeID string, nodeSlot uint16, 
 		t.Fatalf("init store: %v", err)
 	}
 	return st
+}
+
+type failingMessageProjectionRepository struct {
+	delegate MessageProjectionRepository
+	failType EventType
+	err      error
+}
+
+func (r failingMessageProjectionRepository) ApplyMessageCreated(ctx context.Context, message Message) error {
+	if r.failType == EventTypeMessageCreated {
+		return r.err
+	}
+	return r.delegate.ApplyMessageCreated(ctx, message)
+}
+
+func (r failingMessageProjectionRepository) ListMessagesByUser(ctx context.Context, key UserKey, limit int) ([]Message, error) {
+	return r.delegate.ListMessagesByUser(ctx, key, limit)
+}
+
+func (r failingMessageProjectionRepository) BuildMessageSnapshotRows(ctx context.Context, producer int64) ([]*proto.SnapshotRow, error) {
+	return r.delegate.BuildMessageSnapshotRows(ctx, producer)
+}
+
+func (r failingMessageProjectionRepository) ApplyMessageSnapshotRows(ctx context.Context, producer int64, rows []*proto.SnapshotRow) error {
+	return r.delegate.ApplyMessageSnapshotRows(ctx, producer, rows)
 }

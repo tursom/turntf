@@ -147,13 +147,19 @@ func (s *Store) upsertOriginCursor(ctx context.Context, originNodeID, appliedEve
 	}
 
 	updatedAt := s.clock.Now().String()
-	if err := s.upsertOriginCursorTx(ctx, s.db, originNodeID, appliedEventID, updatedAt); err != nil {
+	if err := upsertOriginCursorTx(ctx, s.db, originNodeID, appliedEventID, updatedAt); err != nil {
 		return fmt.Errorf("upsert origin cursor: %w", err)
 	}
 	return nil
 }
 
 func (s *Store) upsertOriginCursorTx(ctx context.Context, exec interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}, originNodeID, appliedEventID int64, updatedAt string) error {
+	return upsertOriginCursorTx(ctx, exec, originNodeID, appliedEventID, updatedAt)
+}
+
+func upsertOriginCursorTx(ctx context.Context, exec interface {
 	ExecContext(context.Context, string, ...any) (sql.Result, error)
 }, originNodeID, appliedEventID int64, updatedAt string) error {
 	if _, err := exec.ExecContext(ctx, `

@@ -26,12 +26,18 @@ type operationsStatus struct {
 	WriteGateReady    bool                 `json:"write_gate_ready"`
 	ConflictTotal     int64                `json:"conflict_total"`
 	MessageTrim       messageTrimStatus    `json:"message_trim"`
+	Projection        projectionStatus     `json:"projection"`
 	Peers             []peerStatusResponse `json:"peers"`
 }
 
 type messageTrimStatus struct {
 	TrimmedTotal  int64  `json:"trimmed_total"`
 	LastTrimmedAt string `json:"last_trimmed_at,omitempty"`
+}
+
+type projectionStatus struct {
+	PendingTotal int64  `json:"pending_total"`
+	LastFailedAt string `json:"last_failed_at,omitempty"`
 }
 
 type peerOriginStatusResponse struct {
@@ -94,6 +100,10 @@ func (s *Service) OperationsStatus(ctx context.Context) (operationsStatus, error
 			TrimmedTotal:  storeStats.MessageTrim.TrimmedTotal,
 			LastTrimmedAt: timestampString(storeStats.MessageTrim.LastTrimmedAt),
 		},
+		Projection: projectionStatus{
+			PendingTotal: storeStats.Projection.PendingTotal,
+			LastFailedAt: timestampString(storeStats.Projection.LastFailedAt),
+		},
 		Peers: mergePeerStatus(storeStats.Peers, clusterStatus.Peers),
 	}
 	if response.NodeID == 0 {
@@ -119,6 +129,8 @@ func (s *Service) Metrics(ctx context.Context) (string, error) {
 	writeGauge(&buf, "notifier_user_conflicts_total", map[string]string{"node_id": nodeIDLabel}, float64(status.ConflictTotal))
 	writeMetricHelp(&buf, "notifier_message_trimmed_total", "Total messages trimmed by the local window.", "counter")
 	writeGauge(&buf, "notifier_message_trimmed_total", map[string]string{"node_id": nodeIDLabel}, float64(status.MessageTrim.TrimmedTotal))
+	writeMetricHelp(&buf, "notifier_pending_projections", "Pending event projections waiting to be replayed.", "gauge")
+	writeGauge(&buf, "notifier_pending_projections", map[string]string{"node_id": nodeIDLabel}, float64(status.Projection.PendingTotal))
 	writeMetricHelp(&buf, "notifier_write_gate_ready", "Whether the node currently allows local writes.", "gauge")
 	writeGauge(&buf, "notifier_write_gate_ready", map[string]string{"node_id": nodeIDLabel}, boolGauge(status.WriteGateReady))
 

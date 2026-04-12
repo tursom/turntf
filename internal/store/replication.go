@@ -58,6 +58,7 @@ func (s *Store) ApplyReplicatedEvent(ctx context.Context, event *internalproto.R
 		return nil
 	}
 
+	deferredMessageProjection := false
 	switch body := decoded.Body.(type) {
 	case *internalproto.UserCreatedEvent, *internalproto.UserUpdatedEvent:
 		if err := s.applyReplicatedUserUpsert(ctx, tx, body); err != nil {
@@ -68,9 +69,7 @@ func (s *Store) ApplyReplicatedEvent(ctx context.Context, event *internalproto.R
 			return err
 		}
 	case *internalproto.MessageCreatedEvent:
-		if err := s.applyReplicatedMessageCreated(ctx, tx, body, decoded.OriginNodeID); err != nil {
-			return err
-		}
+		deferredMessageProjection = true
 	case *internalproto.ChannelSubscribedEvent:
 		if err := s.applyReplicatedChannelSubscription(ctx, tx, body, false, decoded.OriginNodeID); err != nil {
 			return err
@@ -116,6 +115,18 @@ VALUES(?, ?, ?)
 
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit replicated event: %w", err)
+	}
+	if !deferredMessageProjection {
+		return nil
+	}
+	if err := s.projectMessageEvent(ctx, decoded); err != nil {
+		if recordErr := s.recordPendingProjection(ctx, decoded, err); recordErr != nil {
+			return fmt.Errorf("record pending projection for replicated event %d:%d: %w", decoded.OriginNodeID, decoded.EventID, recordErr)
+		}
+		return nil
+	}
+	if err := s.clearPendingProjection(ctx, decoded.OriginNodeID, decoded.EventID); err != nil {
+		return err
 	}
 	return nil
 }

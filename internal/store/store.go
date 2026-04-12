@@ -36,7 +36,7 @@ const (
 	BootstrapAdminUserID = int64(1)
 	BroadcastUserID      = int64(2)
 	ReservedUserIDMax    = int64(1024)
-	defaultSchemaVersion = "9"
+	defaultSchemaVersion = "10"
 	schemaMetaNodeIDKey  = "node_id"
 )
 
@@ -133,11 +133,22 @@ type Event struct {
 	Body            internalproto.EventBody `json:"-"`
 }
 
-type PeerCursor struct {
-	PeerNodeID      int64           `json:"peer_node_id"`
-	AckedSequence   int64           `json:"acked_sequence"`
-	AppliedSequence int64           `json:"applied_sequence"`
-	UpdatedAt       clock.Timestamp `json:"updated_at"`
+type OriginProgress struct {
+	OriginNodeID int64 `json:"origin_node_id"`
+	LastEventID  int64 `json:"last_event_id"`
+}
+
+type PeerAckCursor struct {
+	PeerNodeID   int64           `json:"peer_node_id"`
+	OriginNodeID int64           `json:"origin_node_id"`
+	AckedEventID int64           `json:"acked_event_id"`
+	UpdatedAt    clock.Timestamp `json:"updated_at"`
+}
+
+type OriginCursor struct {
+	OriginNodeID   int64           `json:"origin_node_id"`
+	AppliedEventID int64           `json:"applied_event_id"`
+	UpdatedAt      clock.Timestamp `json:"updated_at"`
 }
 
 type CreateUserParams struct {
@@ -274,10 +285,17 @@ CREATE TABLE IF NOT EXISTS event_log (
     UNIQUE(origin_node_id, event_id)
 );
 
-CREATE TABLE IF NOT EXISTS peer_cursors (
-    peer_node_id INTEGER PRIMARY KEY,
-    acked_sequence INTEGER NOT NULL DEFAULT 0,
-    applied_sequence INTEGER NOT NULL DEFAULT 0,
+CREATE TABLE IF NOT EXISTS peer_ack_cursors (
+    peer_node_id INTEGER NOT NULL,
+    origin_node_id INTEGER NOT NULL,
+    acked_event_id INTEGER NOT NULL DEFAULT 0,
+    updated_at_hlc TEXT NOT NULL,
+    PRIMARY KEY(peer_node_id, origin_node_id)
+);
+
+CREATE TABLE IF NOT EXISTS origin_cursors (
+    origin_node_id INTEGER PRIMARY KEY,
+    applied_event_id INTEGER NOT NULL DEFAULT 0,
     updated_at_hlc TEXT NOT NULL
 );
 
@@ -325,6 +343,7 @@ CREATE INDEX IF NOT EXISTS idx_messages_user_created ON messages(user_node_id, u
 CREATE INDEX IF NOT EXISTS idx_messages_node ON messages(node_id, user_node_id, user_id, seq);
 CREATE INDEX IF NOT EXISTS idx_subscriptions_subscriber ON channel_subscriptions(subscriber_node_id, subscriber_user_id, deleted_at_hlc);
 CREATE INDEX IF NOT EXISTS idx_subscriptions_channel ON channel_subscriptions(channel_node_id, channel_user_id, deleted_at_hlc);
+CREATE INDEX IF NOT EXISTS idx_event_log_origin_event ON event_log(origin_node_id, event_id);
 `); err != nil {
 		return fmt.Errorf("init message indexes: %w", err)
 	}
@@ -1114,6 +1133,9 @@ VALUES(?, ?, ?)
 	event.Sequence, err = result.LastInsertId()
 	if err != nil {
 		return Event{}, fmt.Errorf("read event sequence: %w", err)
+	}
+	if err := s.upsertOriginCursorTx(ctx, tx, event.OriginNodeID, event.EventID, s.clock.Now().String()); err != nil {
+		return Event{}, fmt.Errorf("record local origin cursor: %w", err)
 	}
 	return event, nil
 }

@@ -50,17 +50,17 @@ sqlite3 ./data/node-a.db ".backup './backup/node-a-$(date +%Y%m%d%H%M%S).db'"
 2. 确认恢复时仍使用原来的 SQLite 数据库或至少保留 `schema_meta.node_id`，不要把同一个身份同时启动两份。
 3. 从最近备份恢复 SQLite 数据库文件。
 4. 使用原配置启动节点，确保 `cluster.peers` 指向当前可用节点。
-5. 观察 `/ops/status` 中该节点对各 peer 的 `unconfirmed_events`、`pending_catchup`、`pending_snapshot_partitions` 是否逐步归零。
-6. 观察 `/metrics` 中 `notifier_peer_connected`、`notifier_peer_applied_sequence`、`notifier_peer_pending_snapshot_partitions`。
+5. 观察 `/ops/status` 中该节点对各 peer 下各 `origin_node_id` 的 `unconfirmed_events`、`pending_catchup`，以及 peer 顶层的 `pending_snapshot_partitions` 是否逐步归零。
+6. 观察 `/metrics` 中 `notifier_peer_connected`、`notifier_peer_origin_applied_event_id`、`notifier_peer_pending_snapshot_partitions`。
 7. 如果长时间无法追平，检查集群 HMAC 密钥、peer URL、时钟偏差和网络连通性。
 
 ## 核心指标
 
 - `notifier_event_log_last_sequence{node_id}`：本地事件日志最新 sequence。持续增长代表本节点有写入或复制事件入库。
 - `notifier_peer_connected{node_id,peer_node_id}`：peer 是否已连接。正常值为 `1`。
-- `notifier_peer_unconfirmed_events{node_id,peer_node_id}`：本地事件尚未被 peer ack 的数量。持续升高通常表示对端断开或复制阻塞。
-- `notifier_peer_applied_sequence{node_id,peer_node_id}`：本地已经应用该 peer 的事件 sequence。
-- `notifier_peer_remote_last_sequence{node_id,peer_node_id}`：最近从 peer 观察到的远端最新 sequence。
+- `notifier_peer_origin_unconfirmed_events{node_id,peer_node_id,origin_node_id}`：本地某个 origin 的事件尚未被 peer ack 的数量。持续升高通常表示对端断开或复制阻塞。
+- `notifier_peer_origin_applied_event_id{node_id,peer_node_id,origin_node_id}`：本地对该 origin 已应用到的最新 `event_id`。
+- `notifier_peer_origin_remote_last_event_id{node_id,peer_node_id,origin_node_id}`：最近从 peer 观察到的该 origin 最新 `event_id`。
 - `notifier_peer_pending_snapshot_partitions{node_id,peer_node_id}`：待完成的反熵快照分片数量。短暂非零正常，长期非零需要排查快照修复。
 - `notifier_user_conflicts_total{node_id}`：累计用户冲突记录数。
 - `notifier_message_trimmed_total{node_id}`：累计被本地消息窗口裁剪的消息数。
@@ -85,6 +85,6 @@ file_path = "./data/notifier.log"
 
 - peer 长期未连接：检查 `cluster.peers.url`、防火墙、反向代理 WebSocket 支持和 `cluster.advertise_path`。
 - `notifier_write_gate_ready` 为 `0`：检查是否至少有一个 peer 完成校时，或是否时钟偏差超过 `cluster.max_clock_skew_ms`。
-- `notifier_peer_unconfirmed_events` 持续升高：检查对端是否在线、是否能应用事件、日志中是否有 HMAC、HLC 或 schema 错误。
+- `notifier_peer_origin_unconfirmed_events` 持续升高：检查对端是否在线、是否能应用该 origin 的事件、日志中是否有 HMAC、HLC 或 schema 错误。
 - `notifier_peer_pending_snapshot_partitions` 长期非零：检查快照版本是否一致、消息窗口大小是否一致、目标用户是否已被墓碑删除。
 - `notifier_clock_offset_ms` 接近阈值：检查 NTP 或宿主机时间源，必要时先修复系统时间再恢复写入。

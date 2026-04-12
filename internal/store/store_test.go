@@ -843,36 +843,49 @@ func TestPeerCursorSchemaAndMonotonicUpdates(t *testing.T) {
 
 	ctx := context.Background()
 	rows, err := st.db.QueryContext(ctx, `
-SELECT acked_sequence, applied_sequence
-FROM peer_cursors
+SELECT acked_event_id
+FROM peer_ack_cursors
 `)
 	if err != nil {
-		t.Fatalf("peer cursor schema query: %v", err)
+		t.Fatalf("peer ack cursor schema query: %v", err)
 	}
 	rows.Close()
 
-	if err := st.RecordPeerAck(ctx, testNodeID(1), 5); err != nil {
+	rows, err = st.db.QueryContext(ctx, `
+SELECT applied_event_id
+FROM origin_cursors
+`)
+	if err != nil {
+		t.Fatalf("origin cursor schema query: %v", err)
+	}
+	rows.Close()
+
+	if err := st.RecordPeerAck(ctx, testNodeID(1), testNodeID(2), 5); err != nil {
 		t.Fatalf("record peer ack: %v", err)
 	}
-	if err := st.RecordPeerAck(ctx, testNodeID(1), 3); err != nil {
+	if err := st.RecordPeerAck(ctx, testNodeID(1), testNodeID(2), 3); err != nil {
 		t.Fatalf("record stale peer ack: %v", err)
 	}
-	if err := st.RecordPeerApplied(ctx, testNodeID(1), 7); err != nil {
-		t.Fatalf("record peer applied: %v", err)
+	if err := st.RecordOriginApplied(ctx, testNodeID(2), 7); err != nil {
+		t.Fatalf("record origin applied: %v", err)
 	}
-	if err := st.RecordPeerApplied(ctx, testNodeID(1), 4); err != nil {
-		t.Fatalf("record stale peer applied: %v", err)
+	if err := st.RecordOriginApplied(ctx, testNodeID(2), 4); err != nil {
+		t.Fatalf("record stale origin applied: %v", err)
 	}
 
-	cursor, err := st.GetPeerCursor(ctx, testNodeID(1))
+	ackCursor, err := st.GetPeerAckCursor(ctx, testNodeID(1), testNodeID(2))
 	if err != nil {
-		t.Fatalf("get peer cursor: %v", err)
+		t.Fatalf("get peer ack cursor: %v", err)
 	}
-	if cursor.AckedSequence != 5 {
-		t.Fatalf("unexpected acked sequence: got=%d want=5", cursor.AckedSequence)
+	if ackCursor.AckedEventID != 5 {
+		t.Fatalf("unexpected acked event id: got=%d want=5", ackCursor.AckedEventID)
 	}
-	if cursor.AppliedSequence != 7 {
-		t.Fatalf("unexpected applied sequence: got=%d want=7", cursor.AppliedSequence)
+	originCursor, err := st.GetOriginCursor(ctx, testNodeID(2))
+	if err != nil {
+		t.Fatalf("get origin cursor: %v", err)
+	}
+	if originCursor.AppliedEventID != 7 {
+		t.Fatalf("unexpected applied event id: got=%d want=7", originCursor.AppliedEventID)
 	}
 }
 
@@ -883,28 +896,31 @@ func TestOperationsStatsIncludesPeerCursorsConflictsAndTrimStats(t *testing.T) {
 	defer st.Close()
 
 	ctx := context.Background()
-	user, _, err := st.CreateUser(ctx, CreateUserParams{
+	user, userEvent, err := st.CreateUser(ctx, CreateUserParams{
 		Username:     "ops-stats-user",
 		PasswordHash: "hash-1",
 	})
 	if err != nil {
 		t.Fatalf("create user: %v", err)
 	}
+	var messageEvents []Event
 	for i := 1; i <= 2; i++ {
-		if _, _, err := st.CreateMessage(ctx, CreateMessageParams{
+		_, event, err := st.CreateMessage(ctx, CreateMessageParams{
 			UserKey: user.Key(),
 			Sender:  "orders",
 			Body:    "message-" + strconv.Itoa(i),
-		}); err != nil {
+		})
+		if err != nil {
 			t.Fatalf("create message %d: %v", i, err)
 		}
+		messageEvents = append(messageEvents, event)
 	}
 
-	if err := st.RecordPeerAck(ctx, testNodeID(1), 1); err != nil {
+	if err := st.RecordPeerAck(ctx, testNodeID(1), testNodeID(2), userEvent.EventID); err != nil {
 		t.Fatalf("record peer ack: %v", err)
 	}
-	if err := st.RecordPeerApplied(ctx, testNodeID(1), 2); err != nil {
-		t.Fatalf("record peer applied: %v", err)
+	if err := st.RecordOriginApplied(ctx, testNodeID(2), messageEvents[0].EventID); err != nil {
+		t.Fatalf("record origin applied: %v", err)
 	}
 	now := st.clock.Now().String()
 	if _, err := st.db.ExecContext(ctx, `
@@ -927,20 +943,27 @@ VALUES(?, ?, ?, ?, ?, ?)
 	if stats.MessageTrim.TrimmedTotal != 1 || stats.MessageTrim.LastTrimmedAt == nil {
 		t.Fatalf("unexpected trim stats: %+v", stats.MessageTrim)
 	}
-	if len(stats.PeerCursors) != 2 {
-		t.Fatalf("expected configured peer stats, got %+v", stats.PeerCursors)
+	if len(stats.Peers) != 2 {
+		t.Fatalf("expected configured peer stats, got %+v", stats.Peers)
 	}
-	if stats.PeerCursors[0].PeerNodeID != testNodeID(1) ||
-		stats.PeerCursors[0].AckedSequence != 1 ||
-		stats.PeerCursors[0].AppliedSequence != 2 ||
-		stats.PeerCursors[0].UnconfirmedEvents != 2 ||
-		stats.PeerCursors[0].UpdatedAt == nil {
-		t.Fatalf("unexpected node-a cursor stats: %+v", stats.PeerCursors[0])
+	if stats.Peers[0].PeerNodeID != testNodeID(1) || len(stats.Peers[0].Origins) != 1 {
+		t.Fatalf("unexpected node-a peer stats: %+v", stats.Peers[0])
 	}
-	if stats.PeerCursors[1].PeerNodeID != testNodeID(3) ||
-		stats.PeerCursors[1].UnconfirmedEvents != 3 ||
-		stats.PeerCursors[1].UpdatedAt != nil {
-		t.Fatalf("unexpected node-c cursor stats: %+v", stats.PeerCursors[1])
+	originStats := stats.Peers[0].Origins[0]
+	if originStats.OriginNodeID != testNodeID(2) ||
+		originStats.AckedEventID != userEvent.EventID ||
+		originStats.AppliedEventID != messageEvents[len(messageEvents)-1].EventID ||
+		originStats.UnconfirmedEvents != 2 ||
+		originStats.UpdatedAt == nil {
+		t.Fatalf("unexpected node-a origin stats: %+v", originStats)
+	}
+	if stats.Peers[1].PeerNodeID != testNodeID(3) || len(stats.Peers[1].Origins) != 1 {
+		t.Fatalf("unexpected node-c peer stats: %+v", stats.Peers[1])
+	}
+	if stats.Peers[1].Origins[0].OriginNodeID != testNodeID(2) ||
+		stats.Peers[1].Origins[0].UnconfirmedEvents != 3 ||
+		stats.Peers[1].Origins[0].UpdatedAt == nil {
+		t.Fatalf("unexpected node-c origin stats: %+v", stats.Peers[1].Origins[0])
 	}
 }
 

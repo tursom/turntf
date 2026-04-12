@@ -35,7 +35,7 @@ func (m *Manager) sendSnapshotDigest(sess *session) {
 	if m.store == nil || sess == nil || sess.peerID == 0 {
 		return
 	}
-	if !sess.isReplicationReady() || sess.hasPendingPull() || sess.isClosed() {
+	if !sess.isReplicationReady() || sess.hasPendingPulls() || sess.isClosed() {
 		return
 	}
 	if sess.remoteSnapshotVersion != internalproto.SnapshotVersion {

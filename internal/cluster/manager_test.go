@@ -407,12 +407,12 @@ func TestHandleEventBatchSendsAckAfterSuccessfulApply(t *testing.T) {
 		t.Fatalf("unexpected replicated user: %+v", replicatedUser)
 	}
 
-	cursor, err := targetStore.GetPeerCursor(context.Background(), testNodeID(1))
+	cursor, err := targetStore.GetOriginCursor(context.Background(), testNodeID(1))
 	if err != nil {
-		t.Fatalf("get peer cursor: %v", err)
+		t.Fatalf("get origin cursor: %v", err)
 	}
-	if cursor.AppliedSequence != int64(event.Sequence) {
-		t.Fatalf("unexpected applied sequence: got=%d want=%d", cursor.AppliedSequence, event.Sequence)
+	if cursor.AppliedEventID != event.EventID {
+		t.Fatalf("unexpected applied event id: got=%d want=%d", cursor.AppliedEventID, event.EventID)
 	}
 
 	select {
@@ -427,8 +427,11 @@ func TestHandleEventBatchSendsAckAfterSuccessfulApply(t *testing.T) {
 		if ack.NodeId != testNodeID(2) {
 			t.Fatalf("unexpected ack node id: %d", ack.NodeId)
 		}
-		if ack.AckedSequence != uint64(event.Sequence) {
-			t.Fatalf("unexpected ack sequence: got=%d want=%d", ack.AckedSequence, event.Sequence)
+		if ack.OriginNodeId != testNodeID(1) {
+			t.Fatalf("unexpected ack origin node id: %d", ack.OriginNodeId)
+		}
+		if ack.AckedEventId != uint64(event.EventID) {
+			t.Fatalf("unexpected ack event id: got=%d want=%d", ack.AckedEventId, event.EventID)
 		}
 	default:
 		t.Fatalf("expected ack to be enqueued")
@@ -478,8 +481,11 @@ func TestHandleEventBatchDuplicateDeliveryIsIdempotentAndAcks(t *testing.T) {
 			if ack == nil {
 				t.Fatalf("expected ack on attempt %d, got %+v", attempt, ackEnvelope)
 			}
-			if ack.AckedSequence != uint64(event.Sequence) {
-				t.Fatalf("unexpected ack sequence on attempt %d: got=%d want=%d", attempt, ack.AckedSequence, event.Sequence)
+			if ack.OriginNodeId != testNodeID(1) {
+				t.Fatalf("unexpected ack origin on attempt %d: got=%d want=%d", attempt, ack.OriginNodeId, testNodeID(1))
+			}
+			if ack.AckedEventId != uint64(event.EventID) {
+				t.Fatalf("unexpected ack event id on attempt %d: got=%d want=%d", attempt, ack.AckedEventId, event.EventID)
 			}
 		default:
 			t.Fatalf("expected ack to be enqueued on attempt %d", attempt)
@@ -536,12 +542,12 @@ func TestHandleEventBatchDoesNotAckFailedApply(t *testing.T) {
 	default:
 	}
 
-	cursor, err := targetStore.GetPeerCursor(context.Background(), testNodeID(1))
+	cursor, err := targetStore.GetOriginCursor(context.Background(), testNodeID(1))
 	if err != nil {
-		t.Fatalf("get peer cursor: %v", err)
+		t.Fatalf("get origin cursor: %v", err)
 	}
-	if cursor.AppliedSequence != 0 {
-		t.Fatalf("expected failed apply to keep applied sequence at 0, got %d", cursor.AppliedSequence)
+	if cursor.AppliedEventID != 0 {
+		t.Fatalf("expected failed apply to keep applied event id at 0, got %d", cursor.AppliedEventID)
 	}
 }
 
@@ -549,8 +555,8 @@ func TestHandleHelloEnqueuesPullEventsWhenBehind(t *testing.T) {
 	t.Parallel()
 
 	targetStore := newReplicationTestStore(t, "node-b", 2)
-	if err := targetStore.RecordPeerApplied(context.Background(), testNodeID(1), 2); err != nil {
-		t.Fatalf("record peer applied: %v", err)
+	if err := targetStore.RecordOriginApplied(context.Background(), testNodeID(1), 2); err != nil {
+		t.Fatalf("record origin applied: %v", err)
 	}
 	mgr := newReplicationTestManager(t, targetStore)
 
@@ -559,10 +565,13 @@ func TestHandleHelloEnqueuesPullEventsWhenBehind(t *testing.T) {
 		send:    make(chan *internalproto.Envelope, 1),
 	}
 	hello := &internalproto.Hello{
-		NodeId:            testNodeID(1),
-		AdvertiseAddr:     websocketPath,
-		ProtocolVersion:   internalproto.ProtocolVersion,
-		LastSequence:      4,
+		NodeId:          testNodeID(1),
+		AdvertiseAddr:   websocketPath,
+		ProtocolVersion: internalproto.ProtocolVersion,
+		OriginProgress: []*internalproto.OriginProgress{{
+			OriginNodeId: testNodeID(1),
+			LastEventId:  4,
+		}},
 		MessageWindowSize: store.DefaultMessageWindowSize,
 	}
 
@@ -575,11 +584,17 @@ func TestHandleHelloEnqueuesPullEventsWhenBehind(t *testing.T) {
 		if pull == nil {
 			t.Fatalf("expected pull events body")
 		}
-		if pull.AfterSequence != 2 {
-			t.Fatalf("unexpected pull after sequence: got=%d want=2", pull.AfterSequence)
+		if pull.OriginNodeId != testNodeID(1) {
+			t.Fatalf("unexpected pull origin node id: got=%d want=%d", pull.OriginNodeId, testNodeID(1))
+		}
+		if pull.AfterEventId != 2 {
+			t.Fatalf("unexpected pull after event id: got=%d want=2", pull.AfterEventId)
 		}
 		if pull.Limit != pullBatchSize {
 			t.Fatalf("unexpected pull limit: got=%d want=%d", pull.Limit, pullBatchSize)
+		}
+		if pull.RequestId == 0 {
+			t.Fatalf("expected pull request id")
 		}
 	case <-time.After(time.Second):
 		t.Fatalf("expected catch-up pull request")
@@ -593,7 +608,7 @@ func TestHandlePullEventsReturnsRequestedRange(t *testing.T) {
 	mgr := newReplicationTestManager(t, sourceStore)
 
 	ctx := context.Background()
-	user, _, err := sourceStore.CreateUser(ctx, store.CreateUserParams{
+	user, userEvent, err := sourceStore.CreateUser(ctx, store.CreateUserParams{
 		Username:     "alice",
 		PasswordHash: "hash-1",
 	})
@@ -615,7 +630,7 @@ func TestHandlePullEventsReturnsRequestedRange(t *testing.T) {
 		t.Fatalf("create second message: %v", err)
 	}
 
-	expected, err := sourceStore.ListEvents(ctx, 1, 2)
+	expected, err := sourceStore.ListEventsByOrigin(ctx, testNodeID(2), userEvent.EventID, 2)
 	if err != nil {
 		t.Fatalf("list expected events: %v", err)
 	}
@@ -630,8 +645,10 @@ func TestHandlePullEventsReturnsRequestedRange(t *testing.T) {
 		NodeId: testNodeID(1),
 		Body: &internalproto.Envelope_PullEvents{
 			PullEvents: &internalproto.PullEvents{
-				AfterSequence: 1,
-				Limit:         2,
+				OriginNodeId: testNodeID(2),
+				AfterEventId: uint64(userEvent.EventID),
+				Limit:        2,
+				RequestId:    7,
 			},
 		},
 	}
@@ -648,6 +665,12 @@ func TestHandlePullEventsReturnsRequestedRange(t *testing.T) {
 		}
 		if batchEnvelope.Sequence != uint64(expected[len(expected)-1].Sequence) {
 			t.Fatalf("unexpected batch sequence: got=%d want=%d", batchEnvelope.Sequence, expected[len(expected)-1].Sequence)
+		}
+		if batch.PullRequestId != 7 {
+			t.Fatalf("unexpected pull request id: got=%d want=7", batch.PullRequestId)
+		}
+		if batch.OriginNodeId != testNodeID(2) {
+			t.Fatalf("unexpected origin node id: got=%d want=%d", batch.OriginNodeId, testNodeID(2))
 		}
 		if len(batch.Events) != len(expected) {
 			t.Fatalf("unexpected event count: got=%d want=%d", len(batch.Events), len(expected))
@@ -768,8 +791,9 @@ func TestHandleAckPersistsPeerCursor(t *testing.T) {
 		NodeId: testNodeID(1),
 		Body: &internalproto.Envelope_Ack{
 			Ack: &internalproto.Ack{
-				NodeId:        testNodeID(1),
-				AckedSequence: 7,
+				NodeId:       testNodeID(1),
+				OriginNodeId: testNodeID(2),
+				AckedEventId: 7,
 			},
 		},
 	}
@@ -778,12 +802,12 @@ func TestHandleAckPersistsPeerCursor(t *testing.T) {
 		t.Fatalf("handle ack: %v", err)
 	}
 
-	cursor, err := targetStore.GetPeerCursor(context.Background(), testNodeID(1))
+	cursor, err := targetStore.GetPeerAckCursor(context.Background(), testNodeID(1), testNodeID(2))
 	if err != nil {
-		t.Fatalf("get peer cursor: %v", err)
+		t.Fatalf("get peer ack cursor: %v", err)
 	}
-	if cursor.AckedSequence != 7 {
-		t.Fatalf("unexpected acked sequence: got=%d want=7", cursor.AckedSequence)
+	if cursor.AckedEventID != 7 {
+		t.Fatalf("unexpected acked event id: got=%d want=7", cursor.AckedEventID)
 	}
 }
 
@@ -806,8 +830,8 @@ func TestStatusReportsPeerReplicationAndWriteGate(t *testing.T) {
 
 	sess := readySnapshotTestSession(mgr, testNodeID(1), store.DefaultMessageWindowSize)
 	sess.outbound = true
-	sess.noteRemoteLastSequence(9)
-	if !sess.beginPendingPull(3) {
+	sess.noteRemoteOriginEvent(testNodeID(1), 9)
+	if _, ok := sess.beginPendingPull(testNodeID(1), 3); !ok {
 		t.Fatalf("expected pending pull to start")
 	}
 	if !sess.beginSnapshotRequest(store.SnapshotUsersPartition) {
@@ -818,7 +842,6 @@ func TestStatusReportsPeerReplicationAndWriteGate(t *testing.T) {
 	peer := mgr.peers[testNodeID(1)]
 	peer.active = sess
 	peer.trustedSession = sess
-	peer.lastAck = 4
 	peer.clockOffsetMs = 12
 	peer.lastClockSync = now
 	peer.snapshotDigestsSent = 1
@@ -839,9 +862,7 @@ func TestStatusReportsPeerReplicationAndWriteGate(t *testing.T) {
 	peerStatus := status.Peers[0]
 	if !peerStatus.Connected ||
 		peerStatus.SessionDirection != "outbound" ||
-		peerStatus.LastAck != 4 ||
-		peerStatus.RemoteLastSequence != 9 ||
-		!peerStatus.PendingCatchup ||
+		len(peerStatus.Origins) != 1 ||
 		peerStatus.PendingSnapshotPartitions != 1 ||
 		peerStatus.RemoteSnapshotVersion != internalproto.SnapshotVersion ||
 		peerStatus.RemoteMessageWindowSize != store.DefaultMessageWindowSize ||
@@ -854,6 +875,11 @@ func TestStatusReportsPeerReplicationAndWriteGate(t *testing.T) {
 		peerStatus.LastSnapshotDigestAt == nil ||
 		peerStatus.LastSnapshotChunkAt == nil {
 		t.Fatalf("unexpected connected peer status: %+v", peerStatus)
+	}
+	if peerStatus.Origins[0].OriginNodeID != testNodeID(1) ||
+		peerStatus.Origins[0].RemoteLastEventID != 9 ||
+		!peerStatus.Origins[0].PendingCatchup {
+		t.Fatalf("unexpected origin peer status: %+v", peerStatus.Origins[0])
 	}
 }
 

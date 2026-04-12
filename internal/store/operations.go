@@ -13,15 +13,20 @@ type OperationsStats struct {
 	NodeID             int64
 	MessageWindowSize  int
 	LastEventSequence  int64
-	PeerCursors        []PeerOperationsStats
+	Peers              []PeerOperationsStats
 	UserConflictsTotal int64
 	MessageTrim        MessageTrimStats
 }
 
 type PeerOperationsStats struct {
-	PeerNodeID        int64
-	AckedSequence     int64
-	AppliedSequence   int64
+	PeerNodeID int64
+	Origins    []PeerOriginOperationsStats
+}
+
+type PeerOriginOperationsStats struct {
+	OriginNodeID      int64
+	AckedEventID      int64
+	AppliedEventID    int64
 	UnconfirmedEvents int64
 	UpdatedAt         *clock.Timestamp
 }
@@ -31,13 +36,18 @@ type MessageTrimStats struct {
 	LastTrimmedAt *clock.Timestamp
 }
 
+type localOriginEventStats struct {
+	LastEventID int64
+	EventCount  int64
+}
+
 func (s *Store) OperationsStats(ctx context.Context, peerNodeIDs []int64) (OperationsStats, error) {
 	lastSequence, err := s.LastEventSequence(ctx)
 	if err != nil {
 		return OperationsStats{}, err
 	}
 
-	peerCursors, err := s.peerOperationsStats(ctx, peerNodeIDs, lastSequence)
+	peerStats, err := s.peerOperationsStats(ctx, peerNodeIDs)
 	if err != nil {
 		return OperationsStats{}, err
 	}
@@ -56,67 +66,167 @@ func (s *Store) OperationsStats(ctx context.Context, peerNodeIDs []int64) (Opera
 		NodeID:             s.nodeID,
 		MessageWindowSize:  normalizeMessageWindowSize(s.messageWindowSize),
 		LastEventSequence:  lastSequence,
-		PeerCursors:        peerCursors,
+		Peers:              peerStats,
 		UserConflictsTotal: conflicts,
 		MessageTrim:        trimStats,
 	}, nil
 }
 
-func (s *Store) peerOperationsStats(ctx context.Context, peerNodeIDs []int64, lastSequence int64) ([]PeerOperationsStats, error) {
-	index := make(map[int64]PeerOperationsStats)
+func (s *Store) peerOperationsStats(ctx context.Context, peerNodeIDs []int64) ([]PeerOperationsStats, error) {
+	localStats, err := s.listLocalOriginEventStats(ctx)
+	if err != nil {
+		return nil, err
+	}
+	ackCursors, err := s.ListPeerAckCursors(ctx)
+	if err != nil {
+		return nil, err
+	}
+	originCursors, err := s.ListOriginCursors(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	appliedByOrigin := make(map[int64]OriginCursor, len(originCursors))
+	for _, cursor := range originCursors {
+		appliedByOrigin[cursor.OriginNodeID] = cursor
+	}
+
+	peerOrigins := make(map[int64]map[int64]PeerOriginOperationsStats, len(peerNodeIDs))
 	for _, peerID := range peerNodeIDs {
 		if peerID <= 0 {
 			continue
 		}
-		index[peerID] = PeerOperationsStats{
-			PeerNodeID:        peerID,
-			UnconfirmedEvents: lastSequence,
-		}
+		peerOrigins[peerID] = make(map[int64]PeerOriginOperationsStats)
 	}
 
+	unionOrigins := make(map[int64]struct{}, len(localStats)+len(appliedByOrigin))
+	for originNodeID := range localStats {
+		unionOrigins[originNodeID] = struct{}{}
+	}
+	for originNodeID := range appliedByOrigin {
+		unionOrigins[originNodeID] = struct{}{}
+	}
+
+	for _, cursor := range ackCursors {
+		unionOrigins[cursor.OriginNodeID] = struct{}{}
+		if _, ok := peerOrigins[cursor.PeerNodeID]; !ok {
+			peerOrigins[cursor.PeerNodeID] = make(map[int64]PeerOriginOperationsStats)
+		}
+		item := peerOrigins[cursor.PeerNodeID][cursor.OriginNodeID]
+		item.OriginNodeID = cursor.OriginNodeID
+		item.AckedEventID = cursor.AckedEventID
+		item.UpdatedAt = chooseLaterTimestamp(item.UpdatedAt, &cursor.UpdatedAt)
+		peerOrigins[cursor.PeerNodeID][cursor.OriginNodeID] = item
+	}
+
+	for peerID, origins := range peerOrigins {
+		for originNodeID := range unionOrigins {
+			item := origins[originNodeID]
+			item.OriginNodeID = originNodeID
+			if applied, ok := appliedByOrigin[originNodeID]; ok {
+				item.AppliedEventID = applied.AppliedEventID
+				item.UpdatedAt = chooseLaterTimestamp(item.UpdatedAt, &applied.UpdatedAt)
+			}
+			if local, ok := localStats[originNodeID]; ok {
+				unconfirmed, err := s.countUnconfirmedOriginEvents(ctx, originNodeID, item.AckedEventID, local.EventCount)
+				if err != nil {
+					return nil, err
+				}
+				item.UnconfirmedEvents = unconfirmed
+			}
+			origins[originNodeID] = item
+		}
+		peerOrigins[peerID] = origins
+	}
+
+	peers := make([]PeerOperationsStats, 0, len(peerOrigins))
+	for peerID, origins := range peerOrigins {
+		stats := PeerOperationsStats{
+			PeerNodeID: peerID,
+			Origins:    make([]PeerOriginOperationsStats, 0, len(origins)),
+		}
+		for _, item := range origins {
+			if item.OriginNodeID <= 0 {
+				continue
+			}
+			stats.Origins = append(stats.Origins, item)
+		}
+		sort.Slice(stats.Origins, func(i, j int) bool {
+			return stats.Origins[i].OriginNodeID < stats.Origins[j].OriginNodeID
+		})
+		peers = append(peers, stats)
+	}
+	sort.Slice(peers, func(i, j int) bool {
+		return peers[i].PeerNodeID < peers[j].PeerNodeID
+	})
+	return peers, nil
+}
+
+func (s *Store) listLocalOriginEventStats(ctx context.Context) (map[int64]localOriginEventStats, error) {
 	rows, err := s.db.QueryContext(ctx, `
-SELECT peer_node_id, acked_sequence, applied_sequence, updated_at_hlc
-FROM peer_cursors
-ORDER BY peer_node_id ASC
+SELECT origin_node_id, COALESCE(MAX(event_id), 0), COUNT(*)
+FROM event_log
+GROUP BY origin_node_id
+ORDER BY origin_node_id ASC
 `)
 	if err != nil {
-		return nil, fmt.Errorf("query peer cursor stats: %w", err)
+		return nil, fmt.Errorf("query local origin event stats: %w", err)
 	}
 	defer rows.Close()
 
+	stats := make(map[int64]localOriginEventStats)
 	for rows.Next() {
-		cursor, err := scanPeerCursor(rows)
-		if err != nil {
-			return nil, err
+		var originNodeID int64
+		var item localOriginEventStats
+		if err := rows.Scan(&originNodeID, &item.LastEventID, &item.EventCount); err != nil {
+			return nil, fmt.Errorf("scan local origin event stats: %w", err)
 		}
-		updatedAt := cursor.UpdatedAt
-		index[cursor.PeerNodeID] = PeerOperationsStats{
-			PeerNodeID:        cursor.PeerNodeID,
-			AckedSequence:     cursor.AckedSequence,
-			AppliedSequence:   cursor.AppliedSequence,
-			UnconfirmedEvents: nonNegativeDelta(lastSequence, cursor.AckedSequence),
-			UpdatedAt:         &updatedAt,
-		}
+		stats[originNodeID] = item
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate peer cursor stats: %w", err)
+		return nil, fmt.Errorf("iterate local origin event stats: %w", err)
 	}
-
-	stats := make([]PeerOperationsStats, 0, len(index))
-	for _, item := range index {
-		stats = append(stats, item)
-	}
-	sort.Slice(stats, func(i, j int) bool {
-		return stats[i].PeerNodeID < stats[j].PeerNodeID
-	})
 	return stats, nil
 }
 
-func nonNegativeDelta(value, subtract int64) int64 {
-	if value <= subtract {
-		return 0
+func (s *Store) countUnconfirmedOriginEvents(ctx context.Context, originNodeID, ackedEventID, fallbackCount int64) (int64, error) {
+	if originNodeID <= 0 {
+		return 0, nil
 	}
-	return value - subtract
+	if ackedEventID <= 0 {
+		return fallbackCount, nil
+	}
+
+	var count int64
+	if err := s.db.QueryRowContext(ctx, `
+SELECT COUNT(*)
+FROM event_log
+WHERE origin_node_id = ? AND event_id > ?
+`, originNodeID, ackedEventID).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count unconfirmed origin events: %w", err)
+	}
+	return count, nil
+}
+
+func chooseLaterTimestamp(current, candidate *clock.Timestamp) *clock.Timestamp {
+	switch {
+	case current == nil:
+		return cloneTimestamp(candidate)
+	case candidate == nil:
+		return cloneTimestamp(current)
+	case candidate.Compare(*current) > 0:
+		return cloneTimestamp(candidate)
+	default:
+		return cloneTimestamp(current)
+	}
+}
+
+func cloneTimestamp(ts *clock.Timestamp) *clock.Timestamp {
+	if ts == nil {
+		return nil
+	}
+	cloned := *ts
+	return &cloned
 }
 
 func (s *Store) userConflictCount(ctx context.Context) (int64, error) {

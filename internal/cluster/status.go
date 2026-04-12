@@ -2,6 +2,7 @@ package cluster
 
 import (
 	"context"
+	"sort"
 	"time"
 
 	"notifier/internal/app"
@@ -33,7 +34,6 @@ func (m *Manager) Status(context.Context) (app.ClusterStatus, error) {
 		if peer != nil {
 			active = peer.active
 			item.Connected = peer.active != nil
-			item.LastAck = peer.lastAck
 			item.ClockOffsetMs = peer.clockOffsetMs
 			item.LastClockSync = timePointer(peer.lastClockSync)
 			item.SnapshotDigestsSentTotal = peer.snapshotDigestsSent
@@ -58,8 +58,7 @@ func (m *Manager) Status(context.Context) (app.ClusterStatus, error) {
 		item := peer.status
 		if peer.active != nil {
 			item.SessionDirection = peer.active.direction()
-			item.RemoteLastSequence = peer.active.remoteSequence()
-			item.PendingCatchup = peer.active.hasPendingPull()
+			item.Origins = peer.active.originStatuses()
 			item.PendingSnapshotPartitions = peer.active.pendingSnapshotCount()
 			item.RemoteSnapshotVersion = peer.active.snapshotVersion()
 			item.RemoteMessageWindowSize = peer.active.messageWindowSize()
@@ -145,6 +144,25 @@ func (s *session) messageWindowSize() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.remoteMessageWindowSize
+}
+
+func (s *session) originStatuses() []app.ClusterPeerOriginStatus {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	origins := make([]app.ClusterPeerOriginStatus, 0, len(s.remoteOriginProgress))
+	for originNodeID, lastEventID := range s.remoteOriginProgress {
+		_, pending := s.pendingPulls[originNodeID]
+		origins = append(origins, app.ClusterPeerOriginStatus{
+			OriginNodeID:      originNodeID,
+			RemoteLastEventID: lastEventID,
+			PendingCatchup:    pending,
+		})
+	}
+	sort.Slice(origins, func(i, j int) bool {
+		return origins[i].OriginNodeID < origins[j].OriginNodeID
+	})
+	return origins
 }
 
 func timePointer(value time.Time) *time.Time {

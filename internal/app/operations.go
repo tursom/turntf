@@ -9,14 +9,18 @@ type ClusterStatus struct {
 	Peers             []ClusterPeerStatus
 }
 
+type ClusterPeerOriginStatus struct {
+	OriginNodeID      int64
+	RemoteLastEventID uint64
+	PendingCatchup    bool
+}
+
 type ClusterPeerStatus struct {
 	NodeID                    int64
 	ConfiguredURL             string
 	Connected                 bool
 	SessionDirection          string
-	LastAck                   uint64
-	RemoteLastSequence        uint64
-	PendingCatchup            bool
+	Origins                   []ClusterPeerOriginStatus
 	PendingSnapshotPartitions int
 	RemoteSnapshotVersion     string
 	RemoteMessageWindowSize   int

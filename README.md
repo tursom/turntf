@@ -60,11 +60,11 @@
 - 集群模式必须同时提供 `cluster.advertise_path`、`cluster.secret`
 - 节点间启用 `Envelope`、`Hello`、`Ack`、`EventBatch`、`PullEvents`
 - `Envelope`：集群协议的统一外层消息，里面再装握手、确认、事件批次或补拉请求
-- `Hello`：连接建立后的第一条握手消息，用于交换节点身份、协议版本、快照版本、广播路径、当前本地 `last_sequence` 和 `message_window_size`
+- `Hello`：连接建立后的第一条握手消息，用于交换节点身份、协议版本、快照版本、广播路径、当前本地按 `origin_node_id` 聚合的 `origin_progress` 和 `message_window_size`
 - `TimeSyncRequest` / `TimeSyncResponse`：握手后的校时消息，用来估算节点时钟偏移并决定是否允许该 peer 进入可信复制状态
-- `EventBatch`：事件批次消息，既用于在线广播，也用于断线后的增量补发
-- `Ack`：确认消息，表示“我已经应用到了你的哪条 sequence”；它会和 `peer_cursors` 一起记录每个 peer 的确认进度与已应用进度
-- `peer_cursors`：本地持久化的“对每个 peer 的复制进度表”，至少记录 acked/applied sequence，供重连后继续追平
+- `EventBatch`：事件批次消息，既用于在线广播，也用于按 `origin_node_id` 的增量补发；补拉响应会携带 `pull_request_id`
+- `Ack`：确认消息，表示“我已经应用到了某个 `origin_node_id` 的哪条 `event_id`”；它会写入 `peer_ack_cursors`
+- `peer_ack_cursors` / `origin_cursors`：前者记录“某 peer 已确认到哪个 origin/event_id”，后者记录“本地对某 origin 已应用到哪个 event_id”，供重连后继续追平
 - WebSocket 连接具备握手校验、心跳保活、自动重连和单连接方向裁决
 - 集群模式下，节点首次成功校时前会拒绝本地写请求，避免未校准时钟污染字段级 LWW
 - 节点重连后会按持久化游标自动补拉缺失事件，并通过 `applied_events` 做幂等去重
@@ -194,7 +194,7 @@ url = "ws://127.0.0.1:9081/internal/cluster/ws"
 - 对端节点成功应用事件后返回 `Ack`
 - 两节点在线时，创建用户和写消息可以自动同步
 - 集群模式下，节点只有在首次成功校时后才接受本地写入；未校时时写接口会返回 `503`
-- 节点短时离线后重连，会基于 `peer_cursors` 自动补拉未追平的事件
+- 节点短时离线后重连，会按 `origin_cursors` 对比远端 `origin_progress`，逐个 `origin_node_id` 自动补拉未追平的事件
 - 节点会在握手完成后和运行过程中进行反熵摘要比对；用户快照使用全量单分片 `users/full`，消息快照按生产节点 `messages/{node_id}` 分片
 - 摘要不一致时，节点会请求对应快照分片并增量合并到本地；用户仍按字段级 LWW 和墓碑删除优先收敛，消息仍按本地 `message_window_size` 裁剪
 - 当两个节点 `message_window_size` 不一致时，反熵只修复用户分片，避免不同窗口大小导致消息分片反复互拉

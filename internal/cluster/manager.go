@@ -92,9 +92,8 @@ type session struct {
 
 	mu                      sync.Mutex
 	closed                  bool
-	remoteLastSequence      uint64
-	catchupInFlight         bool
-	pendingPullAfter        uint64
+	remoteOriginProgress    map[int64]uint64
+	pendingPulls            map[int64]pendingPullState
 	replicationReady        bool
 	bootstrapStarted        bool
 	syncLoopStarted         bool
@@ -102,8 +101,14 @@ type session struct {
 	remoteMessageWindowSize int
 	pendingSnapshotParts    map[string]struct{}
 	nextTimeSyncID          uint64
+	nextPullRequestID       uint64
 	pendingTimeSync         map[uint64]chan timeSyncResult
 	clockOffsetMs           int64
+}
+
+type pendingPullState struct {
+	RequestID    uint64
+	AfterEventID uint64
 }
 
 type timeSyncResult struct {
@@ -234,7 +239,8 @@ func (m *Manager) broadcastEvent(event store.Event) {
 		SentAtHlc: event.HLC.String(),
 		Body: &internalproto.Envelope_EventBatch{
 			EventBatch: &internalproto.EventBatch{
-				Events: []*internalproto.ReplicatedEvent{replicated},
+				Events:       []*internalproto.ReplicatedEvent{replicated},
+				OriginNodeId: event.OriginNodeID,
 			},
 		},
 	}
@@ -324,12 +330,14 @@ func (m *Manager) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 func (m *Manager) newSession(conn *websocket.Conn, outbound bool, configuredPeerID int64) *session {
 	return &session{
-		manager:          m,
-		conn:             conn,
-		outbound:         outbound,
-		configuredPeerID: configuredPeerID,
-		send:             make(chan *internalproto.Envelope, outboundQueueSize),
-		pendingTimeSync:  make(map[uint64]chan timeSyncResult),
+		manager:              m,
+		conn:                 conn,
+		outbound:             outbound,
+		configuredPeerID:     configuredPeerID,
+		send:                 make(chan *internalproto.Envelope, outboundQueueSize),
+		remoteOriginProgress: make(map[int64]uint64),
+		pendingPulls:         make(map[int64]pendingPullState),
+		pendingTimeSync:      make(map[uint64]chan timeSyncResult),
 	}
 }
 
@@ -361,9 +369,17 @@ func (m *Manager) runSession(sess *session) {
 }
 
 func (m *Manager) buildHelloEnvelope() (*internalproto.Envelope, error) {
-	lastSequence, err := m.store.LastEventSequence(context.Background())
+	originProgress, err := m.store.ListOriginProgress(context.Background())
 	if err != nil {
 		return nil, err
+	}
+
+	progress := make([]*internalproto.OriginProgress, 0, len(originProgress))
+	for _, item := range originProgress {
+		progress = append(progress, &internalproto.OriginProgress{
+			OriginNodeId: item.OriginNodeID,
+			LastEventId:  uint64(item.LastEventID),
+		})
 	}
 
 	return &internalproto.Envelope{
@@ -373,7 +389,7 @@ func (m *Manager) buildHelloEnvelope() (*internalproto.Envelope, error) {
 				NodeId:            m.cfg.NodeID,
 				AdvertiseAddr:     m.cfg.AdvertisePath,
 				ProtocolVersion:   internalproto.ProtocolVersion,
-				LastSequence:      uint64(lastSequence),
+				OriginProgress:    progress,
 				SnapshotVersion:   internalproto.SnapshotVersion,
 				MessageWindowSize: uint32(m.cfg.MessageWindowSize),
 			},
@@ -525,7 +541,7 @@ func (m *Manager) handleHello(sess *session, envelope *internalproto.Envelope) e
 	sess.peerID = peerID
 	sess.remoteSnapshotVersion = hello.SnapshotVersion
 	sess.remoteMessageWindowSize = int(hello.MessageWindowSize)
-	sess.noteRemoteLastSequence(hello.LastSequence)
+	sess.noteRemoteOriginProgress(hello.OriginProgress)
 	if !m.isConfiguredPeer(peerID) {
 		return fmt.Errorf("peer %d is not configured", peerID)
 	}
@@ -633,22 +649,20 @@ func (m *Manager) handleAck(sess *session, envelope *internalproto.Envelope) err
 	if ack.NodeId != sess.peerID {
 		return fmt.Errorf("ack node id mismatch: got %d want %d", ack.NodeId, sess.peerID)
 	}
+	if ack.OriginNodeId <= 0 {
+		return errors.New("ack origin node id cannot be empty")
+	}
 	if m.store != nil {
-		if err := m.store.RecordPeerAck(context.Background(), sess.peerID, int64(ack.AckedSequence)); err != nil {
+		if err := m.store.RecordPeerAck(context.Background(), sess.peerID, ack.OriginNodeId, int64(ack.AckedEventId)); err != nil {
 			return err
 		}
 	}
 
 	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	peer, ok := m.peers[sess.peerID]
-	if !ok {
-		return nil
+	if peer, ok := m.peers[sess.peerID]; ok && ack.AckedEventId > peer.lastAck {
+		peer.lastAck = ack.AckedEventId
 	}
-	if ack.GetAckedSequence() > peer.lastAck {
-		peer.lastAck = ack.GetAckedSequence()
-	}
+	m.mu.Unlock()
 	return nil
 }
 
@@ -659,61 +673,86 @@ func (m *Manager) handleEventBatch(sess *session, envelope *internalproto.Envelo
 	if err := validatePeerEnvelope(sess, envelope); err != nil {
 		return err
 	}
+
+	batch := envelope.GetEventBatch()
+	if batch == nil {
+		return errors.New("event batch body cannot be empty")
+	}
+
+	events := batch.GetEvents()
+	originNodeID := batch.GetOriginNodeId()
+	if originNodeID <= 0 && len(events) > 0 && events[0] != nil {
+		originNodeID = events[0].GetOriginNodeId()
+	}
+	if len(events) == 0 {
+		if batch.GetPullRequestId() == 0 {
+			return errors.New("event batch cannot be empty")
+		}
+		if originNodeID <= 0 {
+			return errors.New("empty pull response origin node id cannot be empty")
+		}
+		sess.noteRemoteOriginEvent(originNodeID, sess.remoteOriginEventID(originNodeID))
+		sess.completePendingPull(originNodeID, batch.GetPullRequestId())
+		if m.store != nil {
+			requested, err := m.requestCatchupIfNeeded(sess)
+			if err != nil {
+				return err
+			}
+			if !requested {
+				m.sendSnapshotDigest(sess)
+			}
+		}
+		return nil
+	}
+
 	if envelope.Sequence == 0 {
 		return errors.New("event batch sequence cannot be empty")
 	}
 	if strings.TrimSpace(envelope.SentAtHlc) == "" {
 		return errors.New("event batch sent_at_hlc cannot be empty")
 	}
-
-	batch := envelope.GetEventBatch()
-	if batch == nil {
-		return errors.New("event batch body cannot be empty")
-	}
-	if len(batch.GetEvents()) == 0 {
-		return errors.New("event batch cannot be empty")
+	if err := m.validateBatchHLC(events); err != nil {
+		return err
 	}
 
-	batchStart, err := batchStartSequence(envelope.Sequence, len(batch.GetEvents()))
+	lastEventID, err := validateOriginEventBatch(originNodeID, events)
 	if err != nil {
 		return err
 	}
+	sess.noteRemoteOriginEvent(originNodeID, uint64(lastEventID))
 
-	if err := m.validateBatchHLC(batch.GetEvents()); err != nil {
-		return err
-	}
-	sess.noteRemoteLastSequence(envelope.Sequence)
-	wasCatchupResponse := sess.matchesPendingPull(batchStart)
-
-	for _, event := range batch.GetEvents() {
+	for _, event := range events {
 		if err := m.store.ApplyReplicatedEvent(context.Background(), event); err != nil {
 			return err
 		}
 	}
-	ackedSequence := uint64(0)
+
+	shouldAdvanceCursor := batch.GetPullRequestId() > 0 && sess.completePendingPull(originNodeID, batch.GetPullRequestId())
+	if !shouldAdvanceCursor && !sess.hasPendingPull(originNodeID) {
+		shouldAdvanceCursor = true
+	}
+
+	ackedEventID := uint64(0)
 	if m.store != nil {
-		cursor, err := m.store.GetPeerCursor(context.Background(), sess.peerID)
+		if shouldAdvanceCursor {
+			if err := m.store.RecordOriginApplied(context.Background(), originNodeID, int64(lastEventID)); err != nil {
+				return err
+			}
+		}
+		cursor, err := m.store.GetOriginCursor(context.Background(), originNodeID)
 		if err != nil {
 			return err
 		}
-		ackedSequence = uint64(cursor.AppliedSequence)
-		if nextApplied := advanceContiguousSequence(uint64(cursor.AppliedSequence), batchStart, envelope.Sequence); nextApplied > uint64(cursor.AppliedSequence) {
-			if err := m.store.RecordPeerApplied(context.Background(), sess.peerID, int64(nextApplied)); err != nil {
-				return err
-			}
-			ackedSequence = nextApplied
-		}
-	}
-	if wasCatchupResponse {
-		sess.completePendingPull(batchStart)
+		ackedEventID = uint64(cursor.AppliedEventID)
 	}
 
 	sess.enqueue(&internalproto.Envelope{
 		NodeId: m.cfg.NodeID,
 		Body: &internalproto.Envelope_Ack{
 			Ack: &internalproto.Ack{
-				NodeId:        m.cfg.NodeID,
-				AckedSequence: ackedSequence,
+				NodeId:       m.cfg.NodeID,
+				OriginNodeId: originNodeID,
+				AckedEventId: ackedEventID,
 			},
 		},
 	})
@@ -741,17 +780,32 @@ func (m *Manager) handlePullEvents(sess *session, envelope *internalproto.Envelo
 	if pull == nil {
 		return errors.New("pull events body cannot be empty")
 	}
+	if pull.OriginNodeId <= 0 {
+		return errors.New("pull events origin node id cannot be empty")
+	}
+	if pull.RequestId == 0 {
+		return errors.New("pull events request id cannot be empty")
+	}
 
 	limit := int(pull.GetLimit())
 	if limit <= 0 || limit > pullBatchSize {
 		limit = pullBatchSize
 	}
 
-	events, err := m.store.ListEvents(context.Background(), int64(pull.GetAfterSequence()), limit)
+	events, err := m.store.ListEventsByOrigin(context.Background(), pull.OriginNodeId, int64(pull.GetAfterEventId()), limit)
 	if err != nil {
 		return err
 	}
 	if len(events) == 0 {
+		sess.enqueue(&internalproto.Envelope{
+			NodeId: m.cfg.NodeID,
+			Body: &internalproto.Envelope_EventBatch{
+				EventBatch: &internalproto.EventBatch{
+					PullRequestId: pull.RequestId,
+					OriginNodeId:  pull.OriginNodeId,
+				},
+			},
+		})
 		return nil
 	}
 
@@ -767,7 +821,9 @@ func (m *Manager) handlePullEvents(sess *session, envelope *internalproto.Envelo
 		SentAtHlc: last.HLC.String(),
 		Body: &internalproto.Envelope_EventBatch{
 			EventBatch: &internalproto.EventBatch{
-				Events: replicated,
+				Events:        replicated,
+				PullRequestId: pull.RequestId,
+				OriginNodeId:  pull.OriginNodeId,
 			},
 		},
 	})
@@ -779,36 +835,52 @@ func (m *Manager) requestCatchupIfNeeded(sess *session) (bool, error) {
 		return false, nil
 	}
 
-	cursor, err := m.store.GetPeerCursor(context.Background(), sess.peerID)
-	if err != nil {
-		return false, err
+	remoteProgress := sess.remoteOriginProgressSnapshot()
+	originNodeIDs := make([]int64, 0, len(remoteProgress))
+	for originNodeID := range remoteProgress {
+		originNodeIDs = append(originNodeIDs, originNodeID)
 	}
+	sort.Slice(originNodeIDs, func(i, j int) bool {
+		return originNodeIDs[i] < originNodeIDs[j]
+	})
 
-	remoteLastSequence := sess.remoteSequence()
-	appliedSequence := uint64(cursor.AppliedSequence)
-	if appliedSequence >= remoteLastSequence {
-		return false, nil
-	}
-	if !sess.beginPendingPull(appliedSequence) {
-		return true, nil
-	}
+	requested := false
+	for _, originNodeID := range originNodeIDs {
+		remoteLastEventID := remoteProgress[originNodeID]
+		cursor, err := m.store.GetOriginCursor(context.Background(), originNodeID)
+		if err != nil {
+			return false, err
+		}
+		appliedEventID := uint64(cursor.AppliedEventID)
+		if appliedEventID >= remoteLastEventID {
+			continue
+		}
+		requestID, ok := sess.beginPendingPull(originNodeID, appliedEventID)
+		if !ok {
+			requested = true
+			continue
+		}
 
-	envelope, err := m.buildPullEventsEnvelope(appliedSequence)
-	if err != nil {
-		sess.cancelPendingPull(appliedSequence)
-		return false, err
+		envelope, err := m.buildPullEventsEnvelope(originNodeID, appliedEventID, requestID)
+		if err != nil {
+			sess.cancelPendingPull(originNodeID, requestID)
+			return false, err
+		}
+		sess.enqueue(envelope)
+		requested = true
 	}
-	sess.enqueue(envelope)
-	return true, nil
+	return requested, nil
 }
 
-func (m *Manager) buildPullEventsEnvelope(afterSequence uint64) (*internalproto.Envelope, error) {
+func (m *Manager) buildPullEventsEnvelope(originNodeID int64, afterEventID, requestID uint64) (*internalproto.Envelope, error) {
 	return &internalproto.Envelope{
 		NodeId: m.cfg.NodeID,
 		Body: &internalproto.Envelope_PullEvents{
 			PullEvents: &internalproto.PullEvents{
-				AfterSequence: afterSequence,
-				Limit:         pullBatchSize,
+				OriginNodeId: originNodeID,
+				AfterEventId: afterEventID,
+				Limit:        pullBatchSize,
+				RequestId:    requestID,
 			},
 		},
 	}, nil
@@ -1246,57 +1318,102 @@ func (s *session) isClosed() bool {
 	return s.closed
 }
 
-func (s *session) noteRemoteLastSequence(sequence uint64) {
+func (s *session) noteRemoteOriginProgress(progress []*internalproto.OriginProgress) {
 	s.mu.Lock()
-	if sequence > s.remoteLastSequence {
-		s.remoteLastSequence = sequence
+	defer s.mu.Unlock()
+	if s.remoteOriginProgress == nil {
+		s.remoteOriginProgress = make(map[int64]uint64)
 	}
-	s.mu.Unlock()
+	for _, item := range progress {
+		if item == nil || item.OriginNodeId <= 0 {
+			continue
+		}
+		if item.LastEventId > s.remoteOriginProgress[item.OriginNodeId] {
+			s.remoteOriginProgress[item.OriginNodeId] = item.LastEventId
+		}
+	}
 }
 
-func (s *session) remoteSequence() uint64 {
+func (s *session) noteRemoteOriginEvent(originNodeID int64, eventID uint64) {
+	if originNodeID <= 0 || eventID == 0 {
+		return
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.remoteLastSequence
+	if s.remoteOriginProgress == nil {
+		s.remoteOriginProgress = make(map[int64]uint64)
+	}
+	if eventID > s.remoteOriginProgress[originNodeID] {
+		s.remoteOriginProgress[originNodeID] = eventID
+	}
 }
 
-func (s *session) beginPendingPull(afterSequence uint64) bool {
+func (s *session) remoteOriginEventID(originNodeID int64) uint64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.catchupInFlight {
+	return s.remoteOriginProgress[originNodeID]
+}
+
+func (s *session) remoteOriginProgressSnapshot() map[int64]uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	progress := make(map[int64]uint64, len(s.remoteOriginProgress))
+	for originNodeID, eventID := range s.remoteOriginProgress {
+		progress[originNodeID] = eventID
+	}
+	return progress
+}
+
+func (s *session) beginPendingPull(originNodeID int64, afterEventID uint64) (uint64, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.pendingPulls == nil {
+		s.pendingPulls = make(map[int64]pendingPullState)
+	}
+	if _, ok := s.pendingPulls[originNodeID]; ok {
+		return 0, false
+	}
+	s.nextPullRequestID++
+	requestID := s.nextPullRequestID
+	s.pendingPulls[originNodeID] = pendingPullState{
+		RequestID:    requestID,
+		AfterEventID: afterEventID,
+	}
+	return requestID, true
+}
+
+func (s *session) hasPendingPull(originNodeID int64) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, ok := s.pendingPulls[originNodeID]
+	return ok
+}
+
+func (s *session) hasPendingPulls() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.pendingPulls) > 0
+}
+
+func (s *session) cancelPendingPull(originNodeID int64, requestID uint64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	state, ok := s.pendingPulls[originNodeID]
+	if ok && state.RequestID == requestID {
+		delete(s.pendingPulls, originNodeID)
+	}
+}
+
+func (s *session) completePendingPull(originNodeID int64, requestID uint64) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	state, ok := s.pendingPulls[originNodeID]
+	if !ok || state.RequestID != requestID {
 		return false
 	}
-	s.catchupInFlight = true
-	s.pendingPullAfter = afterSequence
+	delete(s.pendingPulls, originNodeID)
 	return true
-}
-
-func (s *session) hasPendingPull() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.catchupInFlight
-}
-
-func (s *session) cancelPendingPull(afterSequence uint64) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.catchupInFlight && s.pendingPullAfter == afterSequence {
-		s.catchupInFlight = false
-	}
-}
-
-func (s *session) matchesPendingPull(batchStart uint64) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.catchupInFlight && batchStart == s.pendingPullAfter+1
-}
-
-func (s *session) completePendingPull(batchStart uint64) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.catchupInFlight && batchStart == s.pendingPullAfter+1 {
-		s.catchupInFlight = false
-	}
 }
 
 func (s *session) beginBootstrap() bool {
@@ -1411,24 +1528,31 @@ func (s *session) completeSnapshotRequest(partition string) {
 	delete(s.pendingSnapshotParts, partition)
 }
 
-func batchStartSequence(endSequence uint64, batchLen int) (uint64, error) {
-	if batchLen <= 0 {
+func validateOriginEventBatch(originNodeID int64, events []*internalproto.ReplicatedEvent) (int64, error) {
+	if originNodeID <= 0 {
+		return 0, errors.New("event batch origin node id cannot be empty")
+	}
+	if len(events) == 0 {
 		return 0, errors.New("event batch cannot be empty")
 	}
-	if uint64(batchLen) > endSequence {
-		return 0, fmt.Errorf("event batch sequence %d smaller than batch length %d", endSequence, batchLen)
-	}
-	return endSequence - uint64(batchLen) + 1, nil
-}
 
-func advanceContiguousSequence(current, batchStart, batchEnd uint64) uint64 {
-	if current >= batchEnd {
-		return current
+	var lastEventID int64
+	for i, event := range events {
+		if event == nil {
+			return 0, errors.New("event batch cannot contain nil events")
+		}
+		if event.OriginNodeId != originNodeID {
+			return 0, fmt.Errorf("event batch origin mismatch: got %d want %d", event.OriginNodeId, originNodeID)
+		}
+		if event.EventId == 0 {
+			return 0, errors.New("event batch event id cannot be empty")
+		}
+		if i > 0 && event.EventId <= lastEventID {
+			return 0, fmt.Errorf("event batch event ids must be strictly increasing: %d then %d", lastEventID, event.EventId)
+		}
+		lastEventID = event.EventId
 	}
-	if current+1 < batchStart {
-		return current
-	}
-	return batchEnd
+	return lastEventID, nil
 }
 
 func minInt(a, b int) int {

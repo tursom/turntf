@@ -42,19 +42,6 @@ type MessageTrimRepository interface {
 	RecordMessageTrim(context.Context, int64) error
 }
 
-type PendingProjection struct {
-	OriginNodeID  int64           `json:"origin_node_id"`
-	EventID       int64           `json:"event_id"`
-	EventType     EventType       `json:"event_type"`
-	Aggregate     string          `json:"aggregate"`
-	AggregateNode int64           `json:"aggregate_node_id"`
-	AggregateID   int64           `json:"aggregate_id"`
-	AttemptCount  int64           `json:"attempt_count"`
-	LastError     string          `json:"last_error"`
-	FirstFailedAt clock.Timestamp `json:"first_failed_at"`
-	LastFailedAt  clock.Timestamp `json:"last_failed_at"`
-}
-
 type ProjectionStats struct {
 	PendingTotal int64
 	LastFailedAt *clock.Timestamp

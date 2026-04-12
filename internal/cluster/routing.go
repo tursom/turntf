@@ -52,9 +52,9 @@ func (m *Manager) handleTransientPacket(sess *session, envelope *internalproto.E
 		PacketID:     body.PacketId,
 		SourceNodeID: body.SourceNodeId,
 		TargetNodeID: body.TargetNodeId,
-		RelayTarget: store.UserKey{
-			NodeID: body.RelayTargetNodeId,
-			UserID: body.RelayTargetUserId,
+		Recipient: store.UserKey{
+			NodeID: body.RecipientNodeId,
+			UserID: body.RecipientUserId,
 		},
 		Sender:       body.Sender,
 		Body:         append([]byte(nil), body.Body...),
@@ -387,15 +387,15 @@ func shouldSwitchRoute(current, candidate routeEntry) bool {
 
 func transientPacketProto(packet store.TransientPacket) *internalproto.TransientPacket {
 	return &internalproto.TransientPacket{
-		PacketId:          packet.PacketID,
-		SourceNodeId:      packet.SourceNodeID,
-		TargetNodeId:      packet.TargetNodeID,
-		RelayTargetNodeId: packet.RelayTarget.NodeID,
-		RelayTargetUserId: packet.RelayTarget.UserID,
-		Sender:            packet.Sender,
-		Body:              append([]byte(nil), packet.Body...),
-		DeliveryMode:      storeDeliveryModeToCluster(packet.DeliveryMode),
-		TtlHops:           uint32(packet.TTLHops),
+		PacketId:        packet.PacketID,
+		SourceNodeId:    packet.SourceNodeID,
+		TargetNodeId:    packet.TargetNodeID,
+		RecipientNodeId: packet.Recipient.NodeID,
+		RecipientUserId: packet.Recipient.UserID,
+		Sender:          packet.Sender,
+		Body:            append([]byte(nil), packet.Body...),
+		DeliveryMode:    storeDeliveryModeToCluster(packet.DeliveryMode),
+		TtlHops:         uint32(packet.TTLHops),
 	}
 }
 

@@ -2545,18 +2545,18 @@ func (x *RouteAdvertisement) GetResidualJitterMs() uint32 {
 }
 
 type TransientPacket struct {
-	state             protoimpl.MessageState `protogen:"open.v1"`
-	PacketId          uint64                 `protobuf:"varint,1,opt,name=packet_id,json=packetId,proto3" json:"packet_id,omitempty"`
-	SourceNodeId      int64                  `protobuf:"varint,2,opt,name=source_node_id,json=sourceNodeId,proto3" json:"source_node_id,omitempty"`
-	TargetNodeId      int64                  `protobuf:"varint,3,opt,name=target_node_id,json=targetNodeId,proto3" json:"target_node_id,omitempty"`
-	RelayTargetNodeId int64                  `protobuf:"varint,4,opt,name=relay_target_node_id,json=relayTargetNodeId,proto3" json:"relay_target_node_id,omitempty"`
-	RelayTargetUserId int64                  `protobuf:"varint,5,opt,name=relay_target_user_id,json=relayTargetUserId,proto3" json:"relay_target_user_id,omitempty"`
-	Sender            string                 `protobuf:"bytes,6,opt,name=sender,proto3" json:"sender,omitempty"`
-	Body              []byte                 `protobuf:"bytes,7,opt,name=body,proto3" json:"body,omitempty"`
-	DeliveryMode      ClusterDeliveryMode    `protobuf:"varint,8,opt,name=delivery_mode,json=deliveryMode,proto3,enum=notifier.cluster.v1.ClusterDeliveryMode" json:"delivery_mode,omitempty"`
-	TtlHops           uint32                 `protobuf:"varint,9,opt,name=ttl_hops,json=ttlHops,proto3" json:"ttl_hops,omitempty"`
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	PacketId        uint64                 `protobuf:"varint,1,opt,name=packet_id,json=packetId,proto3" json:"packet_id,omitempty"`
+	SourceNodeId    int64                  `protobuf:"varint,2,opt,name=source_node_id,json=sourceNodeId,proto3" json:"source_node_id,omitempty"`
+	TargetNodeId    int64                  `protobuf:"varint,3,opt,name=target_node_id,json=targetNodeId,proto3" json:"target_node_id,omitempty"`
+	RecipientNodeId int64                  `protobuf:"varint,4,opt,name=recipient_node_id,json=recipientNodeId,proto3" json:"recipient_node_id,omitempty"`
+	RecipientUserId int64                  `protobuf:"varint,5,opt,name=recipient_user_id,json=recipientUserId,proto3" json:"recipient_user_id,omitempty"`
+	Sender          string                 `protobuf:"bytes,6,opt,name=sender,proto3" json:"sender,omitempty"`
+	Body            []byte                 `protobuf:"bytes,7,opt,name=body,proto3" json:"body,omitempty"`
+	DeliveryMode    ClusterDeliveryMode    `protobuf:"varint,8,opt,name=delivery_mode,json=deliveryMode,proto3,enum=notifier.cluster.v1.ClusterDeliveryMode" json:"delivery_mode,omitempty"`
+	TtlHops         uint32                 `protobuf:"varint,9,opt,name=ttl_hops,json=ttlHops,proto3" json:"ttl_hops,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *TransientPacket) Reset() {
@@ -2610,16 +2610,16 @@ func (x *TransientPacket) GetTargetNodeId() int64 {
 	return 0
 }
 
-func (x *TransientPacket) GetRelayTargetNodeId() int64 {
+func (x *TransientPacket) GetRecipientNodeId() int64 {
 	if x != nil {
-		return x.RelayTargetNodeId
+		return x.RecipientNodeId
 	}
 	return 0
 }
 
-func (x *TransientPacket) GetRelayTargetUserId() int64 {
+func (x *TransientPacket) GetRecipientUserId() int64 {
 	if x != nil {
-		return x.RelayTargetUserId
+		return x.RecipientUserId
 	}
 	return 0
 }
@@ -2869,13 +2869,13 @@ const file_cluster_proto_rawDesc = "" +
 	"\treachable\x18\x02 \x01(\bR\treachable\x12\"\n" +
 	"\rtotal_cost_ms\x18\x03 \x01(\rR\vtotalCostMs\x12(\n" +
 	"\x10residual_cost_ms\x18\x04 \x01(\rR\x0eresidualCostMs\x12,\n" +
-	"\x12residual_jitter_ms\x18\x05 \x01(\rR\x10residualJitterMs\"\xf2\x02\n" +
+	"\x12residual_jitter_ms\x18\x05 \x01(\rR\x10residualJitterMs\"\xe8\x02\n" +
 	"\x0fTransientPacket\x12\x1b\n" +
 	"\tpacket_id\x18\x01 \x01(\x04R\bpacketId\x12$\n" +
 	"\x0esource_node_id\x18\x02 \x01(\x03R\fsourceNodeId\x12$\n" +
-	"\x0etarget_node_id\x18\x03 \x01(\x03R\ftargetNodeId\x12/\n" +
-	"\x14relay_target_node_id\x18\x04 \x01(\x03R\x11relayTargetNodeId\x12/\n" +
-	"\x14relay_target_user_id\x18\x05 \x01(\x03R\x11relayTargetUserId\x12\x16\n" +
+	"\x0etarget_node_id\x18\x03 \x01(\x03R\ftargetNodeId\x12*\n" +
+	"\x11recipient_node_id\x18\x04 \x01(\x03R\x0frecipientNodeId\x12*\n" +
+	"\x11recipient_user_id\x18\x05 \x01(\x03R\x0frecipientUserId\x12\x16\n" +
 	"\x06sender\x18\x06 \x01(\tR\x06sender\x12\x12\n" +
 	"\x04body\x18\a \x01(\fR\x04body\x12M\n" +
 	"\rdelivery_mode\x18\b \x01(\x0e2(.notifier.cluster.v1.ClusterDeliveryModeR\fdeliveryMode\x12\x19\n" +

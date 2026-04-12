@@ -16,7 +16,7 @@
 - `POST /nodes/{node_id}/users/{user_id}/subscriptions`：维护用户对 channel 的订阅。
 - `GET /nodes/{node_id}/users/{user_id}/messages?limit=N`：HTTP 查询消息，`body` 是 base64 字节。
 - `POST /nodes/{node_id}/users/{user_id}/messages`：HTTP 写消息，`body` 是 base64 字节。
-- `POST /nodes/{node_id}/users/3/messages`：HTTP 发送节点入口瞬时包，需额外提供 `relay_target`。
+- `POST /nodes/{node_id}/users/{user_id}/messages`：HTTP 发送消息；当 `delivery_kind = transient` 时走不落库瞬时投递。
 - `GET /ws/client`：客户端长连接，连接后第一帧必须是 protobuf `LoginRequest`；登录成功后还可继续发送用户管理、订阅管理、历史查询和运维查询 RPC。
 
 ## 端到端流程
@@ -31,7 +31,7 @@
 8. 客户端收到 `MessagePushed` 后先落库，再保存 `(node_id, seq)` 游标，最后可选发送 `AckMessage`。
 9. 客户端可继续通过同一条 WebSocket 发送查询或管理 RPC，例如 `get_user`、`list_messages`、`subscribe_channel`、`list_events`、`metrics`。
 10. 客户端通过同一条 WebSocket 发送 `SendMessageRequest` 写普通持久化消息。
-11. 如需向目标节点在线用户发送非持久化数据包，客户端把 `target.user_id` 设为 `3`，并提供 `relay_target` 与 `delivery_mode`。
+11. 如需向在线目标用户发送非持久化数据包，客户端直接把 `target` 设为最终目标用户，并把 `delivery_kind` 设为 `TRANSIENT`。
 12. 网络断开后，客户端用本地游标重连，服务端按 `seen_messages` 跳过已持久化消息。
 
 ## 服务端准备
@@ -89,7 +89,7 @@ curl -sS -X POST http://127.0.0.1:8080/nodes/4096/users/1025/subscriptions \
 - 消息表：保存完整 `Message`，包括 `user_node_id`、`user_id`、`node_id`、`seq`、`sender`、`body`、`created_at_hlc`。
 - 游标表：保存已成功持久化消息的 `(node_id, seq)`。
 
-如果业务使用节点入口瞬时包，可选再维护一张短期去重表记录 `packet_id`；这属于应用层优化，不属于协议可靠性要求。
+如果业务使用瞬时包，可选再维护一张短期去重表记录 `packet_id`；这属于应用层优化，不属于协议可靠性要求。
 
 推荐本地唯一键：
 
@@ -152,7 +152,7 @@ ServerEnvelope {
 
 登录成功后，服务端立即开始补发历史消息。客户端要准备好在 `LoginResponse` 后连续处理多个 `MessagePushed`。
 
-如果其他节点或本节点通过 `(node_id, 3)` 节点入口把瞬时包转发给当前用户，客户端还可能收到 `PacketPushed`。这类数据包不会进入历史补发。
+如果其他节点或本节点把瞬时包转发给当前用户，客户端还可能收到 `PacketPushed`。这类数据包不会进入历史补发。
 
 ## 接收消息
 
@@ -235,29 +235,29 @@ ServerEnvelope {
 
 客户端应把 `send_message_response.message` 也按普通消息落库，并保存 `(node_id, seq)`。服务端当前会在同连接中把该消息标记为已见，通常不会再重复推送；客户端仍要按 `(node_id, seq)` 幂等处理。
 
-发送节点入口瞬时包：
+发送目标用户瞬时包：
 
 ```protobuf
 ClientEnvelope {
   send_message: SendMessageRequest {
     request_id: 43
-    target: { node_id: 8192, user_id: 3 }
-    relay_target: { node_id: 8192, user_id: 1025 }
+    target: { node_id: 8192, user_id: 1025 }
     sender: "relay"
     body: "\xff\x00payload"
+    delivery_kind: CLIENT_DELIVERY_KIND_TRANSIENT
     delivery_mode: CLIENT_DELIVERY_MODE_BEST_EFFORT
   }
 }
 ```
 
-成功后服务端返回 `send_message_response.relay_accepted`。这只表示瞬时包已进入本地路由层，不代表目标用户已经收到。
+成功后服务端返回 `send_message_response.transient_accepted`。这只表示瞬时包已进入本地路由层，不代表目标用户已经收到。
 
 发送权限：
 
 - 普通用户可以给自己发送。
 - 普通用户可以给已订阅 channel 发送。
 - 管理员可以给任意用户、channel 或 broadcast 发送。
-- 任意已登录用户都可以向 `(node_id, 3)` 发送瞬时包，但必须指定目标节点上的 `relay_target` 登录用户。
+- 瞬时消息只能发给可登录用户；普通用户只能发给自己，管理员可以发给任意可登录用户。
 
 ## HTTP 消息接口
 
@@ -274,16 +274,16 @@ curl -sS -X POST http://127.0.0.1:8080/nodes/4096/users/1025/messages \
 
 其中 `/wBwYXlsb2Fk` 是字节 `ff 00 70 61 79 6c 6f 61 64` 的 base64。
 
-发送节点入口瞬时包示例：
+发送目标用户瞬时包示例：
 
 ```bash
-curl -sS -X POST http://127.0.0.1:8080/nodes/8192/users/3/messages \
+curl -sS -X POST http://127.0.0.1:8080/nodes/8192/users/1025/messages \
   -H "Authorization: Bearer ${ADMIN_TOKEN}" \
   -H 'Content-Type: application/json' \
   -d '{
     "sender":"relay",
     "body":"/wBwYXlsb2Fk",
-    "relay_target":{"node_id":8192,"user_id":1025},
+    "delivery_kind":"transient",
     "delivery_mode":"route_retry"
   }'
 ```
@@ -345,12 +345,12 @@ broadcast：
 2. 管理员可以向任意 broadcast 地址发送消息。
 3. 普通用户读取或连接 WebSocket 时，会看到仍在本地消息窗口内的 broadcast 消息。
 
-node ingress：
+瞬时包：
 
-1. 每个节点启动时会创建系统节点入口地址，固定 `user_id = 3`。
-2. 任意已登录用户都可以向 `(node_id, 3)` 发送瞬时包。
-3. 服务端按动态路由把瞬时包转发到目标节点。
-4. 只有目标节点上当前在线的 `relay_target` 用户能收到 `PacketPushed`。
+1. 客户端直接把消息发给最终目标用户。
+2. 服务端按动态路由把瞬时包转发到目标节点。
+3. 只有目标用户当前在线时才能收到 `PacketPushed`。
+4. 瞬时包不落库，也不会在后续登录时补发。
 
 ## 错误处理
 
@@ -370,7 +370,7 @@ ServerEnvelope {
 
 - `unauthorized`：停止自动重试，提示用户重新输入密码或重新获取账号信息。
 - `invalid_request`：检查客户端构造的 protobuf 字段，通常是目标缺失、正文为空或参数非法。
-- `invalid_request` 也包括节点入口模式下缺少 `relay_target`、`delivery_mode` 非法或 `relay_target` 指向不可登录地址。
+- `invalid_request` 也包括 `delivery_kind` 非法、给不可登录目标发送瞬时消息，或在持久化消息中错误携带 `delivery_mode`。
 - `forbidden`：提示没有权限，必要时刷新订阅关系或联系管理员。
 - `not_found`：目标用户、channel 或 broadcast 地址不存在。
 - `internal_error`：保留连接并稍后重试；如果连接断开，按断线重连流程处理。

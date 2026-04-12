@@ -63,7 +63,7 @@ message SendMessageRequest {
   UserRef target = 2;
   string sender = 3;
   bytes body = 4;
-  UserRef relay_target = 5;
+  ClientDeliveryKind delivery_kind = 5;
   ClientDeliveryMode delivery_mode = 6;
 }
 
@@ -71,7 +71,7 @@ message SendMessageResponse {
   uint64 request_id = 1;
   oneof body {
     Message message = 2;
-    RelayAccepted relay_accepted = 3;
+    TransientAccepted transient_accepted = 3;
   }
 }
 
@@ -83,11 +83,11 @@ message PacketPushed {
   Packet packet = 1;
 }
 
-message RelayAccepted {
+message TransientAccepted {
   uint64 packet_id = 1;
   int64 source_node_id = 2;
   int64 target_node_id = 3;
-  UserRef relay_target = 4;
+  UserRef recipient = 4;
   ClientDeliveryMode delivery_mode = 5;
 }
 
@@ -246,6 +246,12 @@ message MessageCursor {
   int64 seq = 2;
 }
 
+enum ClientDeliveryKind {
+  CLIENT_DELIVERY_KIND_UNSPECIFIED = 0;
+  CLIENT_DELIVERY_KIND_PERSISTENT = 1;
+  CLIENT_DELIVERY_KIND_TRANSIENT = 2;
+}
+
 enum ClientDeliveryMode {
   CLIENT_DELIVERY_MODE_UNSPECIFIED = 0;
   CLIENT_DELIVERY_MODE_BEST_EFFORT = 1;
@@ -283,7 +289,7 @@ message Packet {
   uint64 packet_id = 1;
   int64 source_node_id = 2;
   int64 target_node_id = 3;
-  UserRef relay_target = 4;
+  UserRef recipient = 4;
   string sender = 5;
   bytes body = 6;
   ClientDeliveryMode delivery_mode = 7;

@@ -261,8 +261,8 @@ message TransientPacket {
   uint64 packet_id = 1;
   int64 source_node_id = 2;
   int64 target_node_id = 3;
-  int64 relay_target_node_id = 4;
-  int64 relay_target_user_id = 5;
+  int64 recipient_node_id = 4;
+  int64 recipient_user_id = 5;
   string sender = 6;
   bytes body = 7;
   ClusterDeliveryMode delivery_mode = 8;

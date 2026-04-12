@@ -297,18 +297,16 @@ func (s *clientWSSession) handleSendMessage(ctx context.Context, req *internalpr
 	if err := s.http.authorizeCreateMessage(ctx, s.principal, target); err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
-	if target.UserID == store.NodeIngressUserID {
-		if req.RelayTarget == nil || req.RelayTarget.NodeId <= 0 || req.RelayTarget.UserId <= 0 {
-			return s.writeStoreOrRequestError(req.RequestId, fmt.Errorf("%w: relay_target is required", store.ErrInvalidInput))
-		}
+	deliveryKind, err := clientDeliveryKindFromProto(req.DeliveryKind)
+	if err != nil {
+		return s.writeStoreOrRequestError(req.RequestId, err)
+	}
+	if deliveryKind == deliveryKindTransient {
 		mode, err := store.NormalizeDeliveryMode(clientDeliveryModeString(req.DeliveryMode))
 		if err != nil {
 			return s.writeStoreOrRequestError(req.RequestId, err)
 		}
-		packet, err := s.http.service.DispatchTransientPacket(ctx, target, store.UserKey{
-			NodeID: req.RelayTarget.NodeId,
-			UserID: req.RelayTarget.UserId,
-		}, req.Sender, req.Body, mode)
+		packet, err := s.http.service.DispatchTransientPacket(ctx, target, req.Sender, req.Body, mode)
 		if err != nil {
 			return s.writeStoreOrRequestError(req.RequestId, err)
 		}
@@ -316,18 +314,15 @@ func (s *clientWSSession) handleSendMessage(ctx context.Context, req *internalpr
 			Body: &internalproto.ServerEnvelope_SendMessageResponse{
 				SendMessageResponse: &internalproto.SendMessageResponse{
 					RequestId: req.RequestId,
-					Body: &internalproto.SendMessageResponse_RelayAccepted{
-						RelayAccepted: clientProtoRelayAccepted(packet),
+					Body: &internalproto.SendMessageResponse_TransientAccepted{
+						TransientAccepted: clientProtoTransientAccepted(packet),
 					},
 				},
 			},
 		})
 	}
-	if req.RelayTarget != nil {
-		return s.writeStoreOrRequestError(req.RequestId, fmt.Errorf("%w: relay_target is only allowed for node ingress messages", store.ErrInvalidInput))
-	}
 	if req.DeliveryMode != internalproto.ClientDeliveryMode_CLIENT_DELIVERY_MODE_UNSPECIFIED {
-		return s.writeStoreOrRequestError(req.RequestId, fmt.Errorf("%w: delivery_mode is only allowed for node ingress messages", store.ErrInvalidInput))
+		return s.writeStoreOrRequestError(req.RequestId, fmt.Errorf("%w: delivery_mode is only allowed for transient messages", store.ErrInvalidInput))
 	}
 	message, _, err := s.http.service.CreateMessage(ctx, store.CreateMessageParams{
 		UserKey: target,
@@ -466,20 +461,31 @@ func clientProtoPacket(packet store.TransientPacket) *internalproto.Packet {
 		PacketId:     packet.PacketID,
 		SourceNodeId: packet.SourceNodeID,
 		TargetNodeId: packet.TargetNodeID,
-		RelayTarget:  &internalproto.UserRef{NodeId: packet.RelayTarget.NodeID, UserId: packet.RelayTarget.UserID},
+		Recipient:    &internalproto.UserRef{NodeId: packet.Recipient.NodeID, UserId: packet.Recipient.UserID},
 		Sender:       packet.Sender,
 		Body:         append([]byte(nil), packet.Body...),
 		DeliveryMode: clientDeliveryModeProto(packet.DeliveryMode),
 	}
 }
 
-func clientProtoRelayAccepted(packet store.TransientPacket) *internalproto.RelayAccepted {
-	return &internalproto.RelayAccepted{
+func clientProtoTransientAccepted(packet store.TransientPacket) *internalproto.TransientAccepted {
+	return &internalproto.TransientAccepted{
 		PacketId:     packet.PacketID,
 		SourceNodeId: packet.SourceNodeID,
 		TargetNodeId: packet.TargetNodeID,
-		RelayTarget:  &internalproto.UserRef{NodeId: packet.RelayTarget.NodeID, UserId: packet.RelayTarget.UserID},
+		Recipient:    &internalproto.UserRef{NodeId: packet.Recipient.NodeID, UserId: packet.Recipient.UserID},
 		DeliveryMode: clientDeliveryModeProto(packet.DeliveryMode),
+	}
+}
+
+func clientDeliveryKindFromProto(kind internalproto.ClientDeliveryKind) (deliveryKind, error) {
+	switch kind {
+	case internalproto.ClientDeliveryKind_CLIENT_DELIVERY_KIND_UNSPECIFIED, internalproto.ClientDeliveryKind_CLIENT_DELIVERY_KIND_PERSISTENT:
+		return deliveryKindPersistent, nil
+	case internalproto.ClientDeliveryKind_CLIENT_DELIVERY_KIND_TRANSIENT:
+		return deliveryKindTransient, nil
+	default:
+		return "", fmt.Errorf("%w: unsupported delivery kind %q", store.ErrInvalidInput, kind.String())
 	}
 }
 

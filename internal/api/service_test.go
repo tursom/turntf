@@ -20,6 +20,15 @@ func (s *recordingSink) Publish(event store.Event) {
 	s.events = append(s.events, event)
 }
 
+type recordingTransientReceiver struct {
+	packets []store.TransientPacket
+}
+
+func (r *recordingTransientReceiver) ReceiveTransientPacket(packet store.TransientPacket) bool {
+	r.packets = append(r.packets, packet)
+	return true
+}
+
 func TestServicePublishesOnlySuccessfulWrites(t *testing.T) {
 	t.Parallel()
 
@@ -97,5 +106,61 @@ func TestServicePublishesOnlySuccessfulWrites(t *testing.T) {
 	}
 	if len(sink.events) != 3 {
 		t.Fatalf("expected failed message create to avoid publishing, got %d events", len(sink.events))
+	}
+}
+
+func TestServiceDispatchTransientPacketDoesNotPublishEvents(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "service-transient.db")
+	st, err := store.Open(dbPath, store.Options{
+		NodeID: testNodeID(1),
+	})
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	if err := st.Init(context.Background()); err != nil {
+		t.Fatalf("init store: %v", err)
+	}
+
+	sink := &recordingSink{}
+	svc := New(st, sink)
+	receiver := &recordingTransientReceiver{}
+	svc.SetTransientPacketReceiver(receiver)
+
+	user, _, err := svc.CreateUser(context.Background(), store.CreateUserParams{
+		Username:     "alice",
+		PasswordHash: "hash-1",
+		Role:         store.RoleUser,
+	})
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	if len(sink.events) != 1 {
+		t.Fatalf("expected create user event, got %d", len(sink.events))
+	}
+
+	packet, err := svc.DispatchTransientPacket(context.Background(), user.Key(), "relay", []byte("ephemeral"), store.DeliveryModeBestEffort)
+	if err != nil {
+		t.Fatalf("dispatch transient packet: %v", err)
+	}
+	if packet.PacketID == 0 || packet.Recipient != user.Key() {
+		t.Fatalf("unexpected transient packet: %+v", packet)
+	}
+	if len(receiver.packets) != 1 || receiver.packets[0].PacketID != packet.PacketID {
+		t.Fatalf("expected local transient delivery, got %+v", receiver.packets)
+	}
+	if len(sink.events) != 1 {
+		t.Fatalf("expected transient dispatch to avoid publishing events, got %d events", len(sink.events))
+	}
+
+	messages, err := svc.ListMessagesByUser(context.Background(), user.Key(), 10)
+	if err != nil {
+		t.Fatalf("list messages: %v", err)
+	}
+	if len(messages) != 0 {
+		t.Fatalf("expected transient dispatch to avoid persistence, got %+v", messages)
 	}
 }

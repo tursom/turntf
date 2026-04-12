@@ -1621,7 +1621,7 @@ func TestTransientPacketRoutesAcrossMultipleHops(t *testing.T) {
 		PacketID:     1,
 		SourceNodeID: nodeA.id,
 		TargetNodeID: nodeC.id,
-		RelayTarget:  charlie.Key(),
+		Recipient:    charlie.Key(),
 		Sender:       "relay",
 		Body:         []byte("over-mesh"),
 		DeliveryMode: store.DeliveryModeBestEffort,

@@ -301,7 +301,74 @@ func TestClientWebSocketSeenCursorAndSendMessage(t *testing.T) {
 	}
 }
 
-func TestNodeIngressHTTPAndWebSocketTransientPacket(t *testing.T) {
+func TestClientWebSocketTransientSendMessage(t *testing.T) {
+	t.Parallel()
+
+	testAPI := newAuthenticatedTestAPI(t)
+	server := httptest.NewServer(testAPI.handler)
+	defer server.Close()
+
+	adminKey := store.UserKey{NodeID: testNodeID(1), UserID: store.BootstrapAdminUserID}
+	adminToken := loginToken(t, testAPI.handler, adminKey, "root-password")
+	aliceKey := createUserAs(t, testAPI.handler, adminToken, "alice", "alice-password", store.RoleUser)
+
+	conn := dialClientWebSocket(t, server.URL)
+	defer conn.Close()
+	loginClientWebSocket(t, conn, aliceKey, "alice-password")
+
+	writeClientEnvelope(t, conn, &internalproto.ClientEnvelope{
+		Body: &internalproto.ClientEnvelope_SendMessage{
+			SendMessage: &internalproto.SendMessageRequest{
+				RequestId:    43,
+				Target:       &internalproto.UserRef{NodeId: aliceKey.NodeID, UserId: aliceKey.UserID},
+				Sender:       "alice",
+				Body:         []byte("ephemeral"),
+				DeliveryKind: internalproto.ClientDeliveryKind_CLIENT_DELIVERY_KIND_TRANSIENT,
+				DeliveryMode: internalproto.ClientDeliveryMode_CLIENT_DELIVERY_MODE_BEST_EFFORT,
+			},
+		},
+	})
+	var (
+		gotSendResp bool
+		gotPacket   bool
+	)
+	for range 2 {
+		envelope := readServerEnvelope(t, conn)
+		if sendResp := envelope.GetSendMessageResponse(); sendResp != nil {
+			if sendResp.RequestId != 43 || sendResp.GetTransientAccepted() == nil {
+				t.Fatalf("unexpected transient send response: %+v", sendResp)
+			}
+			gotSendResp = true
+			continue
+		}
+		if packet := envelope.GetPacketPushed(); packet != nil {
+			if packet.Packet == nil || string(packet.Packet.GetBody()) != "ephemeral" || packet.Packet.GetRecipient().GetUserId() != aliceKey.UserID {
+				t.Fatalf("unexpected transient packet push: %+v", packet)
+			}
+			gotPacket = true
+			continue
+		}
+		t.Fatalf("unexpected websocket envelope: %+v", envelope)
+	}
+	if !gotSendResp || !gotPacket {
+		t.Fatalf("expected transient send response and packet push, got response=%v packet=%v", gotSendResp, gotPacket)
+	}
+
+	var listed struct {
+		Items []map[string]any `json:"items"`
+		Count int              `json:"count"`
+	}
+	mustJSON(t, doJSONWithHeaders(t, testAPI.handler, http.MethodGet, userMessagesPath(aliceKey.NodeID, aliceKey.UserID), nil, map[string]string{
+		"Authorization": "Bearer " + loginToken(t, testAPI.handler, aliceKey, "alice-password"),
+	}, http.StatusOK), &listed)
+	if listed.Count != 0 {
+		t.Fatalf("expected transient ws send to avoid persistence, got %+v", listed)
+	}
+}
+
+func TestTransientHTTPAndWebSocketPacket(t *testing.T) {
+	t.Parallel()
+
 	testAPI := newAuthenticatedTestAPI(t)
 	server := httptest.NewServer(testAPI.handler)
 	defer server.Close()
@@ -331,13 +398,10 @@ func TestNodeIngressHTTPAndWebSocketTransientPacket(t *testing.T) {
 		PacketID     uint64 `json:"packet_id"`
 		TargetNodeID int64  `json:"target_node_id"`
 	}
-	mustJSON(t, doJSONWithHeaders(t, testAPI.handler, http.MethodPost, userMessagesPath(testNodeID(1), store.NodeIngressUserID), map[string]any{
-		"sender": "relay",
-		"body":   []byte("transient"),
-		"relay_target": map[string]any{
-			"node_id": aliceKey.NodeID,
-			"user_id": aliceKey.UserID,
-		},
+	mustJSON(t, doJSONWithHeaders(t, testAPI.handler, http.MethodPost, userMessagesPath(aliceKey.NodeID, aliceKey.UserID), map[string]any{
+		"sender":        "relay",
+		"body":          []byte("transient"),
+		"delivery_kind": string(deliveryKindTransient),
 		"delivery_mode": string(store.DeliveryModeBestEffort),
 	}, map[string]string{
 		"Authorization": "Bearer " + aliceToken,
@@ -345,38 +409,38 @@ func TestNodeIngressHTTPAndWebSocketTransientPacket(t *testing.T) {
 	if accepted.Mode != "transient" || accepted.PacketID == 0 || accepted.TargetNodeID != aliceKey.NodeID {
 		t.Fatalf("unexpected accepted response: %+v", accepted)
 	}
-	if !testAPI.http.ReceiveTransientPacket(store.TransientPacket{
-		PacketID:     accepted.PacketID,
-		SourceNodeID: testNodeID(1),
-		TargetNodeID: aliceKey.NodeID,
-		RelayTarget:  aliceKey,
-		Sender:       "relay",
-		Body:         []byte("transient"),
-		DeliveryMode: store.DeliveryModeBestEffort,
-	}) {
-		t.Fatalf("expected transient packet receiver to find websocket session")
-	}
 
 	packet := readServerEnvelope(t, conn).GetPacketPushed()
-	if packet == nil || packet.Packet == nil || string(packet.Packet.GetBody()) != "transient" || packet.Packet.GetRelayTarget().GetUserId() != aliceKey.UserID {
+	if packet == nil || packet.Packet == nil || string(packet.Packet.GetBody()) != "transient" || packet.Packet.GetRecipient().GetUserId() != aliceKey.UserID {
 		t.Fatalf("unexpected packet push: %+v", packet)
+	}
+
+	var listed struct {
+		Items []map[string]any `json:"items"`
+		Count int              `json:"count"`
+	}
+	mustJSON(t, doJSONWithHeaders(t, testAPI.handler, http.MethodGet, userMessagesPath(aliceKey.NodeID, aliceKey.UserID), nil, map[string]string{
+		"Authorization": "Bearer " + aliceToken,
+	}, http.StatusOK), &listed)
+	if listed.Count != 0 {
+		t.Fatalf("expected transient packet to avoid persistence, got %+v", listed)
 	}
 }
 
-func TestNodeIngressRequiresRelayTarget(t *testing.T) {
+func TestTransientRequiresLoginRecipient(t *testing.T) {
 	t.Parallel()
 
 	testAPI := newAuthenticatedTestAPI(t)
 	adminKey := store.UserKey{NodeID: testNodeID(1), UserID: store.BootstrapAdminUserID}
 	adminToken := loginToken(t, testAPI.handler, adminKey, "root-password")
-	aliceKey := createUserAs(t, testAPI.handler, adminToken, "alice", "alice-password", store.RoleUser)
-	aliceToken := loginToken(t, testAPI.handler, aliceKey, "alice-password")
+	channelKey := createUserAs(t, testAPI.handler, adminToken, "orders", "", store.RoleChannel)
 
-	doJSONWithHeaders(t, testAPI.handler, http.MethodPost, userMessagesPath(testNodeID(1), store.NodeIngressUserID), map[string]any{
-		"sender": "relay",
-		"body":   []byte("transient"),
+	doJSONWithHeaders(t, testAPI.handler, http.MethodPost, userMessagesPath(channelKey.NodeID, channelKey.UserID), map[string]any{
+		"sender":        "relay",
+		"body":          []byte("transient"),
+		"delivery_kind": string(deliveryKindTransient),
 	}, map[string]string{
-		"Authorization": "Bearer " + aliceToken,
+		"Authorization": "Bearer " + adminToken,
 	}, http.StatusBadRequest)
 }
 

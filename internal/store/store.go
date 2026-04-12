@@ -199,7 +199,7 @@ type TransientPacket struct {
 	PacketID      uint64       `json:"packet_id"`
 	SourceNodeID  int64        `json:"source_node_id"`
 	TargetNodeID  int64        `json:"target_node_id"`
-	RelayTarget   UserKey      `json:"relay_target"`
+	Recipient     UserKey      `json:"recipient"`
 	Sender        string       `json:"sender"`
 	Body          []byte       `json:"body"`
 	DeliveryMode  DeliveryMode `json:"delivery_mode"`

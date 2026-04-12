@@ -49,10 +49,10 @@ type updateUserRequest struct {
 }
 
 type createMessageRequest struct {
-	Sender       string         `json:"sender"`
-	Body         []byte         `json:"body"`
-	RelayTarget  *store.UserKey `json:"relay_target,omitempty"`
-	DeliveryMode string         `json:"delivery_mode,omitempty"`
+	Sender       string `json:"sender"`
+	Body         []byte `json:"body"`
+	DeliveryKind string `json:"delivery_kind,omitempty"`
+	DeliveryMode string `json:"delivery_mode,omitempty"`
 }
 
 type subscriptionRequest struct {
@@ -69,6 +69,24 @@ type loginRequest struct {
 type requestPrincipal struct {
 	User   store.User
 	Claims auth.Claims
+}
+
+type deliveryKind string
+
+const (
+	deliveryKindPersistent deliveryKind = "persistent"
+	deliveryKindTransient  deliveryKind = "transient"
+)
+
+func normalizeDeliveryKind(raw string) (deliveryKind, error) {
+	switch deliveryKind(strings.TrimSpace(raw)) {
+	case "", deliveryKindPersistent:
+		return deliveryKindPersistent, nil
+	case deliveryKindTransient:
+		return deliveryKindTransient, nil
+	default:
+		return "", fmt.Errorf("%w: unsupported delivery kind %q", store.ErrInvalidInput, raw)
+	}
 }
 
 func NewHTTP(service *Service, opts ...HTTPOptions) *HTTP {
@@ -314,18 +332,18 @@ func (h *HTTP) handleCreateMessage(w http.ResponseWriter, r *http.Request) {
 		writeStoreError(w, err)
 		return
 	}
-
-	if key.UserID == store.NodeIngressUserID {
-		if req.RelayTarget == nil {
-			writeStoreError(w, fmt.Errorf("%w: relay_target is required", store.ErrInvalidInput))
-			return
-		}
+	deliveryKind, err := normalizeDeliveryKind(req.DeliveryKind)
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	if deliveryKind == deliveryKindTransient {
 		mode, err := store.NormalizeDeliveryMode(req.DeliveryMode)
 		if err != nil {
 			writeStoreError(w, err)
 			return
 		}
-		packet, err := h.service.DispatchTransientPacket(r.Context(), key, *req.RelayTarget, req.Sender, req.Body, mode)
+		packet, err := h.service.DispatchTransientPacket(r.Context(), key, req.Sender, req.Body, mode)
 		if err != nil {
 			writeStoreError(w, err)
 			return
@@ -333,12 +351,8 @@ func (h *HTTP) handleCreateMessage(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusAccepted, transientPacketAcceptedResponse(packet))
 		return
 	}
-	if req.RelayTarget != nil {
-		writeStoreError(w, fmt.Errorf("%w: relay_target is only allowed for node ingress messages", store.ErrInvalidInput))
-		return
-	}
 	if strings.TrimSpace(req.DeliveryMode) != "" {
-		writeStoreError(w, fmt.Errorf("%w: delivery_mode is only allowed for node ingress messages", store.ErrInvalidInput))
+		writeStoreError(w, fmt.Errorf("%w: delivery_mode is only allowed for transient messages", store.ErrInvalidInput))
 		return
 	}
 
@@ -356,7 +370,7 @@ func (h *HTTP) handleCreateMessage(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *HTTP) authorizeCreateMessage(ctx context.Context, principal *requestPrincipal, key store.UserKey) error {
-	if principal == nil || key.UserID == store.NodeIngressUserID || isAdminRole(principal.User.Role) || principal.User.Key() == key {
+	if principal == nil || isAdminRole(principal.User.Role) || principal.User.Key() == key {
 		return nil
 	}
 	target, err := h.service.GetUser(ctx, key)
@@ -595,7 +609,7 @@ type transientPacketResponse struct {
 	PacketID     uint64        `json:"packet_id"`
 	SourceNodeID int64         `json:"source_node_id"`
 	TargetNodeID int64         `json:"target_node_id"`
-	RelayTarget  store.UserKey `json:"relay_target"`
+	Recipient    store.UserKey `json:"recipient"`
 	DeliveryMode string        `json:"delivery_mode"`
 }
 
@@ -654,7 +668,7 @@ func transientPacketAcceptedResponse(packet store.TransientPacket) transientPack
 		PacketID:     packet.PacketID,
 		SourceNodeID: packet.SourceNodeID,
 		TargetNodeID: packet.TargetNodeID,
-		RelayTarget:  packet.RelayTarget,
+		Recipient:    packet.Recipient,
 		DeliveryMode: string(packet.DeliveryMode),
 	}
 }
@@ -691,7 +705,7 @@ func (h *HTTP) unregisterClientSession(key store.UserKey, sess *clientWSSession)
 
 func (h *HTTP) ReceiveTransientPacket(packet store.TransientPacket) bool {
 	h.sessionsMu.RLock()
-	bucket := h.sessions[packet.RelayTarget]
+	bucket := h.sessions[packet.Recipient]
 	sessions := make([]*clientWSSession, 0, len(bucket))
 	for sess := range bucket {
 		sessions = append(sessions, sess)

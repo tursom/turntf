@@ -21,6 +21,55 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+type ClientDeliveryKind int32
+
+const (
+	ClientDeliveryKind_CLIENT_DELIVERY_KIND_UNSPECIFIED ClientDeliveryKind = 0
+	ClientDeliveryKind_CLIENT_DELIVERY_KIND_PERSISTENT  ClientDeliveryKind = 1
+	ClientDeliveryKind_CLIENT_DELIVERY_KIND_TRANSIENT   ClientDeliveryKind = 2
+)
+
+// Enum value maps for ClientDeliveryKind.
+var (
+	ClientDeliveryKind_name = map[int32]string{
+		0: "CLIENT_DELIVERY_KIND_UNSPECIFIED",
+		1: "CLIENT_DELIVERY_KIND_PERSISTENT",
+		2: "CLIENT_DELIVERY_KIND_TRANSIENT",
+	}
+	ClientDeliveryKind_value = map[string]int32{
+		"CLIENT_DELIVERY_KIND_UNSPECIFIED": 0,
+		"CLIENT_DELIVERY_KIND_PERSISTENT":  1,
+		"CLIENT_DELIVERY_KIND_TRANSIENT":   2,
+	}
+)
+
+func (x ClientDeliveryKind) Enum() *ClientDeliveryKind {
+	p := new(ClientDeliveryKind)
+	*p = x
+	return p
+}
+
+func (x ClientDeliveryKind) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (ClientDeliveryKind) Descriptor() protoreflect.EnumDescriptor {
+	return file_client_proto_enumTypes[0].Descriptor()
+}
+
+func (ClientDeliveryKind) Type() protoreflect.EnumType {
+	return &file_client_proto_enumTypes[0]
+}
+
+func (x ClientDeliveryKind) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use ClientDeliveryKind.Descriptor instead.
+func (ClientDeliveryKind) EnumDescriptor() ([]byte, []int) {
+	return file_client_proto_rawDescGZIP(), []int{0}
+}
+
 type ClientDeliveryMode int32
 
 const (
@@ -54,11 +103,11 @@ func (x ClientDeliveryMode) String() string {
 }
 
 func (ClientDeliveryMode) Descriptor() protoreflect.EnumDescriptor {
-	return file_client_proto_enumTypes[0].Descriptor()
+	return file_client_proto_enumTypes[1].Descriptor()
 }
 
 func (ClientDeliveryMode) Type() protoreflect.EnumType {
-	return &file_client_proto_enumTypes[0]
+	return &file_client_proto_enumTypes[1]
 }
 
 func (x ClientDeliveryMode) Number() protoreflect.EnumNumber {
@@ -67,7 +116,7 @@ func (x ClientDeliveryMode) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use ClientDeliveryMode.Descriptor instead.
 func (ClientDeliveryMode) EnumDescriptor() ([]byte, []int) {
-	return file_client_proto_rawDescGZIP(), []int{0}
+	return file_client_proto_rawDescGZIP(), []int{1}
 }
 
 type ClientEnvelope struct {
@@ -808,7 +857,7 @@ type SendMessageRequest struct {
 	Target        *UserRef               `protobuf:"bytes,2,opt,name=target,proto3" json:"target,omitempty"`
 	Sender        string                 `protobuf:"bytes,3,opt,name=sender,proto3" json:"sender,omitempty"`
 	Body          []byte                 `protobuf:"bytes,4,opt,name=body,proto3" json:"body,omitempty"`
-	RelayTarget   *UserRef               `protobuf:"bytes,5,opt,name=relay_target,json=relayTarget,proto3" json:"relay_target,omitempty"`
+	DeliveryKind  ClientDeliveryKind     `protobuf:"varint,5,opt,name=delivery_kind,json=deliveryKind,proto3,enum=notifier.client.v1.ClientDeliveryKind" json:"delivery_kind,omitempty"`
 	DeliveryMode  ClientDeliveryMode     `protobuf:"varint,6,opt,name=delivery_mode,json=deliveryMode,proto3,enum=notifier.client.v1.ClientDeliveryMode" json:"delivery_mode,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -872,11 +921,11 @@ func (x *SendMessageRequest) GetBody() []byte {
 	return nil
 }
 
-func (x *SendMessageRequest) GetRelayTarget() *UserRef {
+func (x *SendMessageRequest) GetDeliveryKind() ClientDeliveryKind {
 	if x != nil {
-		return x.RelayTarget
+		return x.DeliveryKind
 	}
-	return nil
+	return ClientDeliveryKind_CLIENT_DELIVERY_KIND_UNSPECIFIED
 }
 
 func (x *SendMessageRequest) GetDeliveryMode() ClientDeliveryMode {
@@ -892,7 +941,7 @@ type SendMessageResponse struct {
 	// Types that are valid to be assigned to Body:
 	//
 	//	*SendMessageResponse_Message
-	//	*SendMessageResponse_RelayAccepted
+	//	*SendMessageResponse_TransientAccepted
 	Body          isSendMessageResponse_Body `protobuf_oneof:"body"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -951,10 +1000,10 @@ func (x *SendMessageResponse) GetMessage() *Message {
 	return nil
 }
 
-func (x *SendMessageResponse) GetRelayAccepted() *RelayAccepted {
+func (x *SendMessageResponse) GetTransientAccepted() *TransientAccepted {
 	if x != nil {
-		if x, ok := x.Body.(*SendMessageResponse_RelayAccepted); ok {
-			return x.RelayAccepted
+		if x, ok := x.Body.(*SendMessageResponse_TransientAccepted); ok {
+			return x.TransientAccepted
 		}
 	}
 	return nil
@@ -968,13 +1017,13 @@ type SendMessageResponse_Message struct {
 	Message *Message `protobuf:"bytes,2,opt,name=message,proto3,oneof"`
 }
 
-type SendMessageResponse_RelayAccepted struct {
-	RelayAccepted *RelayAccepted `protobuf:"bytes,3,opt,name=relay_accepted,json=relayAccepted,proto3,oneof"`
+type SendMessageResponse_TransientAccepted struct {
+	TransientAccepted *TransientAccepted `protobuf:"bytes,3,opt,name=transient_accepted,json=transientAccepted,proto3,oneof"`
 }
 
 func (*SendMessageResponse_Message) isSendMessageResponse_Body() {}
 
-func (*SendMessageResponse_RelayAccepted) isSendMessageResponse_Body() {}
+func (*SendMessageResponse_TransientAccepted) isSendMessageResponse_Body() {}
 
 type MessagePushed struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -1064,31 +1113,31 @@ func (x *PacketPushed) GetPacket() *Packet {
 	return nil
 }
 
-type RelayAccepted struct {
+type TransientAccepted struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	PacketId      uint64                 `protobuf:"varint,1,opt,name=packet_id,json=packetId,proto3" json:"packet_id,omitempty"`
 	SourceNodeId  int64                  `protobuf:"varint,2,opt,name=source_node_id,json=sourceNodeId,proto3" json:"source_node_id,omitempty"`
 	TargetNodeId  int64                  `protobuf:"varint,3,opt,name=target_node_id,json=targetNodeId,proto3" json:"target_node_id,omitempty"`
-	RelayTarget   *UserRef               `protobuf:"bytes,4,opt,name=relay_target,json=relayTarget,proto3" json:"relay_target,omitempty"`
+	Recipient     *UserRef               `protobuf:"bytes,4,opt,name=recipient,proto3" json:"recipient,omitempty"`
 	DeliveryMode  ClientDeliveryMode     `protobuf:"varint,5,opt,name=delivery_mode,json=deliveryMode,proto3,enum=notifier.client.v1.ClientDeliveryMode" json:"delivery_mode,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *RelayAccepted) Reset() {
-	*x = RelayAccepted{}
+func (x *TransientAccepted) Reset() {
+	*x = TransientAccepted{}
 	mi := &file_client_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *RelayAccepted) String() string {
+func (x *TransientAccepted) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*RelayAccepted) ProtoMessage() {}
+func (*TransientAccepted) ProtoMessage() {}
 
-func (x *RelayAccepted) ProtoReflect() protoreflect.Message {
+func (x *TransientAccepted) ProtoReflect() protoreflect.Message {
 	mi := &file_client_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -1100,40 +1149,40 @@ func (x *RelayAccepted) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use RelayAccepted.ProtoReflect.Descriptor instead.
-func (*RelayAccepted) Descriptor() ([]byte, []int) {
+// Deprecated: Use TransientAccepted.ProtoReflect.Descriptor instead.
+func (*TransientAccepted) Descriptor() ([]byte, []int) {
 	return file_client_proto_rawDescGZIP(), []int{8}
 }
 
-func (x *RelayAccepted) GetPacketId() uint64 {
+func (x *TransientAccepted) GetPacketId() uint64 {
 	if x != nil {
 		return x.PacketId
 	}
 	return 0
 }
 
-func (x *RelayAccepted) GetSourceNodeId() int64 {
+func (x *TransientAccepted) GetSourceNodeId() int64 {
 	if x != nil {
 		return x.SourceNodeId
 	}
 	return 0
 }
 
-func (x *RelayAccepted) GetTargetNodeId() int64 {
+func (x *TransientAccepted) GetTargetNodeId() int64 {
 	if x != nil {
 		return x.TargetNodeId
 	}
 	return 0
 }
 
-func (x *RelayAccepted) GetRelayTarget() *UserRef {
+func (x *TransientAccepted) GetRecipient() *UserRef {
 	if x != nil {
-		return x.RelayTarget
+		return x.Recipient
 	}
 	return nil
 }
 
-func (x *RelayAccepted) GetDeliveryMode() ClientDeliveryMode {
+func (x *TransientAccepted) GetDeliveryMode() ClientDeliveryMode {
 	if x != nil {
 		return x.DeliveryMode
 	}
@@ -2985,7 +3034,7 @@ type Packet struct {
 	PacketId      uint64                 `protobuf:"varint,1,opt,name=packet_id,json=packetId,proto3" json:"packet_id,omitempty"`
 	SourceNodeId  int64                  `protobuf:"varint,2,opt,name=source_node_id,json=sourceNodeId,proto3" json:"source_node_id,omitempty"`
 	TargetNodeId  int64                  `protobuf:"varint,3,opt,name=target_node_id,json=targetNodeId,proto3" json:"target_node_id,omitempty"`
-	RelayTarget   *UserRef               `protobuf:"bytes,4,opt,name=relay_target,json=relayTarget,proto3" json:"relay_target,omitempty"`
+	Recipient     *UserRef               `protobuf:"bytes,4,opt,name=recipient,proto3" json:"recipient,omitempty"`
 	Sender        string                 `protobuf:"bytes,5,opt,name=sender,proto3" json:"sender,omitempty"`
 	Body          []byte                 `protobuf:"bytes,6,opt,name=body,proto3" json:"body,omitempty"`
 	DeliveryMode  ClientDeliveryMode     `protobuf:"varint,7,opt,name=delivery_mode,json=deliveryMode,proto3,enum=notifier.client.v1.ClientDeliveryMode" json:"delivery_mode,omitempty"`
@@ -3044,9 +3093,9 @@ func (x *Packet) GetTargetNodeId() int64 {
 	return 0
 }
 
-func (x *Packet) GetRelayTarget() *UserRef {
+func (x *Packet) GetRecipient() *UserRef {
 	if x != nil {
-		return x.RelayTarget
+		return x.Recipient
 	}
 	return nil
 }
@@ -3787,30 +3836,30 @@ const file_client_proto_rawDesc = "" +
 	"\rseen_messages\x18\x04 \x03(\v2!.notifier.client.v1.MessageCursorR\fseenMessages\"h\n" +
 	"\rLoginResponse\x12,\n" +
 	"\x04user\x18\x01 \x01(\v2\x18.notifier.client.v1.UserR\x04user\x12)\n" +
-	"\x10protocol_version\x18\x02 \x01(\tR\x0fprotocolVersion\"\xa1\x02\n" +
+	"\x10protocol_version\x18\x02 \x01(\tR\x0fprotocolVersion\"\xae\x02\n" +
 	"\x12SendMessageRequest\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\x04R\trequestId\x123\n" +
 	"\x06target\x18\x02 \x01(\v2\x1b.notifier.client.v1.UserRefR\x06target\x12\x16\n" +
 	"\x06sender\x18\x03 \x01(\tR\x06sender\x12\x12\n" +
-	"\x04body\x18\x04 \x01(\fR\x04body\x12>\n" +
-	"\frelay_target\x18\x05 \x01(\v2\x1b.notifier.client.v1.UserRefR\vrelayTarget\x12K\n" +
-	"\rdelivery_mode\x18\x06 \x01(\x0e2&.notifier.client.v1.ClientDeliveryModeR\fdeliveryMode\"\xc1\x01\n" +
+	"\x04body\x18\x04 \x01(\fR\x04body\x12K\n" +
+	"\rdelivery_kind\x18\x05 \x01(\x0e2&.notifier.client.v1.ClientDeliveryKindR\fdeliveryKind\x12K\n" +
+	"\rdelivery_mode\x18\x06 \x01(\x0e2&.notifier.client.v1.ClientDeliveryModeR\fdeliveryMode\"\xcd\x01\n" +
 	"\x13SendMessageResponse\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\x04R\trequestId\x127\n" +
-	"\amessage\x18\x02 \x01(\v2\x1b.notifier.client.v1.MessageH\x00R\amessage\x12J\n" +
-	"\x0erelay_accepted\x18\x03 \x01(\v2!.notifier.client.v1.RelayAcceptedH\x00R\rrelayAcceptedB\x06\n" +
+	"\amessage\x18\x02 \x01(\v2\x1b.notifier.client.v1.MessageH\x00R\amessage\x12V\n" +
+	"\x12transient_accepted\x18\x03 \x01(\v2%.notifier.client.v1.TransientAcceptedH\x00R\x11transientAcceptedB\x06\n" +
 	"\x04body\"F\n" +
 	"\rMessagePushed\x125\n" +
 	"\amessage\x18\x01 \x01(\v2\x1b.notifier.client.v1.MessageR\amessage\"B\n" +
 	"\fPacketPushed\x122\n" +
-	"\x06packet\x18\x01 \x01(\v2\x1a.notifier.client.v1.PacketR\x06packet\"\x85\x02\n" +
-	"\rRelayAccepted\x12\x1b\n" +
+	"\x06packet\x18\x01 \x01(\v2\x1a.notifier.client.v1.PacketR\x06packet\"\x84\x02\n" +
+	"\x11TransientAccepted\x12\x1b\n" +
 	"\tpacket_id\x18\x01 \x01(\x04R\bpacketId\x12$\n" +
 	"\x0esource_node_id\x18\x02 \x01(\x03R\fsourceNodeId\x12$\n" +
-	"\x0etarget_node_id\x18\x03 \x01(\x03R\ftargetNodeId\x12>\n" +
-	"\frelay_target\x18\x04 \x01(\v2\x1b.notifier.client.v1.UserRefR\vrelayTarget\x12K\n" +
+	"\x0etarget_node_id\x18\x03 \x01(\x03R\ftargetNodeId\x129\n" +
+	"\trecipient\x18\x04 \x01(\v2\x1b.notifier.client.v1.UserRefR\trecipient\x12K\n" +
 	"\rdelivery_mode\x18\x05 \x01(\x0e2&.notifier.client.v1.ClientDeliveryModeR\fdeliveryMode\"G\n" +
 	"\n" +
 	"AckMessage\x129\n" +
@@ -3965,12 +4014,12 @@ const file_client_proto_rawDesc = "" +
 	"\x03seq\x18\x04 \x01(\x03R\x03seq\x12\x16\n" +
 	"\x06sender\x18\x05 \x01(\tR\x06sender\x12\x12\n" +
 	"\x04body\x18\x06 \x01(\fR\x04body\x12$\n" +
-	"\x0ecreated_at_hlc\x18\a \x01(\tR\fcreatedAtHlc\"\xaa\x02\n" +
+	"\x0ecreated_at_hlc\x18\a \x01(\tR\fcreatedAtHlc\"\xa5\x02\n" +
 	"\x06Packet\x12\x1b\n" +
 	"\tpacket_id\x18\x01 \x01(\x04R\bpacketId\x12$\n" +
 	"\x0esource_node_id\x18\x02 \x01(\x03R\fsourceNodeId\x12$\n" +
-	"\x0etarget_node_id\x18\x03 \x01(\x03R\ftargetNodeId\x12>\n" +
-	"\frelay_target\x18\x04 \x01(\v2\x1b.notifier.client.v1.UserRefR\vrelayTarget\x12\x16\n" +
+	"\x0etarget_node_id\x18\x03 \x01(\x03R\ftargetNodeId\x129\n" +
+	"\trecipient\x18\x04 \x01(\v2\x1b.notifier.client.v1.UserRefR\trecipient\x12\x16\n" +
 	"\x06sender\x18\x05 \x01(\tR\x06sender\x12\x12\n" +
 	"\x04body\x18\x06 \x01(\fR\x04body\x12K\n" +
 	"\rdelivery_mode\x18\a \x01(\x0e2&.notifier.client.v1.ClientDeliveryModeR\fdeliveryMode\"\xa4\x02\n" +
@@ -4038,7 +4087,11 @@ const file_client_proto_rawDesc = "" +
 	"\x1asnapshot_chunks_sent_total\x18\r \x01(\x04R\x17snapshotChunksSentTotal\x12C\n" +
 	"\x1esnapshot_chunks_received_total\x18\x0e \x01(\x04R\x1bsnapshotChunksReceivedTotal\x125\n" +
 	"\x17last_snapshot_digest_at\x18\x0f \x01(\tR\x14lastSnapshotDigestAt\x123\n" +
-	"\x16last_snapshot_chunk_at\x18\x10 \x01(\tR\x13lastSnapshotChunkAt*\x86\x01\n" +
+	"\x16last_snapshot_chunk_at\x18\x10 \x01(\tR\x13lastSnapshotChunkAt*\x83\x01\n" +
+	"\x12ClientDeliveryKind\x12$\n" +
+	" CLIENT_DELIVERY_KIND_UNSPECIFIED\x10\x00\x12#\n" +
+	"\x1fCLIENT_DELIVERY_KIND_PERSISTENT\x10\x01\x12\"\n" +
+	"\x1eCLIENT_DELIVERY_KIND_TRANSIENT\x10\x02*\x86\x01\n" +
 	"\x12ClientDeliveryMode\x12$\n" +
 	" CLIENT_DELIVERY_MODE_UNSPECIFIED\x10\x00\x12$\n" +
 	" CLIENT_DELIVERY_MODE_BEST_EFFORT\x10\x01\x12$\n" +
@@ -4056,133 +4109,134 @@ func file_client_proto_rawDescGZIP() []byte {
 	return file_client_proto_rawDescData
 }
 
-var file_client_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
+var file_client_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
 var file_client_proto_msgTypes = make([]protoimpl.MessageInfo, 49)
 var file_client_proto_goTypes = []any{
-	(ClientDeliveryMode)(0),            // 0: notifier.client.v1.ClientDeliveryMode
-	(*ClientEnvelope)(nil),             // 1: notifier.client.v1.ClientEnvelope
-	(*ServerEnvelope)(nil),             // 2: notifier.client.v1.ServerEnvelope
-	(*LoginRequest)(nil),               // 3: notifier.client.v1.LoginRequest
-	(*LoginResponse)(nil),              // 4: notifier.client.v1.LoginResponse
-	(*SendMessageRequest)(nil),         // 5: notifier.client.v1.SendMessageRequest
-	(*SendMessageResponse)(nil),        // 6: notifier.client.v1.SendMessageResponse
-	(*MessagePushed)(nil),              // 7: notifier.client.v1.MessagePushed
-	(*PacketPushed)(nil),               // 8: notifier.client.v1.PacketPushed
-	(*RelayAccepted)(nil),              // 9: notifier.client.v1.RelayAccepted
-	(*AckMessage)(nil),                 // 10: notifier.client.v1.AckMessage
-	(*Ping)(nil),                       // 11: notifier.client.v1.Ping
-	(*Pong)(nil),                       // 12: notifier.client.v1.Pong
-	(*Error)(nil),                      // 13: notifier.client.v1.Error
-	(*CreateUserRequest)(nil),          // 14: notifier.client.v1.CreateUserRequest
-	(*GetUserRequest)(nil),             // 15: notifier.client.v1.GetUserRequest
-	(*UpdateUserRequest)(nil),          // 16: notifier.client.v1.UpdateUserRequest
-	(*DeleteUserRequest)(nil),          // 17: notifier.client.v1.DeleteUserRequest
-	(*ListMessagesRequest)(nil),        // 18: notifier.client.v1.ListMessagesRequest
-	(*SubscribeChannelRequest)(nil),    // 19: notifier.client.v1.SubscribeChannelRequest
-	(*UnsubscribeChannelRequest)(nil),  // 20: notifier.client.v1.UnsubscribeChannelRequest
-	(*ListSubscriptionsRequest)(nil),   // 21: notifier.client.v1.ListSubscriptionsRequest
-	(*ListEventsRequest)(nil),          // 22: notifier.client.v1.ListEventsRequest
-	(*OperationsStatusRequest)(nil),    // 23: notifier.client.v1.OperationsStatusRequest
-	(*MetricsRequest)(nil),             // 24: notifier.client.v1.MetricsRequest
-	(*CreateUserResponse)(nil),         // 25: notifier.client.v1.CreateUserResponse
-	(*GetUserResponse)(nil),            // 26: notifier.client.v1.GetUserResponse
-	(*UpdateUserResponse)(nil),         // 27: notifier.client.v1.UpdateUserResponse
-	(*DeleteUserResponse)(nil),         // 28: notifier.client.v1.DeleteUserResponse
-	(*ListMessagesResponse)(nil),       // 29: notifier.client.v1.ListMessagesResponse
-	(*SubscribeChannelResponse)(nil),   // 30: notifier.client.v1.SubscribeChannelResponse
-	(*UnsubscribeChannelResponse)(nil), // 31: notifier.client.v1.UnsubscribeChannelResponse
-	(*ListSubscriptionsResponse)(nil),  // 32: notifier.client.v1.ListSubscriptionsResponse
-	(*ListEventsResponse)(nil),         // 33: notifier.client.v1.ListEventsResponse
-	(*OperationsStatusResponse)(nil),   // 34: notifier.client.v1.OperationsStatusResponse
-	(*MetricsResponse)(nil),            // 35: notifier.client.v1.MetricsResponse
-	(*StringField)(nil),                // 36: notifier.client.v1.StringField
-	(*BytesField)(nil),                 // 37: notifier.client.v1.BytesField
-	(*MessageCursor)(nil),              // 38: notifier.client.v1.MessageCursor
-	(*UserRef)(nil),                    // 39: notifier.client.v1.UserRef
-	(*User)(nil),                       // 40: notifier.client.v1.User
-	(*Message)(nil),                    // 41: notifier.client.v1.Message
-	(*Packet)(nil),                     // 42: notifier.client.v1.Packet
-	(*Subscription)(nil),               // 43: notifier.client.v1.Subscription
-	(*Event)(nil),                      // 44: notifier.client.v1.Event
-	(*OperationsStatus)(nil),           // 45: notifier.client.v1.OperationsStatus
-	(*MessageTrimStatus)(nil),          // 46: notifier.client.v1.MessageTrimStatus
-	(*ProjectionStatus)(nil),           // 47: notifier.client.v1.ProjectionStatus
-	(*PeerOriginStatus)(nil),           // 48: notifier.client.v1.PeerOriginStatus
-	(*PeerStatus)(nil),                 // 49: notifier.client.v1.PeerStatus
+	(ClientDeliveryKind)(0),            // 0: notifier.client.v1.ClientDeliveryKind
+	(ClientDeliveryMode)(0),            // 1: notifier.client.v1.ClientDeliveryMode
+	(*ClientEnvelope)(nil),             // 2: notifier.client.v1.ClientEnvelope
+	(*ServerEnvelope)(nil),             // 3: notifier.client.v1.ServerEnvelope
+	(*LoginRequest)(nil),               // 4: notifier.client.v1.LoginRequest
+	(*LoginResponse)(nil),              // 5: notifier.client.v1.LoginResponse
+	(*SendMessageRequest)(nil),         // 6: notifier.client.v1.SendMessageRequest
+	(*SendMessageResponse)(nil),        // 7: notifier.client.v1.SendMessageResponse
+	(*MessagePushed)(nil),              // 8: notifier.client.v1.MessagePushed
+	(*PacketPushed)(nil),               // 9: notifier.client.v1.PacketPushed
+	(*TransientAccepted)(nil),          // 10: notifier.client.v1.TransientAccepted
+	(*AckMessage)(nil),                 // 11: notifier.client.v1.AckMessage
+	(*Ping)(nil),                       // 12: notifier.client.v1.Ping
+	(*Pong)(nil),                       // 13: notifier.client.v1.Pong
+	(*Error)(nil),                      // 14: notifier.client.v1.Error
+	(*CreateUserRequest)(nil),          // 15: notifier.client.v1.CreateUserRequest
+	(*GetUserRequest)(nil),             // 16: notifier.client.v1.GetUserRequest
+	(*UpdateUserRequest)(nil),          // 17: notifier.client.v1.UpdateUserRequest
+	(*DeleteUserRequest)(nil),          // 18: notifier.client.v1.DeleteUserRequest
+	(*ListMessagesRequest)(nil),        // 19: notifier.client.v1.ListMessagesRequest
+	(*SubscribeChannelRequest)(nil),    // 20: notifier.client.v1.SubscribeChannelRequest
+	(*UnsubscribeChannelRequest)(nil),  // 21: notifier.client.v1.UnsubscribeChannelRequest
+	(*ListSubscriptionsRequest)(nil),   // 22: notifier.client.v1.ListSubscriptionsRequest
+	(*ListEventsRequest)(nil),          // 23: notifier.client.v1.ListEventsRequest
+	(*OperationsStatusRequest)(nil),    // 24: notifier.client.v1.OperationsStatusRequest
+	(*MetricsRequest)(nil),             // 25: notifier.client.v1.MetricsRequest
+	(*CreateUserResponse)(nil),         // 26: notifier.client.v1.CreateUserResponse
+	(*GetUserResponse)(nil),            // 27: notifier.client.v1.GetUserResponse
+	(*UpdateUserResponse)(nil),         // 28: notifier.client.v1.UpdateUserResponse
+	(*DeleteUserResponse)(nil),         // 29: notifier.client.v1.DeleteUserResponse
+	(*ListMessagesResponse)(nil),       // 30: notifier.client.v1.ListMessagesResponse
+	(*SubscribeChannelResponse)(nil),   // 31: notifier.client.v1.SubscribeChannelResponse
+	(*UnsubscribeChannelResponse)(nil), // 32: notifier.client.v1.UnsubscribeChannelResponse
+	(*ListSubscriptionsResponse)(nil),  // 33: notifier.client.v1.ListSubscriptionsResponse
+	(*ListEventsResponse)(nil),         // 34: notifier.client.v1.ListEventsResponse
+	(*OperationsStatusResponse)(nil),   // 35: notifier.client.v1.OperationsStatusResponse
+	(*MetricsResponse)(nil),            // 36: notifier.client.v1.MetricsResponse
+	(*StringField)(nil),                // 37: notifier.client.v1.StringField
+	(*BytesField)(nil),                 // 38: notifier.client.v1.BytesField
+	(*MessageCursor)(nil),              // 39: notifier.client.v1.MessageCursor
+	(*UserRef)(nil),                    // 40: notifier.client.v1.UserRef
+	(*User)(nil),                       // 41: notifier.client.v1.User
+	(*Message)(nil),                    // 42: notifier.client.v1.Message
+	(*Packet)(nil),                     // 43: notifier.client.v1.Packet
+	(*Subscription)(nil),               // 44: notifier.client.v1.Subscription
+	(*Event)(nil),                      // 45: notifier.client.v1.Event
+	(*OperationsStatus)(nil),           // 46: notifier.client.v1.OperationsStatus
+	(*MessageTrimStatus)(nil),          // 47: notifier.client.v1.MessageTrimStatus
+	(*ProjectionStatus)(nil),           // 48: notifier.client.v1.ProjectionStatus
+	(*PeerOriginStatus)(nil),           // 49: notifier.client.v1.PeerOriginStatus
+	(*PeerStatus)(nil),                 // 50: notifier.client.v1.PeerStatus
 }
 var file_client_proto_depIdxs = []int32{
-	3,  // 0: notifier.client.v1.ClientEnvelope.login:type_name -> notifier.client.v1.LoginRequest
-	5,  // 1: notifier.client.v1.ClientEnvelope.send_message:type_name -> notifier.client.v1.SendMessageRequest
-	10, // 2: notifier.client.v1.ClientEnvelope.ack_message:type_name -> notifier.client.v1.AckMessage
-	11, // 3: notifier.client.v1.ClientEnvelope.ping:type_name -> notifier.client.v1.Ping
-	14, // 4: notifier.client.v1.ClientEnvelope.create_user:type_name -> notifier.client.v1.CreateUserRequest
-	15, // 5: notifier.client.v1.ClientEnvelope.get_user:type_name -> notifier.client.v1.GetUserRequest
-	16, // 6: notifier.client.v1.ClientEnvelope.update_user:type_name -> notifier.client.v1.UpdateUserRequest
-	17, // 7: notifier.client.v1.ClientEnvelope.delete_user:type_name -> notifier.client.v1.DeleteUserRequest
-	18, // 8: notifier.client.v1.ClientEnvelope.list_messages:type_name -> notifier.client.v1.ListMessagesRequest
-	19, // 9: notifier.client.v1.ClientEnvelope.subscribe_channel:type_name -> notifier.client.v1.SubscribeChannelRequest
-	20, // 10: notifier.client.v1.ClientEnvelope.unsubscribe_channel:type_name -> notifier.client.v1.UnsubscribeChannelRequest
-	21, // 11: notifier.client.v1.ClientEnvelope.list_subscriptions:type_name -> notifier.client.v1.ListSubscriptionsRequest
-	22, // 12: notifier.client.v1.ClientEnvelope.list_events:type_name -> notifier.client.v1.ListEventsRequest
-	23, // 13: notifier.client.v1.ClientEnvelope.operations_status:type_name -> notifier.client.v1.OperationsStatusRequest
-	24, // 14: notifier.client.v1.ClientEnvelope.metrics:type_name -> notifier.client.v1.MetricsRequest
-	4,  // 15: notifier.client.v1.ServerEnvelope.login_response:type_name -> notifier.client.v1.LoginResponse
-	7,  // 16: notifier.client.v1.ServerEnvelope.message_pushed:type_name -> notifier.client.v1.MessagePushed
-	6,  // 17: notifier.client.v1.ServerEnvelope.send_message_response:type_name -> notifier.client.v1.SendMessageResponse
-	13, // 18: notifier.client.v1.ServerEnvelope.error:type_name -> notifier.client.v1.Error
-	12, // 19: notifier.client.v1.ServerEnvelope.pong:type_name -> notifier.client.v1.Pong
-	8,  // 20: notifier.client.v1.ServerEnvelope.packet_pushed:type_name -> notifier.client.v1.PacketPushed
-	25, // 21: notifier.client.v1.ServerEnvelope.create_user_response:type_name -> notifier.client.v1.CreateUserResponse
-	26, // 22: notifier.client.v1.ServerEnvelope.get_user_response:type_name -> notifier.client.v1.GetUserResponse
-	27, // 23: notifier.client.v1.ServerEnvelope.update_user_response:type_name -> notifier.client.v1.UpdateUserResponse
-	28, // 24: notifier.client.v1.ServerEnvelope.delete_user_response:type_name -> notifier.client.v1.DeleteUserResponse
-	29, // 25: notifier.client.v1.ServerEnvelope.list_messages_response:type_name -> notifier.client.v1.ListMessagesResponse
-	30, // 26: notifier.client.v1.ServerEnvelope.subscribe_channel_response:type_name -> notifier.client.v1.SubscribeChannelResponse
-	31, // 27: notifier.client.v1.ServerEnvelope.unsubscribe_channel_response:type_name -> notifier.client.v1.UnsubscribeChannelResponse
-	32, // 28: notifier.client.v1.ServerEnvelope.list_subscriptions_response:type_name -> notifier.client.v1.ListSubscriptionsResponse
-	33, // 29: notifier.client.v1.ServerEnvelope.list_events_response:type_name -> notifier.client.v1.ListEventsResponse
-	34, // 30: notifier.client.v1.ServerEnvelope.operations_status_response:type_name -> notifier.client.v1.OperationsStatusResponse
-	35, // 31: notifier.client.v1.ServerEnvelope.metrics_response:type_name -> notifier.client.v1.MetricsResponse
-	38, // 32: notifier.client.v1.LoginRequest.seen_messages:type_name -> notifier.client.v1.MessageCursor
-	40, // 33: notifier.client.v1.LoginResponse.user:type_name -> notifier.client.v1.User
-	39, // 34: notifier.client.v1.SendMessageRequest.target:type_name -> notifier.client.v1.UserRef
-	39, // 35: notifier.client.v1.SendMessageRequest.relay_target:type_name -> notifier.client.v1.UserRef
-	0,  // 36: notifier.client.v1.SendMessageRequest.delivery_mode:type_name -> notifier.client.v1.ClientDeliveryMode
-	41, // 37: notifier.client.v1.SendMessageResponse.message:type_name -> notifier.client.v1.Message
-	9,  // 38: notifier.client.v1.SendMessageResponse.relay_accepted:type_name -> notifier.client.v1.RelayAccepted
-	41, // 39: notifier.client.v1.MessagePushed.message:type_name -> notifier.client.v1.Message
-	42, // 40: notifier.client.v1.PacketPushed.packet:type_name -> notifier.client.v1.Packet
-	39, // 41: notifier.client.v1.RelayAccepted.relay_target:type_name -> notifier.client.v1.UserRef
-	0,  // 42: notifier.client.v1.RelayAccepted.delivery_mode:type_name -> notifier.client.v1.ClientDeliveryMode
-	38, // 43: notifier.client.v1.AckMessage.cursor:type_name -> notifier.client.v1.MessageCursor
-	39, // 44: notifier.client.v1.GetUserRequest.user:type_name -> notifier.client.v1.UserRef
-	39, // 45: notifier.client.v1.UpdateUserRequest.user:type_name -> notifier.client.v1.UserRef
-	36, // 46: notifier.client.v1.UpdateUserRequest.username:type_name -> notifier.client.v1.StringField
-	36, // 47: notifier.client.v1.UpdateUserRequest.password:type_name -> notifier.client.v1.StringField
-	37, // 48: notifier.client.v1.UpdateUserRequest.profile_json:type_name -> notifier.client.v1.BytesField
-	36, // 49: notifier.client.v1.UpdateUserRequest.role:type_name -> notifier.client.v1.StringField
-	39, // 50: notifier.client.v1.DeleteUserRequest.user:type_name -> notifier.client.v1.UserRef
-	39, // 51: notifier.client.v1.ListMessagesRequest.user:type_name -> notifier.client.v1.UserRef
-	39, // 52: notifier.client.v1.SubscribeChannelRequest.subscriber:type_name -> notifier.client.v1.UserRef
-	39, // 53: notifier.client.v1.SubscribeChannelRequest.channel:type_name -> notifier.client.v1.UserRef
-	39, // 54: notifier.client.v1.UnsubscribeChannelRequest.subscriber:type_name -> notifier.client.v1.UserRef
-	39, // 55: notifier.client.v1.UnsubscribeChannelRequest.channel:type_name -> notifier.client.v1.UserRef
-	39, // 56: notifier.client.v1.ListSubscriptionsRequest.subscriber:type_name -> notifier.client.v1.UserRef
-	40, // 57: notifier.client.v1.CreateUserResponse.user:type_name -> notifier.client.v1.User
-	40, // 58: notifier.client.v1.GetUserResponse.user:type_name -> notifier.client.v1.User
-	40, // 59: notifier.client.v1.UpdateUserResponse.user:type_name -> notifier.client.v1.User
-	41, // 60: notifier.client.v1.ListMessagesResponse.items:type_name -> notifier.client.v1.Message
-	43, // 61: notifier.client.v1.SubscribeChannelResponse.subscription:type_name -> notifier.client.v1.Subscription
-	43, // 62: notifier.client.v1.UnsubscribeChannelResponse.subscription:type_name -> notifier.client.v1.Subscription
-	43, // 63: notifier.client.v1.ListSubscriptionsResponse.items:type_name -> notifier.client.v1.Subscription
-	44, // 64: notifier.client.v1.ListEventsResponse.items:type_name -> notifier.client.v1.Event
-	45, // 65: notifier.client.v1.OperationsStatusResponse.status:type_name -> notifier.client.v1.OperationsStatus
-	39, // 66: notifier.client.v1.Packet.relay_target:type_name -> notifier.client.v1.UserRef
-	0,  // 67: notifier.client.v1.Packet.delivery_mode:type_name -> notifier.client.v1.ClientDeliveryMode
-	46, // 68: notifier.client.v1.OperationsStatus.message_trim:type_name -> notifier.client.v1.MessageTrimStatus
-	47, // 69: notifier.client.v1.OperationsStatus.projection:type_name -> notifier.client.v1.ProjectionStatus
-	49, // 70: notifier.client.v1.OperationsStatus.peers:type_name -> notifier.client.v1.PeerStatus
-	48, // 71: notifier.client.v1.PeerStatus.origins:type_name -> notifier.client.v1.PeerOriginStatus
+	4,  // 0: notifier.client.v1.ClientEnvelope.login:type_name -> notifier.client.v1.LoginRequest
+	6,  // 1: notifier.client.v1.ClientEnvelope.send_message:type_name -> notifier.client.v1.SendMessageRequest
+	11, // 2: notifier.client.v1.ClientEnvelope.ack_message:type_name -> notifier.client.v1.AckMessage
+	12, // 3: notifier.client.v1.ClientEnvelope.ping:type_name -> notifier.client.v1.Ping
+	15, // 4: notifier.client.v1.ClientEnvelope.create_user:type_name -> notifier.client.v1.CreateUserRequest
+	16, // 5: notifier.client.v1.ClientEnvelope.get_user:type_name -> notifier.client.v1.GetUserRequest
+	17, // 6: notifier.client.v1.ClientEnvelope.update_user:type_name -> notifier.client.v1.UpdateUserRequest
+	18, // 7: notifier.client.v1.ClientEnvelope.delete_user:type_name -> notifier.client.v1.DeleteUserRequest
+	19, // 8: notifier.client.v1.ClientEnvelope.list_messages:type_name -> notifier.client.v1.ListMessagesRequest
+	20, // 9: notifier.client.v1.ClientEnvelope.subscribe_channel:type_name -> notifier.client.v1.SubscribeChannelRequest
+	21, // 10: notifier.client.v1.ClientEnvelope.unsubscribe_channel:type_name -> notifier.client.v1.UnsubscribeChannelRequest
+	22, // 11: notifier.client.v1.ClientEnvelope.list_subscriptions:type_name -> notifier.client.v1.ListSubscriptionsRequest
+	23, // 12: notifier.client.v1.ClientEnvelope.list_events:type_name -> notifier.client.v1.ListEventsRequest
+	24, // 13: notifier.client.v1.ClientEnvelope.operations_status:type_name -> notifier.client.v1.OperationsStatusRequest
+	25, // 14: notifier.client.v1.ClientEnvelope.metrics:type_name -> notifier.client.v1.MetricsRequest
+	5,  // 15: notifier.client.v1.ServerEnvelope.login_response:type_name -> notifier.client.v1.LoginResponse
+	8,  // 16: notifier.client.v1.ServerEnvelope.message_pushed:type_name -> notifier.client.v1.MessagePushed
+	7,  // 17: notifier.client.v1.ServerEnvelope.send_message_response:type_name -> notifier.client.v1.SendMessageResponse
+	14, // 18: notifier.client.v1.ServerEnvelope.error:type_name -> notifier.client.v1.Error
+	13, // 19: notifier.client.v1.ServerEnvelope.pong:type_name -> notifier.client.v1.Pong
+	9,  // 20: notifier.client.v1.ServerEnvelope.packet_pushed:type_name -> notifier.client.v1.PacketPushed
+	26, // 21: notifier.client.v1.ServerEnvelope.create_user_response:type_name -> notifier.client.v1.CreateUserResponse
+	27, // 22: notifier.client.v1.ServerEnvelope.get_user_response:type_name -> notifier.client.v1.GetUserResponse
+	28, // 23: notifier.client.v1.ServerEnvelope.update_user_response:type_name -> notifier.client.v1.UpdateUserResponse
+	29, // 24: notifier.client.v1.ServerEnvelope.delete_user_response:type_name -> notifier.client.v1.DeleteUserResponse
+	30, // 25: notifier.client.v1.ServerEnvelope.list_messages_response:type_name -> notifier.client.v1.ListMessagesResponse
+	31, // 26: notifier.client.v1.ServerEnvelope.subscribe_channel_response:type_name -> notifier.client.v1.SubscribeChannelResponse
+	32, // 27: notifier.client.v1.ServerEnvelope.unsubscribe_channel_response:type_name -> notifier.client.v1.UnsubscribeChannelResponse
+	33, // 28: notifier.client.v1.ServerEnvelope.list_subscriptions_response:type_name -> notifier.client.v1.ListSubscriptionsResponse
+	34, // 29: notifier.client.v1.ServerEnvelope.list_events_response:type_name -> notifier.client.v1.ListEventsResponse
+	35, // 30: notifier.client.v1.ServerEnvelope.operations_status_response:type_name -> notifier.client.v1.OperationsStatusResponse
+	36, // 31: notifier.client.v1.ServerEnvelope.metrics_response:type_name -> notifier.client.v1.MetricsResponse
+	39, // 32: notifier.client.v1.LoginRequest.seen_messages:type_name -> notifier.client.v1.MessageCursor
+	41, // 33: notifier.client.v1.LoginResponse.user:type_name -> notifier.client.v1.User
+	40, // 34: notifier.client.v1.SendMessageRequest.target:type_name -> notifier.client.v1.UserRef
+	0,  // 35: notifier.client.v1.SendMessageRequest.delivery_kind:type_name -> notifier.client.v1.ClientDeliveryKind
+	1,  // 36: notifier.client.v1.SendMessageRequest.delivery_mode:type_name -> notifier.client.v1.ClientDeliveryMode
+	42, // 37: notifier.client.v1.SendMessageResponse.message:type_name -> notifier.client.v1.Message
+	10, // 38: notifier.client.v1.SendMessageResponse.transient_accepted:type_name -> notifier.client.v1.TransientAccepted
+	42, // 39: notifier.client.v1.MessagePushed.message:type_name -> notifier.client.v1.Message
+	43, // 40: notifier.client.v1.PacketPushed.packet:type_name -> notifier.client.v1.Packet
+	40, // 41: notifier.client.v1.TransientAccepted.recipient:type_name -> notifier.client.v1.UserRef
+	1,  // 42: notifier.client.v1.TransientAccepted.delivery_mode:type_name -> notifier.client.v1.ClientDeliveryMode
+	39, // 43: notifier.client.v1.AckMessage.cursor:type_name -> notifier.client.v1.MessageCursor
+	40, // 44: notifier.client.v1.GetUserRequest.user:type_name -> notifier.client.v1.UserRef
+	40, // 45: notifier.client.v1.UpdateUserRequest.user:type_name -> notifier.client.v1.UserRef
+	37, // 46: notifier.client.v1.UpdateUserRequest.username:type_name -> notifier.client.v1.StringField
+	37, // 47: notifier.client.v1.UpdateUserRequest.password:type_name -> notifier.client.v1.StringField
+	38, // 48: notifier.client.v1.UpdateUserRequest.profile_json:type_name -> notifier.client.v1.BytesField
+	37, // 49: notifier.client.v1.UpdateUserRequest.role:type_name -> notifier.client.v1.StringField
+	40, // 50: notifier.client.v1.DeleteUserRequest.user:type_name -> notifier.client.v1.UserRef
+	40, // 51: notifier.client.v1.ListMessagesRequest.user:type_name -> notifier.client.v1.UserRef
+	40, // 52: notifier.client.v1.SubscribeChannelRequest.subscriber:type_name -> notifier.client.v1.UserRef
+	40, // 53: notifier.client.v1.SubscribeChannelRequest.channel:type_name -> notifier.client.v1.UserRef
+	40, // 54: notifier.client.v1.UnsubscribeChannelRequest.subscriber:type_name -> notifier.client.v1.UserRef
+	40, // 55: notifier.client.v1.UnsubscribeChannelRequest.channel:type_name -> notifier.client.v1.UserRef
+	40, // 56: notifier.client.v1.ListSubscriptionsRequest.subscriber:type_name -> notifier.client.v1.UserRef
+	41, // 57: notifier.client.v1.CreateUserResponse.user:type_name -> notifier.client.v1.User
+	41, // 58: notifier.client.v1.GetUserResponse.user:type_name -> notifier.client.v1.User
+	41, // 59: notifier.client.v1.UpdateUserResponse.user:type_name -> notifier.client.v1.User
+	42, // 60: notifier.client.v1.ListMessagesResponse.items:type_name -> notifier.client.v1.Message
+	44, // 61: notifier.client.v1.SubscribeChannelResponse.subscription:type_name -> notifier.client.v1.Subscription
+	44, // 62: notifier.client.v1.UnsubscribeChannelResponse.subscription:type_name -> notifier.client.v1.Subscription
+	44, // 63: notifier.client.v1.ListSubscriptionsResponse.items:type_name -> notifier.client.v1.Subscription
+	45, // 64: notifier.client.v1.ListEventsResponse.items:type_name -> notifier.client.v1.Event
+	46, // 65: notifier.client.v1.OperationsStatusResponse.status:type_name -> notifier.client.v1.OperationsStatus
+	40, // 66: notifier.client.v1.Packet.recipient:type_name -> notifier.client.v1.UserRef
+	1,  // 67: notifier.client.v1.Packet.delivery_mode:type_name -> notifier.client.v1.ClientDeliveryMode
+	47, // 68: notifier.client.v1.OperationsStatus.message_trim:type_name -> notifier.client.v1.MessageTrimStatus
+	48, // 69: notifier.client.v1.OperationsStatus.projection:type_name -> notifier.client.v1.ProjectionStatus
+	50, // 70: notifier.client.v1.OperationsStatus.peers:type_name -> notifier.client.v1.PeerStatus
+	49, // 71: notifier.client.v1.PeerStatus.origins:type_name -> notifier.client.v1.PeerOriginStatus
 	72, // [72:72] is the sub-list for method output_type
 	72, // [72:72] is the sub-list for method input_type
 	72, // [72:72] is the sub-list for extension type_name
@@ -4233,14 +4287,14 @@ func file_client_proto_init() {
 	}
 	file_client_proto_msgTypes[5].OneofWrappers = []any{
 		(*SendMessageResponse_Message)(nil),
-		(*SendMessageResponse_RelayAccepted)(nil),
+		(*SendMessageResponse_TransientAccepted)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_client_proto_rawDesc), len(file_client_proto_rawDesc)),
-			NumEnums:      1,
+			NumEnums:      2,
 			NumMessages:   49,
 			NumExtensions: 0,
 			NumServices:   0,

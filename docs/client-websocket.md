@@ -91,7 +91,7 @@ ServerEnvelope {
 }
 ```
 
-节点入口瞬时包推送：
+目标用户瞬时包推送：
 
 ```protobuf
 ServerEnvelope {
@@ -100,7 +100,7 @@ ServerEnvelope {
       packet_id: 77
       source_node_id: 4096
       target_node_id: 8192
-      relay_target: { node_id: 8192, user_id: 1025 }
+      recipient: { node_id: 8192, user_id: 1025 }
       sender: "relay"
       body: "\xff\x00payload"
       delivery_mode: CLIENT_DELIVERY_MODE_BEST_EFFORT
@@ -118,7 +118,7 @@ ServerEnvelope {
 
 `PacketPushed` 与 `MessagePushed` 的区别：
 
-- `PacketPushed` 只用于 `(node_id, 3)` 节点入口地址的瞬时包。
+- `PacketPushed` 只用于 `delivery_kind = TRANSIENT` 的瞬时包。
 - 瞬时包没有 `(node_id, seq)` 游标，不参与 `seen_messages` 和 `AckMessage`。
 - 瞬时包不会在重连后补发；只有目标用户当前在线时才能收到。
 
@@ -149,16 +149,16 @@ ClientEnvelope {
 }
 ```
 
-发送节点入口瞬时包：
+发送目标用户瞬时包：
 
 ```protobuf
 ClientEnvelope {
   send_message: SendMessageRequest {
     request_id: 43
-    target: { node_id: 8192, user_id: 3 }
-    relay_target: { node_id: 8192, user_id: 1025 }
+    target: { node_id: 8192, user_id: 1025 }
     sender: "relay"
     body: "\xff\x00payload"
+    delivery_kind: CLIENT_DELIVERY_KIND_TRANSIENT
     delivery_mode: CLIENT_DELIVERY_MODE_ROUTE_RETRY
   }
 }
@@ -168,18 +168,17 @@ ClientEnvelope {
 
 - `request_id`：客户端生成的请求 ID，服务端在响应或错误中原样返回。
 - `target`：消息目标用户、channel 或 broadcast 地址。
-- 当 `target.user_id = 3` 时，表示目标节点的系统节点入口地址，消息会走瞬时包路径。
-- `relay_target`：仅在 `target.user_id = 3` 时必填，表示目标节点上的指定在线用户。
 - `sender`：发送方或来源标签，不能为空。
 - `body`：原始字节数组，不能为空；不要求 UTF-8。
-- `delivery_mode`：仅在 `target.user_id = 3` 时生效；可选 `CLIENT_DELIVERY_MODE_BEST_EFFORT` 或 `CLIENT_DELIVERY_MODE_ROUTE_RETRY`。
+- `delivery_kind`：可选 `CLIENT_DELIVERY_KIND_PERSISTENT` 或 `CLIENT_DELIVERY_KIND_TRANSIENT`，默认是持久化消息。
+- `delivery_mode`：仅在 `delivery_kind = CLIENT_DELIVERY_KIND_TRANSIENT` 时生效；可选 `CLIENT_DELIVERY_MODE_BEST_EFFORT` 或 `CLIENT_DELIVERY_MODE_ROUTE_RETRY`。
 
 权限规则与 HTTP 写消息接口一致：
 
 - 普通用户只能给自己发消息。
 - 普通用户可以给自己已订阅的 `role=channel` 地址发消息。
 - 管理员可以给任意用户、channel 或 broadcast 地址发消息。
-- 任意已登录用户都可以给 `(node_id, 3)` 发送节点入口瞬时包，但 `relay_target` 必须是该目标节点上的可登录用户。
+- 瞬时消息只能发给可登录用户；普通用户只能发给自己，管理员可以发给任意可登录用户。
 
 成功响应：
 
@@ -200,24 +199,24 @@ ServerEnvelope {
 }
 ```
 
-节点入口瞬时包受理响应：
+目标用户瞬时包受理响应：
 
 ```protobuf
 ServerEnvelope {
   send_message_response: SendMessageResponse {
     request_id: 43
-    relay_accepted: {
+    transient_accepted: {
       packet_id: 77
       source_node_id: 4096
       target_node_id: 8192
-      relay_target: { node_id: 8192, user_id: 1025 }
+      recipient: { node_id: 8192, user_id: 1025 }
       delivery_mode: CLIENT_DELIVERY_MODE_ROUTE_RETRY
     }
   }
 }
 ```
 
-`relay_accepted` 只表示瞬时包已进入本地路由层，不代表目标用户已经收到。
+`transient_accepted` 只表示瞬时包已进入本地路由层，不代表目标用户已经收到。
 
 ## 查询与管理 RPC
 

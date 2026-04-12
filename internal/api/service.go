@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"sync/atomic"
 
@@ -121,37 +122,28 @@ func (s *Service) SetTransientPacketReceiver(receiver TransientPacketReceiver) {
 	s.transientRecv = receiver
 }
 
-func (s *Service) DispatchTransientPacket(ctx context.Context, target, relayTarget store.UserKey, sender string, body []byte, mode store.DeliveryMode) (store.TransientPacket, error) {
+func (s *Service) DispatchTransientPacket(ctx context.Context, recipient store.UserKey, sender string, body []byte, mode store.DeliveryMode) (store.TransientPacket, error) {
 	if err := s.allowWrite(ctx); err != nil {
 		return store.TransientPacket{}, err
 	}
-	if err := target.Validate(); err != nil {
+	if err := recipient.Validate(); err != nil {
 		return store.TransientPacket{}, err
-	}
-	if err := relayTarget.Validate(); err != nil {
-		return store.TransientPacket{}, err
-	}
-	if target.UserID != store.NodeIngressUserID {
-		return store.TransientPacket{}, store.ErrInvalidInput
-	}
-	if relayTarget.NodeID != target.NodeID {
-		return store.TransientPacket{}, store.ErrInvalidInput
 	}
 	if sender == "" || len(body) == 0 {
 		return store.TransientPacket{}, store.ErrInvalidInput
 	}
-	relayUser, err := s.store.GetUser(ctx, relayTarget)
+	recipientUser, err := s.store.GetUser(ctx, recipient)
 	if err != nil {
 		return store.TransientPacket{}, err
 	}
-	if !relayUser.CanLogin() {
-		return store.TransientPacket{}, store.ErrForbidden
+	if !recipientUser.CanLogin() {
+		return store.TransientPacket{}, fmt.Errorf("%w: transient recipient must be a login user", store.ErrInvalidInput)
 	}
 	packet := store.TransientPacket{
 		PacketID:     s.nextTransientID.Add(1),
 		SourceNodeID: s.store.NodeID(),
-		TargetNodeID: target.NodeID,
-		RelayTarget:  relayTarget,
+		TargetNodeID: recipient.NodeID,
+		Recipient:    recipient,
 		Sender:       sender,
 		Body:         append([]byte(nil), body...),
 		DeliveryMode: mode,

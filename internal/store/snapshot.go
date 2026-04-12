@@ -178,6 +178,9 @@ func (s *Store) ApplySnapshotChunk(ctx context.Context, chunk *clusterproto.Snap
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit apply snapshot chunk: %w", err)
 	}
+	if partition == SnapshotUsersPartition {
+		s.invalidateUserCache()
+	}
 	return nil
 }
 

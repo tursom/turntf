@@ -244,7 +244,7 @@ func Open(dbPath string, opts Options) (*Store, error) {
 		initialNodeID:     opts.NodeID,
 		messageWindowSize: normalizeMessageWindowSize(opts.MessageWindowSize),
 		clock:             opts.Clock,
-		userRepository:    &sqliteUserRepository{db: db},
+		userRepository:    newCachedUserRepository(&sqliteUserRepository{db: db}),
 		subscriptions:     &sqliteSubscriptionRepository{db: db},
 	}
 	return st, nil
@@ -647,6 +647,7 @@ VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, NULL, ?)
 	if err := tx.Commit(); err != nil {
 		return User{}, Event{}, fmt.Errorf("commit create user: %w", err)
 	}
+	s.cacheUser(user)
 	return user, event, nil
 }
 
@@ -766,6 +767,7 @@ WHERE node_id = ? AND user_id = ? AND deleted_at_hlc IS NULL
 	if err := tx.Commit(); err != nil {
 		return User{}, Event{}, fmt.Errorf("commit update user: %w", err)
 	}
+	s.cacheUser(current)
 	return current, event, nil
 }
 
@@ -811,6 +813,7 @@ func (s *Store) DeleteUser(ctx context.Context, key UserKey) (Event, error) {
 	if err := tx.Commit(); err != nil {
 		return Event{}, fmt.Errorf("commit delete user: %w", err)
 	}
+	s.invalidateCachedUser(key)
 	return event, nil
 }
 
@@ -1072,6 +1075,24 @@ func (s *Store) getUser(ctx context.Context, key UserKey, includeDeleted bool) (
 
 func (s *Store) getUserTx(ctx context.Context, tx *sql.Tx, key UserKey, includeDeleted bool) (User, error) {
 	return s.userRepository.GetUserTx(ctx, tx, key, includeDeleted)
+}
+
+func (s *Store) cacheUser(user User) {
+	if cache, ok := s.userRepository.(*cachedUserRepository); ok {
+		cache.StoreUser(user)
+	}
+}
+
+func (s *Store) invalidateCachedUser(key UserKey) {
+	if cache, ok := s.userRepository.(*cachedUserRepository); ok {
+		cache.InvalidateUser(key)
+	}
+}
+
+func (s *Store) invalidateUserCache() {
+	if cache, ok := s.userRepository.(*cachedUserRepository); ok {
+		cache.InvalidateAll()
+	}
 }
 
 func (s *Store) insertEvent(ctx context.Context, tx *sql.Tx, event Event) (Event, error) {
@@ -1727,6 +1748,7 @@ WHERE node_id = ? AND user_id = ?
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit ensure bootstrap admin: %w", err)
 	}
+	s.invalidateUserCache()
 	return nil
 }
 

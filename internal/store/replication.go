@@ -59,15 +59,18 @@ func (s *Store) ApplyReplicatedEvent(ctx context.Context, event *internalproto.R
 	}
 
 	deferredMessageProjection := false
+	changedUser := false
 	switch body := decoded.Body.(type) {
 	case *internalproto.UserCreatedEvent, *internalproto.UserUpdatedEvent:
 		if err := s.applyReplicatedUserUpsert(ctx, tx, body); err != nil {
 			return err
 		}
+		changedUser = true
 	case *internalproto.UserDeletedEvent:
 		if err := s.applyReplicatedUserDeleted(ctx, tx, body, decoded.OriginNodeID); err != nil {
 			return err
 		}
+		changedUser = true
 	case *internalproto.MessageCreatedEvent:
 		deferredMessageProjection = true
 	case *internalproto.ChannelSubscribedEvent:
@@ -129,6 +132,9 @@ VALUES(?, ?, ?)
 
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit replicated event: %w", err)
+	}
+	if changedUser {
+		s.invalidateUserCache()
 	}
 	if !deferredMessageProjection {
 		return nil

@@ -1,0 +1,12 @@
+.git
+.idea
+.codex
+
+data/
+*.db
+*.sqlite
+*.sqlite3
+
+notifier
+
+config.toml

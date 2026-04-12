@@ -101,6 +101,53 @@ go run ./cmd/notifier hash -password 'secret'
 printf 'secret' | go run ./cmd/notifier hash -stdin
 ```
 
+## Docker 部署
+
+项目根目录提供了 [Dockerfile](/root/dev/sys/turntf/Dockerfile) 和 [docker-compose.yml](/root/dev/sys/turntf/docker-compose.yml)。
+
+镜像默认不会内置配置文件，启动时需要由用户自行挂载：
+
+- `/app/config.toml`：运行配置文件，建议以只读方式挂载
+- `/app/data`：SQLite、Pebble 和日志等运行数据目录
+
+先准备配置文件：
+
+```bash
+cp ./config.example.toml ./config.toml
+mkdir -p ./data
+```
+
+直接使用 `docker run`：
+
+```bash
+docker build -t turntf-notifier .
+docker run --rm -p 8080:8080 \
+  -v "$PWD/config.toml:/app/config.toml:ro" \
+  -v "$PWD/data:/app/data" \
+  turntf-notifier
+```
+
+或者使用 Compose：
+
+```bash
+docker compose up --build
+```
+
+## GitHub Container Registry
+
+仓库包含 [docker publish workflow](/root/dev/sys/turntf/.github/workflows/docker-publish.yml)，会在以下场景构建并推送镜像到 `ghcr.io/tursom/turntf`：
+
+- push 到 `main`
+- push `v*` 版本标签
+- 手动触发 `workflow_dispatch`
+
+默认标签规则：
+
+- `main` 分支推送会生成 `main`、`sha-<commit>`，以及默认分支上的 `latest`
+- 版本标签如 `v1.2.3` 会生成同名镜像标签
+
+工作流使用仓库自带的 `GITHUB_TOKEN` 登录 GHCR，因此仓库需要允许 GitHub Actions 写入 packages。
+
 ## 配置文件示例
 
 ```bash

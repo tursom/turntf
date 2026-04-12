@@ -3,7 +3,7 @@ package api
 import (
 	"testing"
 
-	"notifier/internal/app"
+	"github.com/tursom/turntf/internal/app"
 )
 
 func TestMergePeerStatusKeepsConfiguredPeersWithoutDiscoveredNodeID(t *testing.T) {

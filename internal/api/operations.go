@@ -9,9 +9,9 @@ import (
 	"strings"
 	"time"
 
-	"notifier/internal/app"
-	"notifier/internal/clock"
-	"notifier/internal/store"
+	"github.com/tursom/turntf/internal/app"
+	"github.com/tursom/turntf/internal/clock"
+	"github.com/tursom/turntf/internal/store"
 )
 
 type clusterStatusProvider interface {

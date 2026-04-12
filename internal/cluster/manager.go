@@ -16,10 +16,10 @@ import (
 	"github.com/rs/zerolog/log"
 	"google.golang.org/protobuf/proto"
 
-	"notifier/internal/app"
-	"notifier/internal/clock"
-	internalproto "notifier/internal/proto"
-	"notifier/internal/store"
+	"github.com/tursom/turntf/internal/app"
+	"github.com/tursom/turntf/internal/clock"
+	internalproto "github.com/tursom/turntf/internal/proto"
+	"github.com/tursom/turntf/internal/store"
 )
 
 const (

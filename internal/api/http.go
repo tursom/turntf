@@ -13,9 +13,9 @@ import (
 	"sync"
 	"time"
 
-	"notifier/internal/app"
-	"notifier/internal/auth"
-	"notifier/internal/store"
+	"github.com/tursom/turntf/internal/app"
+	"github.com/tursom/turntf/internal/auth"
+	"github.com/tursom/turntf/internal/store"
 )
 
 type HTTP struct {

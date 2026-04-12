@@ -1,4 +1,4 @@
-module notifier
+module github.com/tursom/turntf
 
 go 1.26
 

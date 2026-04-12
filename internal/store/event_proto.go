@@ -1,8 +1,8 @@
 package store
 
 import (
-	"notifier/internal/clock"
-	internalproto "notifier/internal/proto"
+	"github.com/tursom/turntf/internal/clock"
+	internalproto "github.com/tursom/turntf/internal/proto"
 )
 
 type EventType string

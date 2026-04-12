@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"strings"
 
-	"notifier/internal/clock"
-	clusterproto "notifier/internal/proto"
+	"github.com/tursom/turntf/internal/clock"
+	clusterproto "github.com/tursom/turntf/internal/proto"
 )
 
 type sqliteEventLogRepository struct {

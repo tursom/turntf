@@ -15,9 +15,9 @@ import (
 	"github.com/gorilla/websocket"
 	gproto "google.golang.org/protobuf/proto"
 
-	"notifier/internal/auth"
-	internalproto "notifier/internal/proto"
-	"notifier/internal/store"
+	"github.com/tursom/turntf/internal/auth"
+	internalproto "github.com/tursom/turntf/internal/proto"
+	"github.com/tursom/turntf/internal/store"
 )
 
 type authenticatedTestAPI struct {

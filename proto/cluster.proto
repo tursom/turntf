@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package notifier.cluster.v1;
 
-option go_package = "notifier/internal/proto;proto";
+option go_package = "github.com/tursom/turntf/internal/proto;proto";
 
 message Envelope {
   int64 node_id = 1;

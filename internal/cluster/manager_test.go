@@ -17,11 +17,11 @@ import (
 	"github.com/gorilla/websocket"
 	"google.golang.org/protobuf/proto"
 
-	"notifier/internal/api"
-	"notifier/internal/auth"
-	"notifier/internal/clock"
-	internalproto "notifier/internal/proto"
-	"notifier/internal/store"
+	"github.com/tursom/turntf/internal/api"
+	"github.com/tursom/turntf/internal/auth"
+	"github.com/tursom/turntf/internal/clock"
+	internalproto "github.com/tursom/turntf/internal/proto"
+	"github.com/tursom/turntf/internal/store"
 )
 
 func testNodeID(slot uint16) int64 {

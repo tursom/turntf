@@ -13,8 +13,8 @@ import (
 	"github.com/cockroachdb/pebble"
 	gproto "google.golang.org/protobuf/proto"
 
-	"notifier/internal/clock"
-	clusterproto "notifier/internal/proto"
+	"github.com/tursom/turntf/internal/clock"
+	clusterproto "github.com/tursom/turntf/internal/proto"
 )
 
 var pebbleEventSequenceKey = []byte("meta/event_sequence")

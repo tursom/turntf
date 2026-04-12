@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"sort"
 
-	"notifier/internal/clock"
+	"github.com/tursom/turntf/internal/clock"
 )
 
 type OperationsStats struct {

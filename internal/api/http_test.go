@@ -11,8 +11,8 @@ import (
 	"strings"
 	"testing"
 
-	"notifier/internal/app"
-	"notifier/internal/store"
+	"github.com/tursom/turntf/internal/app"
+	"github.com/tursom/turntf/internal/store"
 )
 
 func TestUserAndMessageHTTPAPI(t *testing.T) {

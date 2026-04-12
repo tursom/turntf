@@ -9,9 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	"notifier/internal/auth"
-	"notifier/internal/cluster"
-	"notifier/internal/store"
+	"github.com/tursom/turntf/internal/auth"
+	"github.com/tursom/turntf/internal/cluster"
+	"github.com/tursom/turntf/internal/store"
 )
 
 func TestRunWithoutArgsDefaultsToServe(t *testing.T) {

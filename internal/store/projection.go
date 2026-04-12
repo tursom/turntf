@@ -5,8 +5,8 @@ import (
 	"database/sql"
 	"errors"
 
-	"notifier/internal/clock"
-	clusterproto "notifier/internal/proto"
+	"github.com/tursom/turntf/internal/clock"
+	clusterproto "github.com/tursom/turntf/internal/proto"
 )
 
 var ErrProjectionDeferred = errors.New("projection deferred")

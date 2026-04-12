@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package notifier.client.v1;
 
-option go_package = "notifier/internal/proto;proto";
+option go_package = "github.com/tursom/turntf/internal/proto;proto";
 
 message ClientEnvelope {
   oneof body {

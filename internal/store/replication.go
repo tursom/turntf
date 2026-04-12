@@ -9,8 +9,8 @@ import (
 
 	gproto "google.golang.org/protobuf/proto"
 
-	"notifier/internal/clock"
-	internalproto "notifier/internal/proto"
+	"github.com/tursom/turntf/internal/clock"
+	internalproto "github.com/tursom/turntf/internal/proto"
 )
 
 func ToReplicatedEvent(event Event) *internalproto.ReplicatedEvent {

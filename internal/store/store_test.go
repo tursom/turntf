@@ -10,8 +10,8 @@ import (
 
 	gproto "google.golang.org/protobuf/proto"
 
-	"notifier/internal/clock"
-	proto "notifier/internal/proto"
+	"github.com/tursom/turntf/internal/clock"
+	proto "github.com/tursom/turntf/internal/proto"
 )
 
 func testNodeID(slot uint16) int64 {

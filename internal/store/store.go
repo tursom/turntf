@@ -14,9 +14,9 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 	gproto "google.golang.org/protobuf/proto"
 
-	"notifier/internal/auth"
-	"notifier/internal/clock"
-	internalproto "notifier/internal/proto"
+	"github.com/tursom/turntf/internal/auth"
+	"github.com/tursom/turntf/internal/clock"
+	internalproto "github.com/tursom/turntf/internal/proto"
 )
 
 var (

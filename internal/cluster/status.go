@@ -5,7 +5,7 @@ import (
 	"sort"
 	"time"
 
-	"notifier/internal/app"
+	"github.com/tursom/turntf/internal/app"
 )
 
 func (m *Manager) Status(context.Context) (app.ClusterStatus, error) {

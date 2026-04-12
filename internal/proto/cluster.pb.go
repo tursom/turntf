@@ -2888,7 +2888,7 @@ const file_cluster_proto_rawDesc = "" +
 	"\x13ClusterDeliveryMode\x12%\n" +
 	"!CLUSTER_DELIVERY_MODE_UNSPECIFIED\x10\x00\x12%\n" +
 	"!CLUSTER_DELIVERY_MODE_BEST_EFFORT\x10\x01\x12%\n" +
-	"!CLUSTER_DELIVERY_MODE_ROUTE_RETRY\x10\x02B\x1fZ\x1dnotifier/internal/proto;protob\x06proto3"
+	"!CLUSTER_DELIVERY_MODE_ROUTE_RETRY\x10\x02B/Z-github.com/tursom/turntf/internal/proto;protob\x06proto3"
 
 var (
 	file_cluster_proto_rawDescOnce sync.Once

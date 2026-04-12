@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"time"
 
-	internalproto "notifier/internal/proto"
-	"notifier/internal/store"
+	internalproto "github.com/tursom/turntf/internal/proto"
+	"github.com/tursom/turntf/internal/store"
 )
 
 func (m *Manager) handleRoutingUpdate(sess *session, envelope *internalproto.Envelope) error {

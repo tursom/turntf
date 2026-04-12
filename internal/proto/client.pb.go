@@ -1433,7 +1433,7 @@ const file_client_proto_rawDesc = "" +
 	"\x12ClientDeliveryMode\x12$\n" +
 	" CLIENT_DELIVERY_MODE_UNSPECIFIED\x10\x00\x12$\n" +
 	" CLIENT_DELIVERY_MODE_BEST_EFFORT\x10\x01\x12$\n" +
-	" CLIENT_DELIVERY_MODE_ROUTE_RETRY\x10\x02B\x1fZ\x1dnotifier/internal/proto;protob\x06proto3"
+	" CLIENT_DELIVERY_MODE_ROUTE_RETRY\x10\x02B/Z-github.com/tursom/turntf/internal/proto;protob\x06proto3"
 
 var (
 	file_client_proto_rawDescOnce sync.Once

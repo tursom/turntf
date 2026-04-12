@@ -14,10 +14,10 @@ import (
 
 	"github.com/rs/zerolog/log"
 
-	"notifier/internal/api"
-	"notifier/internal/auth"
-	"notifier/internal/cluster"
-	"notifier/internal/store"
+	"github.com/tursom/turntf/internal/api"
+	"github.com/tursom/turntf/internal/auth"
+	"github.com/tursom/turntf/internal/cluster"
+	"github.com/tursom/turntf/internal/store"
 )
 
 func main() {

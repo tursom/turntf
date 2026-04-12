@@ -10,8 +10,8 @@ import (
 
 	"github.com/rs/zerolog/log"
 
-	internalproto "notifier/internal/proto"
-	"notifier/internal/store"
+	internalproto "github.com/tursom/turntf/internal/proto"
+	"github.com/tursom/turntf/internal/store"
 )
 
 func (m *Manager) buildSnapshotDigestEnvelope() (*internalproto.Envelope, error) {

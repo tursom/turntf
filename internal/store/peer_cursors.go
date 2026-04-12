@@ -5,7 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 
-	"notifier/internal/clock"
+	"github.com/tursom/turntf/internal/clock"
 )
 
 func (s *Store) GetPeerAckCursor(ctx context.Context, peerNodeID, originNodeID int64) (PeerAckCursor, error) {

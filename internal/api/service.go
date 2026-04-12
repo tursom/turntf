@@ -5,7 +5,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"notifier/internal/store"
+	"github.com/tursom/turntf/internal/store"
 )
 
 type EventSink interface {

@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"notifier/internal/store"
+	"github.com/tursom/turntf/internal/store"
 )
 
 func testNodeID(slot uint16) int64 {

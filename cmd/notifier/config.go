@@ -7,8 +7,8 @@ import (
 
 	"github.com/BurntSushi/toml"
 
-	"notifier/internal/cluster"
-	"notifier/internal/store"
+	"github.com/tursom/turntf/internal/cluster"
+	"github.com/tursom/turntf/internal/store"
 )
 
 const defaultConfigPath = "./config.toml"

@@ -82,21 +82,35 @@ func (s *Store) ApplyReplicatedEvent(ctx context.Context, event *internalproto.R
 		return fmt.Errorf("%w: unsupported replicated event body %T", ErrInvalidInput, decoded.Body)
 	}
 
-	value, err := gproto.Marshal(event)
-	if err != nil {
-		return fmt.Errorf("marshal replicated event: %w", err)
-	}
-	if _, err := tx.ExecContext(ctx, `
+	if s.engine == EngineSQLite {
+		value, err := gproto.Marshal(event)
+		if err != nil {
+			return fmt.Errorf("marshal replicated event: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, `
 INSERT INTO event_log(event_id, origin_node_id, value)
 VALUES(?, ?, ?)
 `, event.EventId, event.OriginNodeId, value); err != nil {
-		if isUniqueConstraint(err) {
+			if isUniqueConstraint(err) {
+				if err := tx.Commit(); err != nil {
+					return fmt.Errorf("commit duplicate event log entry: %w", err)
+				}
+				return nil
+			}
+			return fmt.Errorf("insert replicated event log: %w", err)
+		}
+	} else {
+		stored, inserted, err := s.eventLog.AppendReplicated(ctx, decoded)
+		if err != nil {
+			return err
+		}
+		if !inserted {
 			if err := tx.Commit(); err != nil {
 				return fmt.Errorf("commit duplicate event log entry: %w", err)
 			}
 			return nil
 		}
-		return fmt.Errorf("insert replicated event log: %w", err)
+		decoded.Sequence = stored.Sequence
 	}
 
 	appliedAt := s.clock.Observe(decoded.HLC)

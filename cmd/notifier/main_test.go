@@ -119,8 +119,8 @@ url = "ws://127.0.0.1:9081/internal/cluster/ws"
 	if cfg.APIAddr != ":8080" {
 		t.Fatalf("unexpected api addr: %q", cfg.APIAddr)
 	}
-	if cfg.DBPath != filepath.Clean("./data/node-a.db") {
-		t.Fatalf("unexpected db path: %q", cfg.DBPath)
+	if cfg.SQLitePath != filepath.Clean("./data/node-a.db") {
+		t.Fatalf("unexpected db path: %q", cfg.SQLitePath)
 	}
 	if cfg.StoreOptions.MessageWindowSize != 250 {
 		t.Fatalf("unexpected message window size: %d", cfg.StoreOptions.MessageWindowSize)
@@ -152,7 +152,6 @@ func TestLoadServeRuntimeConfigUsesDefaultPathAndDefaultMessageWindow(t *testing
 listen_addr = ":8080"
 
 [store]
-db_path = "./data/node-a.db"
 `)
 
 	cfg, err := loadServeRuntimeConfig("")
@@ -165,6 +164,70 @@ db_path = "./data/node-a.db"
 	}
 	if cfg.StoreOptions.MessageWindowSize != store.DefaultMessageWindowSize {
 		t.Fatalf("unexpected default message window size: got=%d want=%d", cfg.StoreOptions.MessageWindowSize, store.DefaultMessageWindowSize)
+	}
+	if cfg.StoreOptions.Engine != store.EngineSQLite {
+		t.Fatalf("unexpected default store engine: %q", cfg.StoreOptions.Engine)
+	}
+	if cfg.SQLitePath != filepath.Clean(defaultSQLitePath) {
+		t.Fatalf("unexpected default sqlite path: %q", cfg.SQLitePath)
+	}
+	if cfg.PebblePath != filepath.Clean(defaultPebblePath) {
+		t.Fatalf("unexpected default pebble path: %q", cfg.PebblePath)
+	}
+}
+
+func TestLoadServeRuntimeConfigReadsSplitStoreConfig(t *testing.T) {
+	t.Parallel()
+
+	configPath := filepath.Join(t.TempDir(), "pebble.toml")
+	writeTestConfig(t, configPath, `
+[api]
+listen_addr = ":8080"
+
+[store]
+engine = "pebble"
+message_window_size = 250
+
+[store.sqlite]
+db_path = "./data/state.db"
+
+[store.pebble]
+path = "./data/projections.pebble"
+`)
+
+	cfg, err := loadServeRuntimeConfig(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if cfg.SQLitePath != filepath.Clean("./data/state.db") {
+		t.Fatalf("unexpected sqlite path: %q", cfg.SQLitePath)
+	}
+	if cfg.PebblePath != filepath.Clean("./data/projections.pebble") {
+		t.Fatalf("unexpected pebble path: %q", cfg.PebblePath)
+	}
+	if cfg.StoreOptions.Engine != store.EnginePebble {
+		t.Fatalf("unexpected store engine: %q", cfg.StoreOptions.Engine)
+	}
+	if cfg.StoreOptions.PebblePath != filepath.Clean("./data/projections.pebble") {
+		t.Fatalf("unexpected store options pebble path: %q", cfg.StoreOptions.PebblePath)
+	}
+}
+
+func TestLoadServeRuntimeConfigRejectsUnknownStoreEngine(t *testing.T) {
+	t.Parallel()
+
+	configPath := filepath.Join(t.TempDir(), "bad-engine.toml")
+	writeTestConfig(t, configPath, `
+[api]
+listen_addr = ":8080"
+
+[store]
+engine = "badger"
+`)
+
+	_, err := loadServeRuntimeConfig(configPath)
+	if err == nil || !strings.Contains(err.Error(), "store.engine must be sqlite or pebble") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 

@@ -13,9 +13,10 @@
 ## 技术栈
 
 - Go 1.26
-- SQLite 作为每节点本地数据库
+- SQLite 作为每节点本地状态数据库；事件日志和消息投影可配置使用 SQLite 或 Pebble
 - `github.com/gorilla/websocket`
 - `github.com/mattn/go-sqlite3`
+- `github.com/cockroachdb/pebble`
 - `github.com/rs/zerolog`
 - `google.golang.org/protobuf`
 - 标准库
@@ -32,7 +33,7 @@
 ├── internal/clock                  # HLC 和本地事件 ID
 ├── internal/cluster                # 集群配置与同步骨架
 ├── internal/proto                  # 集群协议类型
-├── internal/store                  # SQLite 本地存储内核
+├── internal/store                  # 本地存储内核，支持 SQLite/Pebble repository 后端
 ├── proto/cluster.proto             # Protobuf 协议定义
 └── README.md
 ```
@@ -109,8 +110,14 @@ cp ./config.example.toml ./config.toml
 listen_addr = ":8080"
 
 [store]
-db_path = "./data/node-a.db"
+engine = "sqlite"
 message_window_size = 500
+
+[store.sqlite]
+db_path = "./data/turntf.db"
+
+[store.pebble]
+path = "./data/turntf.pebble"
 
 [auth]
 token_secret = "replace-me"
@@ -137,7 +144,9 @@ url = "ws://127.0.0.1:9081/internal/cluster/ws"
 
 - 本地 `node_id`：节点首次启动时自动生成的稳定数字身份，保存到 SQLite `schema_meta` 的 `node_id` key；该 ID 会完整进入 HLC 时间戳
 - `api.listen_addr`：外部 HTTP API 监听地址，同时承载内部 `GET /internal/cluster/ws`
-- `store.db_path`：本地 SQLite 数据库路径。每个节点各自维护本地库，复制链路负责把状态传播到别的节点
+- `store.engine`：事件日志和消息投影 repository 引擎，可选 `sqlite` 或 `pebble`，默认 `sqlite`
+- `store.sqlite.db_path`：本地 SQLite 数据库路径，默认 `./data/turntf.db`。即使 `store.engine = "pebble"`，用户、订阅、游标、pending projection 和运维统计等状态仍保存在 SQLite
+- `store.pebble.path`：Pebble 数据目录，默认 `./data/turntf.pebble`。仅在 `store.engine = "pebble"` 时用于事件日志和消息投影
 - `store.message_window_size`：每节点每用户本地保留的消息窗口，默认 `500`。超过窗口的旧消息会在本地写入或复制应用时被裁剪
 - `auth.token_secret`：外部登录 token 的共享签名密钥；所有节点必须一致，任意节点签发的 token 才能被其他节点校验
 - `auth.token_ttl_minutes`：登录 token 的有效期，默认 `1440`

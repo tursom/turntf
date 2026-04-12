@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/cockroachdb/pebble"
 	_ "github.com/mattn/go-sqlite3"
 	gproto "google.golang.org/protobuf/proto"
 
@@ -26,6 +27,11 @@ var (
 )
 
 const DefaultMessageWindowSize = 500
+
+const (
+	EngineSQLite = "sqlite"
+	EnginePebble = "pebble"
+)
 
 const (
 	RoleSuperAdmin       = "super_admin"
@@ -45,12 +51,16 @@ const disabledPasswordHash = "!"
 type Options struct {
 	// NodeID seeds schema_meta.node_id for deterministic tests; production leaves it empty.
 	NodeID            int64
+	Engine            string
+	PebblePath        string
 	MessageWindowSize int
 	Clock             *clock.Clock
 }
 
 type Store struct {
 	db                *sql.DB
+	pebbleDB          *pebble.DB
+	engine            string
 	nodeID            int64
 	clock             *clock.Clock
 	ids               *clock.IDGenerator
@@ -59,6 +69,8 @@ type Store struct {
 	bootstrapAdmin    BootstrapAdminConfig
 	eventLog          EventLogRepository
 	userRepository    UserRepository
+	subscriptions     SubscriptionRepository
+	messageTrim       MessageTrimRepository
 	messageProjection MessageProjectionRepository
 }
 
@@ -187,6 +199,10 @@ type BootstrapAdminConfig struct {
 }
 
 func Open(dbPath string, opts Options) (*Store, error) {
+	engine := normalizeEngine(opts.Engine)
+	if engine == "" {
+		return nil, fmt.Errorf("%w: unsupported store engine %q", ErrInvalidInput, opts.Engine)
+	}
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
 		return nil, fmt.Errorf("create db dir: %w", err)
 	}
@@ -202,12 +218,34 @@ func Open(dbPath string, opts Options) (*Store, error) {
 		return nil, fmt.Errorf("enable foreign keys: %w", err)
 	}
 
+	var pebbleDB *pebble.DB
+	if engine == EnginePebble {
+		pebblePath := strings.TrimSpace(opts.PebblePath)
+		if pebblePath == "" {
+			_ = db.Close()
+			return nil, fmt.Errorf("%w: pebble path cannot be empty", ErrInvalidInput)
+		}
+		if err := os.MkdirAll(filepath.Dir(pebblePath), 0o755); err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("create pebble dir: %w", err)
+		}
+		var err error
+		pebbleDB, err = pebble.Open(pebblePath, &pebble.Options{})
+		if err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("open pebble: %w", err)
+		}
+	}
+
 	st := &Store{
 		db:                db,
+		pebbleDB:          pebbleDB,
+		engine:            engine,
 		initialNodeID:     opts.NodeID,
 		messageWindowSize: normalizeMessageWindowSize(opts.MessageWindowSize),
 		clock:             opts.Clock,
 		userRepository:    &sqliteUserRepository{db: db},
+		subscriptions:     &sqliteSubscriptionRepository{db: db},
 	}
 	return st, nil
 }
@@ -225,7 +263,14 @@ func (s *Store) MessageWindowSize() int {
 }
 
 func (s *Store) Close() error {
-	return s.db.Close()
+	var err error
+	if s.pebbleDB != nil {
+		err = s.pebbleDB.Close()
+	}
+	if closeErr := s.db.Close(); err == nil {
+		err = closeErr
+	}
+	return err
 }
 
 func (s *Store) Init(ctx context.Context) error {
@@ -432,19 +477,50 @@ VALUES(?, ?)
 	if s.clock == nil {
 		s.clock = clock.NewClock(nodeID)
 	}
-	s.messageProjection = &sqliteMessageProjectionRepository{
-		db:                s.db,
-		clock:             s.clock,
-		messageWindowSize: s.messageWindowSize,
-		userRepository:    s.userRepository,
-	}
-	s.eventLog = &sqliteEventLogRepository{
-		db:     s.db,
-		ids:    s.ids,
-		nodeID: s.nodeID,
-		clock:  s.clock,
+	s.messageTrim = &sqliteMessageTrimRepository{db: s.db, clock: s.clock}
+	switch s.engine {
+	case EngineSQLite:
+		s.messageProjection = &sqliteMessageProjectionRepository{
+			db:                s.db,
+			clock:             s.clock,
+			messageWindowSize: s.messageWindowSize,
+			userRepository:    s.userRepository,
+		}
+		s.eventLog = &sqliteEventLogRepository{
+			db:     s.db,
+			ids:    s.ids,
+			nodeID: s.nodeID,
+			clock:  s.clock,
+		}
+	case EnginePebble:
+		s.messageProjection = &pebbleMessageProjectionRepository{
+			db:                s.pebbleDB,
+			messageWindowSize: s.messageWindowSize,
+			userRepository:    s.userRepository,
+			subscriptions:     s.subscriptions,
+			messageTrim:       s.messageTrim,
+		}
+		s.eventLog = &pebbleEventLogRepository{
+			db:     s.pebbleDB,
+			ids:    s.ids,
+			nodeID: s.nodeID,
+			clock:  s.clock,
+		}
+	default:
+		return fmt.Errorf("%w: unsupported store engine %q", ErrInvalidInput, s.engine)
 	}
 	return nil
+}
+
+func normalizeEngine(engine string) string {
+	switch strings.ToLower(strings.TrimSpace(engine)) {
+	case "", EngineSQLite:
+		return EngineSQLite
+	case EnginePebble:
+		return EnginePebble
+	default:
+		return ""
+	}
 }
 
 func (s *Store) validateSchemaVersion(ctx context.Context) error {
@@ -999,6 +1075,10 @@ func (s *Store) getUserTx(ctx context.Context, tx *sql.Tx, key UserKey, includeD
 }
 
 func (s *Store) insertEvent(ctx context.Context, tx *sql.Tx, event Event) (Event, error) {
+	if s.engine == EnginePebble {
+		return s.eventLog.Append(ctx, event)
+	}
+
 	event.EventID = s.ids.Next()
 	event.OriginNodeID = s.nodeID
 

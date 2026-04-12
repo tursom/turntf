@@ -15,8 +15,10 @@ var ErrProjectionDeferred = errors.New("projection deferred")
 
 type EventLogRepository interface {
 	Append(context.Context, Event) (Event, error)
+	AppendReplicated(context.Context, Event) (Event, bool, error)
 	ListEvents(context.Context, int64, int) ([]Event, error)
 	ListEventsByOrigin(context.Context, int64, int64, int) ([]Event, error)
+	CountEventsByOrigin(context.Context, int64, int64) (int64, error)
 	LastEventSequence(context.Context) (int64, error)
 	ListOriginProgress(context.Context) ([]OriginProgress, error)
 }
@@ -31,6 +33,15 @@ type MessageProjectionRepository interface {
 type UserRepository interface {
 	GetUser(context.Context, UserKey, bool) (User, error)
 	GetUserTx(context.Context, *sql.Tx, UserKey, bool) (User, error)
+	ListBroadcastUserKeys(context.Context) ([]UserKey, error)
+}
+
+type SubscriptionRepository interface {
+	ListActiveSubscriptions(context.Context, UserKey) ([]Subscription, error)
+}
+
+type MessageTrimRepository interface {
+	RecordMessageTrim(context.Context, int64) error
 }
 
 type PendingProjection struct {
@@ -106,6 +117,34 @@ VALUES(?, ?, ?)
 	return event, nil
 }
 
+func (r *sqliteEventLogRepository) AppendReplicated(ctx context.Context, event Event) (Event, bool, error) {
+	value, err := eventLogValue(event)
+	if err != nil {
+		return Event{}, false, err
+	}
+	result, err := r.db.ExecContext(ctx, `
+INSERT INTO event_log(event_id, origin_node_id, value)
+VALUES(?, ?, ?)
+`, event.EventID, event.OriginNodeID, value)
+	if err != nil {
+		if isUniqueConstraint(err) {
+			events, listErr := r.ListEventsByOrigin(ctx, event.OriginNodeID, event.EventID-1, 1)
+			if listErr != nil {
+				return Event{}, false, listErr
+			}
+			if len(events) == 1 && events[0].EventID == event.EventID {
+				return events[0], false, nil
+			}
+		}
+		return Event{}, false, fmt.Errorf("insert replicated event log: %w", err)
+	}
+	event.Sequence, err = result.LastInsertId()
+	if err != nil {
+		return Event{}, false, fmt.Errorf("read replicated event sequence: %w", err)
+	}
+	return event, true, nil
+}
+
 func (r *sqliteEventLogRepository) ListEvents(ctx context.Context, afterSequence int64, limit int) ([]Event, error) {
 	if limit <= 0 || limit > 1000 {
 		limit = 100
@@ -169,6 +208,21 @@ LIMIT ?
 		return nil, fmt.Errorf("iterate origin events: %w", err)
 	}
 	return events, nil
+}
+
+func (r *sqliteEventLogRepository) CountEventsByOrigin(ctx context.Context, originNodeID, afterEventID int64) (int64, error) {
+	if originNodeID <= 0 {
+		return 0, nil
+	}
+	var count int64
+	if err := r.db.QueryRowContext(ctx, `
+SELECT COUNT(*)
+FROM event_log
+WHERE origin_node_id = ? AND event_id > ?
+`, originNodeID, afterEventID).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count origin events: %w", err)
+	}
+	return count, nil
 }
 
 func (r *sqliteEventLogRepository) LastEventSequence(ctx context.Context) (int64, error) {
@@ -427,6 +481,15 @@ type sqliteUserRepository struct {
 	db *sql.DB
 }
 
+type sqliteSubscriptionRepository struct {
+	db *sql.DB
+}
+
+type sqliteMessageTrimRepository struct {
+	db    *sql.DB
+	clock *clock.Clock
+}
+
 func (r *sqliteUserRepository) GetUser(ctx context.Context, key UserKey, includeDeleted bool) (User, error) {
 	if err := key.Validate(); err != nil {
 		return User{}, err
@@ -475,6 +538,78 @@ WHERE node_id = ? AND user_id = ?`
 		return User{}, err
 	}
 	return user, nil
+}
+
+func (r *sqliteUserRepository) ListBroadcastUserKeys(ctx context.Context) ([]UserKey, error) {
+	rows, err := r.db.QueryContext(ctx, `
+SELECT node_id, user_id
+FROM users
+WHERE role = ? AND deleted_at_hlc IS NULL
+ORDER BY node_id ASC, user_id ASC
+`, RoleBroadcast)
+	if err != nil {
+		return nil, fmt.Errorf("list broadcast users: %w", err)
+	}
+	defer rows.Close()
+
+	keys := make([]UserKey, 0)
+	for rows.Next() {
+		var key UserKey
+		if err := rows.Scan(&key.NodeID, &key.UserID); err != nil {
+			return nil, fmt.Errorf("scan broadcast user: %w", err)
+		}
+		keys = append(keys, key)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate broadcast users: %w", err)
+	}
+	return keys, nil
+}
+
+func (r *sqliteSubscriptionRepository) ListActiveSubscriptions(ctx context.Context, subscriber UserKey) ([]Subscription, error) {
+	if err := subscriber.Validate(); err != nil {
+		return nil, err
+	}
+	rows, err := r.db.QueryContext(ctx, `
+SELECT subscriber_node_id, subscriber_user_id, channel_node_id, channel_user_id, subscribed_at_hlc, deleted_at_hlc, origin_node_id
+FROM channel_subscriptions
+WHERE subscriber_node_id = ? AND subscriber_user_id = ? AND deleted_at_hlc IS NULL
+ORDER BY channel_node_id ASC, channel_user_id ASC
+`, subscriber.NodeID, subscriber.UserID)
+	if err != nil {
+		return nil, fmt.Errorf("list active subscriptions: %w", err)
+	}
+	defer rows.Close()
+
+	subscriptions := make([]Subscription, 0)
+	for rows.Next() {
+		subscription, err := scanSubscription(rows)
+		if err != nil {
+			return nil, err
+		}
+		subscriptions = append(subscriptions, subscription)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate active subscriptions: %w", err)
+	}
+	return subscriptions, nil
+}
+
+func (r *sqliteMessageTrimRepository) RecordMessageTrim(ctx context.Context, trimmed int64) error {
+	if trimmed <= 0 {
+		return nil
+	}
+	now := r.clock.Now().String()
+	if _, err := r.db.ExecContext(ctx, `
+INSERT INTO message_trim_stats(scope, trimmed_total, last_trimmed_at_hlc)
+VALUES('global', ?, ?)
+ON CONFLICT(scope) DO UPDATE SET
+    trimmed_total = message_trim_stats.trimmed_total + excluded.trimmed_total,
+    last_trimmed_at_hlc = excluded.last_trimmed_at_hlc
+`, trimmed, now); err != nil {
+		return fmt.Errorf("record message trim stats: %w", err)
+	}
+	return nil
 }
 
 func (r *sqliteMessageProjectionRepository) trimMessagesForUserTx(ctx context.Context, tx *sql.Tx, key UserKey) error {
@@ -594,6 +729,38 @@ func (s *Store) listPendingProjectionEvents(ctx context.Context, limit int) ([]E
 	if limit <= 0 || limit > 1000 {
 		limit = 100
 	}
+	if s.engine != EngineSQLite {
+		rows, err := s.db.QueryContext(ctx, `
+SELECT origin_node_id, event_id
+FROM pending_projections
+ORDER BY last_failed_at_hlc ASC, origin_node_id ASC, event_id ASC
+LIMIT ?
+`, limit)
+		if err != nil {
+			return nil, fmt.Errorf("list pending projection keys: %w", err)
+		}
+		defer rows.Close()
+
+		var events []Event
+		for rows.Next() {
+			var originNodeID, eventID int64
+			if err := rows.Scan(&originNodeID, &eventID); err != nil {
+				return nil, fmt.Errorf("scan pending projection key: %w", err)
+			}
+			found, err := s.eventLog.ListEventsByOrigin(ctx, originNodeID, eventID-1, 1)
+			if err != nil {
+				return nil, err
+			}
+			if len(found) == 1 && found[0].OriginNodeID == originNodeID && found[0].EventID == eventID {
+				events = append(events, found[0])
+			}
+		}
+		if err := rows.Err(); err != nil {
+			return nil, fmt.Errorf("iterate pending projection keys: %w", err)
+		}
+		return events, nil
+	}
+
 	rows, err := s.db.QueryContext(ctx, `
 SELECT e.sequence, e.event_id, e.origin_node_id, e.value
 FROM pending_projections p

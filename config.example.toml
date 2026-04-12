@@ -2,8 +2,14 @@
 listen_addr = ":8080"
 
 [store]
-db_path = "./data/node-a.db"
+engine = "sqlite"
 message_window_size = 500
+
+[store.sqlite]
+db_path = "./data/turntf.db"
+
+[store.pebble]
+path = "./data/turntf.pebble"
 
 [auth]
 token_secret = "replace-me"

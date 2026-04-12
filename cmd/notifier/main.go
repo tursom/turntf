@@ -76,7 +76,7 @@ func runServe(args []string, stdout io.Writer) error {
 		_ = closeLogger()
 	}()
 
-	st, err := store.Open(cfg.DBPath, cfg.StoreOptions)
+	st, err := store.Open(cfg.SQLitePath, cfg.StoreOptions)
 	if err != nil {
 		return err
 	}
@@ -120,7 +120,11 @@ func runServe(args []string, stdout io.Writer) error {
 	errCh := make(chan error, 1)
 	log.Info().Str("component", "notifier").Str("event", "config_loaded").Str("path", cfg.ConfigPath).Msg("config loaded")
 	log.Info().Str("component", "notifier").Str("event", "http_api_listening").Str("addr", cfg.APIAddr).Msg("http api listening")
-	log.Info().Str("component", "notifier").Str("event", "sqlite_database").Str("path", cfg.DBPath).Msg("sqlite database")
+	log.Info().Str("component", "notifier").Str("event", "store_engine").Str("engine", cfg.StoreOptions.Engine).Msg("store engine")
+	log.Info().Str("component", "notifier").Str("event", "sqlite_database").Str("path", cfg.SQLitePath).Msg("sqlite database")
+	if cfg.StoreOptions.Engine == store.EnginePebble {
+		log.Info().Str("component", "notifier").Str("event", "pebble_database").Str("path", cfg.PebblePath).Msg("pebble database")
+	}
 	if manager != nil {
 		log.Info().Str("component", "cluster").Str("event", "websocket_listening").Str("addr", cfg.APIAddr).Str("path", cfg.Cluster.AdvertisePath).Msg("websocket listening")
 	}

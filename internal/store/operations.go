@@ -169,6 +169,25 @@ func (s *Store) peerOperationsStats(ctx context.Context, peerNodeIDs []int64) ([
 }
 
 func (s *Store) listLocalOriginEventStats(ctx context.Context) (map[int64]localOriginEventStats, error) {
+	if s.engine != EngineSQLite {
+		progress, err := s.eventLog.ListOriginProgress(ctx)
+		if err != nil {
+			return nil, err
+		}
+		stats := make(map[int64]localOriginEventStats, len(progress))
+		for _, item := range progress {
+			count, err := s.eventLog.CountEventsByOrigin(ctx, item.OriginNodeID, 0)
+			if err != nil {
+				return nil, err
+			}
+			stats[item.OriginNodeID] = localOriginEventStats{
+				LastEventID: item.LastEventID,
+				EventCount:  count,
+			}
+		}
+		return stats, nil
+	}
+
 	rows, err := s.db.QueryContext(ctx, `
 SELECT origin_node_id, COALESCE(MAX(event_id), 0), COUNT(*)
 FROM event_log
@@ -201,6 +220,9 @@ func (s *Store) countUnconfirmedOriginEvents(ctx context.Context, originNodeID, 
 	}
 	if ackedEventID <= 0 {
 		return fallbackCount, nil
+	}
+	if s.engine != EngineSQLite {
+		return s.eventLog.CountEventsByOrigin(ctx, originNodeID, ackedEventID)
 	}
 
 	var count int64

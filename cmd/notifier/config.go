@@ -12,6 +12,8 @@ import (
 )
 
 const defaultConfigPath = "./config.toml"
+const defaultSQLitePath = "./data/turntf.db"
+const defaultPebblePath = "./data/turntf.pebble"
 
 type serveConfig struct {
 	API     apiConfig         `toml:"api"`
@@ -26,8 +28,19 @@ type apiConfig struct {
 }
 
 type storeConfig struct {
-	DBPath            string `toml:"db_path"`
-	MessageWindowSize int    `toml:"message_window_size"`
+	DBPath            string            `toml:"db_path"`
+	MessageWindowSize int               `toml:"message_window_size"`
+	Engine            string            `toml:"engine"`
+	SQLite            sqliteStoreConfig `toml:"sqlite"`
+	Pebble            pebbleStoreConfig `toml:"pebble"`
+}
+
+type sqliteStoreConfig struct {
+	DBPath string `toml:"db_path"`
+}
+
+type pebbleStoreConfig struct {
+	Path string `toml:"path"`
 }
 
 type authConfig struct {
@@ -60,7 +73,8 @@ type peerFileConfig struct {
 type runtimeServeConfig struct {
 	ConfigPath   string
 	APIAddr      string
-	DBPath       string
+	SQLitePath   string
+	PebblePath   string
 	StoreOptions store.Options
 	Auth         runtimeAuthConfig
 	Logging      runtimeLoggingConfig
@@ -105,11 +119,15 @@ func (c serveConfig) runtimeConfig(configPath string) (runtimeServeConfig, error
 	if strings.TrimSpace(c.API.ListenAddr) == "" {
 		return runtimeServeConfig{}, fmt.Errorf("api.listen_addr cannot be empty")
 	}
-	if strings.TrimSpace(c.Store.DBPath) == "" {
-		return runtimeServeConfig{}, fmt.Errorf("store.db_path cannot be empty")
-	}
 	if c.Store.MessageWindowSize < 0 {
 		return runtimeServeConfig{}, fmt.Errorf("store.message_window_size must be positive")
+	}
+	engine := strings.ToLower(strings.TrimSpace(c.Store.Engine))
+	if engine == "" {
+		engine = store.EngineSQLite
+	}
+	if engine != store.EngineSQLite && engine != store.EnginePebble {
+		return runtimeServeConfig{}, fmt.Errorf("store.engine must be sqlite or pebble")
 	}
 	if strings.TrimSpace(c.Auth.TokenSecret) == "" {
 		return runtimeServeConfig{}, fmt.Errorf("auth.token_secret cannot be empty")
@@ -131,6 +149,17 @@ func (c serveConfig) runtimeConfig(configPath string) (runtimeServeConfig, error
 	messageWindowSize := c.Store.MessageWindowSize
 	if messageWindowSize == 0 {
 		messageWindowSize = store.DefaultMessageWindowSize
+	}
+	sqlitePath := strings.TrimSpace(c.Store.SQLite.DBPath)
+	if sqlitePath == "" {
+		sqlitePath = strings.TrimSpace(c.Store.DBPath)
+	}
+	if sqlitePath == "" {
+		sqlitePath = defaultSQLitePath
+	}
+	pebblePath := strings.TrimSpace(c.Store.Pebble.Path)
+	if pebblePath == "" {
+		pebblePath = defaultPebblePath
 	}
 	tokenTTLMinutes := c.Auth.TokenTTLMinutes
 	if tokenTTLMinutes == 0 {
@@ -165,8 +194,11 @@ func (c serveConfig) runtimeConfig(configPath string) (runtimeServeConfig, error
 	return runtimeServeConfig{
 		ConfigPath: configPath,
 		APIAddr:    strings.TrimSpace(c.API.ListenAddr),
-		DBPath:     filepath.Clean(strings.TrimSpace(c.Store.DBPath)),
+		SQLitePath: filepath.Clean(sqlitePath),
+		PebblePath: filepath.Clean(pebblePath),
 		StoreOptions: store.Options{
+			Engine:            engine,
+			PebblePath:        filepath.Clean(pebblePath),
 			MessageWindowSize: messageWindowSize,
 		},
 		Auth: runtimeAuthConfig{

@@ -1,6 +1,6 @@
 # 运维与上线手册
 
-本文档记录分布式通知服务的小规模上线建议、备份策略、节点恢复流程和核心监控项。默认每个节点使用本地 SQLite，节点间通过 WebSocket + Protobuf 复制。
+本文档记录分布式通知服务的小规模上线建议、备份策略、节点恢复流程和核心监控项。默认每个节点使用本地 SQLite，节点间通过 WebSocket + Protobuf 复制；事件日志和消息投影也可配置为 Pebble 后端。
 
 ## 小规模部署建议
 
@@ -8,6 +8,7 @@
 - 所有节点使用相同的 `auth.token_secret`，否则跨节点登录 token 无法互认。
 - 所有节点使用相同的 `cluster.secret`，并确保它不同于 `auth.token_secret`。
 - 生产环境建议所有节点使用相同的 `store.message_window_size`，避免消息反熵因窗口不一致而跳过消息分片修复。
+- `store.engine` 默认 `sqlite`；配置为 `pebble` 时，事件日志和消息投影写入 Pebble，但用户、订阅、游标、pending projection 和运维统计仍写入 SQLite。
 - 将 `api.listen_addr` 暴露给业务调用方，同时只允许可信节点访问 `cluster.advertise_path`。
 - 保持节点系统时钟同步。集群模式下，节点首次成功校时前会拒绝写入；时钟偏差超过 `cluster.max_clock_skew_ms` 会导致 peer 被拒绝或断开。
 - 将 `GET /healthz` 接入存活探针，将 `GET /metrics` 接入带管理员 Bearer token 的指标抓取。
@@ -33,22 +34,23 @@ curl -H "Authorization: Bearer ${TOKEN}" http://127.0.0.1:8080/metrics
 
 ## 备份策略
 
-- 备份对象是每个节点自己的 SQLite 文件，例如 `./data/node-a.db`。
+- 备份对象至少包括每个节点自己的 SQLite 文件，默认 `./data/turntf.db`。
+- 如果 `store.engine = "pebble"`，还需要同时备份 Pebble 数据目录，默认 `./data/turntf.pebble`。
 - 推荐使用 SQLite 在线备份能力或文件系统快照，不建议在写入中直接复制裸 DB 文件。
 - 如果使用 `sqlite3` 命令，可执行：
 
 ```bash
-sqlite3 ./data/node-a.db ".backup './backup/node-a-$(date +%Y%m%d%H%M%S).db'"
+sqlite3 ./data/turntf.db ".backup './backup/turntf-$(date +%Y%m%d%H%M%S).db'"
 ```
 
-- 至少备份配置文件和数据库文件；SQLite `schema_meta` 中的 `node_id` 以及配置里的 `auth.token_secret`、`cluster.secret` 是恢复时的关键材料。
+- 至少备份配置文件、SQLite 数据库文件，以及 Pebble 模式下的 Pebble 数据目录；SQLite `schema_meta` 中的 `node_id` 以及配置里的 `auth.token_secret`、`cluster.secret` 是恢复时的关键材料。
 - 单节点备份只代表该节点本地状态。集群仍依赖事件补拉和快照反熵来修复节点间差异。
 
 ## 节点恢复流程
 
 1. 停止故障节点进程。
 2. 确认恢复时仍使用原来的 SQLite 数据库或至少保留 `schema_meta.node_id`，不要把同一个身份同时启动两份。
-3. 从最近备份恢复 SQLite 数据库文件。
+3. 从最近备份恢复 SQLite 数据库文件；Pebble 模式下同时恢复 Pebble 数据目录。
 4. 使用原配置启动节点，确保 `cluster.peers` 指向当前可用节点。
 5. 观察 `/ops/status` 中该节点对各 peer 下各 `origin_node_id` 的 `unconfirmed_events`、`pending_catchup`，以及 peer 顶层的 `pending_snapshot_partitions` 是否逐步归零。
 6. 观察 `/metrics` 中 `notifier_peer_connected`、`notifier_peer_origin_applied_event_id`、`notifier_peer_pending_snapshot_partitions`。

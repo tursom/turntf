@@ -6,8 +6,7 @@ import (
 )
 
 type Peer struct {
-	NodeID int64
-	URL    string
+	URL string
 }
 
 type Config struct {
@@ -45,21 +44,16 @@ func (c Config) Validate() error {
 		}
 	}
 
-	seenPeers := make(map[int64]struct{}, len(c.Peers))
+	seenPeers := make(map[string]struct{}, len(c.Peers))
 	for _, peer := range c.Peers {
-		if peer.NodeID <= 0 {
-			return fmt.Errorf("peer node id cannot be empty")
-		}
-		if strings.TrimSpace(peer.URL) == "" {
+		url := strings.TrimSpace(peer.URL)
+		if url == "" {
 			return fmt.Errorf("peer url cannot be empty")
 		}
-		if peer.NodeID == c.NodeID {
-			return fmt.Errorf("peer node id %d cannot match local node id", peer.NodeID)
+		if _, ok := seenPeers[url]; ok {
+			return fmt.Errorf("duplicate peer url %q", url)
 		}
-		if _, ok := seenPeers[peer.NodeID]; ok {
-			return fmt.Errorf("duplicate peer node id %d", peer.NodeID)
-		}
-		seenPeers[peer.NodeID] = struct{}{}
+		seenPeers[url] = struct{}{}
 	}
 	return nil
 }

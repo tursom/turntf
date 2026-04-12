@@ -194,10 +194,12 @@ func (m *Manager) requestSnapshotPartition(sess *session, partition *internalpro
 }
 
 func (m *Manager) snapshotProducerNodeIDs() []int64 {
-	producers := make([]int64, 0, 1+len(m.cfg.Peers))
+	producers := make([]int64, 0, 1+len(m.peers))
 	producers = append(producers, m.cfg.NodeID)
-	for _, peer := range m.cfg.Peers {
-		producers = append(producers, peer.NodeID)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for peerNodeID := range m.peers {
+		producers = append(producers, peerNodeID)
 	}
 	return producers
 }

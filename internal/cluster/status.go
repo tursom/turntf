@@ -19,11 +19,11 @@ func (m *Manager) Status(context.Context) (app.ClusterStatus, error) {
 	}
 
 	m.mu.Lock()
-	peers := make([]peerSnapshot, 0, len(m.cfg.Peers))
-	for _, configured := range m.cfg.Peers {
-		peer := m.peers[configured.NodeID]
+	peers := make([]peerSnapshot, 0, len(m.configuredPeers)+len(m.peers))
+	seen := make(map[int64]struct{}, len(m.peers))
+	for _, configured := range m.configuredPeers {
 		item := app.ClusterPeerStatus{
-			NodeID:                   configured.NodeID,
+			NodeID:                   configured.nodeID,
 			ConfiguredURL:            configured.URL,
 			SnapshotDigestsSentTotal: 0,
 			SnapshotDigestsRecvTotal: 0,
@@ -31,7 +31,10 @@ func (m *Manager) Status(context.Context) (app.ClusterStatus, error) {
 			SnapshotChunksRecvTotal:  0,
 		}
 		var active *session
-		if peer != nil {
+		if configured.nodeID > 0 {
+			seen[configured.nodeID] = struct{}{}
+		}
+		if peer := m.peers[configured.nodeID]; peer != nil {
 			active = peer.active
 			item.Connected = peer.active != nil
 			item.ClockOffsetMs = peer.clockOffsetMs
@@ -44,6 +47,24 @@ func (m *Manager) Status(context.Context) (app.ClusterStatus, error) {
 			item.LastSnapshotChunkAt = timePointer(peer.lastSnapshotChunkAt)
 		}
 		peers = append(peers, peerSnapshot{status: item, active: active})
+	}
+	for nodeID, peer := range m.peers {
+		if _, ok := seen[nodeID]; ok {
+			continue
+		}
+		item := app.ClusterPeerStatus{
+			NodeID:                   nodeID,
+			SnapshotDigestsSentTotal: peer.snapshotDigestsSent,
+			SnapshotDigestsRecvTotal: peer.snapshotDigestsReceived,
+			SnapshotChunksSentTotal:  peer.snapshotChunksSent,
+			SnapshotChunksRecvTotal:  peer.snapshotChunksReceived,
+			LastSnapshotDigestAt:     timePointer(peer.lastSnapshotDigestAt),
+			LastSnapshotChunkAt:      timePointer(peer.lastSnapshotChunkAt),
+			Connected:                peer.active != nil,
+			ClockOffsetMs:            peer.clockOffsetMs,
+			LastClockSync:            timePointer(peer.lastClockSync),
+		}
+		peers = append(peers, peerSnapshot{status: item, active: peer.active})
 	}
 	writeGateReady := m.hasWritableClockSyncLocked()
 	m.mu.Unlock()
@@ -72,9 +93,15 @@ func (m *Manager) ConfiguredPeerNodeIDs() []int64 {
 	if m == nil {
 		return nil
 	}
-	ids := make([]int64, 0, len(m.cfg.Peers))
-	for _, peer := range m.cfg.Peers {
-		ids = append(ids, peer.NodeID)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	ids := make([]int64, 0, len(m.configuredPeers))
+	for _, peer := range m.configuredPeers {
+		if peer.nodeID <= 0 {
+			continue
+		}
+		ids = append(ids, peer.nodeID)
 	}
 	return ids
 }

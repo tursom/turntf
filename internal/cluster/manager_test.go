@@ -48,7 +48,7 @@ func TestActivateSessionPrefersExpectedDirection(t *testing.T) {
 		MessageWindowSize: store.DefaultMessageWindowSize,
 		MaxClockSkewMs:    DefaultMaxClockSkewMs,
 		Peers: []Peer{
-			{NodeID: testNodeID(2), URL: "ws://127.0.0.1:9999/internal/cluster/ws"},
+			{URL: "ws://127.0.0.1:9999/internal/cluster/ws"},
 		},
 	}, nil)
 	if err != nil {
@@ -57,6 +57,7 @@ func TestActivateSessionPrefersExpectedDirection(t *testing.T) {
 	mgr.timeSyncer = func(*session) (timeSyncSample, error) {
 		return timeSyncSample{offsetMs: 0, rttMs: 1}, nil
 	}
+	mgr.peers[testNodeID(2)] = &peerState{}
 
 	inbound := &session{manager: mgr, conn: nil, peerID: testNodeID(2), outbound: false, send: make(chan *internalproto.Envelope, 1)}
 	outbound := &session{manager: mgr, conn: nil, peerID: testNodeID(2), outbound: true, send: make(chan *internalproto.Envelope, 1)}
@@ -89,20 +90,6 @@ func TestHandleHelloRejectsInvalidHandshake(t *testing.T) {
 		wantActivePeerID int64
 	}{
 		{
-			name: "unknown peer",
-			session: &session{
-				manager: mgr,
-				send:    make(chan *internalproto.Envelope, 1),
-			},
-			hello: &internalproto.Hello{
-				NodeId:            testNodeID(3),
-				AdvertiseAddr:     websocketPath,
-				ProtocolVersion:   internalproto.ProtocolVersion,
-				MessageWindowSize: store.DefaultMessageWindowSize,
-			},
-			envelopeNodeID: testNodeID(3),
-		},
-		{
 			name: "protocol mismatch",
 			session: &session{
 				manager: mgr,
@@ -133,10 +120,13 @@ func TestHandleHelloRejectsInvalidHandshake(t *testing.T) {
 		{
 			name: "outbound peer mismatch",
 			session: &session{
-				manager:          mgr,
-				outbound:         true,
-				configuredPeerID: testNodeID(3),
-				send:             make(chan *internalproto.Envelope, 1),
+				manager:  mgr,
+				outbound: true,
+				configuredPeer: &configuredPeer{
+					URL:    "ws://127.0.0.1:9081/internal/cluster/ws",
+					nodeID: testNodeID(3),
+				},
+				send: make(chan *internalproto.Envelope, 1),
 			},
 			hello: &internalproto.Hello{
 				NodeId:            testNodeID(2),
@@ -184,7 +174,7 @@ func TestHandleHelloAllowsMismatchedMessageWindowSizes(t *testing.T) {
 		MessageWindowSize: 5,
 		MaxClockSkewMs:    DefaultMaxClockSkewMs,
 		Peers: []Peer{
-			{NodeID: testNodeID(2), URL: "ws://127.0.0.1:9081/internal/cluster/ws"},
+			{URL: "ws://127.0.0.1:9081/internal/cluster/ws"},
 		},
 	}, nil)
 	if err != nil {
@@ -824,7 +814,7 @@ func TestStatusReportsPeerReplicationAndWriteGate(t *testing.T) {
 	if status.WriteGateReady {
 		t.Fatalf("expected write gate to be closed before trusted clock sync")
 	}
-	if len(status.Peers) != 1 || status.Peers[0].NodeID != testNodeID(1) || status.Peers[0].Connected {
+	if len(status.Peers) != 1 || status.Peers[0].NodeID != 0 || status.Peers[0].Connected {
 		t.Fatalf("unexpected disconnected peer status: %+v", status)
 	}
 
@@ -839,6 +829,8 @@ func TestStatusReportsPeerReplicationAndWriteGate(t *testing.T) {
 	}
 	now := time.Now().UTC()
 	mgr.mu.Lock()
+	mgr.peers[testNodeID(1)] = &peerState{}
+	mgr.configuredPeers[0].nodeID = testNodeID(1)
 	peer := mgr.peers[testNodeID(1)]
 	peer.active = sess
 	peer.trustedSession = sess
@@ -939,10 +931,10 @@ func TestWriteRequestsBlockedUntilInitialClockSync(t *testing.T) {
 	lnB := mustListen(t)
 
 	nodeA := newClusterTestNode(t, "node-a", 1, lnA, []Peer{
-		{NodeID: testNodeID(2), URL: wsURL(lnB)},
+		{URL: wsURL(lnB)},
 	})
 	nodeB := newClusterTestNode(t, "node-b", 2, lnB, []Peer{
-		{NodeID: testNodeID(1), URL: wsURL(lnA)},
+		{URL: wsURL(lnA)},
 	})
 
 	nodeA.start(t)
@@ -967,10 +959,10 @@ func TestSkewedPeerRejectedWhenMaxClockSkewExceeded(t *testing.T) {
 	lnB := mustListen(t)
 
 	nodeA := newClusterTestNodeWithWindowAndSkew(t, "node-a", 1, lnA, []Peer{
-		{NodeID: testNodeID(2), URL: wsURL(lnB)},
+		{URL: wsURL(lnB)},
 	}, store.DefaultMessageWindowSize, 0, DefaultMaxClockSkewMs)
 	nodeB := newClusterTestNodeWithWindowAndSkew(t, "node-b", 2, lnB, []Peer{
-		{NodeID: testNodeID(1), URL: wsURL(lnA)},
+		{URL: wsURL(lnA)},
 	}, store.DefaultMessageWindowSize, 5000, DefaultMaxClockSkewMs)
 
 	nodeA.start(t)
@@ -990,10 +982,10 @@ func TestSkewedPeerAllowedWhenMaxClockSkewDisabled(t *testing.T) {
 	lnB := mustListen(t)
 
 	nodeA := newClusterTestNodeWithWindowAndSkew(t, "node-a", 1, lnA, []Peer{
-		{NodeID: testNodeID(2), URL: wsURL(lnB)},
+		{URL: wsURL(lnB)},
 	}, store.DefaultMessageWindowSize, 0, 0)
 	nodeB := newClusterTestNodeWithWindowAndSkew(t, "node-b", 2, lnB, []Peer{
-		{NodeID: testNodeID(1), URL: wsURL(lnA)},
+		{URL: wsURL(lnA)},
 	}, store.DefaultMessageWindowSize, 5000, 0)
 
 	nodeA.start(t)
@@ -1009,10 +1001,10 @@ func TestTwoNodeReplicationOverWebSocket(t *testing.T) {
 	lnB := mustListen(t)
 
 	nodeA := newClusterTestNode(t, "node-a", 1, lnA, []Peer{
-		{NodeID: testNodeID(2), URL: wsURL(lnB)},
+		{URL: wsURL(lnB)},
 	})
 	nodeB := newClusterTestNode(t, "node-b", 2, lnB, []Peer{
-		{NodeID: testNodeID(1), URL: wsURL(lnA)},
+		{URL: wsURL(lnA)},
 	})
 
 	nodeA.start(t)
@@ -1075,10 +1067,10 @@ func TestTwoNodeMessageWindowConvergesWhenSizesMatch(t *testing.T) {
 	lnB := mustListen(t)
 
 	nodeA := newClusterTestNodeWithWindow(t, "node-a", 1, lnA, []Peer{
-		{NodeID: testNodeID(2), URL: wsURL(lnB)},
+		{URL: wsURL(lnB)},
 	}, 2)
 	nodeB := newClusterTestNodeWithWindow(t, "node-b", 2, lnB, []Peer{
-		{NodeID: testNodeID(1), URL: wsURL(lnA)},
+		{URL: wsURL(lnA)},
 	}, 2)
 
 	nodeA.start(t)
@@ -1131,10 +1123,10 @@ func TestTwoNodeMessageWindowMismatchKeepsPerNodeWindows(t *testing.T) {
 	lnB := mustListen(t)
 
 	nodeA := newClusterTestNodeWithWindow(t, "node-a", 1, lnA, []Peer{
-		{NodeID: testNodeID(2), URL: wsURL(lnB)},
+		{URL: wsURL(lnB)},
 	}, 3)
 	nodeB := newClusterTestNodeWithWindow(t, "node-b", 2, lnB, []Peer{
-		{NodeID: testNodeID(1), URL: wsURL(lnA)},
+		{URL: wsURL(lnA)},
 	}, 2)
 
 	nodeA.start(t)
@@ -1187,10 +1179,10 @@ func TestLateJoiningNodeCatchesUpWithoutDuplicates(t *testing.T) {
 	lnB := mustListen(t)
 
 	nodeA := newClusterTestNode(t, "node-a", 1, lnA, []Peer{
-		{NodeID: testNodeID(2), URL: wsURL(lnB)},
+		{URL: wsURL(lnB)},
 	})
 	nodeB := newClusterTestNode(t, "node-b", 2, lnB, []Peer{
-		{NodeID: testNodeID(1), URL: wsURL(lnA)},
+		{URL: wsURL(lnA)},
 	})
 
 	nodeA.start(t)
@@ -1235,10 +1227,10 @@ func TestLateJoiningNodeCatchesUpAcrossMultiplePullBatches(t *testing.T) {
 	lnB := mustListen(t)
 
 	nodeA := newClusterTestNode(t, "node-a", 1, lnA, []Peer{
-		{NodeID: testNodeID(2), URL: wsURL(lnB)},
+		{URL: wsURL(lnB)},
 	})
 	nodeB := newClusterTestNode(t, "node-b", 2, lnB, []Peer{
-		{NodeID: testNodeID(1), URL: wsURL(lnA)},
+		{URL: wsURL(lnA)},
 	})
 
 	nodeA.start(t)
@@ -1286,10 +1278,10 @@ func TestLateJoiningNodeTrimsCatchupToLocalWindow(t *testing.T) {
 	lnB := mustListen(t)
 
 	nodeA := newClusterTestNodeWithWindow(t, "node-a", 1, lnA, []Peer{
-		{NodeID: testNodeID(2), URL: wsURL(lnB)},
+		{URL: wsURL(lnB)},
 	}, 5)
 	nodeB := newClusterTestNodeWithWindow(t, "node-b", 2, lnB, []Peer{
-		{NodeID: testNodeID(1), URL: wsURL(lnA)},
+		{URL: wsURL(lnA)},
 	}, 2)
 
 	nodeA.start(t)
@@ -1327,10 +1319,10 @@ func TestSnapshotRepairOverWebSocketRepairsRowsOutsideEventLog(t *testing.T) {
 	lnB := mustListen(t)
 
 	nodeA := newClusterTestNode(t, "node-a", 1, lnA, []Peer{
-		{NodeID: testNodeID(2), URL: wsURL(lnB)},
+		{URL: wsURL(lnB)},
 	})
 	nodeB := newClusterTestNode(t, "node-b", 2, lnB, []Peer{
-		{NodeID: testNodeID(1), URL: wsURL(lnA)},
+		{URL: wsURL(lnA)},
 	})
 
 	ctx := context.Background()
@@ -1407,16 +1399,16 @@ func TestThreeNodeFieldLevelConvergence(t *testing.T) {
 	lnC := mustListen(t)
 
 	nodeA := newClusterTestNode(t, "node-a", 1, lnA, []Peer{
-		{NodeID: testNodeID(2), URL: wsURL(lnB)},
-		{NodeID: testNodeID(3), URL: wsURL(lnC)},
+		{URL: wsURL(lnB)},
+		{URL: wsURL(lnC)},
 	})
 	nodeB := newClusterTestNode(t, "node-b", 2, lnB, []Peer{
-		{NodeID: testNodeID(1), URL: wsURL(lnA)},
-		{NodeID: testNodeID(3), URL: wsURL(lnC)},
+		{URL: wsURL(lnA)},
+		{URL: wsURL(lnC)},
 	})
 	nodeC := newClusterTestNode(t, "node-c", 3, lnC, []Peer{
-		{NodeID: testNodeID(1), URL: wsURL(lnA)},
-		{NodeID: testNodeID(2), URL: wsURL(lnB)},
+		{URL: wsURL(lnA)},
+		{URL: wsURL(lnB)},
 	})
 
 	nodeA.start(t)
@@ -1495,16 +1487,16 @@ func TestThreeNodeDeleteWinsOverConcurrentUpdate(t *testing.T) {
 	lnC := mustListen(t)
 
 	nodeA := newClusterTestNode(t, "node-a", 1, lnA, []Peer{
-		{NodeID: testNodeID(2), URL: wsURL(lnB)},
-		{NodeID: testNodeID(3), URL: wsURL(lnC)},
+		{URL: wsURL(lnB)},
+		{URL: wsURL(lnC)},
 	})
 	nodeB := newClusterTestNode(t, "node-b", 2, lnB, []Peer{
-		{NodeID: testNodeID(1), URL: wsURL(lnA)},
-		{NodeID: testNodeID(3), URL: wsURL(lnC)},
+		{URL: wsURL(lnA)},
+		{URL: wsURL(lnC)},
 	})
 	nodeC := newClusterTestNode(t, "node-c", 3, lnC, []Peer{
-		{NodeID: testNodeID(1), URL: wsURL(lnA)},
-		{NodeID: testNodeID(2), URL: wsURL(lnB)},
+		{URL: wsURL(lnA)},
+		{URL: wsURL(lnB)},
 	})
 
 	nodeA.start(t)
@@ -1783,7 +1775,7 @@ func newHandshakeTestManager(t *testing.T) *Manager {
 		MessageWindowSize: store.DefaultMessageWindowSize,
 		MaxClockSkewMs:    DefaultMaxClockSkewMs,
 		Peers: []Peer{
-			{NodeID: testNodeID(2), URL: "ws://127.0.0.1:9081/internal/cluster/ws"},
+			{URL: "ws://127.0.0.1:9081/internal/cluster/ws"},
 		},
 	}, nil)
 	if err != nil {
@@ -1845,7 +1837,7 @@ func newReplicationTestManagerWithWindow(t *testing.T, st *store.Store, messageW
 		MessageWindowSize: messageWindowSize,
 		MaxClockSkewMs:    DefaultMaxClockSkewMs,
 		Peers: []Peer{
-			{NodeID: testNodeID(1), URL: "ws://127.0.0.1:9080/internal/cluster/ws"},
+			{URL: "ws://127.0.0.1:9080/internal/cluster/ws"},
 		},
 	}, st)
 	if err != nil {

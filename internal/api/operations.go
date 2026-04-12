@@ -130,6 +130,9 @@ func (s *Service) Metrics(ctx context.Context) (string, error) {
 	writeMetricHelp(&buf, "notifier_peer_pending_snapshot_partitions", "Pending anti-entropy snapshot partitions for the peer.", "gauge")
 	writeMetricHelp(&buf, "notifier_clock_offset_ms", "Last trusted clock offset for the peer in milliseconds.", "gauge")
 	for _, peer := range status.Peers {
+		if peer.NodeID <= 0 {
+			continue
+		}
 		peerLabels := map[string]string{
 			"node_id":      nodeIDLabel,
 			"peer_node_id": strconv.FormatInt(peer.NodeID, 10),
@@ -154,6 +157,7 @@ func (s *Service) Metrics(ctx context.Context) (string, error) {
 
 func mergePeerStatus(storePeers []store.PeerOperationsStats, clusterPeers []app.ClusterPeerStatus) []peerStatusResponse {
 	index := make(map[int64]peerStatusResponse, len(storePeers)+len(clusterPeers))
+	unknown := make([]peerStatusResponse, 0)
 	for _, peer := range storePeers {
 		item := peerStatusResponse{
 			NodeID:  peer.PeerNodeID,
@@ -171,6 +175,27 @@ func mergePeerStatus(storePeers []store.PeerOperationsStats, clusterPeers []app.
 		index[peer.PeerNodeID] = item
 	}
 	for _, peer := range clusterPeers {
+		if peer.NodeID <= 0 {
+			unknown = append(unknown, peerStatusResponse{
+				NodeID:                    peer.NodeID,
+				ConfiguredURL:             peer.ConfiguredURL,
+				Connected:                 peer.Connected,
+				SessionDirection:          peer.SessionDirection,
+				PendingSnapshotPartitions: peer.PendingSnapshotPartitions,
+				RemoteSnapshotVersion:     peer.RemoteSnapshotVersion,
+				RemoteMessageWindowSize:   peer.RemoteMessageWindowSize,
+				ClockOffsetMs:             peer.ClockOffsetMs,
+				LastClockSync:             timeString(peer.LastClockSync),
+				SnapshotDigestsSentTotal:  peer.SnapshotDigestsSentTotal,
+				SnapshotDigestsRecvTotal:  peer.SnapshotDigestsRecvTotal,
+				SnapshotChunksSentTotal:   peer.SnapshotChunksSentTotal,
+				SnapshotChunksRecvTotal:   peer.SnapshotChunksRecvTotal,
+				LastSnapshotDigestAt:      timeString(peer.LastSnapshotDigestAt),
+				LastSnapshotChunkAt:       timeString(peer.LastSnapshotChunkAt),
+				Origins:                   mergePeerOrigins(nil, peer.Origins),
+			})
+			continue
+		}
 		item := index[peer.NodeID]
 		item.NodeID = peer.NodeID
 		item.ConfiguredURL = peer.ConfiguredURL
@@ -201,7 +226,10 @@ func mergePeerStatus(storePeers []store.PeerOperationsStats, clusterPeers []app.
 	sort.Slice(peers, func(i, j int) bool {
 		return peers[i].NodeID < peers[j].NodeID
 	})
-	return peers
+	sort.Slice(unknown, func(i, j int) bool {
+		return unknown[i].ConfiguredURL < unknown[j].ConfiguredURL
+	})
+	return append(unknown, peers...)
 }
 
 func mergePeerOrigins(storeOrigins []peerOriginStatusResponse, clusterOrigins []app.ClusterPeerOriginStatus) []peerOriginStatusResponse {

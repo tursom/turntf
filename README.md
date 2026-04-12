@@ -47,7 +47,7 @@
 - `幂等`：同一事件重复投递多次，最终效果仍只生效一次。集群复制必须具备幂等性，否则断线重连或重放时会产生重复数据。
 - `反熵`：anti-entropy，同步双方定期比对摘要并修补差异的机制。它用于补偿“实时广播 + 增量补拉”仍可能遗漏的边角情况。
 - `快照修复`：当事件补拉不足以修复状态差异时，直接按分片传输当前数据快照并增量合并到本地状态的机制。
-- `peer`：当前节点已知的其他节点配置项。每个 peer 至少包含一个数字身份 `node_id` 和一个可拨号的 `url`。
+- `peer`：当前节点已知的其他节点配置项。每个 peer 至少包含一个可拨号的 `url`；远端 `node_id` 会在握手时自动读取并缓存。
 
 ## 当前状态
 
@@ -130,7 +130,6 @@ secret = "secret"
 max_clock_skew_ms = 1000
 
 [[cluster.peers]]
-node_id = 8192
 url = "ws://127.0.0.1:9081/internal/cluster/ws"
 ```
 
@@ -151,8 +150,7 @@ url = "ws://127.0.0.1:9081/internal/cluster/ws"
 - `cluster.advertise_path`：节点对外暴露的集群 WebSocket 路径，必须以 `/` 开头；peer 的 `url` 需要带上这个路径
 - `cluster.secret`：集群内部 `Envelope` 的共享 HMAC 密钥；节点间握手、广播、补拉和反熵消息都会验签
 - `cluster.max_clock_skew_ms`：允许的最大时钟偏差，默认 `1000` 毫秒；正数启用超限拒绝，`0` 表示关闭“超限拒绝”，但节点仍会在首次成功校时前拒绝本地写入
-- `[[cluster.peers]]`：静态 peer 列表，可重复出现多个条目，但 `node_id` 不能和本节点相同
-- `cluster.peers.node_id`：远端节点的稳定数字身份，可从远端日志、`/ops/status` 或 `/metrics` 中查看
+- `[[cluster.peers]]`：静态 peer 列表，可重复出现多个条目；当前仅需配置可拨号地址，远端 `node_id` 会在首次握手后自动识别
 - `cluster.peers.url`：当前节点主动拨号到远端时使用的完整 WebSocket URL，例如 `ws://127.0.0.1:9081/internal/cluster/ws`
 - 当前协议不支持旧快照版本节点混跑；升级后需整集群使用新协议版本和快照版本
 

@@ -54,8 +54,7 @@ type clusterFileConfig struct {
 }
 
 type peerFileConfig struct {
-	NodeID int64  `toml:"node_id"`
-	URL    string `toml:"url"`
+	URL string `toml:"url"`
 }
 
 type runtimeServeConfig struct {
@@ -141,8 +140,7 @@ func (c serveConfig) runtimeConfig(configPath string) (runtimeServeConfig, error
 	peers := make([]cluster.Peer, 0, len(c.Cluster.Peers))
 	for _, peer := range c.Cluster.Peers {
 		peers = append(peers, cluster.Peer{
-			NodeID: peer.NodeID,
-			URL:    strings.TrimSpace(peer.URL),
+			URL: strings.TrimSpace(peer.URL),
 		})
 	}
 
@@ -200,18 +198,16 @@ func validateClusterFileConfig(c cluster.Config) error {
 		}
 	}
 
-	seenPeers := make(map[int64]struct{}, len(c.Peers))
+	seenPeers := make(map[string]struct{}, len(c.Peers))
 	for _, peer := range c.Peers {
-		if peer.NodeID <= 0 {
-			return fmt.Errorf("peer node id cannot be empty")
-		}
-		if strings.TrimSpace(peer.URL) == "" {
+		url := strings.TrimSpace(peer.URL)
+		if url == "" {
 			return fmt.Errorf("peer url cannot be empty")
 		}
-		if _, ok := seenPeers[peer.NodeID]; ok {
-			return fmt.Errorf("duplicate peer node id %d", peer.NodeID)
+		if _, ok := seenPeers[url]; ok {
+			return fmt.Errorf("duplicate peer url %q", url)
 		}
-		seenPeers[peer.NodeID] = struct{}{}
+		seenPeers[url] = struct{}{}
 	}
 	return nil
 }

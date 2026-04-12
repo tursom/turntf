@@ -105,7 +105,6 @@ advertise_path = "/internal/cluster/ws"
 secret = "secret"
 
 [[cluster.peers]]
-node_id = 8192
 url = "ws://127.0.0.1:9081/internal/cluster/ws"
 `)
 
@@ -418,7 +417,6 @@ secret = "secret"
 max_clock_skew_ms = 0
 
 [[cluster.peers]]
-node_id = 8192
 url = "ws://127.0.0.1:9081/internal/cluster/ws"
 `)
 
@@ -448,7 +446,6 @@ secret = "secret"
 max_clock_skew_ms = -1
 
 [[cluster.peers]]
-node_id = 8192
 url = "ws://127.0.0.1:9081/internal/cluster/ws"
 `)
 
@@ -551,7 +548,6 @@ secret = "secret"
 [cluster]
 
 [[cluster.peers]]
-node_id = 8192
 url = "ws://127.0.0.1:9081/internal/cluster/ws"
 `,
 			wantErr: "cluster secret cannot be empty",
@@ -580,10 +576,10 @@ db_path = "./data/node-a.db"
 	}
 }
 
-func TestLoadServeRuntimeConfigRejectsStringPeerNodeID(t *testing.T) {
+func TestLoadServeRuntimeConfigRejectsRemovedPeerNodeID(t *testing.T) {
 	t.Parallel()
 
-	configPath := filepath.Join(t.TempDir(), "string-peer-id.toml")
+	configPath := filepath.Join(t.TempDir(), "peer-node-id.toml")
 	writeTestConfig(t, configPath, `
 [api]
 listen_addr = ":8080"
@@ -596,12 +592,12 @@ advertise_path = "/internal/cluster/ws"
 secret = "secret"
 
 [[cluster.peers]]
-node_id = "node-b"
+node_id = 8192
 url = "ws://127.0.0.1:9081/internal/cluster/ws"
 `)
 
 	_, err := loadServeRuntimeConfig(configPath)
-	if err == nil || !strings.Contains(err.Error(), "destination has type integer") {
+	if err == nil || !strings.Contains(err.Error(), "unknown fields cluster.peers.node_id") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

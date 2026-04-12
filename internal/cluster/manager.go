@@ -57,15 +57,20 @@ type Manager struct {
 	closeOnce sync.Once
 	dialer    *websocket.Dialer
 
-	mu    sync.Mutex
-	peers map[int64]*peerState
+	mu              sync.Mutex
+	peers           map[int64]*peerState
+	configuredPeers []*configuredPeer
 
 	lastSuccessfulClockSync time.Time
 	timeSyncer              func(*session) (timeSyncSample, error)
 }
 
+type configuredPeer struct {
+	URL    string
+	nodeID int64
+}
+
 type peerState struct {
-	cfg            Peer
 	active         *session
 	lastAck        uint64
 	trustedSession *session
@@ -85,8 +90,8 @@ type session struct {
 	conn     *websocket.Conn
 	outbound bool
 
-	configuredPeerID int64
-	peerID           int64
+	configuredPeer *configuredPeer
+	peerID         int64
 
 	send chan *internalproto.Envelope
 
@@ -128,9 +133,9 @@ func NewManager(cfg Config, st *store.Store) (*Manager, error) {
 		return nil, err
 	}
 
-	peers := make(map[int64]*peerState, len(cfg.Peers))
+	configuredPeers := make([]*configuredPeer, 0, len(cfg.Peers))
 	for _, peer := range cfg.Peers {
-		peers[peer.NodeID] = &peerState{cfg: peer}
+		configuredPeers = append(configuredPeers, &configuredPeer{URL: peer.URL})
 	}
 
 	clockRef := clock.NewClock(cfg.NodeID)
@@ -145,10 +150,11 @@ func NewManager(cfg Config, st *store.Store) (*Manager, error) {
 		upgrader: websocket.Upgrader{
 			CheckOrigin: func(*http.Request) bool { return true },
 		},
-		mux:       http.NewServeMux(),
-		publishCh: make(chan store.Event, managerPublishQueue),
-		dialer:    websocket.DefaultDialer,
-		peers:     peers,
+		mux:             http.NewServeMux(),
+		publishCh:       make(chan store.Event, managerPublishQueue),
+		dialer:          websocket.DefaultDialer,
+		peers:           make(map[int64]*peerState, len(cfg.Peers)),
+		configuredPeers: configuredPeers,
 	}
 	mgr.mux.HandleFunc("GET "+cfg.AdvertisePath, mgr.handleWebSocket)
 	return mgr, nil
@@ -169,7 +175,7 @@ func (m *Manager) Start(parent context.Context) {
 		m.wg.Add(1)
 		go m.publishLoop()
 
-		for _, peer := range m.cfg.Peers {
+		for _, peer := range m.configuredPeers {
 			peer := peer
 			m.wg.Add(1)
 			go m.dialLoop(peer)
@@ -263,7 +269,7 @@ func (m *Manager) activeSessions() []*session {
 	return sessions
 }
 
-func (m *Manager) dialLoop(peer Peer) {
+func (m *Manager) dialLoop(peer *configuredPeer) {
 	defer m.wg.Done()
 
 	backoff := []time.Duration{time.Second, 2 * time.Second, 5 * time.Second, 10 * time.Second, 30 * time.Second}
@@ -276,7 +282,7 @@ func (m *Manager) dialLoop(peer Peer) {
 		default:
 		}
 
-		if m.cfg.NodeID > peer.NodeID && m.hasActivePeer(peer.NodeID) {
+		if peerID := m.configuredPeerNodeID(peer); peerID > 0 && m.cfg.NodeID > peerID && m.hasActivePeer(peerID) {
 			select {
 			case <-m.ctx.Done():
 				return
@@ -298,7 +304,7 @@ func (m *Manager) dialLoop(peer Peer) {
 		}
 
 		attempt = 0
-		sess := m.newSession(conn, true, peer.NodeID)
+		sess := m.newSession(conn, true, peer)
 		m.runSession(sess)
 
 		select {
@@ -320,7 +326,7 @@ func (m *Manager) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sess := m.newSession(conn, false, 0)
+	sess := m.newSession(conn, false, nil)
 	m.wg.Add(1)
 	go func() {
 		defer m.wg.Done()
@@ -328,12 +334,12 @@ func (m *Manager) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}()
 }
 
-func (m *Manager) newSession(conn *websocket.Conn, outbound bool, configuredPeerID int64) *session {
+func (m *Manager) newSession(conn *websocket.Conn, outbound bool, configuredPeer *configuredPeer) *session {
 	return &session{
 		manager:              m,
 		conn:                 conn,
 		outbound:             outbound,
-		configuredPeerID:     configuredPeerID,
+		configuredPeer:       configuredPeer,
 		send:                 make(chan *internalproto.Envelope, outboundQueueSize),
 		remoteOriginProgress: make(map[int64]uint64),
 		pendingPulls:         make(map[int64]pendingPullState),
@@ -525,8 +531,8 @@ func (m *Manager) handleHello(sess *session, envelope *internalproto.Envelope) e
 	if !strings.HasPrefix(strings.TrimSpace(hello.AdvertiseAddr), "/") {
 		return errors.New("hello advertise path must start with /")
 	}
-	if sess.outbound && sess.configuredPeerID != 0 && sess.configuredPeerID != peerID {
-		return fmt.Errorf("peer mismatch: expected %d got %d", sess.configuredPeerID, peerID)
+	if err := m.bindPeerIdentity(sess, peerID); err != nil {
+		return err
 	}
 	if int(hello.MessageWindowSize) != m.cfg.MessageWindowSize {
 		log.Warn().
@@ -538,13 +544,9 @@ func (m *Manager) handleHello(sess *session, envelope *internalproto.Envelope) e
 			Msg("continuing with per-node windows")
 	}
 
-	sess.peerID = peerID
 	sess.remoteSnapshotVersion = hello.SnapshotVersion
 	sess.remoteMessageWindowSize = int(hello.MessageWindowSize)
 	sess.noteRemoteOriginProgress(hello.OriginProgress)
-	if !m.isConfiguredPeer(peerID) {
-		return fmt.Errorf("peer %d is not configured", peerID)
-	}
 
 	if !sess.beginBootstrap() {
 		return errors.New("duplicate bootstrap rejected")
@@ -887,7 +889,7 @@ func (m *Manager) buildPullEventsEnvelope(originNodeID int64, afterEventID, requ
 }
 
 func (m *Manager) AllowWrite(context.Context) error {
-	if m == nil || len(m.peers) == 0 {
+	if m == nil || (len(m.configuredPeers) == 0 && len(m.peers) == 0) {
 		return nil
 	}
 
@@ -901,7 +903,7 @@ func (m *Manager) AllowWrite(context.Context) error {
 }
 
 func (m *Manager) hasWritableClockSyncLocked() bool {
-	if len(m.peers) == 0 {
+	if len(m.configuredPeers) == 0 && len(m.peers) == 0 {
 		return true
 	}
 	for _, peer := range m.peers {
@@ -1208,13 +1210,6 @@ func validatePeerEnvelope(sess *session, envelope *internalproto.Envelope) error
 		return fmt.Errorf("envelope node id mismatch: got %d want %d", envelopeNodeID, sess.peerID)
 	}
 	return nil
-}
-
-func (m *Manager) isConfiguredPeer(peerID int64) bool {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	_, ok := m.peers[peerID]
-	return ok
 }
 
 func (m *Manager) activateSession(sess *session) bool {
@@ -1575,4 +1570,43 @@ func (m *Manager) hasActivePeer(peerID int64) bool {
 
 	peer, ok := m.peers[peerID]
 	return ok && peer.active != nil
+}
+
+func (m *Manager) configuredPeerNodeID(peer *configuredPeer) int64 {
+	if peer == nil {
+		return 0
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return peer.nodeID
+}
+
+func (m *Manager) bindPeerIdentity(sess *session, peerID int64) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if sess.peerID != 0 {
+		if sess.peerID != peerID {
+			return fmt.Errorf("session peer id mismatch: got %d want %d", peerID, sess.peerID)
+		}
+		return nil
+	}
+
+	if sess.configuredPeer != nil {
+		if sess.configuredPeer.nodeID != 0 && sess.configuredPeer.nodeID != peerID {
+			return fmt.Errorf("peer mismatch: expected %d got %d", sess.configuredPeer.nodeID, peerID)
+		}
+		for _, configured := range m.configuredPeers {
+			if configured != sess.configuredPeer && configured.nodeID == peerID {
+				return fmt.Errorf("peer %d already bound to configured url %s", peerID, configured.URL)
+			}
+		}
+		sess.configuredPeer.nodeID = peerID
+	}
+
+	sess.peerID = peerID
+	if _, ok := m.peers[peerID]; !ok {
+		m.peers[peerID] = &peerState{}
+	}
+	return nil
 }

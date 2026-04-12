@@ -114,6 +114,20 @@ func TestGenerateNodeIDReturnsPositiveOpaqueID(t *testing.T) {
 	if nodeID <= 0 {
 		t.Fatalf("expected positive node id, got %d", nodeID)
 	}
+
+	timePart := nodeID >> (snowflakeNodeBits + snowflakeSeqBits)
+	if timePart < 0 {
+		t.Fatalf("expected non-negative time part, got %d", timePart)
+	}
+
+	nodePart := (nodeID >> snowflakeSeqBits) & snowflakeNodeMax
+	seqPart := nodeID & snowflakeSeqMax
+	if nodePart < 0 || nodePart > snowflakeNodeMax {
+		t.Fatalf("unexpected random node part %d", nodePart)
+	}
+	if seqPart < 0 || seqPart > snowflakeSeqMax {
+		t.Fatalf("unexpected random sequence part %d", seqPart)
+	}
 }
 
 func TestParseTimestampRejectsLegacyWidth(t *testing.T) {

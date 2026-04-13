@@ -81,7 +81,7 @@ func TestServicePublishesOnlySuccessfulWrites(t *testing.T) {
 
 	message, messageEvent, err := svc.CreateMessage(context.Background(), store.CreateMessageParams{
 		UserKey: user.Key(),
-		Sender:  "orders",
+		Sender:  user.Key(),
 		Body:    []byte("package shipped"),
 	})
 	if err != nil {
@@ -99,7 +99,7 @@ func TestServicePublishesOnlySuccessfulWrites(t *testing.T) {
 
 	if _, _, err := svc.CreateMessage(context.Background(), store.CreateMessageParams{
 		UserKey: store.UserKey{NodeID: user.NodeID, UserID: 9999},
-		Sender:  "orders",
+		Sender:  user.Key(),
 		Body:    []byte("missing user"),
 	}); err != store.ErrNotFound {
 		t.Fatalf("expected create message not found, got %v", err)
@@ -142,7 +142,7 @@ func TestServiceDispatchTransientPacketDoesNotPublishEvents(t *testing.T) {
 		t.Fatalf("expected create user event, got %d", len(sink.events))
 	}
 
-	packet, err := svc.DispatchTransientPacket(context.Background(), user.Key(), "relay", []byte("ephemeral"), store.DeliveryModeBestEffort)
+	packet, err := svc.DispatchTransientPacket(context.Background(), user.Key(), user.Key(), []byte("ephemeral"), store.DeliveryModeBestEffort)
 	if err != nil {
 		t.Fatalf("dispatch transient packet: %v", err)
 	}

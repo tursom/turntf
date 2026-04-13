@@ -117,7 +117,8 @@ message MessageCreatedEvent {
   int64 user_id = 2;
   int64 node_id = 3;
   int64 seq = 4;
-  string sender = 5;
+  int64 sender_node_id = 5;
+  int64 sender_user_id = 7;
   bytes body = 6;
   string created_at_hlc = 8;
 }
@@ -215,7 +216,8 @@ message SnapshotMessageRow {
   int64 user_id = 1;
   int64 node_id = 2;
   int64 user_node_id = 8;
-  string sender = 3;
+  int64 sender_node_id = 3;
+  int64 sender_user_id = 9;
   bytes body = 4;
   string created_at_hlc = 6;
   int64 seq = 7;
@@ -263,7 +265,8 @@ message TransientPacket {
   int64 target_node_id = 3;
   int64 recipient_node_id = 4;
   int64 recipient_user_id = 5;
-  string sender = 6;
+  int64 sender_node_id = 6;
+  int64 sender_user_id = 10;
   bytes body = 7;
   ClusterDeliveryMode delivery_mode = 8;
   uint32 ttl_hops = 9;

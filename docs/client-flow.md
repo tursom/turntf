@@ -86,7 +86,7 @@ curl -sS -X POST http://127.0.0.1:8080/nodes/4096/users/1025/subscriptions \
 
 客户端至少需要持久化两类数据：
 
-- 消息表：保存完整 `Message`，包括 `user_node_id`、`user_id`、`node_id`、`seq`、`sender`、`body`、`created_at_hlc`。
+- 消息表：保存完整 `Message`，包括 `user_node_id`、`user_id`、`node_id`、`seq`、`sender_node_id`、`sender_user_id`、`body`、`created_at_hlc`。
 - 游标表：保存已成功持久化消息的 `(node_id, seq)`。
 
 如果业务使用瞬时包，可选再维护一张短期去重表记录 `packet_id`；这属于应用层优化，不属于协议可靠性要求。
@@ -166,7 +166,7 @@ ServerEnvelope {
       user_id: 1025
       node_id: 4096
       seq: 3
-      sender: "orders"
+      sender: { node_id: 4096, user_id: 1 }
       body: "\xff\x00payload"
       created_at_hlc: "..."
     }
@@ -208,7 +208,6 @@ ClientEnvelope {
   send_message: SendMessageRequest {
     request_id: 42
     target: { node_id: 4096, user_id: 1025 }
-    sender: "mobile"
     body: "\xff\x00payload"
   }
 }
@@ -225,7 +224,7 @@ ServerEnvelope {
       user_id: 1025
       node_id: 4096
       seq: 4
-      sender: "mobile"
+      sender: { node_id: 4096, user_id: 1025 }
       body: "\xff\x00payload"
       created_at_hlc: "..."
     }
@@ -242,7 +241,6 @@ ClientEnvelope {
   send_message: SendMessageRequest {
     request_id: 43
     target: { node_id: 8192, user_id: 1025 }
-    sender: "relay"
     body: "\xff\x00payload"
     delivery_kind: CLIENT_DELIVERY_KIND_TRANSIENT
     delivery_mode: CLIENT_DELIVERY_MODE_BEST_EFFORT
@@ -269,7 +267,7 @@ HTTP 消息接口也使用 bytes body，但 JSON 中以 base64 表示。
 curl -sS -X POST http://127.0.0.1:8080/nodes/4096/users/1025/messages \
   -H "Authorization: Bearer ${ADMIN_TOKEN}" \
   -H 'Content-Type: application/json' \
-  -d '{"sender":"ops","body":"/wBwYXlsb2Fk"}'
+  -d '{"body":"/wBwYXlsb2Fk"}'
 ```
 
 其中 `/wBwYXlsb2Fk` 是字节 `ff 00 70 61 79 6c 6f 61 64` 的 base64。
@@ -281,7 +279,6 @@ curl -sS -X POST http://127.0.0.1:8080/nodes/8192/users/1025/messages \
   -H "Authorization: Bearer ${ADMIN_TOKEN}" \
   -H 'Content-Type: application/json' \
   -d '{
-    "sender":"relay",
     "body":"/wBwYXlsb2Fk",
     "delivery_kind":"transient",
     "delivery_mode":"route_retry"

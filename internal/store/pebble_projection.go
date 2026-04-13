@@ -438,7 +438,7 @@ func (r *pebbleMessageProjectionRepository) applyMessageSnapshotRow(ctx context.
 		UserID:     messageRow.UserId,
 		NodeID:     messageRow.NodeId,
 		Seq:        messageRow.Seq,
-		Sender:     messageRow.Sender,
+		Sender:     UserKey{NodeID: messageRow.SenderNodeId, UserID: messageRow.SenderUserId},
 		Body:       messageRow.Body,
 		CreatedAt:  createdAt,
 	}
@@ -567,7 +567,7 @@ func messageFromPebbleValue(value []byte) (Message, error) {
 		UserID:     messageRow.UserId,
 		NodeID:     messageRow.NodeId,
 		Seq:        messageRow.Seq,
-		Sender:     messageRow.Sender,
+		Sender:     UserKey{NodeID: messageRow.SenderNodeId, UserID: messageRow.SenderUserId},
 		Body:       messageRow.Body,
 		CreatedAt:  createdAt,
 	}, nil

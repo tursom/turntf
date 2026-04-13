@@ -23,6 +23,10 @@ func bootstrapKey(st *Store) UserKey {
 	return UserKey{NodeID: st.NodeID(), UserID: BootstrapAdminUserID}
 }
 
+func testSenderKey(slot uint16, userID int64) UserKey {
+	return UserKey{NodeID: testNodeID(slot), UserID: userID}
+}
+
 func TestLocalUserCRUDAndEventLog(t *testing.T) {
 	t.Parallel()
 
@@ -126,7 +130,7 @@ func TestListEventsIncludesMessageCreated(t *testing.T) {
 
 	if _, _, err := st.CreateMessage(ctx, CreateMessageParams{
 		UserKey: user.Key(),
-		Sender:  "orders",
+		Sender:  testSenderKey(9, 1),
 		Body:    []byte("package shipped"),
 	}); err != nil {
 		t.Fatalf("create message: %v", err)
@@ -272,7 +276,7 @@ func TestApplyReplicatedEventDefersFailedMessageProjectionForReplay(t *testing.T
 
 	_, messageEvent, err := source.CreateMessage(ctx, CreateMessageParams{
 		UserKey: user.Key(),
-		Sender:  "orders",
+		Sender:  testSenderKey(9, 1),
 		Body:    []byte("package shipped"),
 	})
 	if err != nil {
@@ -700,7 +704,7 @@ func TestLocalMessageWriteAndQuery(t *testing.T) {
 
 	first, firstEvent, err := st.CreateMessage(ctx, CreateMessageParams{
 		UserKey: user.Key(),
-		Sender:  "orders",
+		Sender:  testSenderKey(9, 1),
 		Body:    []byte("first message"),
 	})
 	if err != nil {
@@ -712,7 +716,7 @@ func TestLocalMessageWriteAndQuery(t *testing.T) {
 
 	second, _, err := st.CreateMessage(ctx, CreateMessageParams{
 		UserKey: user.Key(),
-		Sender:  "orders",
+		Sender:  testSenderKey(9, 1),
 		Body:    []byte("second message"),
 	})
 	if err != nil {
@@ -760,7 +764,7 @@ func TestLocalMessagesTrimToConfiguredWindow(t *testing.T) {
 	for i := 1; i <= 3; i++ {
 		if _, _, err := st.CreateMessage(ctx, CreateMessageParams{
 			UserKey: user.Key(),
-			Sender:  "orders",
+			Sender:  testSenderKey(9, 1),
 			Body:    []byte("message-" + strconv.Itoa(i)),
 		}); err != nil {
 			t.Fatalf("create message %d: %v", i, err)
@@ -819,7 +823,7 @@ func TestCreateMessageDefersProjectionWhenApplyFails(t *testing.T) {
 
 	message, event, err := st.CreateMessage(ctx, CreateMessageParams{
 		UserKey: user.Key(),
-		Sender:  "orders",
+		Sender:  testSenderKey(9, 1),
 		Body:    []byte("package shipped"),
 	})
 	if !errors.Is(err, ErrProjectionDeferred) {
@@ -877,7 +881,7 @@ func TestReplayPendingEventsProjectsDeferredMessages(t *testing.T) {
 	}
 	if _, _, err := st.CreateMessage(ctx, CreateMessageParams{
 		UserKey: user.Key(),
-		Sender:  "orders",
+		Sender:  testSenderKey(9, 1),
 		Body:    []byte("package shipped"),
 	}); !errors.Is(err, ErrProjectionDeferred) {
 		t.Fatalf("expected deferred projection error, got %v", err)
@@ -948,7 +952,7 @@ func TestChannelSubscriptionAndBroadcastMessageVisibility(t *testing.T) {
 
 	if _, _, err := st.CreateMessage(ctx, CreateMessageParams{
 		UserKey: channel.Key(),
-		Sender:  "system",
+		Sender:  testSenderKey(9, 1),
 		Body:    []byte("before subscription"),
 	}); err != nil {
 		t.Fatalf("create pre-subscription channel message: %v", err)
@@ -961,14 +965,14 @@ func TestChannelSubscriptionAndBroadcastMessageVisibility(t *testing.T) {
 	}
 	if _, _, err := st.CreateMessage(ctx, CreateMessageParams{
 		UserKey: channel.Key(),
-		Sender:  "system",
+		Sender:  testSenderKey(9, 1),
 		Body:    []byte("after subscription"),
 	}); err != nil {
 		t.Fatalf("create channel message: %v", err)
 	}
 	if _, _, err := st.CreateMessage(ctx, CreateMessageParams{
 		UserKey: UserKey{NodeID: st.NodeID(), UserID: BroadcastUserID},
-		Sender:  "system",
+		Sender:  testSenderKey(9, 1),
 		Body:    []byte("broadcast message"),
 	}); err != nil {
 		t.Fatalf("create broadcast message: %v", err)
@@ -1173,7 +1177,7 @@ func TestOperationsStatsIncludesPeerCursorsConflictsAndTrimStats(t *testing.T) {
 	for i := 1; i <= 2; i++ {
 		_, event, err := st.CreateMessage(ctx, CreateMessageParams{
 			UserKey: user.Key(),
-			Sender:  "orders",
+			Sender:  testSenderKey(9, 1),
 			Body:    []byte("message-" + strconv.Itoa(i)),
 		})
 		if err != nil {
@@ -1428,7 +1432,7 @@ func TestApplyReplicatedMessageIsIdempotent(t *testing.T) {
 
 	message, messageEvent, err := source.CreateMessage(ctx, CreateMessageParams{
 		UserKey: user.Key(),
-		Sender:  "orders",
+		Sender:  testSenderKey(9, 1),
 		Body:    []byte("hello cluster"),
 	})
 	if err != nil {
@@ -1498,7 +1502,7 @@ func TestReplicatedChannelSubscriptionMakesChannelMessagesVisible(t *testing.T) 
 
 	_, messageEvent, err := source.CreateMessage(ctx, CreateMessageParams{
 		UserKey: channel.Key(),
-		Sender:  "alerts",
+		Sender:  testSenderKey(9, 1),
 		Body:    []byte("replicated channel message"),
 	})
 	if err != nil {
@@ -1540,7 +1544,7 @@ func TestReplicatedMessagesTrimToConfiguredWindow(t *testing.T) {
 	for i := 1; i <= 3; i++ {
 		_, messageEvent, err := source.CreateMessage(ctx, CreateMessageParams{
 			UserKey: user.Key(),
-			Sender:  "orders",
+			Sender:  testSenderKey(9, 1),
 			Body:    []byte("message-" + strconv.Itoa(i)),
 		})
 		if err != nil {
@@ -1595,7 +1599,8 @@ func TestReplicatedMessageTrimUsesNodeAndSeqForSameTimestamp(t *testing.T) {
 			UserId:       user.ID,
 			NodeId:       testNodeID(1),
 			Seq:          1,
-			Sender:       "orders",
+			SenderNodeId: testSenderKey(9, 1).NodeID,
+			SenderUserId: testSenderKey(9, 1).UserID,
 			Body:         []byte("older-seq"),
 			CreatedAtHlc: sharedHLC.String(),
 		},
@@ -1615,7 +1620,8 @@ func TestReplicatedMessageTrimUsesNodeAndSeqForSameTimestamp(t *testing.T) {
 			UserId:       user.ID,
 			NodeId:       testNodeID(1),
 			Seq:          2,
-			Sender:       "orders",
+			SenderNodeId: testSenderKey(9, 1).NodeID,
+			SenderUserId: testSenderKey(9, 1).UserID,
 			Body:         []byte("newer-seq"),
 			CreatedAtHlc: sharedHLC.String(),
 		},
@@ -1982,7 +1988,7 @@ func TestSnapshotMessagesChunkIsIdempotentAndTrimsToLocalWindow(t *testing.T) {
 	for i := 1; i <= 3; i++ {
 		if _, _, err := source.CreateMessage(ctx, CreateMessageParams{
 			UserKey: user.Key(),
-			Sender:  "orders",
+			Sender:  testSenderKey(9, 1),
 			Body:    []byte("message-" + strconv.Itoa(i)),
 		}); err != nil {
 			t.Fatalf("create source message %d: %v", i, err)
@@ -2052,7 +2058,7 @@ func TestSnapshotSubscriptionsChunkRepairsSubscriptionVisibility(t *testing.T) {
 	}
 	if _, _, err := source.CreateMessage(ctx, CreateMessageParams{
 		UserKey: channel.Key(),
-		Sender:  "alerts",
+		Sender:  testSenderKey(9, 1),
 		Body:    []byte("snapshot channel message"),
 	}); err != nil {
 		t.Fatalf("create source channel message: %v", err)

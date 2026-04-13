@@ -77,15 +77,13 @@ func TestAuthenticatedHTTPLoginAndAuthorization(t *testing.T) {
 	}, http.StatusForbidden)
 
 	doJSONWithHeaders(t, testAPI.handler, http.MethodPost, userMessagesPath(aliceKey.NodeID, aliceKey.UserID), map[string]any{
-		"sender": "alice",
-		"body":   []byte("hello"),
+		"body": []byte("hello"),
 	}, map[string]string{
 		"Authorization": "Bearer " + aliceToken,
 	}, http.StatusCreated)
 
 	doJSONWithHeaders(t, testAPI.handler, http.MethodPost, userMessagesPath(adminKey.NodeID, adminKey.UserID), map[string]any{
-		"sender": "alice",
-		"body":   []byte("forbidden"),
+		"body": []byte("forbidden"),
 	}, map[string]string{
 		"Authorization": "Bearer " + aliceToken,
 	}, http.StatusForbidden)
@@ -112,8 +110,7 @@ func TestAuthenticatedHTTPLoginAndAuthorization(t *testing.T) {
 	}, nil, http.StatusUnauthorized)
 
 	doJSONWithHeaders(t, testAPI.handler, http.MethodPost, userMessagesPath(channel.NodeID, channel.UserID), map[string]any{
-		"sender": "alice",
-		"body":   []byte("not subscribed"),
+		"body": []byte("not subscribed"),
 	}, map[string]string{
 		"Authorization": "Bearer " + aliceToken,
 	}, http.StatusForbidden)
@@ -126,22 +123,19 @@ func TestAuthenticatedHTTPLoginAndAuthorization(t *testing.T) {
 	}, http.StatusCreated)
 
 	doJSONWithHeaders(t, testAPI.handler, http.MethodPost, userMessagesPath(channel.NodeID, channel.UserID), map[string]any{
-		"sender": "alice",
-		"body":   []byte("channel message"),
+		"body": []byte("channel message"),
 	}, map[string]string{
 		"Authorization": "Bearer " + aliceToken,
 	}, http.StatusCreated)
 
 	broadcastPath := userMessagesPath(testNodeID(1), store.BroadcastUserID)
 	doJSONWithHeaders(t, testAPI.handler, http.MethodPost, broadcastPath, map[string]any{
-		"sender": "alice",
-		"body":   []byte("ordinary broadcast"),
+		"body": []byte("ordinary broadcast"),
 	}, map[string]string{
 		"Authorization": "Bearer " + aliceToken,
 	}, http.StatusForbidden)
 	doJSONWithHeaders(t, testAPI.handler, http.MethodPost, broadcastPath, map[string]any{
-		"sender": "admin",
-		"body":   []byte("admin broadcast"),
+		"body": []byte("admin broadcast"),
 	}, map[string]string{
 		"Authorization": "Bearer " + adminToken,
 	}, http.StatusCreated)
@@ -214,8 +208,7 @@ func TestClientWebSocketLoginAndPushesBytesMessages(t *testing.T) {
 	aliceKey := createUserAs(t, testAPI.handler, adminToken, "alice", "alice-password", store.RoleUser)
 	body := []byte{0xff, 0x00, 'x'}
 	doJSONWithHeaders(t, testAPI.handler, http.MethodPost, userMessagesPath(aliceKey.NodeID, aliceKey.UserID), map[string]any{
-		"sender": "binary",
-		"body":   body,
+		"body": body,
 	}, map[string]string{
 		"Authorization": "Bearer " + adminToken,
 	}, http.StatusCreated)
@@ -237,7 +230,7 @@ func TestClientWebSocketLoginAndPushesBytesMessages(t *testing.T) {
 		t.Fatalf("unexpected login response: %+v", loginResp)
 	}
 	pushed := readServerEnvelope(t, conn).GetMessagePushed()
-	if pushed == nil || pushed.Message.GetSender() != "binary" || string(pushed.Message.GetBody()) != string(body) {
+	if pushed == nil || !senderMatchesRef(pushed.Message.GetSender(), adminKey) || string(pushed.Message.GetBody()) != string(body) {
 		t.Fatalf("unexpected pushed message: %+v", pushed)
 	}
 }
@@ -257,8 +250,7 @@ func TestClientWebSocketSeenCursorAndSendMessage(t *testing.T) {
 		Seq    int64 `json:"seq"`
 	}
 	mustJSON(t, doJSONWithHeaders(t, testAPI.handler, http.MethodPost, userMessagesPath(aliceKey.NodeID, aliceKey.UserID), map[string]any{
-		"sender": "seed",
-		"body":   []byte("already seen"),
+		"body": []byte("already seen"),
 	}, map[string]string{
 		"Authorization": "Bearer " + adminToken,
 	}, http.StatusCreated), &created)
@@ -290,14 +282,16 @@ func TestClientWebSocketSeenCursorAndSendMessage(t *testing.T) {
 					NodeId: aliceKey.NodeID,
 					UserId: aliceKey.UserID,
 				},
-				Sender: "alice",
-				Body:   []byte{0x00, 0x01, 0xfe},
+				Body: []byte{0x00, 0x01, 0xfe},
 			},
 		},
 	})
 	sendResp := readServerEnvelope(t, conn).GetSendMessageResponse()
 	if sendResp == nil || sendResp.RequestId != 42 || string(sendResp.GetMessage().GetBody()) != string([]byte{0x00, 0x01, 0xfe}) {
 		t.Fatalf("unexpected send response: %+v", sendResp)
+	}
+	if !senderMatchesRef(sendResp.GetMessage().GetSender(), aliceKey) {
+		t.Fatalf("unexpected send response sender: %+v", sendResp)
 	}
 }
 
@@ -321,7 +315,6 @@ func TestClientWebSocketTransientSendMessage(t *testing.T) {
 			SendMessage: &internalproto.SendMessageRequest{
 				RequestId:    43,
 				Target:       &internalproto.UserRef{NodeId: aliceKey.NodeID, UserId: aliceKey.UserID},
-				Sender:       "alice",
 				Body:         []byte("ephemeral"),
 				DeliveryKind: internalproto.ClientDeliveryKind_CLIENT_DELIVERY_KIND_TRANSIENT,
 				DeliveryMode: internalproto.ClientDeliveryMode_CLIENT_DELIVERY_MODE_BEST_EFFORT,
@@ -342,7 +335,7 @@ func TestClientWebSocketTransientSendMessage(t *testing.T) {
 			continue
 		}
 		if packet := envelope.GetPacketPushed(); packet != nil {
-			if packet.Packet == nil || string(packet.Packet.GetBody()) != "ephemeral" || packet.Packet.GetRecipient().GetUserId() != aliceKey.UserID {
+			if packet.Packet == nil || string(packet.Packet.GetBody()) != "ephemeral" || packet.Packet.GetRecipient().GetUserId() != aliceKey.UserID || !senderMatchesRef(packet.Packet.GetSender(), aliceKey) {
 				t.Fatalf("unexpected transient packet push: %+v", packet)
 			}
 			gotPacket = true
@@ -399,7 +392,6 @@ func TestTransientHTTPAndWebSocketPacket(t *testing.T) {
 		TargetNodeID int64  `json:"target_node_id"`
 	}
 	mustJSON(t, doJSONWithHeaders(t, testAPI.handler, http.MethodPost, userMessagesPath(aliceKey.NodeID, aliceKey.UserID), map[string]any{
-		"sender":        "relay",
 		"body":          []byte("transient"),
 		"delivery_kind": string(deliveryKindTransient),
 		"delivery_mode": string(store.DeliveryModeBestEffort),
@@ -411,7 +403,7 @@ func TestTransientHTTPAndWebSocketPacket(t *testing.T) {
 	}
 
 	packet := readServerEnvelope(t, conn).GetPacketPushed()
-	if packet == nil || packet.Packet == nil || string(packet.Packet.GetBody()) != "transient" || packet.Packet.GetRecipient().GetUserId() != aliceKey.UserID {
+	if packet == nil || packet.Packet == nil || string(packet.Packet.GetBody()) != "transient" || packet.Packet.GetRecipient().GetUserId() != aliceKey.UserID || !senderMatchesRef(packet.Packet.GetSender(), aliceKey) {
 		t.Fatalf("unexpected packet push: %+v", packet)
 	}
 
@@ -436,7 +428,6 @@ func TestTransientRequiresLoginRecipient(t *testing.T) {
 	channelKey := createUserAs(t, testAPI.handler, adminToken, "orders", "", store.RoleChannel)
 
 	doJSONWithHeaders(t, testAPI.handler, http.MethodPost, userMessagesPath(channelKey.NodeID, channelKey.UserID), map[string]any{
-		"sender":        "relay",
 		"body":          []byte("transient"),
 		"delivery_kind": string(deliveryKindTransient),
 	}, map[string]string{
@@ -504,8 +495,7 @@ func TestClientWebSocketAdminRPCProvidesFullHTTPCapabilities(t *testing.T) {
 	}
 
 	doJSONWithHeaders(t, testAPI.handler, http.MethodPost, userMessagesPath(createdKey.NodeID, createdKey.UserID), map[string]any{
-		"sender": "admin",
-		"body":   []byte("rpc hello"),
+		"body": []byte("rpc hello"),
 	}, map[string]string{
 		"Authorization": "Bearer " + loginToken(t, testAPI.handler, adminKey, "root-password"),
 	}, http.StatusCreated)
@@ -618,7 +608,6 @@ func TestClientWebSocketRPCRespectsUserAuthorizationAndSubscriptions(t *testing.
 			SendMessage: &internalproto.SendMessageRequest{
 				RequestId: 230,
 				Target:    &internalproto.UserRef{NodeId: aliceKey.NodeID, UserId: aliceKey.UserID},
-				Sender:    "alice",
 				Body:      []byte("seed"),
 			},
 		},
@@ -695,8 +684,7 @@ func TestClientWebSocketRPCRespectsUserAuthorizationAndSubscriptions(t *testing.
 					NodeId: channelKey.NodeID,
 					UserId: channelKey.UserID,
 				},
-				Sender: "alice",
-				Body:   []byte("channel payload"),
+				Body: []byte("channel payload"),
 			},
 		},
 	})
@@ -733,8 +721,7 @@ func TestClientWebSocketRPCRespectsUserAuthorizationAndSubscriptions(t *testing.
 					NodeId: channelKey.NodeID,
 					UserId: channelKey.UserID,
 				},
-				Sender: "alice",
-				Body:   []byte("forbidden after unsubscribe"),
+				Body: []byte("forbidden after unsubscribe"),
 			},
 		},
 	})
@@ -758,6 +745,10 @@ func loginClientWebSocket(t *testing.T, conn *websocket.Conn, key store.UserKey,
 	if loginResp == nil || loginResp.User.GetUserId() != key.UserID {
 		t.Fatalf("unexpected login response: %+v", loginResp)
 	}
+}
+
+func senderMatchesRef(ref *internalproto.UserRef, key store.UserKey) bool {
+	return ref != nil && ref.GetNodeId() == key.NodeID && ref.GetUserId() == key.UserID
 }
 
 func loginToken(t *testing.T, handler http.Handler, key store.UserKey, password string) string {

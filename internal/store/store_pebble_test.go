@@ -25,7 +25,7 @@ func TestPebbleStoreEventLogAndMessageProjection(t *testing.T) {
 	for _, body := range []string{"message-1", "message-2", "message-3"} {
 		if _, _, err := st.CreateMessage(ctx, CreateMessageParams{
 			UserKey: user.Key(),
-			Sender:  "system",
+			Sender:  testSenderKey(9, 1),
 			Body:    []byte(body),
 		}); err != nil {
 			t.Fatalf("create message %q: %v", body, err)
@@ -88,7 +88,7 @@ func TestPebbleMessageSnapshotRoundTrip(t *testing.T) {
 	for _, body := range []string{"message-1", "message-2", "message-3"} {
 		if _, _, err := source.CreateMessage(ctx, CreateMessageParams{
 			UserKey: user.Key(),
-			Sender:  "system",
+			Sender:  testSenderKey(9, 1),
 			Body:    []byte(body),
 		}); err != nil {
 			t.Fatalf("create message %q: %v", body, err)

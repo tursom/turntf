@@ -12,13 +12,17 @@ import (
 	"testing"
 
 	"github.com/tursom/turntf/internal/app"
+	"github.com/tursom/turntf/internal/auth"
 	"github.com/tursom/turntf/internal/store"
 )
 
 func TestUserAndMessageHTTPAPI(t *testing.T) {
 	t.Parallel()
 
-	handler := newTestHandler(t)
+	testAPI := newAuthenticatedTestAPI(t)
+	handler := testAPI.handler
+	adminKey := store.UserKey{NodeID: testNodeID(1), UserID: store.BootstrapAdminUserID}
+	adminToken := loginToken(t, handler, adminKey, "root-password")
 
 	createUserBody := map[string]any{
 		"username": "alice",
@@ -34,7 +38,9 @@ func TestUserAndMessageHTTPAPI(t *testing.T) {
 		Username string            `json:"username"`
 		Profile  map[string]string `json:"profile"`
 	}
-	mustJSON(t, doJSON(t, handler, http.MethodPost, "/users", createUserBody, http.StatusCreated), &createdUser)
+	mustJSON(t, doJSONWithHeaders(t, handler, http.MethodPost, "/users", createUserBody, map[string]string{
+		"Authorization": "Bearer " + adminToken,
+	}, http.StatusCreated), &createdUser)
 	if createdUser.NodeID == 0 || createdUser.UserID == 0 {
 		t.Fatalf("expected created user id")
 	}
@@ -48,7 +54,9 @@ func TestUserAndMessageHTTPAPI(t *testing.T) {
 		Username string            `json:"username"`
 		Profile  map[string]string `json:"profile"`
 	}
-	mustJSON(t, doJSON(t, handler, http.MethodGet, userPath(createdUser.NodeID, createdUser.UserID), nil, http.StatusOK), &loadedUser)
+	mustJSON(t, doJSONWithHeaders(t, handler, http.MethodGet, userPath(createdUser.NodeID, createdUser.UserID), nil, map[string]string{
+		"Authorization": "Bearer " + adminToken,
+	}, http.StatusOK), &loadedUser)
 	if loadedUser.NodeID != createdUser.NodeID || loadedUser.UserID != createdUser.UserID {
 		t.Fatalf("unexpected loaded user: %+v", loadedUser)
 	}
@@ -64,14 +72,15 @@ func TestUserAndMessageHTTPAPI(t *testing.T) {
 		Username string            `json:"username"`
 		Profile  map[string]string `json:"profile"`
 	}
-	mustJSON(t, doJSON(t, handler, http.MethodPatch, userPath(createdUser.NodeID, createdUser.UserID), updateBody, http.StatusOK), &updatedUser)
+	mustJSON(t, doJSONWithHeaders(t, handler, http.MethodPatch, userPath(createdUser.NodeID, createdUser.UserID), updateBody, map[string]string{
+		"Authorization": "Bearer " + adminToken,
+	}, http.StatusOK), &updatedUser)
 	if updatedUser.Username != "alice-updated" || updatedUser.Profile["display_name"] != "Alice Updated" {
 		t.Fatalf("unexpected updated user: %+v", updatedUser)
 	}
 
 	createMessageBody := map[string]any{
-		"sender": "orders",
-		"body":   []byte("package shipped"),
+		"body": []byte("package shipped"),
 	}
 	var createdMessage struct {
 		UserNodeID int64 `json:"user_node_id"`
@@ -79,7 +88,9 @@ func TestUserAndMessageHTTPAPI(t *testing.T) {
 		NodeID     int64 `json:"node_id"`
 		Seq        int64 `json:"seq"`
 	}
-	mustJSON(t, doJSON(t, handler, http.MethodPost, userMessagesPath(createdUser.NodeID, createdUser.UserID), createMessageBody, http.StatusCreated), &createdMessage)
+	mustJSON(t, doJSONWithHeaders(t, handler, http.MethodPost, userMessagesPath(createdUser.NodeID, createdUser.UserID), createMessageBody, map[string]string{
+		"Authorization": "Bearer " + adminToken,
+	}, http.StatusCreated), &createdMessage)
 	if createdMessage.UserNodeID != createdUser.NodeID || createdMessage.UserID != createdUser.UserID || createdMessage.NodeID != testNodeID(1) || createdMessage.Seq != 1 {
 		t.Fatalf("unexpected created message: %+v", createdMessage)
 	}
@@ -94,7 +105,9 @@ func TestUserAndMessageHTTPAPI(t *testing.T) {
 			Body       []byte `json:"body"`
 		} `json:"items"`
 	}
-	mustJSON(t, doJSON(t, handler, http.MethodGet, userMessagesPath(createdUser.NodeID, createdUser.UserID)+"?limit=10", nil, http.StatusOK), &listMessages)
+	mustJSON(t, doJSONWithHeaders(t, handler, http.MethodGet, userMessagesPath(createdUser.NodeID, createdUser.UserID)+"?limit=10", nil, map[string]string{
+		"Authorization": "Bearer " + adminToken,
+	}, http.StatusOK), &listMessages)
 	if listMessages.Count != 1 || len(listMessages.Items) != 1 ||
 		listMessages.Items[0].UserNodeID != createdUser.NodeID ||
 		listMessages.Items[0].UserID != createdUser.UserID ||
@@ -110,14 +123,16 @@ func TestUserAndMessageHTTPAPI(t *testing.T) {
 			EventType string `json:"event_type"`
 		} `json:"items"`
 	}
-	mustJSON(t, doJSON(t, handler, http.MethodGet, "/events?after=0&limit=10", nil, http.StatusOK), &listEvents)
-	if listEvents.Count != 3 {
-		t.Fatalf("expected 3 events, got %+v", listEvents)
+	mustJSON(t, doJSONWithHeaders(t, handler, http.MethodGet, "/events?after=0&limit=10", nil, map[string]string{
+		"Authorization": "Bearer " + adminToken,
+	}, http.StatusOK), &listEvents)
+	if listEvents.Count < 6 {
+		t.Fatalf("expected bootstrap and test events, got %+v", listEvents)
 	}
-	if len(listEvents.Items) != 3 ||
-		listEvents.Items[0].EventType != "user_created" ||
-		listEvents.Items[1].EventType != "user_updated" ||
-		listEvents.Items[2].EventType != "message_created" {
+	if len(listEvents.Items) != listEvents.Count ||
+		listEvents.Items[len(listEvents.Items)-3].EventType != "user_created" ||
+		listEvents.Items[len(listEvents.Items)-2].EventType != "user_updated" ||
+		listEvents.Items[len(listEvents.Items)-1].EventType != "message_created" {
 		t.Fatalf("unexpected events payload: %+v", listEvents)
 	}
 
@@ -129,17 +144,23 @@ func TestUserAndMessageHTTPAPI(t *testing.T) {
 			TrimmedTotal int64 `json:"trimmed_total"`
 		} `json:"message_trim"`
 	}
-	mustJSON(t, doJSON(t, handler, http.MethodGet, "/ops/status", nil, http.StatusOK), &opsStatus)
-	if opsStatus.NodeID != testNodeID(1) || opsStatus.LastEventSequence != 3 {
+	mustJSON(t, doJSONWithHeaders(t, handler, http.MethodGet, "/ops/status", nil, map[string]string{
+		"Authorization": "Bearer " + adminToken,
+	}, http.StatusOK), &opsStatus)
+	if opsStatus.NodeID != testNodeID(1) || opsStatus.LastEventSequence < 6 {
 		t.Fatalf("unexpected ops status: %+v", opsStatus)
 	}
 
-	metrics := doPlain(t, handler, http.MethodGet, "/metrics", nil, http.StatusOK)
-	if !strings.Contains(metrics, `notifier_event_log_last_sequence{node_id="4096"} 3`) {
+	metrics := doPlain(t, handler, http.MethodGet, "/metrics", map[string]string{
+		"Authorization": "Bearer " + adminToken,
+	}, http.StatusOK)
+	if !strings.Contains(metrics, `notifier_event_log_last_sequence{node_id="4096"} `) {
 		t.Fatalf("metrics missing last sequence: %s", metrics)
 	}
 
-	body := doJSON(t, handler, http.MethodDelete, userPath(createdUser.NodeID, createdUser.UserID), nil, http.StatusOK)
+	body := doJSONWithHeaders(t, handler, http.MethodDelete, userPath(createdUser.NodeID, createdUser.UserID), nil, map[string]string{
+		"Authorization": "Bearer " + adminToken,
+	}, http.StatusOK)
 	var deleteResp struct {
 		Status string `json:"status"`
 	}
@@ -148,7 +169,9 @@ func TestUserAndMessageHTTPAPI(t *testing.T) {
 		t.Fatalf("unexpected delete response: %+v", deleteResp)
 	}
 
-	doJSON(t, handler, http.MethodGet, userPath(createdUser.NodeID, createdUser.UserID), nil, http.StatusNotFound)
+	doJSONWithHeaders(t, handler, http.MethodGet, userPath(createdUser.NodeID, createdUser.UserID), nil, map[string]string{
+		"Authorization": "Bearer " + adminToken,
+	}, http.StatusNotFound)
 }
 
 func TestCreateUserAllowsDuplicateUsername(t *testing.T) {
@@ -195,24 +218,30 @@ func TestUpdateUserAllowsDuplicateUsername(t *testing.T) {
 func TestListEventsReturnsTypedEventJSON(t *testing.T) {
 	t.Parallel()
 
-	handler := newTestHandler(t)
+	testAPI := newAuthenticatedTestAPI(t)
+	handler := testAPI.handler
+	adminKey := store.UserKey{NodeID: testNodeID(1), UserID: store.BootstrapAdminUserID}
+	adminToken := loginToken(t, handler, adminKey, "root-password")
 
 	var createdUser struct {
 		NodeID   int64  `json:"node_id"`
 		UserID   int64  `json:"user_id"`
 		Username string `json:"username"`
 	}
-	mustJSON(t, doJSON(t, handler, http.MethodPost, "/users", map[string]any{
+	mustJSON(t, doJSONWithHeaders(t, handler, http.MethodPost, "/users", map[string]any{
 		"username": "alice",
 		"password": "password-1",
 		"profile": map[string]any{
 			"display_name": "Alice",
 		},
+	}, map[string]string{
+		"Authorization": "Bearer " + adminToken,
 	}, http.StatusCreated), &createdUser)
 
-	mustJSON(t, doJSON(t, handler, http.MethodPost, userMessagesPath(createdUser.NodeID, createdUser.UserID), map[string]any{
-		"sender": "orders",
-		"body":   []byte("package shipped"),
+	mustJSON(t, doJSONWithHeaders(t, handler, http.MethodPost, userMessagesPath(createdUser.NodeID, createdUser.UserID), map[string]any{
+		"body": []byte("package shipped"),
+	}, map[string]string{
+		"Authorization": "Bearer " + adminToken,
 	}, http.StatusCreated), &struct{}{})
 
 	var listEvents struct {
@@ -222,8 +251,10 @@ func TestListEventsReturnsTypedEventJSON(t *testing.T) {
 			Event     json.RawMessage `json:"event"`
 		} `json:"items"`
 	}
-	mustJSON(t, doJSON(t, handler, http.MethodGet, "/events?after=0&limit=10", nil, http.StatusOK), &listEvents)
-	if listEvents.Count != 2 || len(listEvents.Items) != 2 {
+	mustJSON(t, doJSONWithHeaders(t, handler, http.MethodGet, "/events?after=0&limit=10", nil, map[string]string{
+		"Authorization": "Bearer " + adminToken,
+	}, http.StatusOK), &listEvents)
+	if listEvents.Count < 5 || len(listEvents.Items) != listEvents.Count {
 		t.Fatalf("unexpected events payload: %+v", listEvents)
 	}
 
@@ -234,27 +265,30 @@ func TestListEventsReturnsTypedEventJSON(t *testing.T) {
 		Profile      string `json:"profile"`
 		CreatedAtHLC string `json:"created_at_hlc"`
 	}
-	if listEvents.Items[0].EventType != "user_created" {
-		t.Fatalf("unexpected first event type: %+v", listEvents.Items[0])
+	userEventIndex := len(listEvents.Items) - 2
+	if listEvents.Items[userEventIndex].EventType != "user_created" {
+		t.Fatalf("unexpected user_created event type: %+v", listEvents.Items[userEventIndex])
 	}
-	mustJSON(t, listEvents.Items[0].Event, &userEvent)
+	mustJSON(t, listEvents.Items[userEventIndex].Event, &userEvent)
 	if userEvent.NodeID != createdUser.NodeID || userEvent.UserID != createdUser.UserID || userEvent.Username != "alice" || userEvent.Profile != `{"display_name":"Alice"}` || userEvent.CreatedAtHLC == "" {
 		t.Fatalf("unexpected user_created event json: %+v", userEvent)
 	}
 
 	var messageEvent struct {
-		UserNodeID int64  `json:"user_node_id"`
-		UserID     int64  `json:"user_id"`
-		NodeID     int64  `json:"node_id"`
-		Seq        int64  `json:"seq"`
-		Sender     string `json:"sender"`
-		Body       []byte `json:"body"`
+		UserNodeID   int64  `json:"user_node_id"`
+		UserID       int64  `json:"user_id"`
+		NodeID       int64  `json:"node_id"`
+		Seq          int64  `json:"seq"`
+		SenderNodeID int64  `json:"sender_node_id"`
+		SenderUserID int64  `json:"sender_user_id"`
+		Body         []byte `json:"body"`
 	}
-	if listEvents.Items[1].EventType != "message_created" {
-		t.Fatalf("unexpected second event type: %+v", listEvents.Items[1])
+	messageEventIndex := len(listEvents.Items) - 1
+	if listEvents.Items[messageEventIndex].EventType != "message_created" {
+		t.Fatalf("unexpected message_created event type: %+v", listEvents.Items[messageEventIndex])
 	}
-	mustJSON(t, listEvents.Items[1].Event, &messageEvent)
-	if messageEvent.UserNodeID != createdUser.NodeID || messageEvent.UserID != createdUser.UserID || messageEvent.NodeID != testNodeID(1) || messageEvent.Seq != 1 || messageEvent.Sender != "orders" || string(messageEvent.Body) != "package shipped" {
+	mustJSON(t, listEvents.Items[messageEventIndex].Event, &messageEvent)
+	if messageEvent.UserNodeID != createdUser.NodeID || messageEvent.UserID != createdUser.UserID || messageEvent.NodeID != testNodeID(1) || messageEvent.Seq != 1 || messageEvent.SenderNodeID != adminKey.NodeID || messageEvent.SenderUserID != adminKey.UserID || string(messageEvent.Body) != "package shipped" {
 		t.Fatalf("unexpected message_created event json: %+v", messageEvent)
 	}
 }
@@ -296,7 +330,23 @@ func TestWriteEndpointsReturn503WhenClockIsNotSynchronized(t *testing.T) {
 		t.Fatalf("seed user: %v", err)
 	}
 
-	handler := NewHTTP(New(st, gatingSink{})).Handler()
+	signer, err := auth.NewSigner("gating-secret")
+	if err != nil {
+		t.Fatalf("new signer: %v", err)
+	}
+	if err := st.EnsureBootstrapAdmin(context.Background(), store.BootstrapAdminConfig{
+		Username:     "root",
+		PasswordHash: mustHashPassword(t, "root-password"),
+	}); err != nil {
+		t.Fatalf("bootstrap admin: %v", err)
+	}
+	handler := NewHTTP(New(st, gatingSink{}), HTTPOptions{
+		NodeID:   testNodeID(1),
+		Signer:   signer,
+		TokenTTL: 0,
+	}).Handler()
+	adminKey := store.UserKey{NodeID: testNodeID(1), UserID: store.BootstrapAdminUserID}
+	adminToken := loginToken(t, handler, adminKey, "root-password")
 
 	for _, tc := range []struct {
 		method string
@@ -315,8 +365,7 @@ func TestWriteEndpointsReturn503WhenClockIsNotSynchronized(t *testing.T) {
 			method: http.MethodPost,
 			path:   userMessagesPath(user.NodeID, user.ID),
 			body: map[string]any{
-				"sender": "orders",
-				"body":   []byte("package shipped"),
+				"body": []byte("package shipped"),
 			},
 		},
 		{
@@ -333,7 +382,9 @@ func TestWriteEndpointsReturn503WhenClockIsNotSynchronized(t *testing.T) {
 		},
 	} {
 		t.Run(tc.method+" "+tc.path, func(t *testing.T) {
-			data := doJSON(t, handler, tc.method, tc.path, tc.body, http.StatusServiceUnavailable)
+			data := doJSONWithHeaders(t, handler, tc.method, tc.path, tc.body, map[string]string{
+				"Authorization": "Bearer " + adminToken,
+			}, http.StatusServiceUnavailable)
 			var payload map[string]string
 			mustJSON(t, data, &payload)
 			if payload["error"] != app.ErrClockNotSynchronized.Error() {

@@ -79,7 +79,8 @@ func messageCreatedProtoFromMessage(message Message) *internalproto.MessageCreat
 		UserId:       message.UserID,
 		NodeId:       message.NodeID,
 		Seq:          message.Seq,
-		Sender:       message.Sender,
+		SenderNodeId: message.Sender.NodeID,
+		SenderUserId: message.Sender.UserID,
 		Body:         message.Body,
 		CreatedAtHlc: message.CreatedAt.String(),
 	}

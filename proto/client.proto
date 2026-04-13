@@ -61,10 +61,9 @@ message LoginResponse {
 message SendMessageRequest {
   uint64 request_id = 1;
   UserRef target = 2;
-  string sender = 3;
-  bytes body = 4;
-  ClientDeliveryKind delivery_kind = 5;
-  ClientDeliveryMode delivery_mode = 6;
+  bytes body = 3;
+  ClientDeliveryKind delivery_kind = 4;
+  ClientDeliveryMode delivery_mode = 5;
 }
 
 message SendMessageResponse {
@@ -280,7 +279,7 @@ message Message {
   int64 user_id = 2;
   int64 node_id = 3;
   int64 seq = 4;
-  string sender = 5;
+  UserRef sender = 5;
   bytes body = 6;
   string created_at_hlc = 7;
 }
@@ -290,7 +289,7 @@ message Packet {
   int64 source_node_id = 2;
   int64 target_node_id = 3;
   UserRef recipient = 4;
-  string sender = 5;
+  UserRef sender = 5;
   bytes body = 6;
   ClientDeliveryMode delivery_mode = 7;
 }

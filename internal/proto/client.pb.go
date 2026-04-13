@@ -855,10 +855,9 @@ type SendMessageRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	RequestId     uint64                 `protobuf:"varint,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
 	Target        *UserRef               `protobuf:"bytes,2,opt,name=target,proto3" json:"target,omitempty"`
-	Sender        string                 `protobuf:"bytes,3,opt,name=sender,proto3" json:"sender,omitempty"`
-	Body          []byte                 `protobuf:"bytes,4,opt,name=body,proto3" json:"body,omitempty"`
-	DeliveryKind  ClientDeliveryKind     `protobuf:"varint,5,opt,name=delivery_kind,json=deliveryKind,proto3,enum=notifier.client.v1.ClientDeliveryKind" json:"delivery_kind,omitempty"`
-	DeliveryMode  ClientDeliveryMode     `protobuf:"varint,6,opt,name=delivery_mode,json=deliveryMode,proto3,enum=notifier.client.v1.ClientDeliveryMode" json:"delivery_mode,omitempty"`
+	Body          []byte                 `protobuf:"bytes,3,opt,name=body,proto3" json:"body,omitempty"`
+	DeliveryKind  ClientDeliveryKind     `protobuf:"varint,4,opt,name=delivery_kind,json=deliveryKind,proto3,enum=notifier.client.v1.ClientDeliveryKind" json:"delivery_kind,omitempty"`
+	DeliveryMode  ClientDeliveryMode     `protobuf:"varint,5,opt,name=delivery_mode,json=deliveryMode,proto3,enum=notifier.client.v1.ClientDeliveryMode" json:"delivery_mode,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -905,13 +904,6 @@ func (x *SendMessageRequest) GetTarget() *UserRef {
 		return x.Target
 	}
 	return nil
-}
-
-func (x *SendMessageRequest) GetSender() string {
-	if x != nil {
-		return x.Sender
-	}
-	return ""
 }
 
 func (x *SendMessageRequest) GetBody() []byte {
@@ -2943,7 +2935,7 @@ type Message struct {
 	UserId        int64                  `protobuf:"varint,2,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
 	NodeId        int64                  `protobuf:"varint,3,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
 	Seq           int64                  `protobuf:"varint,4,opt,name=seq,proto3" json:"seq,omitempty"`
-	Sender        string                 `protobuf:"bytes,5,opt,name=sender,proto3" json:"sender,omitempty"`
+	Sender        *UserRef               `protobuf:"bytes,5,opt,name=sender,proto3" json:"sender,omitempty"`
 	Body          []byte                 `protobuf:"bytes,6,opt,name=body,proto3" json:"body,omitempty"`
 	CreatedAtHlc  string                 `protobuf:"bytes,7,opt,name=created_at_hlc,json=createdAtHlc,proto3" json:"created_at_hlc,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -3008,11 +3000,11 @@ func (x *Message) GetSeq() int64 {
 	return 0
 }
 
-func (x *Message) GetSender() string {
+func (x *Message) GetSender() *UserRef {
 	if x != nil {
 		return x.Sender
 	}
-	return ""
+	return nil
 }
 
 func (x *Message) GetBody() []byte {
@@ -3035,7 +3027,7 @@ type Packet struct {
 	SourceNodeId  int64                  `protobuf:"varint,2,opt,name=source_node_id,json=sourceNodeId,proto3" json:"source_node_id,omitempty"`
 	TargetNodeId  int64                  `protobuf:"varint,3,opt,name=target_node_id,json=targetNodeId,proto3" json:"target_node_id,omitempty"`
 	Recipient     *UserRef               `protobuf:"bytes,4,opt,name=recipient,proto3" json:"recipient,omitempty"`
-	Sender        string                 `protobuf:"bytes,5,opt,name=sender,proto3" json:"sender,omitempty"`
+	Sender        *UserRef               `protobuf:"bytes,5,opt,name=sender,proto3" json:"sender,omitempty"`
 	Body          []byte                 `protobuf:"bytes,6,opt,name=body,proto3" json:"body,omitempty"`
 	DeliveryMode  ClientDeliveryMode     `protobuf:"varint,7,opt,name=delivery_mode,json=deliveryMode,proto3,enum=notifier.client.v1.ClientDeliveryMode" json:"delivery_mode,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -3100,11 +3092,11 @@ func (x *Packet) GetRecipient() *UserRef {
 	return nil
 }
 
-func (x *Packet) GetSender() string {
+func (x *Packet) GetSender() *UserRef {
 	if x != nil {
 		return x.Sender
 	}
-	return ""
+	return nil
 }
 
 func (x *Packet) GetBody() []byte {
@@ -3836,15 +3828,14 @@ const file_client_proto_rawDesc = "" +
 	"\rseen_messages\x18\x04 \x03(\v2!.notifier.client.v1.MessageCursorR\fseenMessages\"h\n" +
 	"\rLoginResponse\x12,\n" +
 	"\x04user\x18\x01 \x01(\v2\x18.notifier.client.v1.UserR\x04user\x12)\n" +
-	"\x10protocol_version\x18\x02 \x01(\tR\x0fprotocolVersion\"\xae\x02\n" +
+	"\x10protocol_version\x18\x02 \x01(\tR\x0fprotocolVersion\"\x96\x02\n" +
 	"\x12SendMessageRequest\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\x04R\trequestId\x123\n" +
-	"\x06target\x18\x02 \x01(\v2\x1b.notifier.client.v1.UserRefR\x06target\x12\x16\n" +
-	"\x06sender\x18\x03 \x01(\tR\x06sender\x12\x12\n" +
-	"\x04body\x18\x04 \x01(\fR\x04body\x12K\n" +
-	"\rdelivery_kind\x18\x05 \x01(\x0e2&.notifier.client.v1.ClientDeliveryKindR\fdeliveryKind\x12K\n" +
-	"\rdelivery_mode\x18\x06 \x01(\x0e2&.notifier.client.v1.ClientDeliveryModeR\fdeliveryMode\"\xcd\x01\n" +
+	"\x06target\x18\x02 \x01(\v2\x1b.notifier.client.v1.UserRefR\x06target\x12\x12\n" +
+	"\x04body\x18\x03 \x01(\fR\x04body\x12K\n" +
+	"\rdelivery_kind\x18\x04 \x01(\x0e2&.notifier.client.v1.ClientDeliveryKindR\fdeliveryKind\x12K\n" +
+	"\rdelivery_mode\x18\x05 \x01(\x0e2&.notifier.client.v1.ClientDeliveryModeR\fdeliveryMode\"\xcd\x01\n" +
 	"\x13SendMessageResponse\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\x04R\trequestId\x127\n" +
@@ -4005,22 +3996,22 @@ const file_client_proto_rawDesc = "" +
 	"created_at\x18\a \x01(\tR\tcreatedAt\x12\x1d\n" +
 	"\n" +
 	"updated_at\x18\b \x01(\tR\tupdatedAt\x12$\n" +
-	"\x0eorigin_node_id\x18\t \x01(\x03R\foriginNodeId\"\xc1\x01\n" +
+	"\x0eorigin_node_id\x18\t \x01(\x03R\foriginNodeId\"\xde\x01\n" +
 	"\aMessage\x12 \n" +
 	"\fuser_node_id\x18\x01 \x01(\x03R\n" +
 	"userNodeId\x12\x17\n" +
 	"\auser_id\x18\x02 \x01(\x03R\x06userId\x12\x17\n" +
 	"\anode_id\x18\x03 \x01(\x03R\x06nodeId\x12\x10\n" +
-	"\x03seq\x18\x04 \x01(\x03R\x03seq\x12\x16\n" +
-	"\x06sender\x18\x05 \x01(\tR\x06sender\x12\x12\n" +
+	"\x03seq\x18\x04 \x01(\x03R\x03seq\x123\n" +
+	"\x06sender\x18\x05 \x01(\v2\x1b.notifier.client.v1.UserRefR\x06sender\x12\x12\n" +
 	"\x04body\x18\x06 \x01(\fR\x04body\x12$\n" +
-	"\x0ecreated_at_hlc\x18\a \x01(\tR\fcreatedAtHlc\"\xa5\x02\n" +
+	"\x0ecreated_at_hlc\x18\a \x01(\tR\fcreatedAtHlc\"\xc2\x02\n" +
 	"\x06Packet\x12\x1b\n" +
 	"\tpacket_id\x18\x01 \x01(\x04R\bpacketId\x12$\n" +
 	"\x0esource_node_id\x18\x02 \x01(\x03R\fsourceNodeId\x12$\n" +
 	"\x0etarget_node_id\x18\x03 \x01(\x03R\ftargetNodeId\x129\n" +
-	"\trecipient\x18\x04 \x01(\v2\x1b.notifier.client.v1.UserRefR\trecipient\x12\x16\n" +
-	"\x06sender\x18\x05 \x01(\tR\x06sender\x12\x12\n" +
+	"\trecipient\x18\x04 \x01(\v2\x1b.notifier.client.v1.UserRefR\trecipient\x123\n" +
+	"\x06sender\x18\x05 \x01(\v2\x1b.notifier.client.v1.UserRefR\x06sender\x12\x12\n" +
 	"\x04body\x18\x06 \x01(\fR\x04body\x12K\n" +
 	"\rdelivery_mode\x18\a \x01(\x0e2&.notifier.client.v1.ClientDeliveryModeR\fdeliveryMode\"\xa4\x02\n" +
 	"\fSubscription\x12,\n" +
@@ -4231,17 +4222,19 @@ var file_client_proto_depIdxs = []int32{
 	44, // 63: notifier.client.v1.ListSubscriptionsResponse.items:type_name -> notifier.client.v1.Subscription
 	45, // 64: notifier.client.v1.ListEventsResponse.items:type_name -> notifier.client.v1.Event
 	46, // 65: notifier.client.v1.OperationsStatusResponse.status:type_name -> notifier.client.v1.OperationsStatus
-	40, // 66: notifier.client.v1.Packet.recipient:type_name -> notifier.client.v1.UserRef
-	1,  // 67: notifier.client.v1.Packet.delivery_mode:type_name -> notifier.client.v1.ClientDeliveryMode
-	47, // 68: notifier.client.v1.OperationsStatus.message_trim:type_name -> notifier.client.v1.MessageTrimStatus
-	48, // 69: notifier.client.v1.OperationsStatus.projection:type_name -> notifier.client.v1.ProjectionStatus
-	50, // 70: notifier.client.v1.OperationsStatus.peers:type_name -> notifier.client.v1.PeerStatus
-	49, // 71: notifier.client.v1.PeerStatus.origins:type_name -> notifier.client.v1.PeerOriginStatus
-	72, // [72:72] is the sub-list for method output_type
-	72, // [72:72] is the sub-list for method input_type
-	72, // [72:72] is the sub-list for extension type_name
-	72, // [72:72] is the sub-list for extension extendee
-	0,  // [0:72] is the sub-list for field type_name
+	40, // 66: notifier.client.v1.Message.sender:type_name -> notifier.client.v1.UserRef
+	40, // 67: notifier.client.v1.Packet.recipient:type_name -> notifier.client.v1.UserRef
+	40, // 68: notifier.client.v1.Packet.sender:type_name -> notifier.client.v1.UserRef
+	1,  // 69: notifier.client.v1.Packet.delivery_mode:type_name -> notifier.client.v1.ClientDeliveryMode
+	47, // 70: notifier.client.v1.OperationsStatus.message_trim:type_name -> notifier.client.v1.MessageTrimStatus
+	48, // 71: notifier.client.v1.OperationsStatus.projection:type_name -> notifier.client.v1.ProjectionStatus
+	50, // 72: notifier.client.v1.OperationsStatus.peers:type_name -> notifier.client.v1.PeerStatus
+	49, // 73: notifier.client.v1.PeerStatus.origins:type_name -> notifier.client.v1.PeerOriginStatus
+	74, // [74:74] is the sub-list for method output_type
+	74, // [74:74] is the sub-list for method input_type
+	74, // [74:74] is the sub-list for extension type_name
+	74, // [74:74] is the sub-list for extension extendee
+	0,  // [0:74] is the sub-list for field type_name
 }
 
 func init() { file_client_proto_init() }

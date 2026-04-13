@@ -122,14 +122,14 @@ func (s *Service) SetTransientPacketReceiver(receiver TransientPacketReceiver) {
 	s.transientRecv = receiver
 }
 
-func (s *Service) DispatchTransientPacket(ctx context.Context, recipient store.UserKey, sender string, body []byte, mode store.DeliveryMode) (store.TransientPacket, error) {
+func (s *Service) DispatchTransientPacket(ctx context.Context, recipient store.UserKey, sender store.UserKey, body []byte, mode store.DeliveryMode) (store.TransientPacket, error) {
 	if err := s.allowWrite(ctx); err != nil {
 		return store.TransientPacket{}, err
 	}
 	if err := recipient.Validate(); err != nil {
 		return store.TransientPacket{}, err
 	}
-	if sender == "" || len(body) == 0 {
+	if err := sender.Validate(); err != nil || len(body) == 0 {
 		return store.TransientPacket{}, store.ErrInvalidInput
 	}
 	recipientUser, err := s.store.GetUser(ctx, recipient)

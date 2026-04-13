@@ -83,7 +83,7 @@ ServerEnvelope {
       user_id: 1025
       node_id: 4096
       seq: 3
-      sender: "orders"
+      sender: { node_id: 4096, user_id: 1 }
       body: "\xff\x00payload"
       created_at_hlc: "..."
     }
@@ -101,7 +101,7 @@ ServerEnvelope {
       source_node_id: 4096
       target_node_id: 8192
       recipient: { node_id: 8192, user_id: 1025 }
-      sender: "relay"
+      sender: { node_id: 4096, user_id: 1 }
       body: "\xff\x00payload"
       delivery_mode: CLIENT_DELIVERY_MODE_BEST_EFFORT
     }
@@ -143,7 +143,6 @@ ClientEnvelope {
   send_message: SendMessageRequest {
     request_id: 42
     target: { node_id: 4096, user_id: 1025 }
-    sender: "orders"
     body: "\xff\x00payload"
   }
 }
@@ -156,7 +155,6 @@ ClientEnvelope {
   send_message: SendMessageRequest {
     request_id: 43
     target: { node_id: 8192, user_id: 1025 }
-    sender: "relay"
     body: "\xff\x00payload"
     delivery_kind: CLIENT_DELIVERY_KIND_TRANSIENT
     delivery_mode: CLIENT_DELIVERY_MODE_ROUTE_RETRY
@@ -168,7 +166,7 @@ ClientEnvelope {
 
 - `request_id`：客户端生成的请求 ID，服务端在响应或错误中原样返回。
 - `target`：消息目标用户、channel 或 broadcast 地址。
-- `sender`：发送方或来源标签，不能为空。
+- `sender`：不再由客户端传入，服务端会根据已认证连接生成 `UserRef { node_id, user_id }`。
 - `body`：原始字节数组，不能为空；不要求 UTF-8。
 - `delivery_kind`：可选 `CLIENT_DELIVERY_KIND_PERSISTENT` 或 `CLIENT_DELIVERY_KIND_TRANSIENT`，默认是持久化消息。
 - `delivery_mode`：仅在 `delivery_kind = CLIENT_DELIVERY_KIND_TRANSIENT` 时生效；可选 `CLIENT_DELIVERY_MODE_BEST_EFFORT` 或 `CLIENT_DELIVERY_MODE_ROUTE_RETRY`。
@@ -191,7 +189,7 @@ ServerEnvelope {
       user_id: 1025
       node_id: 4096
       seq: 4
-      sender: "orders"
+      sender: { node_id: 4096, user_id: 1 }
       body: "\xff\x00payload"
       created_at_hlc: "..."
     }

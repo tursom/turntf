@@ -49,7 +49,6 @@ type updateUserRequest struct {
 }
 
 type createMessageRequest struct {
-	Sender       string `json:"sender"`
 	Body         []byte `json:"body"`
 	DeliveryKind string `json:"delivery_kind,omitempty"`
 	DeliveryMode string `json:"delivery_mode,omitempty"`
@@ -332,6 +331,11 @@ func (h *HTTP) handleCreateMessage(w http.ResponseWriter, r *http.Request) {
 		writeStoreError(w, err)
 		return
 	}
+	sender, err := messageSenderFromPrincipal(principal)
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
 	deliveryKind, err := normalizeDeliveryKind(req.DeliveryKind)
 	if err != nil {
 		writeStoreError(w, err)
@@ -343,7 +347,7 @@ func (h *HTTP) handleCreateMessage(w http.ResponseWriter, r *http.Request) {
 			writeStoreError(w, err)
 			return
 		}
-		packet, err := h.service.DispatchTransientPacket(r.Context(), key, req.Sender, req.Body, mode)
+		packet, err := h.service.DispatchTransientPacket(r.Context(), key, sender, req.Body, mode)
 		if err != nil {
 			writeStoreError(w, err)
 			return
@@ -358,7 +362,7 @@ func (h *HTTP) handleCreateMessage(w http.ResponseWriter, r *http.Request) {
 
 	message, _, err := h.service.CreateMessage(r.Context(), store.CreateMessageParams{
 		UserKey: key,
-		Sender:  req.Sender,
+		Sender:  sender,
 		Body:    req.Body,
 	})
 	if err != nil {
@@ -595,13 +599,13 @@ type userResponse struct {
 }
 
 type messageResponse struct {
-	UserNodeID int64  `json:"user_node_id"`
-	UserID     int64  `json:"user_id"`
-	NodeID     int64  `json:"node_id"`
-	Seq        int64  `json:"seq"`
-	Sender     string `json:"sender"`
-	Body       []byte `json:"body"`
-	CreatedAt  string `json:"created_at"`
+	UserNodeID int64         `json:"user_node_id"`
+	UserID     int64         `json:"user_id"`
+	NodeID     int64         `json:"node_id"`
+	Seq        int64         `json:"seq"`
+	Sender     store.UserKey `json:"sender"`
+	Body       []byte        `json:"body"`
+	CreatedAt  string        `json:"created_at"`
 }
 
 type transientPacketResponse struct {
@@ -899,6 +903,13 @@ func (h *HTTP) authenticateRequest(ctx context.Context, r *http.Request) (*reque
 
 func isAdminRole(role string) bool {
 	return role == store.RoleSuperAdmin || role == store.RoleAdmin
+}
+
+func messageSenderFromPrincipal(principal *requestPrincipal) (store.UserKey, error) {
+	if principal == nil {
+		return store.UserKey{}, fmt.Errorf("%w: authentication is required to derive sender", store.ErrForbidden)
+	}
+	return principal.User.Key(), nil
 }
 
 func formatUserSubject(key store.UserKey) string {

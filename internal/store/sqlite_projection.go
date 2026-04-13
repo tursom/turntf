@@ -241,7 +241,7 @@ func (r *sqliteMessageProjectionRepository) ListMessagesByUser(ctx context.Conte
 	}
 
 	rows, err := r.db.QueryContext(ctx, `
-SELECT user_node_id, user_id, node_id, seq, sender, body, created_at_hlc
+SELECT user_node_id, user_id, node_id, seq, sender_node_id, sender_user_id, body, created_at_hlc
 FROM messages
 WHERE (user_node_id = ? AND user_id = ?)
    OR EXISTS (
@@ -286,7 +286,7 @@ LIMIT ?
 
 func (r *sqliteMessageProjectionRepository) BuildMessageSnapshotRows(ctx context.Context, producer int64) ([]*clusterproto.SnapshotRow, error) {
 	rows, err := r.db.QueryContext(ctx, `
-SELECT user_node_id, user_id, node_id, seq, sender, body, created_at_hlc
+SELECT user_node_id, user_id, node_id, seq, sender_node_id, sender_user_id, body, created_at_hlc
 FROM messages
 WHERE node_id = ?
 ORDER BY user_node_id ASC, user_id ASC, created_at_hlc DESC, node_id ASC, seq DESC
@@ -348,9 +348,9 @@ func (r *sqliteMessageProjectionRepository) applyMessageCreatedTx(ctx context.Co
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `
-INSERT INTO messages(user_node_id, user_id, node_id, seq, sender, body, created_at_hlc)
-VALUES(?, ?, ?, ?, ?, ?, ?)
-`, message.UserNodeID, message.UserID, message.NodeID, message.Seq, message.Sender, message.Body, message.CreatedAt.String()); err != nil {
+INSERT INTO messages(user_node_id, user_id, node_id, seq, sender_node_id, sender_user_id, body, created_at_hlc)
+VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+`, message.UserNodeID, message.UserID, message.NodeID, message.Seq, message.Sender.NodeID, message.Sender.UserID, message.Body, message.CreatedAt.String()); err != nil {
 		if !isUniqueConstraint(err) {
 			return fmt.Errorf("insert message projection: %w", err)
 		}
@@ -387,9 +387,9 @@ func (r *sqliteMessageProjectionRepository) applyMessageSnapshotRowTx(ctx contex
 	}
 
 	if _, err := tx.ExecContext(ctx, `
-INSERT INTO messages(user_node_id, user_id, node_id, seq, sender, body, created_at_hlc)
-VALUES(?, ?, ?, ?, ?, ?, ?)
-`, messageRow.UserNodeId, messageRow.UserId, messageRow.NodeId, messageRow.Seq, messageRow.Sender, messageRow.Body, messageRow.CreatedAtHlc); err != nil {
+INSERT INTO messages(user_node_id, user_id, node_id, seq, sender_node_id, sender_user_id, body, created_at_hlc)
+VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+`, messageRow.UserNodeId, messageRow.UserId, messageRow.NodeId, messageRow.Seq, messageRow.SenderNodeId, messageRow.SenderUserId, messageRow.Body, messageRow.CreatedAtHlc); err != nil {
 		if isUniqueConstraint(err) {
 			return key, nil
 		}
@@ -400,7 +400,7 @@ VALUES(?, ?, ?, ?, ?, ?, ?)
 
 func (r *sqliteMessageProjectionRepository) listRawMessagesByUser(ctx context.Context, key UserKey, limit int) ([]Message, error) {
 	rows, err := r.db.QueryContext(ctx, `
-SELECT user_node_id, user_id, node_id, seq, sender, body, created_at_hlc
+SELECT user_node_id, user_id, node_id, seq, sender_node_id, sender_user_id, body, created_at_hlc
 FROM messages
 WHERE user_node_id = ? AND user_id = ?
 ORDER BY created_at_hlc DESC, node_id ASC, seq DESC
@@ -780,7 +780,8 @@ func messageFromCreatedEvent(body *clusterproto.MessageCreatedEvent) (Message, e
 	if err != nil {
 		return Message{}, err
 	}
-	if strings.TrimSpace(body.Sender) == "" {
+	sender := UserKey{NodeID: body.SenderNodeId, UserID: body.SenderUserId}
+	if err := sender.Validate(); err != nil {
 		return Message{}, fmt.Errorf("%w: sender cannot be empty", ErrInvalidInput)
 	}
 	if len(body.Body) == 0 {
@@ -791,7 +792,7 @@ func messageFromCreatedEvent(body *clusterproto.MessageCreatedEvent) (Message, e
 		UserID:     body.UserId,
 		NodeID:     body.NodeId,
 		Seq:        body.Seq,
-		Sender:     strings.TrimSpace(body.Sender),
+		Sender:     sender,
 		Body:       append([]byte(nil), body.Body...),
 		CreatedAt:  createdAt,
 	}, nil

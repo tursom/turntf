@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
 
@@ -393,6 +392,10 @@ func (s *clientWSSession) handleSendMessage(ctx context.Context, req *internalpr
 	if err := s.http.authorizeCreateMessage(ctx, s.principal, target); err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
+	sender, err := messageSenderFromPrincipal(s.principal)
+	if err != nil {
+		return s.writeStoreOrRequestError(req.RequestId, err)
+	}
 	deliveryKind, err := clientDeliveryKindFromProto(req.DeliveryKind)
 	if err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
@@ -402,7 +405,7 @@ func (s *clientWSSession) handleSendMessage(ctx context.Context, req *internalpr
 		if err != nil {
 			return s.writeStoreOrRequestError(req.RequestId, err)
 		}
-		packet, err := s.http.service.DispatchTransientPacket(ctx, target, req.Sender, req.Body, mode)
+		packet, err := s.http.service.DispatchTransientPacket(ctx, target, sender, req.Body, mode)
 		if err != nil {
 			return s.writeStoreOrRequestError(req.RequestId, err)
 		}
@@ -422,7 +425,7 @@ func (s *clientWSSession) handleSendMessage(ctx context.Context, req *internalpr
 	}
 	message, _, err := s.http.service.CreateMessage(ctx, store.CreateMessageParams{
 		UserKey: target,
-		Sender:  req.Sender,
+		Sender:  sender,
 		Body:    req.Body,
 	})
 	if err != nil {
@@ -644,7 +647,7 @@ func clientProtoMessage(message store.Message) *internalproto.Message {
 		UserId:       message.UserID,
 		NodeId:       message.NodeID,
 		Seq:          message.Seq,
-		Sender:       message.Sender,
+		Sender:       &internalproto.UserRef{NodeId: message.Sender.NodeID, UserId: message.Sender.UserID},
 		Body:         append([]byte(nil), message.Body...),
 		CreatedAtHlc: message.CreatedAt.String(),
 	}
@@ -656,7 +659,7 @@ func clientProtoPacket(packet store.TransientPacket) *internalproto.Packet {
 		SourceNodeId: packet.SourceNodeID,
 		TargetNodeId: packet.TargetNodeID,
 		Recipient:    &internalproto.UserRef{NodeId: packet.Recipient.NodeID, UserId: packet.Recipient.UserID},
-		Sender:       packet.Sender,
+		Sender:       &internalproto.UserRef{NodeId: packet.Sender.NodeID, UserId: packet.Sender.UserID},
 		Body:         append([]byte(nil), packet.Body...),
 		DeliveryMode: clientDeliveryModeProto(packet.DeliveryMode),
 	}
@@ -720,7 +723,7 @@ func messageFromClientPushEvent(event store.Event) (store.Message, bool, error) 
 		UserID:     body.UserId,
 		NodeID:     body.NodeId,
 		Seq:        body.Seq,
-		Sender:     strings.TrimSpace(body.Sender),
+		Sender:     store.UserKey{NodeID: body.SenderNodeId, UserID: body.SenderUserId},
 		Body:       append([]byte(nil), body.Body...),
 		CreatedAt:  createdAt,
 	}, true, nil

@@ -34,6 +34,10 @@ func clusterUserKey(nodeID, userID int64) store.UserKey {
 	return store.UserKey{NodeID: nodeID, UserID: userID}
 }
 
+func clusterSenderKey(slot uint16, userID int64) store.UserKey {
+	return store.UserKey{NodeID: testNodeID(slot), UserID: userID}
+}
+
 func clusterUserPath(nodeID, userID int64) string {
 	return "/nodes/" + strconv.FormatInt(nodeID, 10) + "/users/" + strconv.FormatInt(userID, 10)
 }
@@ -316,7 +320,7 @@ func TestHandleSnapshotDigestLogsPartitionMismatch(t *testing.T) {
 	}
 	if _, _, err := sourceStore.CreateMessage(ctx, store.CreateMessageParams{
 		UserKey: user.Key(),
-		Sender:  "orders",
+		Sender:  clusterSenderKey(9, 1),
 		Body:    []byte("snapshot message"),
 	}); err != nil {
 		t.Fatalf("create source message: %v", err)
@@ -351,7 +355,7 @@ func TestRouteTransientPacketLogsRetryQueueEntry(t *testing.T) {
 		SourceNodeID: testNodeID(1),
 		TargetNodeID: testNodeID(3),
 		Recipient:    clusterUserKey(testNodeID(3), 9),
-		Sender:       "relay",
+		Sender:       clusterSenderKey(9, 1),
 		Body:         []byte("retry-me"),
 		DeliveryMode: store.DeliveryModeRouteRetry,
 		TTLHops:      8,
@@ -770,14 +774,14 @@ func TestHandlePullEventsReturnsRequestedRange(t *testing.T) {
 	}
 	if _, _, err := sourceStore.CreateMessage(ctx, store.CreateMessageParams{
 		UserKey: user.Key(),
-		Sender:  "orders",
+		Sender:  clusterSenderKey(9, 1),
 		Body:    []byte("first"),
 	}); err != nil {
 		t.Fatalf("create first message: %v", err)
 	}
 	if _, _, err := sourceStore.CreateMessage(ctx, store.CreateMessageParams{
 		UserKey: user.Key(),
-		Sender:  "orders",
+		Sender:  clusterSenderKey(9, 1),
 		Body:    []byte("second"),
 	}); err != nil {
 		t.Fatalf("create second message: %v", err)
@@ -895,7 +899,7 @@ func TestHandleSnapshotDigestRequestsUsersBeforeMessages(t *testing.T) {
 	}
 	if _, _, err := sourceStore.CreateMessage(ctx, store.CreateMessageParams{
 		UserKey: user.Key(),
-		Sender:  "orders",
+		Sender:  clusterSenderKey(9, 1),
 		Body:    []byte("snapshot message"),
 	}); err != nil {
 		t.Fatalf("create source message: %v", err)
@@ -1196,8 +1200,7 @@ func TestTwoNodeReplicationOverWebSocket(t *testing.T) {
 	})
 
 	createMessageBody := map[string]any{
-		"sender": "orders",
-		"body":   []byte("replicated payload"),
+		"body": []byte("replicated payload"),
 	}
 	doJSON(t, nodeA.apiBaseURL, http.MethodPost, clusterUserMessagesPath(createdUser.NodeID, createdUser.UserID), createMessageBody, http.StatusCreated)
 
@@ -1256,8 +1259,7 @@ func TestTwoNodeMessageWindowConvergesWhenSizesMatch(t *testing.T) {
 
 	for i := 1; i <= 4; i++ {
 		doJSON(t, nodeA.apiBaseURL, http.MethodPost, clusterUserMessagesPath(createdUser.NodeID, createdUser.UserID), map[string]any{
-			"sender": "orders",
-			"body":   []byte("message-" + strconv.Itoa(i)),
+			"body": []byte("message-" + strconv.Itoa(i)),
 		}, http.StatusCreated)
 	}
 
@@ -1312,8 +1314,7 @@ func TestTwoNodeMessageWindowMismatchKeepsPerNodeWindows(t *testing.T) {
 
 	for i := 1; i <= 4; i++ {
 		doJSON(t, nodeA.apiBaseURL, http.MethodPost, clusterUserMessagesPath(createdUser.NodeID, createdUser.UserID), map[string]any{
-			"sender": "orders",
-			"body":   []byte("message-" + strconv.Itoa(i)),
+			"body": []byte("message-" + strconv.Itoa(i)),
 		}, http.StatusCreated)
 	}
 
@@ -1356,7 +1357,7 @@ func TestLateJoiningNodeCatchesUpWithoutDuplicates(t *testing.T) {
 	}
 	if _, _, err := nodeA.store.CreateMessage(context.Background(), store.CreateMessageParams{
 		UserKey: user.Key(),
-		Sender:  "orders",
+		Sender:  clusterSenderKey(9, 1),
 		Body:    []byte("missed while offline"),
 	}); err != nil {
 		t.Fatalf("create offline message: %v", err)
@@ -1406,7 +1407,7 @@ func TestLateJoiningNodeCatchesUpAcrossMultiplePullBatches(t *testing.T) {
 	for i := 0; i < pullBatchSize+12; i++ {
 		if _, _, err := nodeA.store.CreateMessage(ctx, store.CreateMessageParams{
 			UserKey: user.Key(),
-			Sender:  "orders",
+			Sender:  clusterSenderKey(9, 1),
 			Body:    []byte("message-" + strconv.Itoa(i)),
 		}); err != nil {
 			t.Fatalf("create backlog message %d: %v", i, err)
@@ -1456,7 +1457,7 @@ func TestLateJoiningNodeTrimsCatchupToLocalWindow(t *testing.T) {
 	for i := 1; i <= 5; i++ {
 		if _, _, err := nodeA.store.CreateMessage(context.Background(), store.CreateMessageParams{
 			UserKey: user.Key(),
-			Sender:  "orders",
+			Sender:  clusterSenderKey(9, 1),
 			Body:    []byte("message-" + strconv.Itoa(i)),
 		}); err != nil {
 			t.Fatalf("create offline message %d: %v", i, err)
@@ -1496,7 +1497,7 @@ func TestSnapshotRepairOverWebSocketRepairsRowsOutsideEventLog(t *testing.T) {
 	}
 	if _, _, err := seedStore.CreateMessage(ctx, store.CreateMessageParams{
 		UserKey: user.Key(),
-		Sender:  "orders",
+		Sender:  clusterSenderKey(9, 1),
 		Body:    []byte("snapshot-only-message"),
 	}); err != nil {
 		t.Fatalf("create seed message: %v", err)
@@ -1783,7 +1784,7 @@ func TestTransientPacketRoutesAcrossMultipleHops(t *testing.T) {
 		SourceNodeID: nodeA.id,
 		TargetNodeID: nodeC.id,
 		Recipient:    charlie.Key(),
-		Sender:       "relay",
+		Sender:       clusterSenderKey(9, 1),
 		Body:         []byte("over-mesh"),
 		DeliveryMode: store.DeliveryModeBestEffort,
 		TTLHops:      8,

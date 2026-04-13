@@ -1224,7 +1224,8 @@ type MessageCreatedEvent struct {
 	UserId        int64                  `protobuf:"varint,2,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
 	NodeId        int64                  `protobuf:"varint,3,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
 	Seq           int64                  `protobuf:"varint,4,opt,name=seq,proto3" json:"seq,omitempty"`
-	Sender        string                 `protobuf:"bytes,5,opt,name=sender,proto3" json:"sender,omitempty"`
+	SenderNodeId  int64                  `protobuf:"varint,5,opt,name=sender_node_id,json=senderNodeId,proto3" json:"sender_node_id,omitempty"`
+	SenderUserId  int64                  `protobuf:"varint,7,opt,name=sender_user_id,json=senderUserId,proto3" json:"sender_user_id,omitempty"`
 	Body          []byte                 `protobuf:"bytes,6,opt,name=body,proto3" json:"body,omitempty"`
 	CreatedAtHlc  string                 `protobuf:"bytes,8,opt,name=created_at_hlc,json=createdAtHlc,proto3" json:"created_at_hlc,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -1289,11 +1290,18 @@ func (x *MessageCreatedEvent) GetSeq() int64 {
 	return 0
 }
 
-func (x *MessageCreatedEvent) GetSender() string {
+func (x *MessageCreatedEvent) GetSenderNodeId() int64 {
 	if x != nil {
-		return x.Sender
+		return x.SenderNodeId
 	}
-	return ""
+	return 0
+}
+
+func (x *MessageCreatedEvent) GetSenderUserId() int64 {
+	if x != nil {
+		return x.SenderUserId
+	}
+	return 0
 }
 
 func (x *MessageCreatedEvent) GetBody() []byte {
@@ -2109,7 +2117,8 @@ type SnapshotMessageRow struct {
 	UserId        int64                  `protobuf:"varint,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
 	NodeId        int64                  `protobuf:"varint,2,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
 	UserNodeId    int64                  `protobuf:"varint,8,opt,name=user_node_id,json=userNodeId,proto3" json:"user_node_id,omitempty"`
-	Sender        string                 `protobuf:"bytes,3,opt,name=sender,proto3" json:"sender,omitempty"`
+	SenderNodeId  int64                  `protobuf:"varint,3,opt,name=sender_node_id,json=senderNodeId,proto3" json:"sender_node_id,omitempty"`
+	SenderUserId  int64                  `protobuf:"varint,9,opt,name=sender_user_id,json=senderUserId,proto3" json:"sender_user_id,omitempty"`
 	Body          []byte                 `protobuf:"bytes,4,opt,name=body,proto3" json:"body,omitempty"`
 	CreatedAtHlc  string                 `protobuf:"bytes,6,opt,name=created_at_hlc,json=createdAtHlc,proto3" json:"created_at_hlc,omitempty"`
 	Seq           int64                  `protobuf:"varint,7,opt,name=seq,proto3" json:"seq,omitempty"`
@@ -2168,11 +2177,18 @@ func (x *SnapshotMessageRow) GetUserNodeId() int64 {
 	return 0
 }
 
-func (x *SnapshotMessageRow) GetSender() string {
+func (x *SnapshotMessageRow) GetSenderNodeId() int64 {
 	if x != nil {
-		return x.Sender
+		return x.SenderNodeId
 	}
-	return ""
+	return 0
+}
+
+func (x *SnapshotMessageRow) GetSenderUserId() int64 {
+	if x != nil {
+		return x.SenderUserId
+	}
+	return 0
 }
 
 func (x *SnapshotMessageRow) GetBody() []byte {
@@ -2551,7 +2567,8 @@ type TransientPacket struct {
 	TargetNodeId    int64                  `protobuf:"varint,3,opt,name=target_node_id,json=targetNodeId,proto3" json:"target_node_id,omitempty"`
 	RecipientNodeId int64                  `protobuf:"varint,4,opt,name=recipient_node_id,json=recipientNodeId,proto3" json:"recipient_node_id,omitempty"`
 	RecipientUserId int64                  `protobuf:"varint,5,opt,name=recipient_user_id,json=recipientUserId,proto3" json:"recipient_user_id,omitempty"`
-	Sender          string                 `protobuf:"bytes,6,opt,name=sender,proto3" json:"sender,omitempty"`
+	SenderNodeId    int64                  `protobuf:"varint,6,opt,name=sender_node_id,json=senderNodeId,proto3" json:"sender_node_id,omitempty"`
+	SenderUserId    int64                  `protobuf:"varint,10,opt,name=sender_user_id,json=senderUserId,proto3" json:"sender_user_id,omitempty"`
 	Body            []byte                 `protobuf:"bytes,7,opt,name=body,proto3" json:"body,omitempty"`
 	DeliveryMode    ClusterDeliveryMode    `protobuf:"varint,8,opt,name=delivery_mode,json=deliveryMode,proto3,enum=notifier.cluster.v1.ClusterDeliveryMode" json:"delivery_mode,omitempty"`
 	TtlHops         uint32                 `protobuf:"varint,9,opt,name=ttl_hops,json=ttlHops,proto3" json:"ttl_hops,omitempty"`
@@ -2624,11 +2641,18 @@ func (x *TransientPacket) GetRecipientUserId() int64 {
 	return 0
 }
 
-func (x *TransientPacket) GetSender() string {
+func (x *TransientPacket) GetSenderNodeId() int64 {
 	if x != nil {
-		return x.Sender
+		return x.SenderNodeId
 	}
-	return ""
+	return 0
+}
+
+func (x *TransientPacket) GetSenderUserId() int64 {
+	if x != nil {
+		return x.SenderUserId
+	}
+	return 0
 }
 
 func (x *TransientPacket) GetBody() []byte {
@@ -2752,14 +2776,15 @@ const file_cluster_proto_rawDesc = "" +
 	"\x10UserDeletedEvent\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\x03R\x06nodeId\x12\x17\n" +
 	"\auser_id\x18\x02 \x01(\x03R\x06userId\x12$\n" +
-	"\x0edeleted_at_hlc\x18\x03 \x01(\tR\fdeletedAtHlc\"\xcd\x01\n" +
+	"\x0edeleted_at_hlc\x18\x03 \x01(\tR\fdeletedAtHlc\"\x81\x02\n" +
 	"\x13MessageCreatedEvent\x12 \n" +
 	"\fuser_node_id\x18\x01 \x01(\x03R\n" +
 	"userNodeId\x12\x17\n" +
 	"\auser_id\x18\x02 \x01(\x03R\x06userId\x12\x17\n" +
 	"\anode_id\x18\x03 \x01(\x03R\x06nodeId\x12\x10\n" +
-	"\x03seq\x18\x04 \x01(\x03R\x03seq\x12\x16\n" +
-	"\x06sender\x18\x05 \x01(\tR\x06sender\x12\x12\n" +
+	"\x03seq\x18\x04 \x01(\x03R\x03seq\x12$\n" +
+	"\x0esender_node_id\x18\x05 \x01(\x03R\fsenderNodeId\x12$\n" +
+	"\x0esender_user_id\x18\a \x01(\x03R\fsenderUserId\x12\x12\n" +
 	"\x04body\x18\x06 \x01(\fR\x04body\x12$\n" +
 	"\x0ecreated_at_hlc\x18\b \x01(\tR\fcreatedAtHlc\"\x96\x02\n" +
 	"\x16ChannelSubscribedEvent\x12,\n" +
@@ -2830,13 +2855,14 @@ const file_cluster_proto_rawDesc = "" +
 	"\tentity_id\x18\x02 \x01(\x03R\bentityId\x12$\n" +
 	"\x0edeleted_at_hlc\x18\x03 \x01(\tR\fdeletedAtHlc\x12$\n" +
 	"\x0eorigin_node_id\x18\x04 \x01(\x03R\foriginNodeId\x12$\n" +
-	"\x0eentity_node_id\x18\x05 \x01(\x03R\fentityNodeId\"\xcc\x01\n" +
+	"\x0eentity_node_id\x18\x05 \x01(\x03R\fentityNodeId\"\x80\x02\n" +
 	"\x12SnapshotMessageRow\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\x03R\x06userId\x12\x17\n" +
 	"\anode_id\x18\x02 \x01(\x03R\x06nodeId\x12 \n" +
 	"\fuser_node_id\x18\b \x01(\x03R\n" +
-	"userNodeId\x12\x16\n" +
-	"\x06sender\x18\x03 \x01(\tR\x06sender\x12\x12\n" +
+	"userNodeId\x12$\n" +
+	"\x0esender_node_id\x18\x03 \x01(\x03R\fsenderNodeId\x12$\n" +
+	"\x0esender_user_id\x18\t \x01(\x03R\fsenderUserId\x12\x12\n" +
 	"\x04body\x18\x04 \x01(\fR\x04body\x12$\n" +
 	"\x0ecreated_at_hlc\x18\x06 \x01(\tR\fcreatedAtHlc\x12\x10\n" +
 	"\x03seq\x18\a \x01(\x03R\x03seq\"\xbd\x02\n" +
@@ -2869,14 +2895,16 @@ const file_cluster_proto_rawDesc = "" +
 	"\treachable\x18\x02 \x01(\bR\treachable\x12\"\n" +
 	"\rtotal_cost_ms\x18\x03 \x01(\rR\vtotalCostMs\x12(\n" +
 	"\x10residual_cost_ms\x18\x04 \x01(\rR\x0eresidualCostMs\x12,\n" +
-	"\x12residual_jitter_ms\x18\x05 \x01(\rR\x10residualJitterMs\"\xe8\x02\n" +
+	"\x12residual_jitter_ms\x18\x05 \x01(\rR\x10residualJitterMs\"\x9c\x03\n" +
 	"\x0fTransientPacket\x12\x1b\n" +
 	"\tpacket_id\x18\x01 \x01(\x04R\bpacketId\x12$\n" +
 	"\x0esource_node_id\x18\x02 \x01(\x03R\fsourceNodeId\x12$\n" +
 	"\x0etarget_node_id\x18\x03 \x01(\x03R\ftargetNodeId\x12*\n" +
 	"\x11recipient_node_id\x18\x04 \x01(\x03R\x0frecipientNodeId\x12*\n" +
-	"\x11recipient_user_id\x18\x05 \x01(\x03R\x0frecipientUserId\x12\x16\n" +
-	"\x06sender\x18\x06 \x01(\tR\x06sender\x12\x12\n" +
+	"\x11recipient_user_id\x18\x05 \x01(\x03R\x0frecipientUserId\x12$\n" +
+	"\x0esender_node_id\x18\x06 \x01(\x03R\fsenderNodeId\x12$\n" +
+	"\x0esender_user_id\x18\n" +
+	" \x01(\x03R\fsenderUserId\x12\x12\n" +
 	"\x04body\x18\a \x01(\fR\x04body\x12M\n" +
 	"\rdelivery_mode\x18\b \x01(\x0e2(.notifier.cluster.v1.ClusterDeliveryModeR\fdeliveryMode\x12\x19\n" +
 	"\bttl_hops\x18\t \x01(\rR\attlHops*\xb4\x01\n" +

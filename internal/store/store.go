@@ -124,7 +124,7 @@ type Message struct {
 	UserID     int64           `json:"user_id"`
 	NodeID     int64           `json:"node_id"`
 	Seq        int64           `json:"seq"`
-	Sender     string          `json:"sender"`
+	Sender     UserKey         `json:"sender"`
 	Body       []byte          `json:"body"`
 	CreatedAt  clock.Timestamp `json:"created_at"`
 }
@@ -188,7 +188,7 @@ type UpdateUserParams struct {
 
 type CreateMessageParams struct {
 	UserKey UserKey
-	Sender  string
+	Sender  UserKey
 	Body    []byte
 }
 
@@ -204,7 +204,7 @@ type TransientPacket struct {
 	SourceNodeID  int64        `json:"source_node_id"`
 	TargetNodeID  int64        `json:"target_node_id"`
 	Recipient     UserKey      `json:"recipient"`
-	Sender        string       `json:"sender"`
+	Sender        UserKey      `json:"sender"`
 	Body          []byte       `json:"body"`
 	DeliveryMode  DeliveryMode `json:"delivery_mode"`
 	TTLHops       int32        `json:"ttl_hops"`
@@ -340,7 +340,8 @@ CREATE TABLE IF NOT EXISTS messages (
     user_id INTEGER NOT NULL,
     node_id INTEGER NOT NULL,
     seq INTEGER NOT NULL,
-    sender TEXT NOT NULL,
+    sender_node_id INTEGER NOT NULL,
+    sender_user_id INTEGER NOT NULL,
     body BLOB NOT NULL,
     created_at_hlc TEXT NOT NULL,
     FOREIGN KEY(user_node_id, user_id) REFERENCES users(node_id, user_id),
@@ -892,7 +893,7 @@ func (s *Store) CreateMessage(ctx context.Context, params CreateMessageParams) (
 	if err := params.UserKey.Validate(); err != nil {
 		return Message{}, Event{}, err
 	}
-	if strings.TrimSpace(params.Sender) == "" {
+	if err := params.Sender.Validate(); err != nil {
 		return Message{}, Event{}, fmt.Errorf("%w: sender cannot be empty", ErrInvalidInput)
 	}
 	if len(params.Body) == 0 {
@@ -919,7 +920,7 @@ func (s *Store) CreateMessage(ctx context.Context, params CreateMessageParams) (
 		UserID:     params.UserKey.UserID,
 		NodeID:     s.nodeID,
 		Seq:        seq,
-		Sender:     strings.TrimSpace(params.Sender),
+		Sender:     params.Sender,
 		Body:       append([]byte(nil), params.Body...),
 		CreatedAt:  now,
 	}
@@ -1533,7 +1534,8 @@ func scanMessage(scanner interface {
 		&message.UserID,
 		&message.NodeID,
 		&message.Seq,
-		&message.Sender,
+		&message.Sender.NodeID,
+		&message.Sender.UserID,
 		&message.Body,
 		&createdAtRaw,
 	); err != nil {

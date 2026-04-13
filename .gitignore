@@ -6,3 +6,4 @@
 *.sqlite3
 .codex
 .idea
+.VSCodeCounter

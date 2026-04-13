@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/tursom/turntf/internal/api"
@@ -203,6 +205,165 @@ func TestHandleHelloAllowsMismatchedMessageWindowSizes(t *testing.T) {
 	waitFor(t, time.Second, func() bool {
 		return mgr.hasActivePeer(testNodeID(2))
 	})
+}
+
+func TestHandleHelloLogsPeerJoinWhenPeerBecomesActive(t *testing.T) {
+	mgr := newHandshakeTestManager(t)
+
+	logOutput := captureClusterLogs(t)
+
+	sess := &session{
+		manager: mgr,
+		send:    make(chan *internalproto.Envelope, 1),
+	}
+	envelope := mustHelloEnvelope(t, testNodeID(2), &internalproto.Hello{
+		NodeId:            testNodeID(2),
+		AdvertiseAddr:     websocketPath,
+		ProtocolVersion:   internalproto.ProtocolVersion,
+		SnapshotVersion:   internalproto.SnapshotVersion,
+		MessageWindowSize: store.DefaultMessageWindowSize,
+	})
+
+	if err := mgr.handleHello(sess, envelope); err != nil {
+		t.Fatalf("handle hello: %v", err)
+	}
+
+	waitFor(t, time.Second, func() bool {
+		return strings.Contains(logOutput.String(), `"event":"peer_joined"`)
+	})
+	if !strings.Contains(logOutput.String(), `"peer_node_id":8192`) {
+		t.Fatalf("expected peer join log to include peer node id, got %q", logOutput.String())
+	}
+	if !strings.Contains(logOutput.String(), `"direction":"inbound"`) {
+		t.Fatalf("expected peer join log to include direction, got %q", logOutput.String())
+	}
+	if !strings.Contains(logOutput.String(), `"local_node_id":4096`) {
+		t.Fatalf("expected peer join log to include local node id, got %q", logOutput.String())
+	}
+	if !strings.Contains(logOutput.String(), `"event":"peer_hello_accepted"`) {
+		t.Fatalf("expected hello accepted log, got %q", logOutput.String())
+	}
+	if !strings.Contains(logOutput.String(), `"event":"time_sync_succeeded"`) {
+		t.Fatalf("expected time sync success log, got %q", logOutput.String())
+	}
+}
+
+func TestActivateSessionLogsPeerReconnectForKnownPeer(t *testing.T) {
+	mgr := newHandshakeTestManager(t)
+	mgr.peers[testNodeID(2)] = &peerState{joinedLogged: true}
+
+	logOutput := captureClusterLogs(t)
+
+	sess := &session{
+		manager: mgr,
+		peerID:  testNodeID(2),
+		send:    make(chan *internalproto.Envelope, 1),
+	}
+
+	if !mgr.activateSession(sess) {
+		t.Fatalf("expected known peer session to activate")
+	}
+	if !strings.Contains(logOutput.String(), `"event":"peer_reconnected"`) {
+		t.Fatalf("expected peer reconnect log, got %q", logOutput.String())
+	}
+	if !strings.Contains(logOutput.String(), `"peer_node_id":8192`) {
+		t.Fatalf("expected peer reconnect log to include peer node id, got %q", logOutput.String())
+	}
+}
+
+func TestRequestCatchupIfNeededLogsRequestedPull(t *testing.T) {
+	t.Parallel()
+
+	mgr := newReplicationTestManager(t, newReplicationTestStore(t, "node-b", 2))
+	logOutput := captureClusterLogs(t)
+
+	sess := readySnapshotTestSession(mgr, testNodeID(1), store.DefaultMessageWindowSize)
+	sess.noteRemoteOriginEvent(testNodeID(1), 7)
+
+	requested, err := mgr.requestCatchupIfNeeded(sess)
+	if err != nil {
+		t.Fatalf("request catchup: %v", err)
+	}
+	if !requested {
+		t.Fatalf("expected catchup request")
+	}
+	if !strings.Contains(logOutput.String(), `"event":"catchup_requested"`) {
+		t.Fatalf("expected catchup log, got %q", logOutput.String())
+	}
+	if !strings.Contains(logOutput.String(), `"origin_node_id":4096`) {
+		t.Fatalf("expected catchup origin in log, got %q", logOutput.String())
+	}
+	if !strings.Contains(logOutput.String(), `"request_id":1`) {
+		t.Fatalf("expected catchup request id in log, got %q", logOutput.String())
+	}
+}
+
+func TestHandleSnapshotDigestLogsPartitionMismatch(t *testing.T) {
+	t.Parallel()
+
+	sourceStore := newReplicationTestStore(t, "node-a", 1)
+	targetStore := newReplicationTestStore(t, "node-b", 2)
+	mgr := newReplicationTestManager(t, targetStore)
+	logOutput := captureClusterLogs(t)
+
+	ctx := context.Background()
+	user, _, err := sourceStore.CreateUser(ctx, store.CreateUserParams{
+		Username:     "snapshot-log-user",
+		PasswordHash: "hash-1",
+	})
+	if err != nil {
+		t.Fatalf("create source user: %v", err)
+	}
+	if _, _, err := sourceStore.CreateMessage(ctx, store.CreateMessageParams{
+		UserKey: user.Key(),
+		Sender:  "orders",
+		Body:    []byte("snapshot message"),
+	}); err != nil {
+		t.Fatalf("create source message: %v", err)
+	}
+
+	remoteDigest, err := sourceStore.BuildSnapshotDigest(ctx, []int64{testNodeID(1), testNodeID(2)})
+	if err != nil {
+		t.Fatalf("build remote digest: %v", err)
+	}
+	remoteDigest.SnapshotVersion = internalproto.SnapshotVersion
+
+	sess := readySnapshotTestSession(mgr, testNodeID(1), store.DefaultMessageWindowSize)
+	if err := mgr.handleSnapshotDigest(sess, snapshotDigestEnvelope(testNodeID(1), remoteDigest)); err != nil {
+		t.Fatalf("handle snapshot digest: %v", err)
+	}
+	if !strings.Contains(logOutput.String(), `"event":"snapshot_partition_mismatch"`) {
+		t.Fatalf("expected snapshot mismatch log, got %q", logOutput.String())
+	}
+	if !strings.Contains(logOutput.String(), `"event":"snapshot_partition_requested"`) {
+		t.Fatalf("expected snapshot request log, got %q", logOutput.String())
+	}
+}
+
+func TestRouteTransientPacketLogsRetryQueueEntry(t *testing.T) {
+	t.Parallel()
+
+	mgr := newHandshakeTestManager(t)
+	logOutput := captureClusterLogs(t)
+
+	if err := mgr.RouteTransientPacket(context.Background(), store.TransientPacket{
+		PacketID:     11,
+		SourceNodeID: testNodeID(1),
+		TargetNodeID: testNodeID(3),
+		Recipient:    clusterUserKey(testNodeID(3), 9),
+		Sender:       "relay",
+		Body:         []byte("retry-me"),
+		DeliveryMode: store.DeliveryModeRouteRetry,
+		TTLHops:      8,
+	}); err != nil {
+		t.Fatalf("route transient packet: %v", err)
+	}
+	if !strings.Contains(logOutput.String(), `"event":"transient_packet_queued"`) {
+		t.Fatalf("expected transient queue log, got %q", logOutput.String())
+	}
+	if !strings.Contains(logOutput.String(), `"packet_id":11`) {
+		t.Fatalf("expected packet id in transient queue log, got %q", logOutput.String())
+	}
 }
 
 func TestVerifyEnvelopeRejectsInvalidHMAC(t *testing.T) {
@@ -1881,6 +2042,18 @@ func mustJSON(t *testing.T, data []byte, dst any) {
 	if err := json.Unmarshal(data, dst); err != nil {
 		t.Fatalf("unmarshal json: %v body=%s", err, string(data))
 	}
+}
+
+func captureClusterLogs(t *testing.T) *bytes.Buffer {
+	t.Helper()
+
+	originalLogger := log.Logger
+	var logOutput bytes.Buffer
+	log.Logger = zerolog.New(&logOutput)
+	t.Cleanup(func() {
+		log.Logger = originalLogger
+	})
+	return &logOutput
 }
 
 func newHandshakeTestManager(t *testing.T) *Manager {

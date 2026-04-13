@@ -37,6 +37,10 @@ func (m *Manager) handleRoutingUpdate(sess *session, envelope *internalproto.Env
 		}
 	}
 	m.recomputeRoutesLocked()
+	m.logSessionDebug("routing_update_received", sess).
+		Int("route_count", len(update.Routes)).
+		Uint64("generation", update.Generation).
+		Msg("routing update received")
 	return nil
 }
 
@@ -61,6 +65,12 @@ func (m *Manager) handleTransientPacket(sess *session, envelope *internalproto.E
 		DeliveryMode: clusterDeliveryModeToStore(body.DeliveryMode),
 		TTLHops:      int32(body.TtlHops),
 	}
+	m.logSessionDebug("transient_packet_received", sess).
+		Uint64("packet_id", packet.PacketID).
+		Int64("source_node_id", packet.SourceNodeID).
+		Int64("target_node_id", packet.TargetNodeID).
+		Int32("ttl_hops", packet.TTLHops).
+		Msg("transient packet received")
 	m.routeIncomingTransient(packet)
 	return nil
 }
@@ -70,9 +80,14 @@ func (m *Manager) routeIncomingTransient(packet store.TransientPacket) {
 		return
 	}
 	if packet.TTLHops <= 0 {
+		addPacketLogFields(m.logWarn("transient_packet_dropped", nil), packet).
+			Str("reason", "ttl_exhausted").
+			Msg("dropping transient packet")
 		return
 	}
 	if !m.markPacketSeen(packet) {
+		addPacketLogFields(m.logDebug("transient_packet_deduplicated"), packet).
+			Msg("ignoring duplicate transient packet")
 		return
 	}
 	if packet.TargetNodeID == m.cfg.NodeID {
@@ -81,6 +96,9 @@ func (m *Manager) routeIncomingTransient(packet store.TransientPacket) {
 	}
 	packet.TTLHops--
 	if packet.TTLHops <= 0 {
+		addPacketLogFields(m.logWarn("transient_packet_dropped", nil), packet).
+			Str("reason", "ttl_exhausted").
+			Msg("dropping transient packet")
 		return
 	}
 	m.routeOrQueueTransient(packet)
@@ -92,6 +110,9 @@ func (m *Manager) routeOrQueueTransient(packet store.TransientPacket) {
 		return
 	}
 	if sess := m.bestRouteSession(packet.TargetNodeID); sess != nil {
+		addPacketLogFields(m.logSessionEvent("transient_packet_forwarded", sess), packet).
+			Int64("next_hop_peer_node_id", sess.peerID).
+			Msg("forwarding transient packet")
 		sess.enqueue(&internalproto.Envelope{
 			NodeId: m.cfg.NodeID,
 			Body: &internalproto.Envelope_TransientPacket{
@@ -101,6 +122,9 @@ func (m *Manager) routeOrQueueTransient(packet store.TransientPacket) {
 		return
 	}
 	if packet.DeliveryMode != store.DeliveryModeRouteRetry {
+		addPacketLogFields(m.logWarn("transient_packet_dropped", nil), packet).
+			Str("reason", "no_route").
+			Msg("dropping transient packet without route")
 		return
 	}
 	m.mu.Lock()
@@ -117,6 +141,9 @@ func (m *Manager) routeOrQueueTransient(packet store.TransientPacket) {
 		item.queuedAt = current.queuedAt
 	}
 	m.retryQueue[key] = item
+	addPacketLogFields(m.logInfo("transient_packet_queued"), packet).
+		Int("attempt", item.attempts).
+		Msg("queued transient packet for retry")
 }
 
 func (m *Manager) retryTransientPackets() {
@@ -130,6 +157,14 @@ func (m *Manager) retryTransientPackets() {
 	items := make([]queuedPacket, 0, len(m.retryQueue))
 	for key, item := range m.retryQueue {
 		if now.Sub(item.queuedAt) > routeRetryTTL || item.attempts >= 10 {
+			reason := "retry_limit"
+			if now.Sub(item.queuedAt) > routeRetryTTL {
+				reason = "retry_ttl_expired"
+			}
+			addPacketLogFields(m.logWarn("transient_packet_dropped", nil), item.packet).
+				Int("attempt", item.attempts).
+				Str("reason", reason).
+				Msg("dropping transient packet from retry queue")
 			delete(m.retryQueue, key)
 			continue
 		}
@@ -144,6 +179,9 @@ func (m *Manager) retryTransientPackets() {
 	m.gcPacketSeenLocked()
 	m.mu.Unlock()
 	for _, item := range items {
+		addPacketLogFields(m.logDebug("transient_packet_retrying"), item.packet).
+			Int("attempt", item.attempts).
+			Msg("retrying transient packet route")
 		m.routeOrQueueTransient(item.packet)
 	}
 }
@@ -153,9 +191,20 @@ func (m *Manager) deliverTransientLocal(packet store.TransientPacket) bool {
 	handler := m.transientHandler
 	m.mu.Unlock()
 	if handler == nil {
+		addPacketLogFields(m.logWarn("transient_packet_dropped", nil), packet).
+			Str("reason", "no_local_handler").
+			Msg("dropping transient packet without local handler")
 		return false
 	}
-	return handler(packet)
+	delivered := handler(packet)
+	event := m.logInfo("transient_packet_delivered")
+	if !delivered {
+		event = m.logWarn("transient_packet_delivery_missed", nil)
+	}
+	addPacketLogFields(event, packet).
+		Bool("delivered", delivered).
+		Msg("processed local transient packet")
+	return delivered
 }
 
 func (m *Manager) bestRouteSession(targetNodeID int64) *session {
@@ -189,6 +238,8 @@ func (m *Manager) broadcastRoutingUpdate() {
 	}
 	m.mu.Unlock()
 	for _, sess := range sessions {
+		m.logSessionDebug("routing_update_sent", sess).
+			Msg("routing update sent")
 		sess.enqueue(m.buildRoutingEnvelope(sess.peerID))
 	}
 }

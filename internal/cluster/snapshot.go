@@ -8,8 +8,6 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/rs/zerolog/log"
-
 	internalproto "github.com/tursom/turntf/internal/proto"
 	"github.com/tursom/turntf/internal/store"
 )
@@ -44,10 +42,19 @@ func (m *Manager) sendSnapshotDigest(sess *session) {
 
 	envelope, err := m.buildSnapshotDigestEnvelope()
 	if err != nil {
-		log.Warn().Err(err).Str("component", "cluster").Int64("peer", sess.peerID).Str("event", "build_snapshot_digest_failed").Msg("build snapshot digest failed")
+		m.logSessionWarn("build_snapshot_digest_failed", sess, err).
+			Msg("build snapshot digest failed")
 		return
 	}
 	m.markSnapshotDigestSent(sess.peerID)
+	digest := envelope.GetSnapshotDigest()
+	partitionCount := 0
+	if digest != nil {
+		partitionCount = len(digest.GetPartitions())
+	}
+	m.logSessionDebug("snapshot_digest_sent", sess).
+		Int("partition_count", partitionCount).
+		Msg("snapshot digest sent")
 	sess.enqueue(envelope)
 }
 
@@ -70,6 +77,10 @@ func (m *Manager) handleSnapshotDigest(sess *session, envelope *internalproto.En
 	if digest.SnapshotVersion != internalproto.SnapshotVersion {
 		return fmt.Errorf("unsupported snapshot digest version %q", digest.SnapshotVersion)
 	}
+	m.logSessionDebug("snapshot_digest_received", sess).
+		Int("partition_count", len(digest.GetPartitions())).
+		Str("snapshot_version", digest.SnapshotVersion).
+		Msg("snapshot digest received")
 
 	localDigest, err := m.store.BuildSnapshotDigest(context.Background(), m.snapshotProducerNodeIDs())
 	if err != nil {
@@ -83,6 +94,11 @@ func (m *Manager) handleSnapshotDigest(sess *session, envelope *internalproto.En
 		return fmt.Errorf("snapshot digest missing %s partition", store.SnapshotUsersPartition)
 	}
 	if !snapshotPartitionDigestEqual(local[store.SnapshotUsersPartition], remoteUsers) {
+		m.logSessionEvent("snapshot_partition_mismatch", sess).
+			Str("partition", remoteUsers.Partition).
+			Stringer("kind", remoteUsers.Kind).
+			Uint64("row_count", remoteUsers.RowCount).
+			Msg("snapshot partition mismatch detected")
 		m.requestSnapshotPartition(sess, remoteUsers)
 		return nil
 	}
@@ -91,6 +107,11 @@ func (m *Manager) handleSnapshotDigest(sess *session, envelope *internalproto.En
 		return fmt.Errorf("snapshot digest missing %s partition", store.SnapshotSubscriptionsPartition)
 	}
 	if !snapshotPartitionDigestEqual(local[store.SnapshotSubscriptionsPartition], remoteSubscriptions) {
+		m.logSessionEvent("snapshot_partition_mismatch", sess).
+			Str("partition", remoteSubscriptions.Partition).
+			Stringer("kind", remoteSubscriptions.Kind).
+			Uint64("row_count", remoteSubscriptions.RowCount).
+			Msg("snapshot partition mismatch detected")
 		m.requestSnapshotPartition(sess, remoteSubscriptions)
 		return nil
 	}
@@ -116,6 +137,11 @@ func (m *Manager) handleSnapshotDigest(sess *session, envelope *internalproto.En
 			return fmt.Errorf("snapshot digest partition %s has unsupported kind %s", partition, remotePartition.Kind)
 		}
 		if !snapshotPartitionDigestEqual(local[partition], remotePartition) {
+			m.logSessionEvent("snapshot_partition_mismatch", sess).
+				Str("partition", remotePartition.Partition).
+				Stringer("kind", remotePartition.Kind).
+				Uint64("row_count", remotePartition.RowCount).
+				Msg("snapshot partition mismatch detected")
 			m.requestSnapshotPartition(sess, remotePartition)
 		}
 	}
@@ -146,12 +172,21 @@ func (m *Manager) handleSnapshotChunk(sess *session, envelope *internalproto.Env
 	}
 
 	if chunk.Request {
+		m.logSessionEvent("snapshot_partition_requested", sess).
+			Str("partition", chunk.Partition).
+			Stringer("kind", chunk.Kind).
+			Msg("snapshot partition request received")
 		response, err := m.store.BuildSnapshotChunk(context.Background(), chunk.Partition)
 		if err != nil {
 			return err
 		}
 		response.SnapshotVersion = internalproto.SnapshotVersion
 		m.markSnapshotChunkSent(sess.peerID)
+		m.logSessionDebug("snapshot_chunk_sent", sess).
+			Str("partition", response.Partition).
+			Stringer("kind", response.Kind).
+			Int("row_count", len(response.GetRows())).
+			Msg("snapshot chunk sent")
 		sess.enqueue(&internalproto.Envelope{
 			NodeId: m.cfg.NodeID,
 			Body: &internalproto.Envelope_SnapshotChunk{
@@ -165,6 +200,11 @@ func (m *Manager) handleSnapshotChunk(sess *session, envelope *internalproto.Env
 	if err := m.store.ApplySnapshotChunk(context.Background(), chunk); err != nil {
 		return err
 	}
+	m.logSessionEvent("snapshot_chunk_applied", sess).
+		Str("partition", chunk.Partition).
+		Stringer("kind", chunk.Kind).
+		Int("row_count", len(chunk.GetRows())).
+		Msg("snapshot chunk applied")
 	m.sendSnapshotDigest(sess)
 	return nil
 }
@@ -180,6 +220,11 @@ func (m *Manager) requestSnapshotPartition(sess *session, partition *internalpro
 		return
 	}
 	m.markSnapshotChunkSent(sess.peerID)
+	m.logSessionEvent("snapshot_partition_requested", sess).
+		Str("partition", partition.Partition).
+		Stringer("kind", partition.Kind).
+		Uint64("row_count", partition.RowCount).
+		Msg("requested snapshot partition from peer")
 	sess.enqueue(&internalproto.Envelope{
 		NodeId: m.cfg.NodeID,
 		Body: &internalproto.Envelope_SnapshotChunk{

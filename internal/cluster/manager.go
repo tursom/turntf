@@ -89,6 +89,7 @@ type peerState struct {
 	lastClockSync  time.Time
 	sessions       map[uint64]*session
 	routeAdverts   map[int64]routeAdvertisement
+	joinedLogged   bool
 
 	snapshotDigestsSent     uint64
 	snapshotDigestsReceived uint64
@@ -381,9 +382,18 @@ func (m *Manager) dialLoop(peer *configuredPeer) {
 			}
 		}
 
+		m.logInfo("peer_dial_started").
+			Str("direction", "outbound").
+			Str("peer_url", peer.URL).
+			Msg("starting outbound peer dial")
 		conn, _, err := m.dialer.DialContext(m.ctx, peer.URL, nil)
 		if err != nil {
 			wait := backoff[minInt(attempt, len(backoff)-1)]
+			m.logWarn("peer_dial_failed", err).
+				Str("direction", "outbound").
+				Str("peer_url", peer.URL).
+				Dur("retry_in", wait).
+				Msg("outbound peer dial failed")
 			attempt++
 			select {
 			case <-m.ctx.Done():
@@ -395,6 +405,8 @@ func (m *Manager) dialLoop(peer *configuredPeer) {
 
 		attempt = 0
 		sess := m.newSession(conn, true, peer)
+		m.logSessionEvent("peer_dial_succeeded", sess).
+			Msg("outbound peer dial succeeded")
 		m.runSession(sess)
 
 		select {
@@ -415,6 +427,11 @@ func (m *Manager) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
+	m.logInfo("peer_inbound_accepted").
+		Str("direction", "inbound").
+		Str("remote_addr", r.RemoteAddr).
+		Str("path", r.URL.Path).
+		Msg("accepted inbound peer websocket")
 
 	sess := m.newSession(conn, false, nil)
 	m.wg.Add(1)
@@ -444,6 +461,8 @@ func (m *Manager) newSession(conn *websocket.Conn, outbound bool, configuredPeer
 }
 
 func (m *Manager) runSession(sess *session) {
+	m.logSessionEvent("peer_session_started", sess).
+		Msg("peer session started")
 	defer sess.close()
 	defer m.deactivateSession(sess)
 
@@ -645,12 +664,9 @@ func (m *Manager) handleHello(sess *session, envelope *internalproto.Envelope) e
 		return err
 	}
 	if int(hello.MessageWindowSize) != m.cfg.MessageWindowSize {
-		log.Warn().
-			Str("component", "cluster").
-			Int64("peer", peerID).
-			Str("event", "message_window_mismatch").
-			Int("local", m.cfg.MessageWindowSize).
-			Uint32("remote", hello.MessageWindowSize).
+		m.logSessionWarn("message_window_mismatch", sess, nil).
+			Int("local_message_window_size", m.cfg.MessageWindowSize).
+			Uint32("remote_message_window_size", hello.MessageWindowSize).
 			Msg("continuing with per-node windows")
 	}
 
@@ -663,6 +679,12 @@ func (m *Manager) handleHello(sess *session, envelope *internalproto.Envelope) e
 	sess.smoothedRTTMs = int64(hello.SmoothedRttMs)
 	sess.jitterPenaltyMs = int64(hello.JitterPenaltyMs)
 	sess.noteRemoteOriginProgress(hello.OriginProgress)
+	m.logSessionEvent("peer_hello_accepted", sess).
+		Str("protocol_version", hello.ProtocolVersion).
+		Str("snapshot_version", hello.SnapshotVersion).
+		Uint32("message_window_size", hello.MessageWindowSize).
+		Bool("supports_routing", hello.SupportsRouting).
+		Msg("peer hello accepted")
 
 	if !sess.beginBootstrap() {
 		return errors.New("duplicate bootstrap rejected")
@@ -673,12 +695,19 @@ func (m *Manager) handleHello(sess *session, envelope *internalproto.Envelope) e
 
 func (m *Manager) bootstrapSession(sess *session) {
 	if err := m.performTimeSync(sess); err != nil {
-		log.Warn().Err(err).Str("component", "cluster").Int64("peer", sess.peerID).Str("event", "time_sync_failed").Msg("time sync failed")
+		m.logSessionWarn("time_sync_failed", sess, err).
+			Msg("time sync failed")
 		sess.close()
 		return
 	}
+	m.logSessionEvent("time_sync_succeeded", sess).
+		Int64("offset_ms", sess.clockOffset()).
+		Int64("rtt_ms", sess.smoothedRTTMs).
+		Int64("max_clock_skew_ms", m.cfg.MaxClockSkewMs).
+		Msg("time sync succeeded")
 	if !m.activateSession(sess) {
-		log.Warn().Str("component", "cluster").Int64("peer", sess.peerID).Str("event", "duplicate_session_rejected").Msg("duplicate session rejected")
+		m.logSessionWarn("duplicate_session_rejected", sess, nil).
+			Msg("duplicate session rejected")
 		sess.close()
 		return
 	}
@@ -692,7 +721,8 @@ func (m *Manager) bootstrapSession(sess *session) {
 	if m.store != nil {
 		requested, err := m.requestCatchupIfNeeded(sess)
 		if err != nil {
-			log.Warn().Err(err).Str("component", "cluster").Int64("peer", sess.peerID).Str("event", "request_catchup_failed").Msg("request catchup failed")
+			m.logSessionWarn("request_catchup_failed", sess, err).
+				Msg("request catchup failed")
 			sess.close()
 			return
 		}
@@ -781,6 +811,10 @@ func (m *Manager) handleAck(sess *session, envelope *internalproto.Envelope) err
 		peer.lastAck = ack.AckedEventId
 	}
 	m.mu.Unlock()
+	m.logSessionDebug("peer_ack_recorded", sess).
+		Int64("origin_node_id", ack.OriginNodeId).
+		Uint64("acked_event_id", ack.AckedEventId).
+		Msg("peer ack recorded")
 	return nil
 }
 
@@ -820,6 +854,10 @@ func (m *Manager) handleEventBatch(sess *session, envelope *internalproto.Envelo
 				m.sendSnapshotDigest(sess)
 			}
 		}
+		m.logSessionDebug("event_batch_pull_completed", sess).
+			Int64("origin_node_id", originNodeID).
+			Uint64("pull_request_id", batch.GetPullRequestId()).
+			Msg("empty pull response completed")
 		return nil
 	}
 
@@ -874,6 +912,14 @@ func (m *Manager) handleEventBatch(sess *session, envelope *internalproto.Envelo
 			},
 		},
 	})
+	m.logSessionEvent("event_batch_applied", sess).
+		Int64("origin_node_id", originNodeID).
+		Int("event_count", len(events)).
+		Int64("last_event_id", lastEventID).
+		Bool("from_pull", batch.GetPullRequestId() > 0).
+		Uint64("pull_request_id", batch.GetPullRequestId()).
+		Uint64("acked_event_id", ackedEventID).
+		Msg("event batch applied")
 	if m.store != nil {
 		requested, err := m.requestCatchupIfNeeded(sess)
 		if err != nil {
@@ -915,6 +961,12 @@ func (m *Manager) handlePullEvents(sess *session, envelope *internalproto.Envelo
 		return err
 	}
 	if len(events) == 0 {
+		m.logSessionDebug("pull_events_served", sess).
+			Int64("origin_node_id", pull.OriginNodeId).
+			Uint64("request_id", pull.RequestId).
+			Int("event_count", 0).
+			Uint64("after_event_id", pull.GetAfterEventId()).
+			Msg("served empty pull events response")
 		sess.enqueue(&internalproto.Envelope{
 			NodeId: m.cfg.NodeID,
 			Body: &internalproto.Envelope_EventBatch{
@@ -933,6 +985,13 @@ func (m *Manager) handlePullEvents(sess *session, envelope *internalproto.Envelo
 	}
 
 	last := events[len(events)-1]
+	m.logSessionEvent("pull_events_served", sess).
+		Int64("origin_node_id", pull.OriginNodeId).
+		Uint64("request_id", pull.RequestId).
+		Int("event_count", len(events)).
+		Uint64("after_event_id", pull.GetAfterEventId()).
+		Int64("last_event_id", last.EventID).
+		Msg("served pull events response")
 	sess.enqueue(&internalproto.Envelope{
 		NodeId:    m.cfg.NodeID,
 		Sequence:  uint64(last.Sequence),
@@ -984,6 +1043,12 @@ func (m *Manager) requestCatchupIfNeeded(sess *session) (bool, error) {
 			sess.cancelPendingPull(originNodeID, requestID)
 			return false, err
 		}
+		m.logSessionEvent("catchup_requested", sess).
+			Int64("origin_node_id", originNodeID).
+			Uint64("after_event_id", appliedEventID).
+			Uint64("remote_last_event_id", remoteLastEventID).
+			Uint64("request_id", requestID).
+			Msg("requested catchup from peer")
 		sess.enqueue(envelope)
 		requested = true
 	}
@@ -1058,10 +1123,7 @@ func (m *Manager) performTimeSync(sess *session) error {
 		warnThreshold = DefaultMaxClockSkewMs
 	}
 	if warnThreshold > 0 && absInt64(best.offsetMs) > warnThreshold {
-		log.Warn().
-			Str("component", "cluster").
-			Int64("peer", sess.peerID).
-			Str("event", "clock_offset_warn").
+		m.logSessionWarn("clock_offset_warn", sess, nil).
 			Int64("offset_ms", best.offsetMs).
 			Int64("threshold_ms", warnThreshold).
 			Msg("clock offset exceeds warning threshold")
@@ -1163,17 +1225,23 @@ func (m *Manager) sessionSyncLoop(sess *session) {
 				return
 			}
 			if err := m.performTimeSync(sess); err != nil {
-				log.Warn().Err(err).Str("component", "cluster").Int64("peer", sess.peerID).Str("event", "periodic_time_sync_failed").Msg("periodic time sync failed")
+				m.logSessionWarn("periodic_time_sync_failed", sess, err).
+					Msg("periodic time sync failed")
 				sess.close()
 				return
 			}
+			m.logSessionDebug("periodic_time_sync_succeeded", sess).
+				Int64("offset_ms", sess.clockOffset()).
+				Int64("rtt_ms", sess.smoothedRTTMs).
+				Msg("periodic time sync succeeded")
 			m.markPeerClockSynced(sess, sess.clockOffset())
 		case <-catchupTicker.C:
 			if sess.isClosed() {
 				return
 			}
 			if _, err := m.requestCatchupIfNeeded(sess); err != nil {
-				log.Warn().Err(err).Str("component", "cluster").Int64("peer", sess.peerID).Str("event", "periodic_catchup_failed").Msg("periodic catchup failed")
+				m.logSessionWarn("periodic_catchup_failed", sess, err).
+					Msg("periodic catchup failed")
 				sess.close()
 				return
 			}
@@ -1198,6 +1266,7 @@ func (m *Manager) markPeerClockSynced(sess *session, offsetMs int64) {
 		return
 	}
 
+	wasTrusted := peer.trustedSession == sess
 	peer.trustedSession = sess
 	peer.clockOffsetMs = offsetMs
 	peer.lastClockSync = time.Now()
@@ -1210,6 +1279,11 @@ func (m *Manager) markPeerClockSynced(sess *session, offsetMs int64) {
 	}
 	m.recomputeRoutesLocked()
 	m.recomputeClockOffsetLocked()
+	if !wasTrusted {
+		m.logSessionEvent("peer_clock_trusted", sess).
+			Int64("offset_ms", offsetMs).
+			Msg("peer clock is trusted")
+	}
 }
 
 func (m *Manager) clearPeerClockSync(sess *session) {
@@ -1220,13 +1294,19 @@ func (m *Manager) clearPeerClockSync(sess *session) {
 	if !ok {
 		return
 	}
+	cleared := false
 	if peer.trustedSession == sess {
 		peer.trustedSession = nil
 		peer.clockOffsetMs = 0
 		peer.lastClockSync = time.Time{}
+		cleared = true
 	}
 	m.recomputeRoutesLocked()
 	m.recomputeClockOffsetLocked()
+	if cleared {
+		m.logSessionEvent("peer_clock_untrusted", sess).
+			Msg("peer clock is no longer trusted")
+	}
 }
 
 func (m *Manager) recomputeClockOffsetLocked() {
@@ -1352,6 +1432,16 @@ func (m *Manager) activateSession(sess *session) bool {
 			peer.sessions = make(map[uint64]*session)
 		}
 		peer.sessions[sess.connectionID] = sess
+		eventName := "peer_joined"
+		message := "peer joined"
+		if peer.joinedLogged {
+			eventName = "peer_reconnected"
+			message = "peer reconnected"
+		} else {
+			peer.joinedLogged = true
+		}
+		m.logSessionEvent(eventName, sess).
+			Msg(message)
 		return true
 	}
 	if peer.active == sess {
@@ -1378,15 +1468,25 @@ func (m *Manager) activateSession(sess *session) bool {
 	return true
 }
 
+func sessionDirection(sess *session) string {
+	if sess != nil && sess.outbound {
+		return "outbound"
+	}
+	return "inbound"
+}
+
 func (m *Manager) deactivateSession(sess *session) {
 	if sess.peerID == 0 {
 		return
 	}
 
+	wasActive := false
+	wasTrusted := false
 	m.mu.Lock()
 	peer, ok := m.peers[sess.peerID]
 	if ok && peer.active == sess {
 		peer.active = nil
+		wasActive = true
 	}
 	if ok && peer.sessions != nil {
 		delete(peer.sessions, sess.connectionID)
@@ -1395,6 +1495,7 @@ func (m *Manager) deactivateSession(sess *session) {
 		peer.trustedSession = nil
 		peer.clockOffsetMs = 0
 		peer.lastClockSync = time.Time{}
+		wasTrusted = true
 	}
 	if ok && len(peer.sessions) == 0 {
 		peer.routeAdverts = nil
@@ -1402,6 +1503,10 @@ func (m *Manager) deactivateSession(sess *session) {
 	m.recomputeRoutesLocked()
 	m.recomputeClockOffsetLocked()
 	m.mu.Unlock()
+	m.logSessionEvent("peer_session_closed", sess).
+		Bool("was_active", wasActive).
+		Bool("was_trusted", wasTrusted).
+		Msg("peer session closed")
 }
 
 func (s *session) enqueue(envelope *internalproto.Envelope) {

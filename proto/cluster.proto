@@ -112,31 +112,30 @@ message UserDeletedEvent {
   string deleted_at_hlc = 3;
 }
 
-message MessageCreatedEvent {
-  int64 user_node_id = 1;
+message ClusterUserRef {
+  int64 node_id = 1;
   int64 user_id = 2;
+}
+
+message MessageCreatedEvent {
+  ClusterUserRef recipient = 1;
   int64 node_id = 3;
   int64 seq = 4;
-  int64 sender_node_id = 5;
-  int64 sender_user_id = 7;
+  ClusterUserRef sender = 5;
   bytes body = 6;
   string created_at_hlc = 8;
 }
 
 message ChannelSubscribedEvent {
-  int64 subscriber_node_id = 1;
-  int64 subscriber_user_id = 2;
-  int64 channel_node_id = 3;
-  int64 channel_user_id = 4;
+  ClusterUserRef subscriber = 1;
+  ClusterUserRef channel = 3;
   string subscribed_at_hlc = 5;
   int64 origin_node_id = 6;
 }
 
 message ChannelUnsubscribedEvent {
-  int64 subscriber_node_id = 1;
-  int64 subscriber_user_id = 2;
-  int64 channel_node_id = 3;
-  int64 channel_user_id = 4;
+  ClusterUserRef subscriber = 1;
+  ClusterUserRef channel = 3;
   string subscribed_at_hlc = 5;
   string deleted_at_hlc = 6;
   int64 origin_node_id = 7;
@@ -213,21 +212,17 @@ message SnapshotTombstoneRow {
 }
 
 message SnapshotMessageRow {
-  int64 user_id = 1;
+  ClusterUserRef recipient = 1;
   int64 node_id = 2;
-  int64 user_node_id = 8;
-  int64 sender_node_id = 3;
-  int64 sender_user_id = 9;
+  ClusterUserRef sender = 3;
   bytes body = 4;
   string created_at_hlc = 6;
   int64 seq = 7;
 }
 
 message SnapshotSubscriptionRow {
-  int64 subscriber_node_id = 1;
-  int64 subscriber_user_id = 2;
-  int64 channel_node_id = 3;
-  int64 channel_user_id = 4;
+  ClusterUserRef subscriber = 1;
+  ClusterUserRef channel = 3;
   string subscribed_at_hlc = 5;
   string deleted_at_hlc = 6;
   int64 origin_node_id = 7;
@@ -263,10 +258,8 @@ message TransientPacket {
   uint64 packet_id = 1;
   int64 source_node_id = 2;
   int64 target_node_id = 3;
-  int64 recipient_node_id = 4;
-  int64 recipient_user_id = 5;
-  int64 sender_node_id = 6;
-  int64 sender_user_id = 10;
+  ClusterUserRef recipient = 4;
+  ClusterUserRef sender = 6;
   bytes body = 7;
   ClusterDeliveryMode delivery_mode = 8;
   uint32 ttl_hops = 9;

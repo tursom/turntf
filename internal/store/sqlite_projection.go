@@ -350,7 +350,7 @@ func (r *sqliteMessageProjectionRepository) applyMessageCreatedTx(ctx context.Co
 	if _, err := tx.ExecContext(ctx, `
 INSERT INTO messages(user_node_id, user_id, node_id, seq, sender_node_id, sender_user_id, body, created_at_hlc)
 VALUES(?, ?, ?, ?, ?, ?, ?, ?)
-`, message.UserNodeID, message.UserID, message.NodeID, message.Seq, message.Sender.NodeID, message.Sender.UserID, message.Body, message.CreatedAt.String()); err != nil {
+`, message.Recipient.NodeID, message.Recipient.UserID, message.NodeID, message.Seq, message.Sender.NodeID, message.Sender.UserID, message.Body, message.CreatedAt.String()); err != nil {
 		if !isUniqueConstraint(err) {
 			return fmt.Errorf("insert message projection: %w", err)
 		}
@@ -369,7 +369,10 @@ func (r *sqliteMessageProjectionRepository) applyMessageSnapshotRowTx(ctx contex
 	if messageRow == nil {
 		return UserKey{}, fmt.Errorf("%w: messages snapshot contains non-message row", ErrInvalidInput)
 	}
-	key := UserKey{NodeID: messageRow.UserNodeId, UserID: messageRow.UserId}
+	if messageRow.Recipient == nil {
+		return UserKey{}, fmt.Errorf("%w: snapshot message recipient cannot be empty", ErrInvalidInput)
+	}
+	key := UserKey{NodeID: messageRow.Recipient.NodeId, UserID: messageRow.Recipient.UserId}
 	if err := validateMessageIdentity(key, messageRow.NodeId, messageRow.Seq); err != nil {
 		return UserKey{}, err
 	}
@@ -386,10 +389,13 @@ func (r *sqliteMessageProjectionRepository) applyMessageSnapshotRowTx(ctx contex
 		return UserKey{}, err
 	}
 
+	if messageRow.Sender == nil {
+		return UserKey{}, fmt.Errorf("%w: snapshot message sender cannot be empty", ErrInvalidInput)
+	}
 	if _, err := tx.ExecContext(ctx, `
 INSERT INTO messages(user_node_id, user_id, node_id, seq, sender_node_id, sender_user_id, body, created_at_hlc)
 VALUES(?, ?, ?, ?, ?, ?, ?, ?)
-`, messageRow.UserNodeId, messageRow.UserId, messageRow.NodeId, messageRow.Seq, messageRow.SenderNodeId, messageRow.SenderUserId, messageRow.Body, messageRow.CreatedAtHlc); err != nil {
+`, messageRow.Recipient.NodeId, messageRow.Recipient.UserId, messageRow.NodeId, messageRow.Seq, messageRow.Sender.NodeId, messageRow.Sender.UserId, messageRow.Body, messageRow.CreatedAtHlc); err != nil {
 		if isUniqueConstraint(err) {
 			return key, nil
 		}
@@ -772,7 +778,10 @@ func messageFromCreatedEvent(body *clusterproto.MessageCreatedEvent) (Message, e
 	if body == nil {
 		return Message{}, fmt.Errorf("%w: message created event cannot be nil", ErrInvalidInput)
 	}
-	key := UserKey{NodeID: body.UserNodeId, UserID: body.UserId}
+	if body.Recipient == nil {
+		return Message{}, fmt.Errorf("%w: recipient cannot be empty", ErrInvalidInput)
+	}
+	key := UserKey{NodeID: body.Recipient.NodeId, UserID: body.Recipient.UserId}
 	if err := validateMessageIdentity(key, body.NodeId, body.Seq); err != nil {
 		return Message{}, err
 	}
@@ -780,7 +789,10 @@ func messageFromCreatedEvent(body *clusterproto.MessageCreatedEvent) (Message, e
 	if err != nil {
 		return Message{}, err
 	}
-	sender := UserKey{NodeID: body.SenderNodeId, UserID: body.SenderUserId}
+	if body.Sender == nil {
+		return Message{}, fmt.Errorf("%w: sender cannot be empty", ErrInvalidInput)
+	}
+	sender := UserKey{NodeID: body.Sender.NodeId, UserID: body.Sender.UserId}
 	if err := sender.Validate(); err != nil {
 		return Message{}, fmt.Errorf("%w: sender cannot be empty", ErrInvalidInput)
 	}
@@ -788,12 +800,11 @@ func messageFromCreatedEvent(body *clusterproto.MessageCreatedEvent) (Message, e
 		return Message{}, fmt.Errorf("%w: body cannot be empty", ErrInvalidInput)
 	}
 	return Message{
-		UserNodeID: body.UserNodeId,
-		UserID:     body.UserId,
-		NodeID:     body.NodeId,
-		Seq:        body.Seq,
-		Sender:     sender,
-		Body:       append([]byte(nil), body.Body...),
-		CreatedAt:  createdAt,
+		Recipient: key,
+		NodeID:    body.NodeId,
+		Seq:       body.Seq,
+		Sender:    sender,
+		Body:      append([]byte(nil), body.Body...),
+		CreatedAt: createdAt,
 	}, nil
 }

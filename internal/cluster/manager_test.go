@@ -1763,8 +1763,7 @@ func TestTransientPacketRoutesAcrossMultipleHops(t *testing.T) {
 	writeClusterClientEnvelope(t, conn, &internalproto.ClientEnvelope{
 		Body: &internalproto.ClientEnvelope_Login{
 			Login: &internalproto.LoginRequest{
-				NodeId:   charlie.NodeID,
-				UserId:   charlie.ID,
+				User:     &internalproto.UserRef{NodeId: charlie.NodeID, UserId: charlie.ID},
 				Password: "charlie-password",
 			},
 		},

@@ -415,7 +415,10 @@ func (r *pebbleMessageProjectionRepository) applyMessageSnapshotRow(ctx context.
 	if messageRow == nil {
 		return UserKey{}, fmt.Errorf("%w: messages snapshot contains non-message row", ErrInvalidInput)
 	}
-	key := UserKey{NodeID: messageRow.UserNodeId, UserID: messageRow.UserId}
+	if messageRow.Recipient == nil {
+		return UserKey{}, fmt.Errorf("%w: snapshot message recipient cannot be empty", ErrInvalidInput)
+	}
+	key := UserKey{NodeID: messageRow.Recipient.NodeId, UserID: messageRow.Recipient.UserId}
 	if err := validateMessageIdentity(key, messageRow.NodeId, messageRow.Seq); err != nil {
 		return UserKey{}, err
 	}
@@ -433,14 +436,16 @@ func (r *pebbleMessageProjectionRepository) applyMessageSnapshotRow(ctx context.
 		return UserKey{}, err
 	}
 
+	if messageRow.Sender == nil {
+		return UserKey{}, fmt.Errorf("%w: snapshot message sender cannot be empty", ErrInvalidInput)
+	}
 	message := Message{
-		UserNodeID: messageRow.UserNodeId,
-		UserID:     messageRow.UserId,
-		NodeID:     messageRow.NodeId,
-		Seq:        messageRow.Seq,
-		Sender:     UserKey{NodeID: messageRow.SenderNodeId, UserID: messageRow.SenderUserId},
-		Body:       messageRow.Body,
-		CreatedAt:  createdAt,
+		Recipient: key,
+		NodeID:    messageRow.NodeId,
+		Seq:       messageRow.Seq,
+		Sender:    UserKey{NodeID: messageRow.Sender.NodeId, UserID: messageRow.Sender.UserId},
+		Body:      messageRow.Body,
+		CreatedAt: createdAt,
 	}
 	if ok, err := r.messageExists(message); err != nil {
 		return UserKey{}, err
@@ -558,18 +563,23 @@ func messageFromPebbleValue(value []byte) (Message, error) {
 	if messageRow == nil {
 		return Message{}, fmt.Errorf("%w: stored pebble message row is empty", ErrInvalidInput)
 	}
+	if messageRow.Recipient == nil {
+		return Message{}, fmt.Errorf("%w: stored pebble message recipient is empty", ErrInvalidInput)
+	}
+	if messageRow.Sender == nil {
+		return Message{}, fmt.Errorf("%w: stored pebble message sender is empty", ErrInvalidInput)
+	}
 	createdAt, err := parseRequiredTimestamp(messageRow.CreatedAtHlc, "stored message created_at")
 	if err != nil {
 		return Message{}, err
 	}
 	return Message{
-		UserNodeID: messageRow.UserNodeId,
-		UserID:     messageRow.UserId,
-		NodeID:     messageRow.NodeId,
-		Seq:        messageRow.Seq,
-		Sender:     UserKey{NodeID: messageRow.SenderNodeId, UserID: messageRow.SenderUserId},
-		Body:       messageRow.Body,
-		CreatedAt:  createdAt,
+		Recipient: UserKey{NodeID: messageRow.Recipient.NodeId, UserID: messageRow.Recipient.UserId},
+		NodeID:    messageRow.NodeId,
+		Seq:       messageRow.Seq,
+		Sender:    UserKey{NodeID: messageRow.Sender.NodeId, UserID: messageRow.Sender.UserId},
+		Body:      messageRow.Body,
+		CreatedAt: createdAt,
 	}, nil
 }
 
@@ -595,17 +605,17 @@ func pebbleEventOriginKey(originNodeID, eventID int64) []byte {
 }
 
 func pebbleMessageIDKey(message Message) []byte {
-	return fmt.Appendf(nil, "message/id/%020d/%020d/%020d/%020d", message.UserNodeID, message.UserID, message.NodeID, message.Seq)
+	return fmt.Appendf(nil, "message/id/%020d/%020d/%020d/%020d", message.Recipient.NodeID, message.Recipient.UserID, message.NodeID, message.Seq)
 }
 
 func pebbleMessageUserKey(message Message) []byte {
 	return fmt.Appendf(nil, "message/user/%020d/%020d/%s/%020d/%020d",
-		message.UserNodeID, message.UserID, descendingString(message.CreatedAt.String()), message.NodeID, math.MaxInt64-message.Seq)
+		message.Recipient.NodeID, message.Recipient.UserID, descendingString(message.CreatedAt.String()), message.NodeID, math.MaxInt64-message.Seq)
 }
 
 func pebbleMessageProducerKey(message Message) []byte {
 	return fmt.Appendf(nil, "message/producer/%020d/%020d/%020d/%s/%020d",
-		message.NodeID, message.UserNodeID, message.UserID, descendingString(message.CreatedAt.String()), math.MaxInt64-message.Seq)
+		message.NodeID, message.Recipient.NodeID, message.Recipient.UserID, descendingString(message.CreatedAt.String()), math.MaxInt64-message.Seq)
 }
 
 func pebbleMessageKeys(message Message) [][]byte {
@@ -660,7 +670,7 @@ func descendingString(value string) string {
 }
 
 func messageIdentity(message Message) string {
-	return fmt.Sprintf("%d/%d/%d/%d", message.UserNodeID, message.UserID, message.NodeID, message.Seq)
+	return fmt.Sprintf("%d/%d/%d/%d", message.Recipient.NodeID, message.Recipient.UserID, message.NodeID, message.Seq)
 }
 
 func sortMessages(messages []Message) {

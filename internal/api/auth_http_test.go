@@ -218,8 +218,7 @@ func TestClientWebSocketLoginAndPushesBytesMessages(t *testing.T) {
 	writeClientEnvelope(t, conn, &internalproto.ClientEnvelope{
 		Body: &internalproto.ClientEnvelope_Login{
 			Login: &internalproto.LoginRequest{
-				NodeId:   aliceKey.NodeID,
-				UserId:   aliceKey.UserID,
+				User:     &internalproto.UserRef{NodeId: aliceKey.NodeID, UserId: aliceKey.UserID},
 				Password: "alice-password",
 			},
 		},
@@ -260,8 +259,7 @@ func TestClientWebSocketSeenCursorAndSendMessage(t *testing.T) {
 	writeClientEnvelope(t, conn, &internalproto.ClientEnvelope{
 		Body: &internalproto.ClientEnvelope_Login{
 			Login: &internalproto.LoginRequest{
-				NodeId:   aliceKey.NodeID,
-				UserId:   aliceKey.UserID,
+				User:     &internalproto.UserRef{NodeId: aliceKey.NodeID, UserId: aliceKey.UserID},
 				Password: "alice-password",
 				SeenMessages: []*internalproto.MessageCursor{{
 					NodeId: created.NodeID,
@@ -376,8 +374,7 @@ func TestTransientHTTPAndWebSocketPacket(t *testing.T) {
 	writeClientEnvelope(t, conn, &internalproto.ClientEnvelope{
 		Body: &internalproto.ClientEnvelope_Login{
 			Login: &internalproto.LoginRequest{
-				NodeId:   aliceKey.NodeID,
-				UserId:   aliceKey.UserID,
+				User:     &internalproto.UserRef{NodeId: aliceKey.NodeID, UserId: aliceKey.UserID},
 				Password: "alice-password",
 			},
 		},
@@ -656,7 +653,7 @@ func TestClientWebSocketRPCRespectsUserAuthorizationAndSubscriptions(t *testing.
 		},
 	})
 	subscribeResp := readServerEnvelope(t, conn).GetSubscribeChannelResponse()
-	if subscribeResp == nil || subscribeResp.RequestId != 25 || subscribeResp.Subscription.GetChannelUserId() != channelKey.UserID {
+	if subscribeResp == nil || subscribeResp.RequestId != 25 || subscribeResp.Subscription.GetChannel().GetUserId() != channelKey.UserID {
 		t.Fatalf("unexpected subscribe response: %+v", subscribeResp)
 	}
 
@@ -672,7 +669,7 @@ func TestClientWebSocketRPCRespectsUserAuthorizationAndSubscriptions(t *testing.
 		},
 	})
 	listSubs := readServerEnvelope(t, conn).GetListSubscriptionsResponse()
-	if listSubs == nil || listSubs.RequestId != 26 || listSubs.Count != 1 || listSubs.Items[0].GetChannelUserId() != channelKey.UserID {
+	if listSubs == nil || listSubs.RequestId != 26 || listSubs.Count != 1 || listSubs.Items[0].GetChannel().GetUserId() != channelKey.UserID {
 		t.Fatalf("unexpected list subscriptions response: %+v", listSubs)
 	}
 
@@ -735,8 +732,7 @@ func loginClientWebSocket(t *testing.T, conn *websocket.Conn, key store.UserKey,
 	writeClientEnvelope(t, conn, &internalproto.ClientEnvelope{
 		Body: &internalproto.ClientEnvelope_Login{
 			Login: &internalproto.LoginRequest{
-				NodeId:   key.NodeID,
-				UserId:   key.UserID,
+				User:     &internalproto.UserRef{NodeId: key.NodeID, UserId: key.UserID},
 				Password: password,
 			},
 		},

@@ -52,15 +52,18 @@ func (m *Manager) handleTransientPacket(sess *session, envelope *internalproto.E
 	if body == nil {
 		return fmt.Errorf("transient packet body cannot be empty")
 	}
+	if body.Recipient == nil {
+		return fmt.Errorf("transient packet recipient cannot be empty")
+	}
+	if body.Sender == nil {
+		return fmt.Errorf("transient packet sender cannot be empty")
+	}
 	packet := store.TransientPacket{
 		PacketID:     body.PacketId,
 		SourceNodeID: body.SourceNodeId,
 		TargetNodeID: body.TargetNodeId,
-		Recipient: store.UserKey{
-			NodeID: body.RecipientNodeId,
-			UserID: body.RecipientUserId,
-		},
-		Sender:       store.UserKey{NodeID: body.SenderNodeId, UserID: body.SenderUserId},
+		Recipient:    store.UserKey{NodeID: body.Recipient.NodeId, UserID: body.Recipient.UserId},
+		Sender:       store.UserKey{NodeID: body.Sender.NodeId, UserID: body.Sender.UserId},
 		Body:         append([]byte(nil), body.Body...),
 		DeliveryMode: clusterDeliveryModeToStore(body.DeliveryMode),
 		TTLHops:      int32(body.TtlHops),
@@ -438,16 +441,14 @@ func shouldSwitchRoute(current, candidate routeEntry) bool {
 
 func transientPacketProto(packet store.TransientPacket) *internalproto.TransientPacket {
 	return &internalproto.TransientPacket{
-		PacketId:        packet.PacketID,
-		SourceNodeId:    packet.SourceNodeID,
-		TargetNodeId:    packet.TargetNodeID,
-		RecipientNodeId: packet.Recipient.NodeID,
-		RecipientUserId: packet.Recipient.UserID,
-		SenderNodeId:    packet.Sender.NodeID,
-		SenderUserId:    packet.Sender.UserID,
-		Body:            append([]byte(nil), packet.Body...),
-		DeliveryMode:    storeDeliveryModeToCluster(packet.DeliveryMode),
-		TtlHops:         uint32(packet.TTLHops),
+		PacketId:     packet.PacketID,
+		SourceNodeId: packet.SourceNodeID,
+		TargetNodeId: packet.TargetNodeID,
+		Recipient:    &internalproto.ClusterUserRef{NodeId: packet.Recipient.NodeID, UserId: packet.Recipient.UserID},
+		Sender:       &internalproto.ClusterUserRef{NodeId: packet.Sender.NodeID, UserId: packet.Sender.UserID},
+		Body:         append([]byte(nil), packet.Body...),
+		DeliveryMode: storeDeliveryModeToCluster(packet.DeliveryMode),
+		TtlHops:      uint32(packet.TTLHops),
 	}
 }
 

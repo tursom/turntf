@@ -87,7 +87,7 @@ func TestServicePublishesOnlySuccessfulWrites(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create message: %v", err)
 	}
-	if message.UserID != user.ID || message.NodeID != testNodeID(1) || message.Seq != 1 {
+	if message.Recipient.UserID != user.ID || message.Recipient.NodeID != user.NodeID || message.NodeID != testNodeID(1) || message.Seq != 1 {
 		t.Fatalf("unexpected message: %+v", message)
 	}
 	if len(sink.events) != 3 {

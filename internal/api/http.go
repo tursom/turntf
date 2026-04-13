@@ -599,13 +599,12 @@ type userResponse struct {
 }
 
 type messageResponse struct {
-	UserNodeID int64         `json:"user_node_id"`
-	UserID     int64         `json:"user_id"`
-	NodeID     int64         `json:"node_id"`
-	Seq        int64         `json:"seq"`
-	Sender     store.UserKey `json:"sender"`
-	Body       []byte        `json:"body"`
-	CreatedAt  string        `json:"created_at"`
+	Recipient store.UserKey `json:"recipient"`
+	NodeID    int64         `json:"node_id"`
+	Seq       int64         `json:"seq"`
+	Sender    store.UserKey `json:"sender"`
+	Body      []byte        `json:"body"`
+	CreatedAt string        `json:"created_at"`
 }
 
 type transientPacketResponse struct {
@@ -618,13 +617,11 @@ type transientPacketResponse struct {
 }
 
 type subscriptionResponse struct {
-	SubscriberNodeID int64  `json:"subscriber_node_id"`
-	SubscriberUserID int64  `json:"subscriber_user_id"`
-	ChannelNodeID    int64  `json:"channel_node_id"`
-	ChannelUserID    int64  `json:"channel_user_id"`
-	SubscribedAt     string `json:"subscribed_at"`
-	DeletedAt        string `json:"deleted_at,omitempty"`
-	OriginNodeID     int64  `json:"origin_node_id"`
+	Subscriber   store.UserKey `json:"subscriber"`
+	Channel      store.UserKey `json:"channel"`
+	SubscribedAt string        `json:"subscribed_at"`
+	DeletedAt    string        `json:"deleted_at,omitempty"`
+	OriginNodeID int64         `json:"origin_node_id"`
 }
 
 type eventResponse struct {
@@ -656,13 +653,12 @@ func userResponseFromStore(user store.User) userResponse {
 
 func messageResponseFromStore(message store.Message) messageResponse {
 	return messageResponse{
-		UserNodeID: message.UserNodeID,
-		UserID:     message.UserID,
-		NodeID:     message.NodeID,
-		Seq:        message.Seq,
-		Sender:     message.Sender,
-		Body:       message.Body,
-		CreatedAt:  message.CreatedAt.String(),
+		Recipient: message.Recipient,
+		NodeID:    message.NodeID,
+		Seq:       message.Seq,
+		Sender:    message.Sender,
+		Body:      message.Body,
+		CreatedAt: message.CreatedAt.String(),
 	}
 }
 
@@ -729,12 +725,10 @@ func (h *HTTP) ReceiveTransientPacket(packet store.TransientPacket) bool {
 
 func subscriptionResponseFromStore(subscription store.Subscription) subscriptionResponse {
 	response := subscriptionResponse{
-		SubscriberNodeID: subscription.Subscriber.NodeID,
-		SubscriberUserID: subscription.Subscriber.UserID,
-		ChannelNodeID:    subscription.Channel.NodeID,
-		ChannelUserID:    subscription.Channel.UserID,
-		SubscribedAt:     subscription.SubscribedAt.String(),
-		OriginNodeID:     subscription.OriginNodeID,
+		Subscriber:   subscription.Subscriber,
+		Channel:      subscription.Channel,
+		SubscribedAt: subscription.SubscribedAt.String(),
+		OriginNodeID: subscription.OriginNodeID,
 	}
 	if subscription.DeletedAt != nil {
 		response.DeletedAt = subscription.DeletedAt.String()

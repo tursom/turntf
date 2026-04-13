@@ -349,7 +349,10 @@ func (s *Store) applyMessageSnapshotRowTx(ctx context.Context, tx *sql.Tx, produ
 	if messageRow == nil {
 		return UserKey{}, fmt.Errorf("%w: messages snapshot contains non-message row", ErrInvalidInput)
 	}
-	key := UserKey{NodeID: messageRow.UserNodeId, UserID: messageRow.UserId}
+	if messageRow.Recipient == nil {
+		return UserKey{}, fmt.Errorf("%w: snapshot message recipient cannot be empty", ErrInvalidInput)
+	}
+	key := UserKey{NodeID: messageRow.Recipient.NodeId, UserID: messageRow.Recipient.UserId}
 	if err := validateMessageIdentity(key, messageRow.NodeId, messageRow.Seq); err != nil {
 		return UserKey{}, err
 	}
@@ -366,10 +369,13 @@ func (s *Store) applyMessageSnapshotRowTx(ctx context.Context, tx *sql.Tx, produ
 		return UserKey{}, err
 	}
 
+	if messageRow.Sender == nil {
+		return UserKey{}, fmt.Errorf("%w: snapshot message sender cannot be empty", ErrInvalidInput)
+	}
 	if _, err := tx.ExecContext(ctx, `
 INSERT INTO messages(user_node_id, user_id, node_id, seq, sender_node_id, sender_user_id, body, created_at_hlc)
 VALUES(?, ?, ?, ?, ?, ?, ?, ?)
-`, messageRow.UserNodeId, messageRow.UserId, messageRow.NodeId, messageRow.Seq, messageRow.SenderNodeId, messageRow.SenderUserId, messageRow.Body, messageRow.CreatedAtHlc); err != nil {
+`, messageRow.Recipient.NodeId, messageRow.Recipient.UserId, messageRow.NodeId, messageRow.Seq, messageRow.Sender.NodeId, messageRow.Sender.UserId, messageRow.Body, messageRow.CreatedAtHlc); err != nil {
 		if isUniqueConstraint(err) {
 			return key, nil
 		}
@@ -443,13 +449,11 @@ func snapshotRowFromMessage(message Message) *clusterproto.SnapshotRow {
 	return &clusterproto.SnapshotRow{
 		Body: &clusterproto.SnapshotRow_Message{
 			Message: &clusterproto.SnapshotMessageRow{
-				UserNodeId:   message.UserNodeID,
-				UserId:       message.UserID,
-				NodeId:       message.NodeID,
-				Seq:          message.Seq,
-				SenderNodeId: message.Sender.NodeID,
-				SenderUserId: message.Sender.UserID,
-				Body:         message.Body,
+				Recipient:   &clusterproto.ClusterUserRef{NodeId: message.Recipient.NodeID, UserId: message.Recipient.UserID},
+				NodeId:      message.NodeID,
+				Seq:         message.Seq,
+				Sender:      &clusterproto.ClusterUserRef{NodeId: message.Sender.NodeID, UserId: message.Sender.UserID},
+				Body:        message.Body,
 				CreatedAtHlc: message.CreatedAt.String(),
 			},
 		},
@@ -458,12 +462,10 @@ func snapshotRowFromMessage(message Message) *clusterproto.SnapshotRow {
 
 func snapshotRowFromSubscription(subscription Subscription) *clusterproto.SnapshotRow {
 	row := &clusterproto.SnapshotSubscriptionRow{
-		SubscriberNodeId: subscription.Subscriber.NodeID,
-		SubscriberUserId: subscription.Subscriber.UserID,
-		ChannelNodeId:    subscription.Channel.NodeID,
-		ChannelUserId:    subscription.Channel.UserID,
-		SubscribedAtHlc:  subscription.SubscribedAt.String(),
-		OriginNodeId:     subscription.OriginNodeID,
+		Subscriber:    &clusterproto.ClusterUserRef{NodeId: subscription.Subscriber.NodeID, UserId: subscription.Subscriber.UserID},
+		Channel:       &clusterproto.ClusterUserRef{NodeId: subscription.Channel.NodeID, UserId: subscription.Channel.UserID},
+		SubscribedAtHlc: subscription.SubscribedAt.String(),
+		OriginNodeId:  subscription.OriginNodeID,
 	}
 	if subscription.DeletedAt != nil {
 		row.DeletedAtHlc = subscription.DeletedAt.String()
@@ -547,9 +549,15 @@ func subscriptionFromSnapshotRow(row *clusterproto.SnapshotSubscriptionRow) (Sub
 	if row == nil {
 		return Subscription{}, fmt.Errorf("%w: snapshot subscription cannot be nil", ErrInvalidInput)
 	}
+	if row.Subscriber == nil {
+		return Subscription{}, fmt.Errorf("%w: snapshot subscriber cannot be empty", ErrInvalidInput)
+	}
+	if row.Channel == nil {
+		return Subscription{}, fmt.Errorf("%w: snapshot channel cannot be empty", ErrInvalidInput)
+	}
 	subscription := Subscription{
-		Subscriber:   UserKey{NodeID: row.SubscriberNodeId, UserID: row.SubscriberUserId},
-		Channel:      UserKey{NodeID: row.ChannelNodeId, UserID: row.ChannelUserId},
+		Subscriber:   UserKey{NodeID: row.Subscriber.NodeId, UserID: row.Subscriber.UserId},
+		Channel:      UserKey{NodeID: row.Channel.NodeId, UserID: row.Channel.UserId},
 		OriginNodeID: row.OriginNodeId,
 	}
 	if err := subscription.Subscriber.Validate(); err != nil {

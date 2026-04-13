@@ -144,8 +144,7 @@ func (s *clientWSSession) handleDeleteUser(ctx context.Context, req *internalpro
 			DeleteUserResponse: &internalproto.DeleteUserResponse{
 				RequestId: req.RequestId,
 				Status:    "deleted",
-				NodeId:    key.NodeID,
-				UserId:    key.UserID,
+				User:      &internalproto.UserRef{NodeId: key.NodeID, UserId: key.UserID},
 			},
 		},
 	})
@@ -412,12 +411,10 @@ func hashPasswordFromWS(password string) (string, error) {
 
 func clientProtoSubscription(subscription store.Subscription) *internalproto.Subscription {
 	item := &internalproto.Subscription{
-		SubscriberNodeId: subscription.Subscriber.NodeID,
-		SubscriberUserId: subscription.Subscriber.UserID,
-		ChannelNodeId:    subscription.Channel.NodeID,
-		ChannelUserId:    subscription.Channel.UserID,
-		SubscribedAt:     subscription.SubscribedAt.String(),
-		OriginNodeId:     subscription.OriginNodeID,
+		Subscriber:   &internalproto.UserRef{NodeId: subscription.Subscriber.NodeID, UserId: subscription.Subscriber.UserID},
+		Channel:      &internalproto.UserRef{NodeId: subscription.Channel.NodeID, UserId: subscription.Channel.UserID},
+		SubscribedAt: subscription.SubscribedAt.String(),
+		OriginNodeId: subscription.OriginNodeID,
 	}
 	if subscription.DeletedAt != nil {
 		item.DeletedAt = subscription.DeletedAt.String()

@@ -75,36 +75,30 @@ func userDeletedProtoFromKey(key UserKey, deletedAt clock.Timestamp) *internalpr
 
 func messageCreatedProtoFromMessage(message Message) *internalproto.MessageCreatedEvent {
 	return &internalproto.MessageCreatedEvent{
-		UserNodeId:   message.UserNodeID,
-		UserId:       message.UserID,
-		NodeId:       message.NodeID,
-		Seq:          message.Seq,
-		SenderNodeId: message.Sender.NodeID,
-		SenderUserId: message.Sender.UserID,
-		Body:         message.Body,
+		Recipient:   &internalproto.ClusterUserRef{NodeId: message.Recipient.NodeID, UserId: message.Recipient.UserID},
+		NodeId:      message.NodeID,
+		Seq:         message.Seq,
+		Sender:      &internalproto.ClusterUserRef{NodeId: message.Sender.NodeID, UserId: message.Sender.UserID},
+		Body:        message.Body,
 		CreatedAtHlc: message.CreatedAt.String(),
 	}
 }
 
 func channelSubscribedProtoFromSubscription(subscription Subscription) *internalproto.ChannelSubscribedEvent {
 	return &internalproto.ChannelSubscribedEvent{
-		SubscriberNodeId: subscription.Subscriber.NodeID,
-		SubscriberUserId: subscription.Subscriber.UserID,
-		ChannelNodeId:    subscription.Channel.NodeID,
-		ChannelUserId:    subscription.Channel.UserID,
-		SubscribedAtHlc:  subscription.SubscribedAt.String(),
-		OriginNodeId:     subscription.OriginNodeID,
+		Subscriber:    &internalproto.ClusterUserRef{NodeId: subscription.Subscriber.NodeID, UserId: subscription.Subscriber.UserID},
+		Channel:       &internalproto.ClusterUserRef{NodeId: subscription.Channel.NodeID, UserId: subscription.Channel.UserID},
+		SubscribedAtHlc: subscription.SubscribedAt.String(),
+		OriginNodeId:  subscription.OriginNodeID,
 	}
 }
 
 func channelUnsubscribedProtoFromSubscription(subscription Subscription) *internalproto.ChannelUnsubscribedEvent {
 	event := &internalproto.ChannelUnsubscribedEvent{
-		SubscriberNodeId: subscription.Subscriber.NodeID,
-		SubscriberUserId: subscription.Subscriber.UserID,
-		ChannelNodeId:    subscription.Channel.NodeID,
-		ChannelUserId:    subscription.Channel.UserID,
-		SubscribedAtHlc:  subscription.SubscribedAt.String(),
-		OriginNodeId:     subscription.OriginNodeID,
+		Subscriber:    &internalproto.ClusterUserRef{NodeId: subscription.Subscriber.NodeID, UserId: subscription.Subscriber.UserID},
+		Channel:       &internalproto.ClusterUserRef{NodeId: subscription.Channel.NodeID, UserId: subscription.Channel.UserID},
+		SubscribedAtHlc: subscription.SubscribedAt.String(),
+		OriginNodeId:  subscription.OriginNodeID,
 	}
 	if subscription.DeletedAt != nil {
 		event.DeletedAtHlc = subscription.DeletedAt.String()

@@ -117,7 +117,10 @@ func (s *clientWSSession) login(ctx context.Context) error {
 	if login == nil {
 		return fmt.Errorf("first message must be login")
 	}
-	key := store.UserKey{NodeID: login.NodeId, UserID: login.UserId}
+	if login.User == nil {
+		return fmt.Errorf("login user cannot be empty")
+	}
+	key := store.UserKey{NodeID: login.User.NodeId, UserID: login.User.UserId}
 	user, err := s.http.service.AuthenticateUser(ctx, key, login.Password)
 	if err != nil {
 		return fmt.Errorf("invalid credentials")
@@ -643,12 +646,11 @@ func clientProtoUser(user store.User) *internalproto.User {
 
 func clientProtoMessage(message store.Message) *internalproto.Message {
 	return &internalproto.Message{
-		UserNodeId:   message.UserNodeID,
-		UserId:       message.UserID,
-		NodeId:       message.NodeID,
-		Seq:          message.Seq,
-		Sender:       &internalproto.UserRef{NodeId: message.Sender.NodeID, UserId: message.Sender.UserID},
-		Body:         append([]byte(nil), message.Body...),
+		Recipient:   &internalproto.UserRef{NodeId: message.Recipient.NodeID, UserId: message.Recipient.UserID},
+		NodeId:      message.NodeID,
+		Seq:         message.Seq,
+		Sender:      &internalproto.UserRef{NodeId: message.Sender.NodeID, UserId: message.Sender.UserID},
+		Body:        append([]byte(nil), message.Body...),
 		CreatedAtHlc: message.CreatedAt.String(),
 	}
 }
@@ -718,13 +720,18 @@ func messageFromClientPushEvent(event store.Event) (store.Message, bool, error) 
 	if err != nil {
 		return store.Message{}, false, err
 	}
+	if body.Recipient == nil {
+		return store.Message{}, false, fmt.Errorf("message created event recipient cannot be nil")
+	}
+	if body.Sender == nil {
+		return store.Message{}, false, fmt.Errorf("message created event sender cannot be nil")
+	}
 	return store.Message{
-		UserNodeID: body.UserNodeId,
-		UserID:     body.UserId,
-		NodeID:     body.NodeId,
-		Seq:        body.Seq,
-		Sender:     store.UserKey{NodeID: body.SenderNodeId, UserID: body.SenderUserId},
-		Body:       append([]byte(nil), body.Body...),
-		CreatedAt:  createdAt,
+		Recipient: store.UserKey{NodeID: body.Recipient.NodeId, UserID: body.Recipient.UserId},
+		NodeID:    body.NodeId,
+		Seq:       body.Seq,
+		Sender:    store.UserKey{NodeID: body.Sender.NodeId, UserID: body.Sender.UserId},
+		Body:      append([]byte(nil), body.Body...),
+		CreatedAt: createdAt,
 	}, true, nil
 }

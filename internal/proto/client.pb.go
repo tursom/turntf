@@ -733,8 +733,7 @@ func (*ServerEnvelope_MetricsResponse) isServerEnvelope_Body() {}
 
 type LoginRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	NodeId        int64                  `protobuf:"varint,1,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
-	UserId        int64                  `protobuf:"varint,2,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	User          *UserRef               `protobuf:"bytes,1,opt,name=user,proto3" json:"user,omitempty"`
 	Password      string                 `protobuf:"bytes,3,opt,name=password,proto3" json:"password,omitempty"`
 	SeenMessages  []*MessageCursor       `protobuf:"bytes,4,rep,name=seen_messages,json=seenMessages,proto3" json:"seen_messages,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -771,18 +770,11 @@ func (*LoginRequest) Descriptor() ([]byte, []int) {
 	return file_client_proto_rawDescGZIP(), []int{2}
 }
 
-func (x *LoginRequest) GetNodeId() int64 {
+func (x *LoginRequest) GetUser() *UserRef {
 	if x != nil {
-		return x.NodeId
+		return x.User
 	}
-	return 0
-}
-
-func (x *LoginRequest) GetUserId() int64 {
-	if x != nil {
-		return x.UserId
-	}
-	return 0
+	return nil
 }
 
 func (x *LoginRequest) GetPassword() string {
@@ -2177,8 +2169,7 @@ type DeleteUserResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	RequestId     uint64                 `protobuf:"varint,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
 	Status        string                 `protobuf:"bytes,2,opt,name=status,proto3" json:"status,omitempty"`
-	NodeId        int64                  `protobuf:"varint,3,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
-	UserId        int64                  `protobuf:"varint,4,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	User          *UserRef               `protobuf:"bytes,3,opt,name=user,proto3" json:"user,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2227,18 +2218,11 @@ func (x *DeleteUserResponse) GetStatus() string {
 	return ""
 }
 
-func (x *DeleteUserResponse) GetNodeId() int64 {
+func (x *DeleteUserResponse) GetUser() *UserRef {
 	if x != nil {
-		return x.NodeId
+		return x.User
 	}
-	return 0
-}
-
-func (x *DeleteUserResponse) GetUserId() int64 {
-	if x != nil {
-		return x.UserId
-	}
-	return 0
+	return nil
 }
 
 type ListMessagesResponse struct {
@@ -2931,8 +2915,7 @@ func (x *User) GetOriginNodeId() int64 {
 
 type Message struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	UserNodeId    int64                  `protobuf:"varint,1,opt,name=user_node_id,json=userNodeId,proto3" json:"user_node_id,omitempty"`
-	UserId        int64                  `protobuf:"varint,2,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	Recipient     *UserRef               `protobuf:"bytes,1,opt,name=recipient,proto3" json:"recipient,omitempty"`
 	NodeId        int64                  `protobuf:"varint,3,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
 	Seq           int64                  `protobuf:"varint,4,opt,name=seq,proto3" json:"seq,omitempty"`
 	Sender        *UserRef               `protobuf:"bytes,5,opt,name=sender,proto3" json:"sender,omitempty"`
@@ -2972,18 +2955,11 @@ func (*Message) Descriptor() ([]byte, []int) {
 	return file_client_proto_rawDescGZIP(), []int{40}
 }
 
-func (x *Message) GetUserNodeId() int64 {
+func (x *Message) GetRecipient() *UserRef {
 	if x != nil {
-		return x.UserNodeId
+		return x.Recipient
 	}
-	return 0
-}
-
-func (x *Message) GetUserId() int64 {
-	if x != nil {
-		return x.UserId
-	}
-	return 0
+	return nil
 }
 
 func (x *Message) GetNodeId() int64 {
@@ -3114,16 +3090,14 @@ func (x *Packet) GetDeliveryMode() ClientDeliveryMode {
 }
 
 type Subscription struct {
-	state            protoimpl.MessageState `protogen:"open.v1"`
-	SubscriberNodeId int64                  `protobuf:"varint,1,opt,name=subscriber_node_id,json=subscriberNodeId,proto3" json:"subscriber_node_id,omitempty"`
-	SubscriberUserId int64                  `protobuf:"varint,2,opt,name=subscriber_user_id,json=subscriberUserId,proto3" json:"subscriber_user_id,omitempty"`
-	ChannelNodeId    int64                  `protobuf:"varint,3,opt,name=channel_node_id,json=channelNodeId,proto3" json:"channel_node_id,omitempty"`
-	ChannelUserId    int64                  `protobuf:"varint,4,opt,name=channel_user_id,json=channelUserId,proto3" json:"channel_user_id,omitempty"`
-	SubscribedAt     string                 `protobuf:"bytes,5,opt,name=subscribed_at,json=subscribedAt,proto3" json:"subscribed_at,omitempty"`
-	DeletedAt        string                 `protobuf:"bytes,6,opt,name=deleted_at,json=deletedAt,proto3" json:"deleted_at,omitempty"`
-	OriginNodeId     int64                  `protobuf:"varint,7,opt,name=origin_node_id,json=originNodeId,proto3" json:"origin_node_id,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Subscriber    *UserRef               `protobuf:"bytes,1,opt,name=subscriber,proto3" json:"subscriber,omitempty"`
+	Channel       *UserRef               `protobuf:"bytes,2,opt,name=channel,proto3" json:"channel,omitempty"`
+	SubscribedAt  string                 `protobuf:"bytes,5,opt,name=subscribed_at,json=subscribedAt,proto3" json:"subscribed_at,omitempty"`
+	DeletedAt     string                 `protobuf:"bytes,6,opt,name=deleted_at,json=deletedAt,proto3" json:"deleted_at,omitempty"`
+	OriginNodeId  int64                  `protobuf:"varint,7,opt,name=origin_node_id,json=originNodeId,proto3" json:"origin_node_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Subscription) Reset() {
@@ -3156,32 +3130,18 @@ func (*Subscription) Descriptor() ([]byte, []int) {
 	return file_client_proto_rawDescGZIP(), []int{42}
 }
 
-func (x *Subscription) GetSubscriberNodeId() int64 {
+func (x *Subscription) GetSubscriber() *UserRef {
 	if x != nil {
-		return x.SubscriberNodeId
+		return x.Subscriber
 	}
-	return 0
+	return nil
 }
 
-func (x *Subscription) GetSubscriberUserId() int64 {
+func (x *Subscription) GetChannel() *UserRef {
 	if x != nil {
-		return x.SubscriberUserId
+		return x.Channel
 	}
-	return 0
-}
-
-func (x *Subscription) GetChannelNodeId() int64 {
-	if x != nil {
-		return x.ChannelNodeId
-	}
-	return 0
-}
-
-func (x *Subscription) GetChannelUserId() int64 {
-	if x != nil {
-		return x.ChannelUserId
-	}
-	return 0
+	return nil
 }
 
 func (x *Subscription) GetSubscribedAt() string {
@@ -3820,10 +3780,9 @@ const file_client_proto_rawDesc = "" +
 	"\x14list_events_response\x18\x0f \x01(\v2&.notifier.client.v1.ListEventsResponseH\x00R\x12listEventsResponse\x12l\n" +
 	"\x1aoperations_status_response\x18\x10 \x01(\v2,.notifier.client.v1.OperationsStatusResponseH\x00R\x18operationsStatusResponse\x12P\n" +
 	"\x10metrics_response\x18\x11 \x01(\v2#.notifier.client.v1.MetricsResponseH\x00R\x0fmetricsResponseB\x06\n" +
-	"\x04body\"\xa4\x01\n" +
-	"\fLoginRequest\x12\x17\n" +
-	"\anode_id\x18\x01 \x01(\x03R\x06nodeId\x12\x17\n" +
-	"\auser_id\x18\x02 \x01(\x03R\x06userId\x12\x1a\n" +
+	"\x04body\"\xa3\x01\n" +
+	"\fLoginRequest\x12/\n" +
+	"\x04user\x18\x01 \x01(\v2\x1b.notifier.client.v1.UserRefR\x04user\x12\x1a\n" +
 	"\bpassword\x18\x03 \x01(\tR\bpassword\x12F\n" +
 	"\rseen_messages\x18\x04 \x03(\v2!.notifier.client.v1.MessageCursorR\fseenMessages\"h\n" +
 	"\rLoginResponse\x12,\n" +
@@ -3936,13 +3895,12 @@ const file_client_proto_rawDesc = "" +
 	"\x12UpdateUserResponse\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\x04R\trequestId\x12,\n" +
-	"\x04user\x18\x02 \x01(\v2\x18.notifier.client.v1.UserR\x04user\"}\n" +
+	"\x04user\x18\x02 \x01(\v2\x18.notifier.client.v1.UserR\x04user\"|\n" +
 	"\x12DeleteUserResponse\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\x04R\trequestId\x12\x16\n" +
-	"\x06status\x18\x02 \x01(\tR\x06status\x12\x17\n" +
-	"\anode_id\x18\x03 \x01(\x03R\x06nodeId\x12\x17\n" +
-	"\auser_id\x18\x04 \x01(\x03R\x06userId\"~\n" +
+	"\x06status\x18\x02 \x01(\tR\x06status\x12/\n" +
+	"\x04user\x18\x03 \x01(\v2\x1b.notifier.client.v1.UserRefR\x04user\"~\n" +
 	"\x14ListMessagesResponse\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\x04R\trequestId\x121\n" +
@@ -3997,10 +3955,8 @@ const file_client_proto_rawDesc = "" +
 	"\n" +
 	"updated_at\x18\b \x01(\tR\tupdatedAt\x12$\n" +
 	"\x0eorigin_node_id\x18\t \x01(\x03R\foriginNodeId\"\xde\x01\n" +
-	"\aMessage\x12 \n" +
-	"\fuser_node_id\x18\x01 \x01(\x03R\n" +
-	"userNodeId\x12\x17\n" +
-	"\auser_id\x18\x02 \x01(\x03R\x06userId\x12\x17\n" +
+	"\aMessage\x129\n" +
+	"\trecipient\x18\x01 \x01(\v2\x1b.notifier.client.v1.UserRefR\trecipient\x12\x17\n" +
 	"\anode_id\x18\x03 \x01(\x03R\x06nodeId\x12\x10\n" +
 	"\x03seq\x18\x04 \x01(\x03R\x03seq\x123\n" +
 	"\x06sender\x18\x05 \x01(\v2\x1b.notifier.client.v1.UserRefR\x06sender\x12\x12\n" +
@@ -4013,12 +3969,12 @@ const file_client_proto_rawDesc = "" +
 	"\trecipient\x18\x04 \x01(\v2\x1b.notifier.client.v1.UserRefR\trecipient\x123\n" +
 	"\x06sender\x18\x05 \x01(\v2\x1b.notifier.client.v1.UserRefR\x06sender\x12\x12\n" +
 	"\x04body\x18\x06 \x01(\fR\x04body\x12K\n" +
-	"\rdelivery_mode\x18\a \x01(\x0e2&.notifier.client.v1.ClientDeliveryModeR\fdeliveryMode\"\xa4\x02\n" +
-	"\fSubscription\x12,\n" +
-	"\x12subscriber_node_id\x18\x01 \x01(\x03R\x10subscriberNodeId\x12,\n" +
-	"\x12subscriber_user_id\x18\x02 \x01(\x03R\x10subscriberUserId\x12&\n" +
-	"\x0fchannel_node_id\x18\x03 \x01(\x03R\rchannelNodeId\x12&\n" +
-	"\x0fchannel_user_id\x18\x04 \x01(\x03R\rchannelUserId\x12#\n" +
+	"\rdelivery_mode\x18\a \x01(\x0e2&.notifier.client.v1.ClientDeliveryModeR\fdeliveryMode\"\xec\x01\n" +
+	"\fSubscription\x12;\n" +
+	"\n" +
+	"subscriber\x18\x01 \x01(\v2\x1b.notifier.client.v1.UserRefR\n" +
+	"subscriber\x125\n" +
+	"\achannel\x18\x02 \x01(\v2\x1b.notifier.client.v1.UserRefR\achannel\x12#\n" +
 	"\rsubscribed_at\x18\x05 \x01(\tR\fsubscribedAt\x12\x1d\n" +
 	"\n" +
 	"deleted_at\x18\x06 \x01(\tR\tdeletedAt\x12$\n" +
@@ -4188,53 +4144,58 @@ var file_client_proto_depIdxs = []int32{
 	34, // 29: notifier.client.v1.ServerEnvelope.list_events_response:type_name -> notifier.client.v1.ListEventsResponse
 	35, // 30: notifier.client.v1.ServerEnvelope.operations_status_response:type_name -> notifier.client.v1.OperationsStatusResponse
 	36, // 31: notifier.client.v1.ServerEnvelope.metrics_response:type_name -> notifier.client.v1.MetricsResponse
-	39, // 32: notifier.client.v1.LoginRequest.seen_messages:type_name -> notifier.client.v1.MessageCursor
-	41, // 33: notifier.client.v1.LoginResponse.user:type_name -> notifier.client.v1.User
-	40, // 34: notifier.client.v1.SendMessageRequest.target:type_name -> notifier.client.v1.UserRef
-	0,  // 35: notifier.client.v1.SendMessageRequest.delivery_kind:type_name -> notifier.client.v1.ClientDeliveryKind
-	1,  // 36: notifier.client.v1.SendMessageRequest.delivery_mode:type_name -> notifier.client.v1.ClientDeliveryMode
-	42, // 37: notifier.client.v1.SendMessageResponse.message:type_name -> notifier.client.v1.Message
-	10, // 38: notifier.client.v1.SendMessageResponse.transient_accepted:type_name -> notifier.client.v1.TransientAccepted
-	42, // 39: notifier.client.v1.MessagePushed.message:type_name -> notifier.client.v1.Message
-	43, // 40: notifier.client.v1.PacketPushed.packet:type_name -> notifier.client.v1.Packet
-	40, // 41: notifier.client.v1.TransientAccepted.recipient:type_name -> notifier.client.v1.UserRef
-	1,  // 42: notifier.client.v1.TransientAccepted.delivery_mode:type_name -> notifier.client.v1.ClientDeliveryMode
-	39, // 43: notifier.client.v1.AckMessage.cursor:type_name -> notifier.client.v1.MessageCursor
-	40, // 44: notifier.client.v1.GetUserRequest.user:type_name -> notifier.client.v1.UserRef
-	40, // 45: notifier.client.v1.UpdateUserRequest.user:type_name -> notifier.client.v1.UserRef
-	37, // 46: notifier.client.v1.UpdateUserRequest.username:type_name -> notifier.client.v1.StringField
-	37, // 47: notifier.client.v1.UpdateUserRequest.password:type_name -> notifier.client.v1.StringField
-	38, // 48: notifier.client.v1.UpdateUserRequest.profile_json:type_name -> notifier.client.v1.BytesField
-	37, // 49: notifier.client.v1.UpdateUserRequest.role:type_name -> notifier.client.v1.StringField
-	40, // 50: notifier.client.v1.DeleteUserRequest.user:type_name -> notifier.client.v1.UserRef
-	40, // 51: notifier.client.v1.ListMessagesRequest.user:type_name -> notifier.client.v1.UserRef
-	40, // 52: notifier.client.v1.SubscribeChannelRequest.subscriber:type_name -> notifier.client.v1.UserRef
-	40, // 53: notifier.client.v1.SubscribeChannelRequest.channel:type_name -> notifier.client.v1.UserRef
-	40, // 54: notifier.client.v1.UnsubscribeChannelRequest.subscriber:type_name -> notifier.client.v1.UserRef
-	40, // 55: notifier.client.v1.UnsubscribeChannelRequest.channel:type_name -> notifier.client.v1.UserRef
-	40, // 56: notifier.client.v1.ListSubscriptionsRequest.subscriber:type_name -> notifier.client.v1.UserRef
-	41, // 57: notifier.client.v1.CreateUserResponse.user:type_name -> notifier.client.v1.User
-	41, // 58: notifier.client.v1.GetUserResponse.user:type_name -> notifier.client.v1.User
-	41, // 59: notifier.client.v1.UpdateUserResponse.user:type_name -> notifier.client.v1.User
-	42, // 60: notifier.client.v1.ListMessagesResponse.items:type_name -> notifier.client.v1.Message
-	44, // 61: notifier.client.v1.SubscribeChannelResponse.subscription:type_name -> notifier.client.v1.Subscription
-	44, // 62: notifier.client.v1.UnsubscribeChannelResponse.subscription:type_name -> notifier.client.v1.Subscription
-	44, // 63: notifier.client.v1.ListSubscriptionsResponse.items:type_name -> notifier.client.v1.Subscription
-	45, // 64: notifier.client.v1.ListEventsResponse.items:type_name -> notifier.client.v1.Event
-	46, // 65: notifier.client.v1.OperationsStatusResponse.status:type_name -> notifier.client.v1.OperationsStatus
-	40, // 66: notifier.client.v1.Message.sender:type_name -> notifier.client.v1.UserRef
-	40, // 67: notifier.client.v1.Packet.recipient:type_name -> notifier.client.v1.UserRef
-	40, // 68: notifier.client.v1.Packet.sender:type_name -> notifier.client.v1.UserRef
-	1,  // 69: notifier.client.v1.Packet.delivery_mode:type_name -> notifier.client.v1.ClientDeliveryMode
-	47, // 70: notifier.client.v1.OperationsStatus.message_trim:type_name -> notifier.client.v1.MessageTrimStatus
-	48, // 71: notifier.client.v1.OperationsStatus.projection:type_name -> notifier.client.v1.ProjectionStatus
-	50, // 72: notifier.client.v1.OperationsStatus.peers:type_name -> notifier.client.v1.PeerStatus
-	49, // 73: notifier.client.v1.PeerStatus.origins:type_name -> notifier.client.v1.PeerOriginStatus
-	74, // [74:74] is the sub-list for method output_type
-	74, // [74:74] is the sub-list for method input_type
-	74, // [74:74] is the sub-list for extension type_name
-	74, // [74:74] is the sub-list for extension extendee
-	0,  // [0:74] is the sub-list for field type_name
+	40, // 32: notifier.client.v1.LoginRequest.user:type_name -> notifier.client.v1.UserRef
+	39, // 33: notifier.client.v1.LoginRequest.seen_messages:type_name -> notifier.client.v1.MessageCursor
+	41, // 34: notifier.client.v1.LoginResponse.user:type_name -> notifier.client.v1.User
+	40, // 35: notifier.client.v1.SendMessageRequest.target:type_name -> notifier.client.v1.UserRef
+	0,  // 36: notifier.client.v1.SendMessageRequest.delivery_kind:type_name -> notifier.client.v1.ClientDeliveryKind
+	1,  // 37: notifier.client.v1.SendMessageRequest.delivery_mode:type_name -> notifier.client.v1.ClientDeliveryMode
+	42, // 38: notifier.client.v1.SendMessageResponse.message:type_name -> notifier.client.v1.Message
+	10, // 39: notifier.client.v1.SendMessageResponse.transient_accepted:type_name -> notifier.client.v1.TransientAccepted
+	42, // 40: notifier.client.v1.MessagePushed.message:type_name -> notifier.client.v1.Message
+	43, // 41: notifier.client.v1.PacketPushed.packet:type_name -> notifier.client.v1.Packet
+	40, // 42: notifier.client.v1.TransientAccepted.recipient:type_name -> notifier.client.v1.UserRef
+	1,  // 43: notifier.client.v1.TransientAccepted.delivery_mode:type_name -> notifier.client.v1.ClientDeliveryMode
+	39, // 44: notifier.client.v1.AckMessage.cursor:type_name -> notifier.client.v1.MessageCursor
+	40, // 45: notifier.client.v1.GetUserRequest.user:type_name -> notifier.client.v1.UserRef
+	40, // 46: notifier.client.v1.UpdateUserRequest.user:type_name -> notifier.client.v1.UserRef
+	37, // 47: notifier.client.v1.UpdateUserRequest.username:type_name -> notifier.client.v1.StringField
+	37, // 48: notifier.client.v1.UpdateUserRequest.password:type_name -> notifier.client.v1.StringField
+	38, // 49: notifier.client.v1.UpdateUserRequest.profile_json:type_name -> notifier.client.v1.BytesField
+	37, // 50: notifier.client.v1.UpdateUserRequest.role:type_name -> notifier.client.v1.StringField
+	40, // 51: notifier.client.v1.DeleteUserRequest.user:type_name -> notifier.client.v1.UserRef
+	40, // 52: notifier.client.v1.ListMessagesRequest.user:type_name -> notifier.client.v1.UserRef
+	40, // 53: notifier.client.v1.SubscribeChannelRequest.subscriber:type_name -> notifier.client.v1.UserRef
+	40, // 54: notifier.client.v1.SubscribeChannelRequest.channel:type_name -> notifier.client.v1.UserRef
+	40, // 55: notifier.client.v1.UnsubscribeChannelRequest.subscriber:type_name -> notifier.client.v1.UserRef
+	40, // 56: notifier.client.v1.UnsubscribeChannelRequest.channel:type_name -> notifier.client.v1.UserRef
+	40, // 57: notifier.client.v1.ListSubscriptionsRequest.subscriber:type_name -> notifier.client.v1.UserRef
+	41, // 58: notifier.client.v1.CreateUserResponse.user:type_name -> notifier.client.v1.User
+	41, // 59: notifier.client.v1.GetUserResponse.user:type_name -> notifier.client.v1.User
+	41, // 60: notifier.client.v1.UpdateUserResponse.user:type_name -> notifier.client.v1.User
+	40, // 61: notifier.client.v1.DeleteUserResponse.user:type_name -> notifier.client.v1.UserRef
+	42, // 62: notifier.client.v1.ListMessagesResponse.items:type_name -> notifier.client.v1.Message
+	44, // 63: notifier.client.v1.SubscribeChannelResponse.subscription:type_name -> notifier.client.v1.Subscription
+	44, // 64: notifier.client.v1.UnsubscribeChannelResponse.subscription:type_name -> notifier.client.v1.Subscription
+	44, // 65: notifier.client.v1.ListSubscriptionsResponse.items:type_name -> notifier.client.v1.Subscription
+	45, // 66: notifier.client.v1.ListEventsResponse.items:type_name -> notifier.client.v1.Event
+	46, // 67: notifier.client.v1.OperationsStatusResponse.status:type_name -> notifier.client.v1.OperationsStatus
+	40, // 68: notifier.client.v1.Message.recipient:type_name -> notifier.client.v1.UserRef
+	40, // 69: notifier.client.v1.Message.sender:type_name -> notifier.client.v1.UserRef
+	40, // 70: notifier.client.v1.Packet.recipient:type_name -> notifier.client.v1.UserRef
+	40, // 71: notifier.client.v1.Packet.sender:type_name -> notifier.client.v1.UserRef
+	1,  // 72: notifier.client.v1.Packet.delivery_mode:type_name -> notifier.client.v1.ClientDeliveryMode
+	40, // 73: notifier.client.v1.Subscription.subscriber:type_name -> notifier.client.v1.UserRef
+	40, // 74: notifier.client.v1.Subscription.channel:type_name -> notifier.client.v1.UserRef
+	47, // 75: notifier.client.v1.OperationsStatus.message_trim:type_name -> notifier.client.v1.MessageTrimStatus
+	48, // 76: notifier.client.v1.OperationsStatus.projection:type_name -> notifier.client.v1.ProjectionStatus
+	50, // 77: notifier.client.v1.OperationsStatus.peers:type_name -> notifier.client.v1.PeerStatus
+	49, // 78: notifier.client.v1.PeerStatus.origins:type_name -> notifier.client.v1.PeerOriginStatus
+	79, // [79:79] is the sub-list for method output_type
+	79, // [79:79] is the sub-list for method input_type
+	79, // [79:79] is the sub-list for extension type_name
+	79, // [79:79] is the sub-list for extension extendee
+	0,  // [0:79] is the sub-list for field type_name
 }
 
 func init() { file_client_proto_init() }

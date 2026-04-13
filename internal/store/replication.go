@@ -192,12 +192,18 @@ func (s *Store) applyReplicatedMessageCreated(ctx context.Context, tx *sql.Tx, b
 	if body == nil {
 		return fmt.Errorf("%w: message created event cannot be nil", ErrInvalidInput)
 	}
-	key := UserKey{NodeID: body.UserNodeId, UserID: body.UserId}
+	if body.Recipient == nil {
+		return fmt.Errorf("%w: message recipient cannot be empty", ErrInvalidInput)
+	}
+	key := UserKey{NodeID: body.Recipient.NodeId, UserID: body.Recipient.UserId}
 	if err := validateMessageIdentity(key, body.NodeId, body.Seq); err != nil {
 		return err
 	}
 	if originNodeID != 0 && originNodeID != body.NodeId {
 		return fmt.Errorf("%w: message node id %d does not match event origin %d", ErrInvalidInput, body.NodeId, originNodeID)
+	}
+	if body.Sender == nil {
+		return fmt.Errorf("%w: message sender cannot be empty", ErrInvalidInput)
 	}
 
 	if _, err := s.getUserByIDTx(ctx, tx, key, false); err != nil {
@@ -207,7 +213,7 @@ func (s *Store) applyReplicatedMessageCreated(ctx context.Context, tx *sql.Tx, b
 	if _, err := tx.ExecContext(ctx, `
 INSERT INTO messages(user_node_id, user_id, node_id, seq, sender_node_id, sender_user_id, body, created_at_hlc)
 VALUES(?, ?, ?, ?, ?, ?, ?, ?)
-`, body.UserNodeId, body.UserId, body.NodeId, body.Seq, body.SenderNodeId, body.SenderUserId, body.Body, body.CreatedAtHlc); err != nil {
+`, body.Recipient.NodeId, body.Recipient.UserId, body.NodeId, body.Seq, body.Sender.NodeId, body.Sender.UserId, body.Body, body.CreatedAtHlc); err != nil {
 		if isUniqueConstraint(err) {
 			return nil
 		}
@@ -260,18 +266,24 @@ func (s *Store) applyReplicatedChannelSubscription(ctx context.Context, tx *sql.
 func subscriptionFromEventBody(body internalproto.EventBody) (Subscription, error) {
 	switch typed := body.(type) {
 	case *internalproto.ChannelSubscribedEvent:
-		return subscriptionFromChannelData(typed.SubscriberNodeId, typed.SubscriberUserId, typed.ChannelNodeId, typed.ChannelUserId, typed.SubscribedAtHlc, "", typed.OriginNodeId)
+		return subscriptionFromChannelData(typed.Subscriber, typed.Channel, typed.SubscribedAtHlc, "", typed.OriginNodeId)
 	case *internalproto.ChannelUnsubscribedEvent:
-		return subscriptionFromChannelData(typed.SubscriberNodeId, typed.SubscriberUserId, typed.ChannelNodeId, typed.ChannelUserId, typed.SubscribedAtHlc, typed.DeletedAtHlc, typed.OriginNodeId)
+		return subscriptionFromChannelData(typed.Subscriber, typed.Channel, typed.SubscribedAtHlc, typed.DeletedAtHlc, typed.OriginNodeId)
 	default:
 		return Subscription{}, fmt.Errorf("%w: unsupported subscription body %T", ErrInvalidInput, body)
 	}
 }
 
-func subscriptionFromChannelData(subscriberNodeID, subscriberUserID, channelNodeID, channelUserID int64, subscribedAtRaw, deletedAtRaw string, originNodeID int64) (Subscription, error) {
+func subscriptionFromChannelData(subscriberRef, channelRef *internalproto.ClusterUserRef, subscribedAtRaw, deletedAtRaw string, originNodeID int64) (Subscription, error) {
+	if subscriberRef == nil {
+		return Subscription{}, fmt.Errorf("%w: subscriber cannot be empty", ErrInvalidInput)
+	}
+	if channelRef == nil {
+		return Subscription{}, fmt.Errorf("%w: channel cannot be empty", ErrInvalidInput)
+	}
 	subscription := Subscription{
-		Subscriber:   UserKey{NodeID: subscriberNodeID, UserID: subscriberUserID},
-		Channel:      UserKey{NodeID: channelNodeID, UserID: channelUserID},
+		Subscriber:   UserKey{NodeID: subscriberRef.NodeId, UserID: subscriberRef.UserId},
+		Channel:      UserKey{NodeID: channelRef.NodeId, UserID: channelRef.UserId},
 		OriginNodeID: originNodeID,
 	}
 	if err := subscription.Subscriber.Validate(); err != nil {

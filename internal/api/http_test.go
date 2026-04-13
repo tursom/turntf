@@ -83,34 +83,32 @@ func TestUserAndMessageHTTPAPI(t *testing.T) {
 		"body": []byte("package shipped"),
 	}
 	var createdMessage struct {
-		UserNodeID int64 `json:"user_node_id"`
-		UserID     int64 `json:"user_id"`
-		NodeID     int64 `json:"node_id"`
-		Seq        int64 `json:"seq"`
+		Recipient store.UserKey `json:"recipient"`
+		NodeID    int64         `json:"node_id"`
+		Seq       int64         `json:"seq"`
 	}
 	mustJSON(t, doJSONWithHeaders(t, handler, http.MethodPost, userMessagesPath(createdUser.NodeID, createdUser.UserID), createMessageBody, map[string]string{
 		"Authorization": "Bearer " + adminToken,
 	}, http.StatusCreated), &createdMessage)
-	if createdMessage.UserNodeID != createdUser.NodeID || createdMessage.UserID != createdUser.UserID || createdMessage.NodeID != testNodeID(1) || createdMessage.Seq != 1 {
+	if createdMessage.Recipient.NodeID != createdUser.NodeID || createdMessage.Recipient.UserID != createdUser.UserID || createdMessage.NodeID != testNodeID(1) || createdMessage.Seq != 1 {
 		t.Fatalf("unexpected created message: %+v", createdMessage)
 	}
 
 	var listMessages struct {
 		Count int `json:"count"`
 		Items []struct {
-			UserNodeID int64  `json:"user_node_id"`
-			UserID     int64  `json:"user_id"`
-			NodeID     int64  `json:"node_id"`
-			Seq        int64  `json:"seq"`
-			Body       []byte `json:"body"`
+			Recipient store.UserKey `json:"recipient"`
+			NodeID    int64         `json:"node_id"`
+			Seq       int64         `json:"seq"`
+			Body      []byte        `json:"body"`
 		} `json:"items"`
 	}
 	mustJSON(t, doJSONWithHeaders(t, handler, http.MethodGet, userMessagesPath(createdUser.NodeID, createdUser.UserID)+"?limit=10", nil, map[string]string{
 		"Authorization": "Bearer " + adminToken,
 	}, http.StatusOK), &listMessages)
 	if listMessages.Count != 1 || len(listMessages.Items) != 1 ||
-		listMessages.Items[0].UserNodeID != createdUser.NodeID ||
-		listMessages.Items[0].UserID != createdUser.UserID ||
+		listMessages.Items[0].Recipient.NodeID != createdUser.NodeID ||
+		listMessages.Items[0].Recipient.UserID != createdUser.UserID ||
 		listMessages.Items[0].NodeID != testNodeID(1) ||
 		listMessages.Items[0].Seq != 1 ||
 		string(listMessages.Items[0].Body) != "package shipped" {
@@ -275,20 +273,18 @@ func TestListEventsReturnsTypedEventJSON(t *testing.T) {
 	}
 
 	var messageEvent struct {
-		UserNodeID   int64  `json:"user_node_id"`
-		UserID       int64  `json:"user_id"`
-		NodeID       int64  `json:"node_id"`
-		Seq          int64  `json:"seq"`
-		SenderNodeID int64  `json:"sender_node_id"`
-		SenderUserID int64  `json:"sender_user_id"`
-		Body         []byte `json:"body"`
+		Recipient store.UserKey `json:"recipient"`
+		NodeID    int64         `json:"node_id"`
+		Seq       int64         `json:"seq"`
+		Sender    store.UserKey `json:"sender"`
+		Body      []byte        `json:"body"`
 	}
 	messageEventIndex := len(listEvents.Items) - 1
 	if listEvents.Items[messageEventIndex].EventType != "message_created" {
 		t.Fatalf("unexpected message_created event type: %+v", listEvents.Items[messageEventIndex])
 	}
 	mustJSON(t, listEvents.Items[messageEventIndex].Event, &messageEvent)
-	if messageEvent.UserNodeID != createdUser.NodeID || messageEvent.UserID != createdUser.UserID || messageEvent.NodeID != testNodeID(1) || messageEvent.Seq != 1 || messageEvent.SenderNodeID != adminKey.NodeID || messageEvent.SenderUserID != adminKey.UserID || string(messageEvent.Body) != "package shipped" {
+	if messageEvent.Recipient.NodeID != createdUser.NodeID || messageEvent.Recipient.UserID != createdUser.UserID || messageEvent.NodeID != testNodeID(1) || messageEvent.Seq != 1 || messageEvent.Sender.NodeID != adminKey.NodeID || messageEvent.Sender.UserID != adminKey.UserID || string(messageEvent.Body) != "package shipped" {
 		t.Fatalf("unexpected message_created event json: %+v", messageEvent)
 	}
 }

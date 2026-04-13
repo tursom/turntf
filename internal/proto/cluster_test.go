@@ -135,13 +135,11 @@ func TestReplicatedEventTypedBodyHelpers(t *testing.T) {
 		{
 			name: "message_created",
 			body: &MessageCreatedEvent{
-				UserNodeId:   testNodeID,
-				UserId:       1001,
-				NodeId:       testNodeID,
-				Seq:          7,
-				SenderNodeId: testNodeID,
-				SenderUserId: 1001,
-				Body:         []byte("hello"),
+				Recipient:   &ClusterUserRef{NodeId: testNodeID, UserId: 1001},
+				NodeId:      testNodeID,
+				Seq:         7,
+				Sender:      &ClusterUserRef{NodeId: testNodeID, UserId: 1001},
+				Body:        []byte("hello"),
 				CreatedAtHlc: "1740000000000-00003-0000000000000004096",
 			},
 			eventType: "message_created",
@@ -149,25 +147,21 @@ func TestReplicatedEventTypedBodyHelpers(t *testing.T) {
 		{
 			name: "channel_subscribed",
 			body: &ChannelSubscribedEvent{
-				SubscriberNodeId: testNodeID,
-				SubscriberUserId: 1001,
-				ChannelNodeId:    testNodeID,
-				ChannelUserId:    2002,
-				SubscribedAtHlc:  "1740000000000-00004-0000000000000004096",
-				OriginNodeId:     testNodeID,
+				Subscriber:    &ClusterUserRef{NodeId: testNodeID, UserId: 1001},
+				Channel:       &ClusterUserRef{NodeId: testNodeID, UserId: 2002},
+				SubscribedAtHlc: "1740000000000-00004-0000000000000004096",
+				OriginNodeId:  testNodeID,
 			},
 			eventType: "channel_subscribed",
 		},
 		{
 			name: "channel_unsubscribed",
 			body: &ChannelUnsubscribedEvent{
-				SubscriberNodeId: testNodeID,
-				SubscriberUserId: 1001,
-				ChannelNodeId:    testNodeID,
-				ChannelUserId:    2002,
-				SubscribedAtHlc:  "1740000000000-00004-0000000000000004096",
-				DeletedAtHlc:     "1740000000000-00005-0000000000000004096",
-				OriginNodeId:     testNodeID,
+				Subscriber:    &ClusterUserRef{NodeId: testNodeID, UserId: 1001},
+				Channel:       &ClusterUserRef{NodeId: testNodeID, UserId: 2002},
+				SubscribedAtHlc: "1740000000000-00004-0000000000000004096",
+				DeletedAtHlc:  "1740000000000-00005-0000000000000004096",
+				OriginNodeId:  testNodeID,
 			},
 			eventType: "channel_unsubscribed",
 		},
@@ -256,12 +250,11 @@ func TestSnapshotMessageRowRoundTripUsesTripleIdentity(t *testing.T) {
 					{
 						Body: &SnapshotRow_Message{
 							Message: &SnapshotMessageRow{
-								UserId:       42,
-								NodeId:       testNodeID,
-								Seq:          7,
-								SenderNodeId: testNodeID,
-								SenderUserId: 42,
-								Body:         []byte("hello"),
+								Recipient:   &ClusterUserRef{NodeId: testNodeID, UserId: 42},
+								NodeId:      testNodeID,
+								Seq:         7,
+								Sender:      &ClusterUserRef{NodeId: testNodeID, UserId: 42},
+								Body:        []byte("hello"),
 								CreatedAtHlc: "1740000000000-00001-0000000000000004096",
 							},
 						},
@@ -282,7 +275,7 @@ func TestSnapshotMessageRowRoundTripUsesTripleIdentity(t *testing.T) {
 	}
 
 	message := decoded.GetSnapshotChunk().GetRows()[0].GetMessage()
-	if message.GetUserId() != 42 || message.GetNodeId() != testNodeID || message.GetSeq() != 7 {
+	if message.GetRecipient().GetUserId() != 42 || message.GetNodeId() != testNodeID || message.GetSeq() != 7 {
 		t.Fatalf("unexpected snapshot message identity: %+v", message)
 	}
 }
@@ -301,12 +294,10 @@ func TestSnapshotSubscriptionRowRoundTrip(t *testing.T) {
 					{
 						Body: &SnapshotRow_Subscription{
 							Subscription: &SnapshotSubscriptionRow{
-								SubscriberNodeId: testNodeID,
-								SubscriberUserId: 42,
-								ChannelNodeId:    testNodeID,
-								ChannelUserId:    99,
-								SubscribedAtHlc:  "1740000000000-00001-0000000000000004096",
-								OriginNodeId:     testNodeID,
+								Subscriber:    &ClusterUserRef{NodeId: testNodeID, UserId: 42},
+								Channel:       &ClusterUserRef{NodeId: testNodeID, UserId: 99},
+								SubscribedAtHlc: "1740000000000-00001-0000000000000004096",
+								OriginNodeId:  testNodeID,
 							},
 						},
 					},
@@ -326,7 +317,7 @@ func TestSnapshotSubscriptionRowRoundTrip(t *testing.T) {
 	}
 
 	subscription := decoded.GetSnapshotChunk().GetRows()[0].GetSubscription()
-	if subscription.GetSubscriberUserId() != 42 || subscription.GetChannelUserId() != 99 {
+	if subscription.GetSubscriber().GetUserId() != 42 || subscription.GetChannel().GetUserId() != 99 {
 		t.Fatalf("unexpected snapshot subscription: %+v", subscription)
 	}
 }

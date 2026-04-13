@@ -47,8 +47,7 @@ message ServerEnvelope {
 }
 
 message LoginRequest {
-  int64 node_id = 1;
-  int64 user_id = 2;
+  UserRef user = 1;
   string password = 3;
   repeated MessageCursor seen_messages = 4;
 }
@@ -190,8 +189,7 @@ message UpdateUserResponse {
 message DeleteUserResponse {
   uint64 request_id = 1;
   string status = 2;
-  int64 node_id = 3;
-  int64 user_id = 4;
+  UserRef user = 3;
 }
 
 message ListMessagesResponse {
@@ -275,8 +273,7 @@ message User {
 }
 
 message Message {
-  int64 user_node_id = 1;
-  int64 user_id = 2;
+  UserRef recipient = 1;
   int64 node_id = 3;
   int64 seq = 4;
   UserRef sender = 5;
@@ -295,10 +292,8 @@ message Packet {
 }
 
 message Subscription {
-  int64 subscriber_node_id = 1;
-  int64 subscriber_user_id = 2;
-  int64 channel_node_id = 3;
-  int64 channel_user_id = 4;
+  UserRef subscriber = 1;
+  UserRef channel = 2;
   string subscribed_at = 5;
   string deleted_at = 6;
   int64 origin_node_id = 7;

@@ -120,17 +120,16 @@ func (u User) CanLogin() bool {
 }
 
 type Message struct {
-	UserNodeID int64           `json:"user_node_id"`
-	UserID     int64           `json:"user_id"`
-	NodeID     int64           `json:"node_id"`
-	Seq        int64           `json:"seq"`
-	Sender     UserKey         `json:"sender"`
-	Body       []byte          `json:"body"`
-	CreatedAt  clock.Timestamp `json:"created_at"`
+	Recipient UserKey         `json:"recipient"`
+	NodeID    int64           `json:"node_id"`
+	Seq       int64           `json:"seq"`
+	Sender    UserKey         `json:"sender"`
+	Body      []byte          `json:"body"`
+	CreatedAt clock.Timestamp `json:"created_at"`
 }
 
 func (m Message) UserKey() UserKey {
-	return UserKey{NodeID: m.UserNodeID, UserID: m.UserID}
+	return m.Recipient
 }
 
 type Subscription struct {
@@ -916,13 +915,12 @@ func (s *Store) CreateMessage(ctx context.Context, params CreateMessageParams) (
 		return Message{}, Event{}, err
 	}
 	message := Message{
-		UserNodeID: params.UserKey.NodeID,
-		UserID:     params.UserKey.UserID,
-		NodeID:     s.nodeID,
-		Seq:        seq,
-		Sender:     params.Sender,
-		Body:       append([]byte(nil), params.Body...),
-		CreatedAt:  now,
+		Recipient: params.UserKey,
+		NodeID:    s.nodeID,
+		Seq:       seq,
+		Sender:    params.Sender,
+		Body:      append([]byte(nil), params.Body...),
+		CreatedAt: now,
 	}
 
 	event, err := s.insertEvent(ctx, tx, Event{
@@ -1530,8 +1528,8 @@ func scanMessage(scanner interface {
 	var createdAtRaw string
 
 	if err := scanner.Scan(
-		&message.UserNodeID,
-		&message.UserID,
+		&message.Recipient.NodeID,
+		&message.Recipient.UserID,
 		&message.NodeID,
 		&message.Seq,
 		&message.Sender.NodeID,

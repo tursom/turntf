@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -599,6 +600,26 @@ func TestBootstrapAdminProtectionFollowsSmallestStoredNodeID(t *testing.T) {
 		if demoted.Role == RoleSuperAdmin || demoted.SystemReserved {
 			t.Fatalf("expected larger node root to be demoted on node %d: %+v", st.NodeID(), demoted)
 		}
+	}
+
+	chunkA, err := nodeA.BuildSnapshotChunk(ctx, SnapshotUsersPartition)
+	if err != nil {
+		t.Fatalf("build node A users snapshot: %v", err)
+	}
+	chunkB, err := nodeB.BuildSnapshotChunk(ctx, SnapshotUsersPartition)
+	if err != nil {
+		t.Fatalf("build node B users snapshot: %v", err)
+	}
+	hashA, err := hashSnapshotRows(chunkA.Rows)
+	if err != nil {
+		t.Fatalf("hash node A users snapshot: %v", err)
+	}
+	hashB, err := hashSnapshotRows(chunkB.Rows)
+	if err != nil {
+		t.Fatalf("hash node B users snapshot: %v", err)
+	}
+	if !bytes.Equal(hashA, hashB) {
+		t.Fatalf("expected converged users snapshot hashes, got nodeA=%x nodeB=%x", hashA, hashB)
 	}
 }
 
@@ -1878,6 +1899,66 @@ func TestSnapshotUsersChunkRepairsDeletedUser(t *testing.T) {
 
 	if _, err := target.GetUser(ctx, user.Key()); err != ErrNotFound {
 		t.Fatalf("expected snapshot tombstone to hide user, got %v", err)
+	}
+}
+
+func TestReplicatedReservedUsersKeepSystemReserved(t *testing.T) {
+	t.Parallel()
+
+	now := clock.NewClock(testNodeID(1)).Now()
+	for _, userID := range []int64{BroadcastUserID, NodeIngressUserID} {
+		user, err := userFromCreatedEvent(&proto.UserCreatedEvent{
+			NodeId:              testNodeID(1),
+			UserId:              userID,
+			Username:            "reserved",
+			PasswordHash:        disabledPasswordHash,
+			Profile:             "{}",
+			Role:                RoleUser,
+			SystemReserved:      true,
+			CreatedAtHlc:        now.String(),
+			UpdatedAtHlc:        now.String(),
+			VersionUsername:     now.String(),
+			VersionPasswordHash: now.String(),
+			VersionProfile:      now.String(),
+			VersionRole:         now.String(),
+			OriginNodeId:        testNodeID(1),
+		}, testNodeID(1))
+		if err != nil {
+			t.Fatalf("userFromCreatedEvent(%d): %v", userID, err)
+		}
+		if !user.SystemReserved {
+			t.Fatalf("expected replicated reserved user_id=%d to keep system_reserved", userID)
+		}
+	}
+}
+
+func TestSnapshotUsersChunkKeepsRemoteReservedUsers(t *testing.T) {
+	t.Parallel()
+
+	now := clock.NewClock(testNodeID(1)).Now()
+	for _, userID := range []int64{BroadcastUserID, NodeIngressUserID} {
+		user, err := userFromSnapshotRow(&proto.SnapshotUserRow{
+			NodeId:              testNodeID(1),
+			UserId:              userID,
+			Username:            "reserved",
+			PasswordHash:        disabledPasswordHash,
+			Profile:             "{}",
+			Role:                RoleUser,
+			SystemReserved:      true,
+			CreatedAtHlc:        now.String(),
+			UpdatedAtHlc:        now.String(),
+			VersionUsername:     now.String(),
+			VersionPasswordHash: now.String(),
+			VersionProfile:      now.String(),
+			VersionRole:         now.String(),
+			OriginNodeId:        testNodeID(1),
+		})
+		if err != nil {
+			t.Fatalf("userFromSnapshotRow(%d): %v", userID, err)
+		}
+		if !user.SystemReserved {
+			t.Fatalf("expected snapshot reserved user_id=%d to keep system_reserved", userID)
+		}
 	}
 }
 

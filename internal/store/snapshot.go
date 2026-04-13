@@ -538,7 +538,7 @@ func userFromSnapshotRow(row *clusterproto.SnapshotUserRow) (User, error) {
 		}
 		user.VersionDeleted = &versionDeleted
 	}
-	user.SystemReserved = user.SystemReserved && user.ID == BootstrapAdminUserID
+	user.SystemReserved = user.SystemReserved && isSystemReservedUserID(user.ID)
 	return user, nil
 }
 

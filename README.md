@@ -245,9 +245,9 @@ url = "ws://127.0.0.1:9081/internal/cluster/ws"
 - 登录请求固定使用 `node_id + user_id + password`
 - `GET /ws/client` 登录后复用同一套权限边界：管理员可使用全部 WS RPC；普通用户只能访问本人、本人订阅和原有消息发送权限允许的资源
 - HTTP JSON 消息接口的 `body` 是 base64 编码字节；客户端 WebSocket 和集群协议中的 `body` 是 protobuf `bytes`
-- 用户身份由 `(node_id, user_id)` 二元组定位；`user_id = 1` 是每个节点的 root 候选，当前已存储且 `node_id` 最小的 root 候选是唯一受保护保底超级管理员，不可删除、不可降权、不可改名，允许修改密码
-- `user_id = 2` 是每个节点的系统广播地址，启动时会创建/修复为 `role=broadcast`，不可登录、不可删除、不可由外部 API 创建或修改为该角色
-- `user_id = 3` 是每个节点的系统节点入口地址，启动时会创建/修复为 `role=node`，不可登录、不可删除、不可由外部 API 创建或修改为该角色
+- 用户身份由 `(node_id, user_id)` 二元组定位；`user_id = 1` 是每个节点的 root 候选，但当前已存储且 `node_id` 最小的那条才会保留 `super_admin + system_reserved` 身份，其他节点的 `1` 号用户会在收敛时降级为普通用户；唯一保底超级管理员不可删除、不可降权、不可改名，允许修改密码
+- `user_id = 2` 是每个节点的系统广播地址，启动时会创建/修复为 `role=broadcast + system_reserved`，不可登录、不可删除、不可由外部 API 创建或修改为该角色；该保留标记会通过事件复制和快照修复在集群内保持一致
+- `user_id = 3` 是每个节点的系统节点入口地址，启动时会创建/修复为 `role=node + system_reserved`，不可登录、不可删除、不可由外部 API 创建或修改为该角色；该保留标记也会通过事件复制和快照修复在集群内保持一致
 - 每个节点的前 `1024` 个 `user_id` 都作为保留用户区间，普通用户和普通 channel 会从 `1025` 开始分配
 - `role=channel` 是不可登录的组播地址，管理员可通过 `POST /users` 创建，其他用户订阅后可接收订阅时间之后发送到该 channel 的消息
 

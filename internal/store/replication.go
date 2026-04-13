@@ -402,7 +402,7 @@ func userFromCreatedEvent(data *internalproto.UserCreatedEvent, eventOriginNodeI
 		VersionRole:         versionRole,
 		OriginNodeID:        data.OriginNodeId,
 	}
-	user.SystemReserved = user.SystemReserved && user.ID == BootstrapAdminUserID
+	user.SystemReserved = user.SystemReserved && isSystemReservedUserID(user.ID)
 	return user, nil
 }
 

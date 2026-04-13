@@ -50,6 +50,10 @@ const (
 
 const disabledPasswordHash = "!"
 
+func isSystemReservedUserID(userID int64) bool {
+	return userID == BootstrapAdminUserID || userID == BroadcastUserID || userID == NodeIngressUserID
+}
+
 type Options struct {
 	// NodeID seeds schema_meta.node_id for deterministic tests; production leaves it empty.
 	NodeID            int64
@@ -2081,10 +2085,16 @@ WHERE user_id = ? AND deleted_at_hlc IS NULL
 	now := s.clock.Now().String()
 	if _, err := tx.ExecContext(ctx, `
 UPDATE users
-SET role = ?, system_reserved = 1, updated_at_hlc = ?,
-    version_role = CASE WHEN version_role < ? THEN ? ELSE version_role END
+SET role = ?,
+    system_reserved = 1,
+    updated_at_hlc = ?,
+    version_role = CASE
+        WHEN role != ? AND version_role < ? THEN ?
+        ELSE version_role
+    END
 WHERE node_id = ? AND user_id = ? AND deleted_at_hlc IS NULL
-`, RoleSuperAdmin, now, now, now, minNodeID.Int64, BootstrapAdminUserID); err != nil {
+  AND (role != ? OR system_reserved != 1)
+`, RoleSuperAdmin, now, RoleSuperAdmin, now, now, minNodeID.Int64, BootstrapAdminUserID, RoleSuperAdmin); err != nil {
 		return fmt.Errorf("promote bootstrap admin: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `
@@ -2092,9 +2102,13 @@ UPDATE users
 SET role = CASE WHEN role = ? THEN ? ELSE role END,
     system_reserved = 0,
     updated_at_hlc = ?,
-    version_role = CASE WHEN role = ? AND version_role < ? THEN ? ELSE version_role END
+    version_role = CASE
+        WHEN role = ? AND version_role < ? THEN ?
+        ELSE version_role
+    END
 WHERE user_id = ? AND node_id != ? AND deleted_at_hlc IS NULL
-`, RoleSuperAdmin, RoleUser, now, RoleSuperAdmin, now, now, BootstrapAdminUserID, minNodeID.Int64); err != nil {
+  AND (role = ? OR system_reserved != 0)
+`, RoleSuperAdmin, RoleUser, now, RoleSuperAdmin, now, now, BootstrapAdminUserID, minNodeID.Int64, RoleSuperAdmin); err != nil {
 		return fmt.Errorf("demote non-owner bootstrap admins: %w", err)
 	}
 	return nil

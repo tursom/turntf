@@ -225,7 +225,7 @@ ServerEnvelope {
 - 用户管理：`create_user`、`get_user`、`update_user`、`delete_user`
 - 消息与订阅查询：`list_messages`、`list_subscriptions`
 - 订阅管理：`subscribe_channel`、`unsubscribe_channel`
-- 运维查询：`list_events`、`operations_status`、`metrics`
+- 集群与运维查询：`list_cluster_nodes`、`list_node_logged_in_users`、`list_events`、`operations_status`、`metrics`
 
 示例：管理员创建用户
 
@@ -302,9 +302,59 @@ ServerEnvelope {
 }
 ```
 
+示例：普通用户查询已连接集群节点
+
+```protobuf
+ClientEnvelope {
+  list_cluster_nodes: ListClusterNodesRequest { request_id: 1004 }
+}
+```
+
+示例：普通用户查询某个节点当前已登录用户
+
+`node_id` 表示最终目标节点，可以是非直连节点。只要集群路由可达，服务端会在节点间多跳转发该查询；查询与响应都会按当前节点路由继续转发，不要求原路返回。该查询链路带有内部最大跳数限制，超过限制或无可达路由时会返回 `service_unavailable`。
+
+```protobuf
+ClientEnvelope {
+  list_node_logged_in_users: ListNodeLoggedInUsersRequest {
+    request_id: 1005
+    node_id: 4096
+  }
+}
+```
+
+```protobuf
+ServerEnvelope {
+  list_node_logged_in_users_response: ListNodeLoggedInUsersResponse {
+    request_id: 1005
+    target_node_id: 4096
+    items: [
+      { node_id: 4096, user_id: 1025, username: "alice" },
+      { node_id: 4096, user_id: 1026, username: "bob" }
+    ]
+    count: 2
+  }
+}
+```
+
+```protobuf
+ServerEnvelope {
+  list_cluster_nodes_response: ListClusterNodesResponse {
+    request_id: 1004
+    items: [
+      { node_id: 4096, is_local: true },
+      { node_id: 8192, is_local: false, configured_url: "ws://127.0.0.1:9081/internal/cluster/ws" }
+    ]
+    count: 2
+  }
+}
+```
+
 权限边界与 HTTP 完全一致：
 
 - `create_user`、`update_user`、`delete_user`、`list_events`、`operations_status`、`metrics` 仅管理员可用。
+- `list_cluster_nodes` 只要求当前连接已登录，普通用户可用。
+- `list_node_logged_in_users` 只要求当前连接已登录，普通用户可用；目标节点不可达时返回错误，不返回空列表。
 - `get_user` 允许本人或管理员。
 - `list_messages` 对可登录用户允许本人或管理员；对 channel/broadcast 目标仅管理员可直接查询。
 - `subscribe_channel`、`unsubscribe_channel`、`list_subscriptions` 允许本人或管理员。

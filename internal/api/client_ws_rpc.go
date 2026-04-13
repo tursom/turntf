@@ -333,6 +333,59 @@ func (s *clientWSSession) handleOperationsStatus(ctx context.Context, req *inter
 	})
 }
 
+func (s *clientWSSession) handleListClusterNodes(ctx context.Context, req *internalproto.ListClusterNodesRequest) error {
+	if req == nil {
+		return s.writeError("invalid_request", "list_cluster_nodes cannot be empty", 0)
+	}
+	if err := s.requireAuthenticatedPrincipal(); err != nil {
+		return s.writeStoreOrRequestError(req.RequestId, err)
+	}
+	nodes, err := s.http.service.ClusterNodes(ctx)
+	if err != nil {
+		return s.writeStoreOrRequestError(req.RequestId, err)
+	}
+	items := make([]*internalproto.ClusterNode, 0, len(nodes.Nodes))
+	for _, node := range nodes.Nodes {
+		items = append(items, clientProtoClusterNode(node))
+	}
+	return s.writeEnvelope(&internalproto.ServerEnvelope{
+		Body: &internalproto.ServerEnvelope_ListClusterNodesResponse{
+			ListClusterNodesResponse: &internalproto.ListClusterNodesResponse{
+				RequestId: req.RequestId,
+				Items:     items,
+				Count:     int32(len(items)),
+			},
+		},
+	})
+}
+
+func (s *clientWSSession) handleListNodeLoggedInUsers(ctx context.Context, req *internalproto.ListNodeLoggedInUsersRequest) error {
+	if req == nil {
+		return s.writeError("invalid_request", "list_node_logged_in_users cannot be empty", 0)
+	}
+	if err := s.requireAuthenticatedPrincipal(); err != nil {
+		return s.writeStoreOrRequestError(req.RequestId, err)
+	}
+	users, err := s.http.service.ListNodeLoggedInUsers(ctx, req.NodeId)
+	if err != nil {
+		return s.writeStoreOrRequestError(req.RequestId, err)
+	}
+	items := make([]*internalproto.LoggedInUser, 0, len(users.Items))
+	for _, user := range users.Items {
+		items = append(items, clientProtoLoggedInUser(user))
+	}
+	return s.writeEnvelope(&internalproto.ServerEnvelope{
+		Body: &internalproto.ServerEnvelope_ListNodeLoggedInUsersResponse{
+			ListNodeLoggedInUsersResponse: &internalproto.ListNodeLoggedInUsersResponse{
+				RequestId:    req.RequestId,
+				TargetNodeId: users.TargetNodeID,
+				Items:        items,
+				Count:        int32(len(items)),
+			},
+		},
+	})
+}
+
 func (s *clientWSSession) handleMetrics(ctx context.Context, req *internalproto.MetricsRequest) error {
 	if req == nil {
 		return s.writeError("invalid_request", "metrics cannot be empty", 0)
@@ -356,6 +409,13 @@ func (s *clientWSSession) handleMetrics(ctx context.Context, req *internalproto.
 
 func (s *clientWSSession) requireAdminPrincipal() error {
 	if s.principal == nil || !isAdminRole(s.principal.User.Role) {
+		return store.ErrForbidden
+	}
+	return nil
+}
+
+func (s *clientWSSession) requireAuthenticatedPrincipal() error {
+	if s.principal == nil {
 		return store.ErrForbidden
 	}
 	return nil
@@ -492,6 +552,22 @@ func clientProtoOperationsStatus(status operationsStatus) *internalproto.Operati
 	}
 }
 
+func clientProtoClusterNode(node clusterNodeResponse) *internalproto.ClusterNode {
+	return &internalproto.ClusterNode{
+		NodeId:        node.NodeID,
+		IsLocal:       node.IsLocal,
+		ConfiguredUrl: node.ConfiguredURL,
+	}
+}
+
+func clientProtoLoggedInUser(user loggedInUserResponse) *internalproto.LoggedInUser {
+	return &internalproto.LoggedInUser{
+		NodeId:   user.NodeID,
+		UserId:   user.UserID,
+		Username: user.Username,
+	}
+}
+
 func (s *clientWSSession) writeStoreOrRequestError(requestID uint64, err error) error {
 	code := "internal_error"
 	message := "internal server error"
@@ -499,6 +575,9 @@ func (s *clientWSSession) writeStoreOrRequestError(requestID uint64, err error) 
 	case errors.Is(err, app.ErrClockNotSynchronized):
 		code = "service_unavailable"
 		message = app.ErrClockNotSynchronized.Error()
+	case errors.Is(err, app.ErrServiceUnavailable):
+		code = "service_unavailable"
+		message = err.Error()
 	case errors.Is(err, store.ErrForbidden):
 		code = "forbidden"
 		message = "forbidden"

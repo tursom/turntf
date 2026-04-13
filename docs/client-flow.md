@@ -29,7 +29,7 @@
 6. 客户端发送第一帧 `ClientEnvelope.login`，携带 `node_id`、`user_id`、`password` 和本地已持久化游标 `seen_messages`。
 7. 服务端返回 `LoginResponse`，随后补发当前用户可见且未见过的历史消息。
 8. 客户端收到 `MessagePushed` 后先落库，再保存 `(node_id, seq)` 游标，最后可选发送 `AckMessage`。
-9. 客户端可继续通过同一条 WebSocket 发送查询或管理 RPC，例如 `get_user`、`list_messages`、`subscribe_channel`、`list_events`、`metrics`。
+9. 客户端可继续通过同一条 WebSocket 发送查询或管理 RPC，例如 `get_user`、`list_messages`、`subscribe_channel`、`list_cluster_nodes`、`list_events`、`metrics`。
 10. 客户端通过同一条 WebSocket 发送 `SendMessageRequest` 写普通持久化消息。
 11. 如需向在线目标用户发送非持久化数据包，客户端直接把 `target` 设为最终目标用户，并把 `delivery_kind` 设为 `TRANSIENT`。
 12. 网络断开后，客户端用本地游标重连，服务端按 `seen_messages` 跳过已持久化消息。

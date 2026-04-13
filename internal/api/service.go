@@ -6,6 +6,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/tursom/turntf/internal/app"
 	"github.com/tursom/turntf/internal/store"
 )
 
@@ -21,6 +22,14 @@ type TransientPacketReceiver interface {
 	ReceiveTransientPacket(store.TransientPacket) bool
 }
 
+type LoggedInUserProvider interface {
+	ListLoggedInUsers(context.Context) ([]app.LoggedInUserSummary, error)
+}
+
+type LoggedInUserQuerier interface {
+	QueryLoggedInUsers(context.Context, int64) ([]app.LoggedInUserSummary, error)
+}
+
 type noopEventSink struct{}
 
 func (noopEventSink) Publish(store.Event) {}
@@ -34,6 +43,8 @@ type Service struct {
 	eventSink       EventSink
 	writeGate       WriteGate
 	transientRouter TransientPacketRouter
+	localUsers      LoggedInUserProvider
+	remoteUsers     LoggedInUserQuerier
 	transientRecvMu sync.RWMutex
 	transientRecv   TransientPacketReceiver
 	nextTransientID atomic.Uint64
@@ -52,11 +63,16 @@ func New(st *store.Store, eventSink EventSink) *Service {
 	if router, ok := eventSink.(TransientPacketRouter); ok {
 		transientRouter = router
 	}
+	var remoteUsers LoggedInUserQuerier
+	if querier, ok := eventSink.(LoggedInUserQuerier); ok {
+		remoteUsers = querier
+	}
 	return &Service{
 		store:           st,
 		eventSink:       eventSink,
 		writeGate:       writeGate,
 		transientRouter: transientRouter,
+		remoteUsers:     remoteUsers,
 	}
 }
 
@@ -120,6 +136,10 @@ func (s *Service) SetTransientPacketReceiver(receiver TransientPacketReceiver) {
 	s.transientRecvMu.Lock()
 	defer s.transientRecvMu.Unlock()
 	s.transientRecv = receiver
+}
+
+func (s *Service) SetLoggedInUserProvider(provider LoggedInUserProvider) {
+	s.localUsers = provider
 }
 
 func (s *Service) DispatchTransientPacket(ctx context.Context, recipient store.UserKey, sender store.UserKey, body []byte, mode store.DeliveryMode) (store.TransientPacket, error) {

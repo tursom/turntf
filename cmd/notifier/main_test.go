@@ -369,6 +369,76 @@ func TestHashCommandRejectsEmptyPassword(t *testing.T) {
 	}
 }
 
+func TestResolvePasswordInputUsesHiddenPromptForTerminal(t *testing.T) {
+	t.Parallel()
+
+	file, err := os.CreateTemp(t.TempDir(), "tty")
+	if err != nil {
+		t.Fatalf("create temp file: %v", err)
+	}
+	defer file.Close()
+
+	originalIsTerminal := isTerminalFile
+	originalReadPassword := readPasswordLineFile
+	t.Cleanup(func() {
+		isTerminalFile = originalIsTerminal
+		readPasswordLineFile = originalReadPassword
+	})
+
+	isTerminalFile = func(*os.File) bool { return true }
+	var reads int
+	readPasswordLineFile = func(*os.File) (string, error) {
+		reads++
+		return "secret\n", nil
+	}
+
+	var stdout bytes.Buffer
+	password, err := resolvePasswordInput(&stdout, file, "", false)
+	if err != nil {
+		t.Fatalf("resolve password input: %v", err)
+	}
+	if password != "secret" {
+		t.Fatalf("unexpected password: %q", password)
+	}
+	if reads != 2 {
+		t.Fatalf("expected two hidden reads, got %d", reads)
+	}
+	if got := stdout.String(); got != "Password: \nConfirm password: \n" {
+		t.Fatalf("unexpected prompt output: %q", got)
+	}
+}
+
+func TestResolvePasswordInputRejectsMismatchedTerminalPasswords(t *testing.T) {
+	t.Parallel()
+
+	file, err := os.CreateTemp(t.TempDir(), "tty")
+	if err != nil {
+		t.Fatalf("create temp file: %v", err)
+	}
+	defer file.Close()
+
+	originalIsTerminal := isTerminalFile
+	originalReadPassword := readPasswordLineFile
+	t.Cleanup(func() {
+		isTerminalFile = originalIsTerminal
+		readPasswordLineFile = originalReadPassword
+	})
+
+	isTerminalFile = func(*os.File) bool { return true }
+	passwords := []string{"secret\n", "different\n"}
+	readPasswordLineFile = func(*os.File) (string, error) {
+		next := passwords[0]
+		passwords = passwords[1:]
+		return next, nil
+	}
+
+	var stdout bytes.Buffer
+	_, err = resolvePasswordInput(&stdout, file, "", false)
+	if err == nil || !strings.Contains(err.Error(), "passwords do not match") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestLoadServeRuntimeConfigUsesDefaultAuthTokenTTL(t *testing.T) {
 	t.Parallel()
 

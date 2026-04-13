@@ -227,6 +227,7 @@ url = "ws://127.0.0.1:9081/internal/cluster/ws"
 - `POST /nodes/{node_id}/users/{user_id}/subscriptions`
 - `DELETE /nodes/{node_id}/users/{user_id}/subscriptions/{channel_node_id}/{channel_user_id}`
 - `GET /nodes/{node_id}/users/{user_id}/subscriptions`
+- `GET /cluster/nodes`
 - `GET /events?after=0&limit=100`
 - `GET /ops/status`
 - `GET /metrics`
@@ -237,6 +238,7 @@ url = "ws://127.0.0.1:9081/internal/cluster/ws"
 
 - `GET /healthz` 和 `POST /auth/login` 公开
 - `POST /users`、`PATCH /nodes/{node_id}/users/{user_id}`、`DELETE /nodes/{node_id}/users/{user_id}`、`GET /events`、`GET /ops/status`、`GET /metrics` 需要管理员或保底超级管理员
+- `GET /cluster/nodes` 需要登录，但普通用户即可访问；只返回当前节点视角下已连接的集群节点列表
 - `GET /nodes/{node_id}/users/{user_id}` 允许本人或管理员访问
 - `GET /nodes/{node_id}/users/{user_id}/messages` 对可登录用户允许本人或管理员访问；对 `role=channel` 或 `role=broadcast` 地址仅管理员可直接查询原始消息
 - `POST /nodes/{node_id}/users/{user_id}/messages` 需要登录；普通用户只能给自己或已订阅的 `role=channel` 地址写消息，管理员可给任意地址写消息，包括广播地址
@@ -275,6 +277,7 @@ url = "ws://127.0.0.1:9081/internal/cluster/ws"
 - 瞬时包动态路由只服务 `(node_id, 3)` 地址，主代价按链路平滑 RTT 加抖动惩罚计算；hop 数仅用于 TTL 防环，不作为主选路指标
 - 瞬时包支持 `best_effort` 和 `route_retry` 两种模式；`route_retry` 只使用内存 TTL 重试队列，节点重启后即丢失
 - 所有集群 `Envelope` 在收发两端都使用 `cluster.secret` 做 HMAC 鉴权
+- `/cluster/nodes` 提供已登录用户可访问的已连接集群节点列表，仅包含 `node_id`、`is_local`、`configured_url`
 - `/ops/status` 提供管理员可访问的本节点运维快照，包括 peer 状态、未确认事件、反熵进度、冲突数和消息裁剪统计
 - `/metrics` 提供无额外依赖的 Prometheus 文本指标，指标名使用 `notifier_*` 前缀
 - 服务日志使用 zerolog；控制台输出易读文本，配置 `logging.file_path` 后同时写入 JSON 行日志文件

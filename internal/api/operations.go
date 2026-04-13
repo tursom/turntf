@@ -19,6 +19,28 @@ type clusterStatusProvider interface {
 	ConfiguredPeerNodeIDs() []int64
 }
 
+type clusterNodeResponse struct {
+	NodeID        int64  `json:"node_id"`
+	IsLocal       bool   `json:"is_local"`
+	ConfiguredURL string `json:"configured_url"`
+}
+
+type clusterNodesResponse struct {
+	Nodes []clusterNodeResponse `json:"nodes"`
+}
+
+type loggedInUserResponse struct {
+	NodeID   int64  `json:"node_id"`
+	UserID   int64  `json:"user_id"`
+	Username string `json:"username"`
+}
+
+type nodeLoggedInUsersResponse struct {
+	TargetNodeID int64                  `json:"target_node_id"`
+	Items        []loggedInUserResponse `json:"items"`
+	Count        int                    `json:"count"`
+}
+
 type operationsStatus struct {
 	NodeID            int64                `json:"node_id"`
 	MessageWindowSize int                  `json:"message_window_size"`
@@ -113,6 +135,73 @@ func (s *Service) OperationsStatus(ctx context.Context) (operationsStatus, error
 		response.MessageWindowSize = clusterStatus.MessageWindowSize
 	}
 	return response, nil
+}
+
+func (s *Service) ClusterNodes(ctx context.Context) (clusterNodesResponse, error) {
+	nodeID := s.store.NodeID()
+	nodes := []clusterNodeResponse{{
+		NodeID:        nodeID,
+		IsLocal:       true,
+		ConfiguredURL: "",
+	}}
+
+	if provider, ok := s.eventSink.(clusterStatusProvider); ok {
+		status, err := provider.Status(ctx)
+		if err != nil {
+			return clusterNodesResponse{}, err
+		}
+		if status.NodeID > 0 {
+			nodes[0].NodeID = status.NodeID
+		}
+		nodes = append(nodes, connectedClusterNodes(status.Peers)...)
+	}
+
+	sort.Slice(nodes, func(i, j int) bool {
+		if nodes[i].IsLocal != nodes[j].IsLocal {
+			return nodes[i].IsLocal
+		}
+		return nodes[i].NodeID < nodes[j].NodeID
+	})
+	return clusterNodesResponse{Nodes: nodes}, nil
+}
+
+func (s *Service) ListNodeLoggedInUsers(ctx context.Context, nodeID int64) (nodeLoggedInUsersResponse, error) {
+	if nodeID <= 0 {
+		return nodeLoggedInUsersResponse{}, fmt.Errorf("%w: node_id must be positive", store.ErrInvalidInput)
+	}
+
+	var (
+		users []app.LoggedInUserSummary
+		err   error
+	)
+	if nodeID == s.store.NodeID() {
+		if s.localUsers == nil {
+			return nodeLoggedInUsersResponse{}, fmt.Errorf("%w: local logged-in users provider is not configured", app.ErrServiceUnavailable)
+		}
+		users, err = s.localUsers.ListLoggedInUsers(ctx)
+	} else {
+		if s.remoteUsers == nil {
+			return nodeLoggedInUsersResponse{}, fmt.Errorf("%w: cluster logged-in user query is not configured", app.ErrServiceUnavailable)
+		}
+		users, err = s.remoteUsers.QueryLoggedInUsers(ctx, nodeID)
+	}
+	if err != nil {
+		return nodeLoggedInUsersResponse{}, err
+	}
+
+	items := make([]loggedInUserResponse, 0, len(users))
+	for _, user := range users {
+		items = append(items, loggedInUserResponse{
+			NodeID:   user.NodeID,
+			UserID:   user.UserID,
+			Username: user.Username,
+		})
+	}
+	return nodeLoggedInUsersResponse{
+		TargetNodeID: nodeID,
+		Items:        items,
+		Count:        len(items),
+	}, nil
 }
 
 func (s *Service) Metrics(ctx context.Context) (string, error) {
@@ -262,6 +351,24 @@ func mergePeerOrigins(storeOrigins []peerOriginStatusResponse, clusterOrigins []
 		origins = append(origins, origin)
 	}
 	return origins
+}
+
+func connectedClusterNodes(peers []app.ClusterPeerStatus) []clusterNodeResponse {
+	nodes := make([]clusterNodeResponse, 0, len(peers))
+	for _, peer := range peers {
+		if !peer.Connected || peer.NodeID <= 0 {
+			continue
+		}
+		nodes = append(nodes, clusterNodeResponse{
+			NodeID:        peer.NodeID,
+			IsLocal:       false,
+			ConfiguredURL: peer.ConfiguredURL,
+		})
+	}
+	sort.Slice(nodes, func(i, j int) bool {
+		return nodes[i].NodeID < nodes[j].NodeID
+	})
+	return nodes
 }
 
 func timestampString(ts *clock.Timestamp) string {

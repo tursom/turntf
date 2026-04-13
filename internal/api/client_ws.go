@@ -280,6 +280,19 @@ func (s *clientWSSession) readLoop(ctx context.Context) error {
 			if err := s.handleOperationsStatus(ctx, body.OperationsStatus); err != nil {
 				return err
 			}
+		case *internalproto.ClientEnvelope_ListClusterNodes:
+			s.logRequest("list_cluster_nodes", requestIDForClientEnvelopeBody(body)).
+				Msg("client websocket request")
+			if err := s.handleListClusterNodes(ctx, body.ListClusterNodes); err != nil {
+				return err
+			}
+		case *internalproto.ClientEnvelope_ListNodeLoggedInUsers:
+			s.logRequest("list_node_logged_in_users", requestIDForClientEnvelopeBody(body)).
+				Int64("target_node_id", body.ListNodeLoggedInUsers.GetNodeId()).
+				Msg("client websocket request")
+			if err := s.handleListNodeLoggedInUsers(ctx, body.ListNodeLoggedInUsers); err != nil {
+				return err
+			}
 		case *internalproto.ClientEnvelope_Metrics:
 			s.logRequest("metrics", requestIDForClientEnvelopeBody(body)).
 				Msg("client websocket request")
@@ -596,6 +609,10 @@ func requestIDForClientEnvelopeBody(body any) uint64 {
 		return req.ListEvents.GetRequestId()
 	case *internalproto.ClientEnvelope_OperationsStatus:
 		return req.OperationsStatus.GetRequestId()
+	case *internalproto.ClientEnvelope_ListClusterNodes:
+		return req.ListClusterNodes.GetRequestId()
+	case *internalproto.ClientEnvelope_ListNodeLoggedInUsers:
+		return req.ListNodeLoggedInUsers.GetRequestId()
 	case *internalproto.ClientEnvelope_Metrics:
 		return req.Metrics.GetRequestId()
 	case *internalproto.ClientEnvelope_AckMessage:
@@ -646,11 +663,11 @@ func clientProtoUser(user store.User) *internalproto.User {
 
 func clientProtoMessage(message store.Message) *internalproto.Message {
 	return &internalproto.Message{
-		Recipient:   &internalproto.UserRef{NodeId: message.Recipient.NodeID, UserId: message.Recipient.UserID},
-		NodeId:      message.NodeID,
-		Seq:         message.Seq,
-		Sender:      &internalproto.UserRef{NodeId: message.Sender.NodeID, UserId: message.Sender.UserID},
-		Body:        append([]byte(nil), message.Body...),
+		Recipient:    &internalproto.UserRef{NodeId: message.Recipient.NodeID, UserId: message.Recipient.UserID},
+		NodeId:       message.NodeID,
+		Seq:          message.Seq,
+		Sender:       &internalproto.UserRef{NodeId: message.Sender.NodeID, UserId: message.Sender.UserID},
+		Body:         append([]byte(nil), message.Body...),
 		CreatedAtHlc: message.CreatedAt.String(),
 	}
 }

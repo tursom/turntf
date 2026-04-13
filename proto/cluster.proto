@@ -19,6 +19,8 @@ message Envelope {
     TimeSyncResponse time_sync_response = 11;
     RoutingUpdate routing_update = 13;
     TransientPacket transient_packet = 14;
+    QueryLoggedInUsersRequest query_logged_in_users_request = 15;
+    QueryLoggedInUsersResponse query_logged_in_users_response = 16;
   }
   bytes hmac = 12;
 }
@@ -238,6 +240,29 @@ message TimeSyncResponse {
   int64 client_send_time_ms = 2;
   int64 server_receive_time_ms = 3;
   int64 server_send_time_ms = 4;
+}
+
+message QueryLoggedInUsersRequest {
+  uint64 request_id = 1;
+  int64 target_node_id = 2;
+  int64 origin_node_id = 3;
+  int32 remaining_hops = 4;
+}
+
+message QueryLoggedInUsersResponse {
+  uint64 request_id = 1;
+  int64 target_node_id = 2;
+  repeated ClusterLoggedInUser items = 3;
+  string error_code = 4;
+  string error_message = 5;
+  int64 origin_node_id = 6;
+  int32 remaining_hops = 7;
+}
+
+message ClusterLoggedInUser {
+  int64 node_id = 1;
+  int64 user_id = 2;
+  string username = 3;
 }
 
 message RoutingUpdate {

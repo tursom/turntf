@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -15,6 +16,7 @@ import (
 	"github.com/gorilla/websocket"
 	gproto "google.golang.org/protobuf/proto"
 
+	"github.com/tursom/turntf/internal/app"
 	"github.com/tursom/turntf/internal/auth"
 	internalproto "github.com/tursom/turntf/internal/proto"
 	"github.com/tursom/turntf/internal/store"
@@ -23,6 +25,38 @@ import (
 type authenticatedTestAPI struct {
 	handler http.Handler
 	http    *HTTP
+}
+
+type fakeClusterStatusSink struct {
+	status app.ClusterStatus
+}
+
+func (s fakeClusterStatusSink) Publish(store.Event) {}
+
+func (s fakeClusterStatusSink) Status(context.Context) (app.ClusterStatus, error) {
+	return s.status, nil
+}
+
+func (s fakeClusterStatusSink) ConfiguredPeerNodeIDs() []int64 {
+	ids := make([]int64, 0, len(s.status.Peers))
+	for _, peer := range s.status.Peers {
+		if peer.NodeID > 0 {
+			ids = append(ids, peer.NodeID)
+		}
+	}
+	return ids
+}
+
+type fakeLoggedInUsersSink struct {
+	fakeClusterStatusSink
+	query func(context.Context, int64) ([]app.LoggedInUserSummary, error)
+}
+
+func (s fakeLoggedInUsersSink) QueryLoggedInUsers(ctx context.Context, nodeID int64) ([]app.LoggedInUserSummary, error) {
+	if s.query == nil {
+		return nil, nil
+	}
+	return s.query(ctx, nodeID)
 }
 
 func TestAuthenticatedHTTPLoginAndAuthorization(t *testing.T) {
@@ -157,7 +191,123 @@ func TestAuthenticatedHTTPLoginAndAuthorization(t *testing.T) {
 	}, http.StatusOK)
 }
 
+func TestClusterNodesHTTPRequiresAuthenticationAndAllowsUsers(t *testing.T) {
+	t.Parallel()
+
+	testAPI := newAuthenticatedTestAPIWithSink(t, fakeClusterStatusSink{
+		status: app.ClusterStatus{
+			NodeID: testNodeID(1),
+			Peers: []app.ClusterPeerStatus{
+				{NodeID: testNodeID(2), ConfiguredURL: "ws://127.0.0.1:9081/internal/cluster/ws", Connected: true},
+				{NodeID: testNodeID(3), ConfiguredURL: "ws://127.0.0.1:9082/internal/cluster/ws", Connected: false},
+				{ConfiguredURL: "ws://127.0.0.1:9083/internal/cluster/ws", Connected: true},
+			},
+		},
+	})
+
+	doJSONWithHeaders(t, testAPI.handler, http.MethodGet, "/cluster/nodes", nil, nil, http.StatusUnauthorized)
+
+	adminKey := store.UserKey{NodeID: testNodeID(1), UserID: store.BootstrapAdminUserID}
+	adminToken := loginToken(t, testAPI.handler, adminKey, "root-password")
+	aliceKey := createUserAs(t, testAPI.handler, adminToken, "alice", "alice-password", store.RoleUser)
+	aliceToken := loginToken(t, testAPI.handler, aliceKey, "alice-password")
+
+	var nodes struct {
+		Nodes []struct {
+			NodeID        int64  `json:"node_id"`
+			IsLocal       bool   `json:"is_local"`
+			ConfiguredURL string `json:"configured_url"`
+		} `json:"nodes"`
+	}
+	mustJSON(t, doJSONWithHeaders(t, testAPI.handler, http.MethodGet, "/cluster/nodes", nil, map[string]string{
+		"Authorization": "Bearer " + aliceToken,
+	}, http.StatusOK), &nodes)
+	if len(nodes.Nodes) != 2 {
+		t.Fatalf("unexpected cluster nodes: %+v", nodes)
+	}
+	if !nodes.Nodes[0].IsLocal || nodes.Nodes[0].NodeID != testNodeID(1) || nodes.Nodes[0].ConfiguredURL != "" {
+		t.Fatalf("unexpected local cluster node: %+v", nodes.Nodes[0])
+	}
+	if nodes.Nodes[1].IsLocal || nodes.Nodes[1].NodeID != testNodeID(2) || nodes.Nodes[1].ConfiguredURL != "ws://127.0.0.1:9081/internal/cluster/ws" {
+		t.Fatalf("unexpected peer cluster node: %+v", nodes.Nodes[1])
+	}
+}
+
+func TestNodeLoggedInUsersHTTPRequiresAuthenticationAndReturnsDeduplicatedUsers(t *testing.T) {
+	t.Parallel()
+
+	testAPI := newAuthenticatedTestAPI(t)
+	server := httptest.NewServer(testAPI.handler)
+	defer server.Close()
+
+	doJSONWithHeaders(t, testAPI.handler, http.MethodGet, "/cluster/nodes/4096/logged-in-users", nil, nil, http.StatusUnauthorized)
+
+	adminKey := store.UserKey{NodeID: testNodeID(1), UserID: store.BootstrapAdminUserID}
+	adminToken := loginToken(t, testAPI.handler, adminKey, "root-password")
+	aliceKey := createUserAs(t, testAPI.handler, adminToken, "alice", "alice-password", store.RoleUser)
+	bobKey := createUserAs(t, testAPI.handler, adminToken, "bob", "bob-password", store.RoleUser)
+	aliceToken := loginToken(t, testAPI.handler, aliceKey, "alice-password")
+
+	connA1 := dialClientWebSocket(t, server.URL)
+	defer connA1.Close()
+	loginClientWebSocket(t, connA1, aliceKey, "alice-password")
+
+	connA2 := dialClientWebSocket(t, server.URL)
+	defer connA2.Close()
+	loginClientWebSocket(t, connA2, aliceKey, "alice-password")
+
+	connB := dialClientWebSocket(t, server.URL)
+	defer connB.Close()
+	loginClientWebSocket(t, connB, bobKey, "bob-password")
+
+	var resp struct {
+		TargetNodeID int64 `json:"target_node_id"`
+		Count        int   `json:"count"`
+		Items        []struct {
+			NodeID   int64  `json:"node_id"`
+			UserID   int64  `json:"user_id"`
+			Username string `json:"username"`
+		} `json:"items"`
+	}
+	mustJSON(t, doJSONWithHeaders(t, testAPI.handler, http.MethodGet, "/cluster/nodes/4096/logged-in-users", nil, map[string]string{
+		"Authorization": "Bearer " + aliceToken,
+	}, http.StatusOK), &resp)
+	if resp.TargetNodeID != testNodeID(1) || resp.Count != 2 || len(resp.Items) != 2 {
+		t.Fatalf("unexpected logged-in users response: %+v", resp)
+	}
+	if resp.Items[0].NodeID != aliceKey.NodeID || resp.Items[0].UserID != aliceKey.UserID || resp.Items[0].Username != "alice" {
+		t.Fatalf("unexpected first logged-in user: %+v", resp.Items[0])
+	}
+	if resp.Items[1].NodeID != bobKey.NodeID || resp.Items[1].UserID != bobKey.UserID || resp.Items[1].Username != "bob" {
+		t.Fatalf("unexpected second logged-in user: %+v", resp.Items[1])
+	}
+}
+
+func TestNodeLoggedInUsersHTTPReturns503WhenRemoteNodeUnavailable(t *testing.T) {
+	t.Parallel()
+
+	testAPI := newAuthenticatedTestAPIWithSink(t, fakeLoggedInUsersSink{
+		query: func(context.Context, int64) ([]app.LoggedInUserSummary, error) {
+			return nil, fmt.Errorf("%w: node 8192 is not connected", app.ErrServiceUnavailable)
+		},
+	})
+
+	adminKey := store.UserKey{NodeID: testNodeID(1), UserID: store.BootstrapAdminUserID}
+	adminToken := loginToken(t, testAPI.handler, adminKey, "root-password")
+	aliceKey := createUserAs(t, testAPI.handler, adminToken, "alice", "alice-password", store.RoleUser)
+	aliceToken := loginToken(t, testAPI.handler, aliceKey, "alice-password")
+
+	doJSONWithHeaders(t, testAPI.handler, http.MethodGet, "/cluster/nodes/8192/logged-in-users", nil, map[string]string{
+		"Authorization": "Bearer " + aliceToken,
+	}, http.StatusServiceUnavailable)
+}
+
 func newAuthenticatedTestAPI(t *testing.T) authenticatedTestAPI {
+	t.Helper()
+	return newAuthenticatedTestAPIWithSink(t, nil)
+}
+
+func newAuthenticatedTestAPIWithSink(t *testing.T, sink EventSink) authenticatedTestAPI {
 	t.Helper()
 
 	dbPath := filepath.Join(t.TempDir(), "auth-api.db")
@@ -185,7 +335,7 @@ func newAuthenticatedTestAPI(t *testing.T) authenticatedTestAPI {
 		t.Fatalf("new signer: %v", err)
 	}
 
-	httpAPI := NewHTTP(New(st, nil), HTTPOptions{
+	httpAPI := NewHTTP(New(st, sink), HTTPOptions{
 		NodeID:   testNodeID(1),
 		Signer:   signer,
 		TokenTTL: time.Hour,
@@ -231,6 +381,123 @@ func TestClientWebSocketLoginAndPushesBytesMessages(t *testing.T) {
 	pushed := readServerEnvelope(t, conn).GetMessagePushed()
 	if pushed == nil || !senderMatchesRef(pushed.Message.GetSender(), adminKey) || string(pushed.Message.GetBody()) != string(body) {
 		t.Fatalf("unexpected pushed message: %+v", pushed)
+	}
+}
+
+func TestClientWebSocketListClusterNodesAllowsUsers(t *testing.T) {
+	t.Parallel()
+
+	testAPI := newAuthenticatedTestAPIWithSink(t, fakeClusterStatusSink{
+		status: app.ClusterStatus{
+			NodeID: testNodeID(1),
+			Peers: []app.ClusterPeerStatus{
+				{NodeID: testNodeID(2), ConfiguredURL: "ws://127.0.0.1:9081/internal/cluster/ws", Connected: true},
+				{NodeID: testNodeID(3), ConfiguredURL: "ws://127.0.0.1:9082/internal/cluster/ws", Connected: false},
+			},
+		},
+	})
+	server := httptest.NewServer(testAPI.handler)
+	defer server.Close()
+
+	adminKey := store.UserKey{NodeID: testNodeID(1), UserID: store.BootstrapAdminUserID}
+	adminToken := loginToken(t, testAPI.handler, adminKey, "root-password")
+	aliceKey := createUserAs(t, testAPI.handler, adminToken, "alice", "alice-password", store.RoleUser)
+
+	conn := dialClientWebSocket(t, server.URL)
+	defer conn.Close()
+	loginClientWebSocket(t, conn, aliceKey, "alice-password")
+
+	writeClientEnvelope(t, conn, &internalproto.ClientEnvelope{
+		Body: &internalproto.ClientEnvelope_ListClusterNodes{
+			ListClusterNodes: &internalproto.ListClusterNodesRequest{RequestId: 99},
+		},
+	})
+	resp := readServerEnvelope(t, conn).GetListClusterNodesResponse()
+	if resp == nil || resp.RequestId != 99 || resp.Count != 2 {
+		t.Fatalf("unexpected list cluster nodes response: %+v", resp)
+	}
+	if resp.Items[0].GetNodeId() != testNodeID(1) || !resp.Items[0].GetIsLocal() || resp.Items[0].GetConfiguredUrl() != "" {
+		t.Fatalf("unexpected local cluster node: %+v", resp.Items[0])
+	}
+	if resp.Items[1].GetNodeId() != testNodeID(2) || resp.Items[1].GetIsLocal() || resp.Items[1].GetConfiguredUrl() != "ws://127.0.0.1:9081/internal/cluster/ws" {
+		t.Fatalf("unexpected peer cluster node: %+v", resp.Items[1])
+	}
+}
+
+func TestClientWebSocketListNodeLoggedInUsersAllowsUsers(t *testing.T) {
+	t.Parallel()
+
+	testAPI := newAuthenticatedTestAPI(t)
+	server := httptest.NewServer(testAPI.handler)
+	defer server.Close()
+
+	adminKey := store.UserKey{NodeID: testNodeID(1), UserID: store.BootstrapAdminUserID}
+	adminToken := loginToken(t, testAPI.handler, adminKey, "root-password")
+	aliceKey := createUserAs(t, testAPI.handler, adminToken, "alice", "alice-password", store.RoleUser)
+	bobKey := createUserAs(t, testAPI.handler, adminToken, "bob", "bob-password", store.RoleUser)
+
+	connAlice := dialClientWebSocket(t, server.URL)
+	defer connAlice.Close()
+	loginClientWebSocket(t, connAlice, aliceKey, "alice-password")
+
+	connAliceDup := dialClientWebSocket(t, server.URL)
+	defer connAliceDup.Close()
+	loginClientWebSocket(t, connAliceDup, aliceKey, "alice-password")
+
+	connBob := dialClientWebSocket(t, server.URL)
+	defer connBob.Close()
+	loginClientWebSocket(t, connBob, bobKey, "bob-password")
+
+	writeClientEnvelope(t, connAlice, &internalproto.ClientEnvelope{
+		Body: &internalproto.ClientEnvelope_ListNodeLoggedInUsers{
+			ListNodeLoggedInUsers: &internalproto.ListNodeLoggedInUsersRequest{
+				RequestId: 77,
+				NodeId:    testNodeID(1),
+			},
+		},
+	})
+	resp := readServerEnvelope(t, connAlice).GetListNodeLoggedInUsersResponse()
+	if resp == nil || resp.RequestId != 77 || resp.TargetNodeId != testNodeID(1) || resp.Count != 2 {
+		t.Fatalf("unexpected list node logged-in users response: %+v", resp)
+	}
+	if resp.Items[0].GetUserId() != aliceKey.UserID || resp.Items[0].GetUsername() != "alice" {
+		t.Fatalf("unexpected first logged-in user: %+v", resp.Items[0])
+	}
+	if resp.Items[1].GetUserId() != bobKey.UserID || resp.Items[1].GetUsername() != "bob" {
+		t.Fatalf("unexpected second logged-in user: %+v", resp.Items[1])
+	}
+}
+
+func TestClientWebSocketListNodeLoggedInUsersReturnsErrorWhenRemoteNodeUnavailable(t *testing.T) {
+	t.Parallel()
+
+	testAPI := newAuthenticatedTestAPIWithSink(t, fakeLoggedInUsersSink{
+		query: func(context.Context, int64) ([]app.LoggedInUserSummary, error) {
+			return nil, fmt.Errorf("%w: node 8192 is not connected", app.ErrServiceUnavailable)
+		},
+	})
+	server := httptest.NewServer(testAPI.handler)
+	defer server.Close()
+
+	adminKey := store.UserKey{NodeID: testNodeID(1), UserID: store.BootstrapAdminUserID}
+	adminToken := loginToken(t, testAPI.handler, adminKey, "root-password")
+	aliceKey := createUserAs(t, testAPI.handler, adminToken, "alice", "alice-password", store.RoleUser)
+
+	conn := dialClientWebSocket(t, server.URL)
+	defer conn.Close()
+	loginClientWebSocket(t, conn, aliceKey, "alice-password")
+
+	writeClientEnvelope(t, conn, &internalproto.ClientEnvelope{
+		Body: &internalproto.ClientEnvelope_ListNodeLoggedInUsers{
+			ListNodeLoggedInUsers: &internalproto.ListNodeLoggedInUsersRequest{
+				RequestId: 88,
+				NodeId:    testNodeID(2),
+			},
+		},
+	})
+	resp := readServerEnvelope(t, conn).GetError()
+	if resp == nil || resp.RequestId != 88 || resp.Code != "service_unavailable" {
+		t.Fatalf("unexpected websocket error response: %+v", resp)
 	}
 }
 

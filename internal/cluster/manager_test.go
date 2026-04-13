@@ -20,6 +20,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/tursom/turntf/internal/api"
+	"github.com/tursom/turntf/internal/app"
 	"github.com/tursom/turntf/internal/auth"
 	"github.com/tursom/turntf/internal/clock"
 	internalproto "github.com/tursom/turntf/internal/proto"
@@ -169,6 +170,407 @@ func TestHandleHelloRejectsInvalidHandshake(t *testing.T) {
 				t.Fatalf("expected invalid handshake to leave peer inactive")
 			}
 		})
+	}
+}
+
+func TestHandleQueryLoggedInUsersRequestRespondsWithLocalUsers(t *testing.T) {
+	t.Parallel()
+
+	mgr := newHandshakeTestManager(t)
+	mgr.SetLoggedInUsersProvider(func(context.Context) ([]app.LoggedInUserSummary, error) {
+		return []app.LoggedInUserSummary{{
+			NodeID:   testNodeID(1),
+			UserID:   1025,
+			Username: "alice",
+		}}, nil
+	})
+	sess := &session{
+		manager:         mgr,
+		peerID:          testNodeID(2),
+		connectionID:    1,
+		send:            make(chan *internalproto.Envelope, 1),
+		supportsRouting: true,
+	}
+	mgr.peers[testNodeID(2)] = &peerState{
+		active:   sess,
+		sessions: map[uint64]*session{sess.connectionID: sess},
+	}
+	mgr.routingTable[testNodeID(2)] = routeEntry{
+		destinationNodeID:    testNodeID(2),
+		nextHopPeer:          testNodeID(2),
+		selectedConnectionID: sess.connectionID,
+	}
+
+	err := mgr.handleQueryLoggedInUsersRequest(sess, &internalproto.Envelope{
+		NodeId: testNodeID(2),
+		Body: &internalproto.Envelope_QueryLoggedInUsersRequest{
+			QueryLoggedInUsersRequest: &internalproto.QueryLoggedInUsersRequest{
+				RequestId:     7,
+				TargetNodeId:  testNodeID(1),
+				OriginNodeId:  testNodeID(2),
+				RemainingHops: defaultLoggedInUsersQueryMaxHops,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("handle query logged-in users request: %v", err)
+	}
+
+	select {
+	case envelope := <-sess.send:
+		resp := envelope.GetQueryLoggedInUsersResponse()
+		if resp == nil || resp.RequestId != 7 || resp.TargetNodeId != testNodeID(1) || resp.OriginNodeId != testNodeID(2) || len(resp.Items) != 1 {
+			t.Fatalf("unexpected query logged-in users response: %+v", resp)
+		}
+		if resp.Items[0].GetUserId() != 1025 || resp.Items[0].GetUsername() != "alice" {
+			t.Fatalf("unexpected logged-in user item: %+v", resp.Items[0])
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("expected query logged-in users response")
+	}
+}
+
+func TestQueryLoggedInUsersUsesBestRoute(t *testing.T) {
+	t.Parallel()
+
+	mgr := newHandshakeTestManager(t)
+	targetNodeID := testNodeID(2)
+	sess := &session{
+		manager:         mgr,
+		peerID:          targetNodeID,
+		connectionID:    1,
+		send:            make(chan *internalproto.Envelope, 1),
+		supportsRouting: true,
+	}
+	mgr.peers[targetNodeID] = &peerState{
+		active:   sess,
+		sessions: map[uint64]*session{sess.connectionID: sess},
+	}
+	mgr.routingTable[targetNodeID] = routeEntry{
+		destinationNodeID:    targetNodeID,
+		nextHopPeer:          targetNodeID,
+		selectedConnectionID: sess.connectionID,
+	}
+
+	resultCh := make(chan []app.LoggedInUserSummary, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		users, err := mgr.QueryLoggedInUsers(context.Background(), targetNodeID)
+		if err != nil {
+			errCh <- err
+			return
+		}
+		resultCh <- users
+	}()
+
+	var requestID uint64
+	select {
+	case envelope := <-sess.send:
+		req := envelope.GetQueryLoggedInUsersRequest()
+		if req == nil || req.TargetNodeId != targetNodeID || req.OriginNodeId != testNodeID(1) || req.RemainingHops != defaultLoggedInUsersQueryMaxHops {
+			t.Fatalf("unexpected query request: %+v", envelope)
+		}
+		requestID = req.RequestId
+	case <-time.After(time.Second):
+		t.Fatalf("expected query request to be enqueued")
+	}
+
+	if err := mgr.handleQueryLoggedInUsersResponse(sess, &internalproto.Envelope{
+		NodeId: targetNodeID,
+		Body: &internalproto.Envelope_QueryLoggedInUsersResponse{
+			QueryLoggedInUsersResponse: &internalproto.QueryLoggedInUsersResponse{
+				RequestId:     requestID,
+				TargetNodeId:  targetNodeID,
+				OriginNodeId:  testNodeID(1),
+				RemainingHops: defaultLoggedInUsersQueryMaxHops,
+				Items: []*internalproto.ClusterLoggedInUser{{
+					NodeId:   targetNodeID,
+					UserId:   2048,
+					Username: "bob",
+				}},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("handle query logged-in users response: %v", err)
+	}
+
+	select {
+	case err := <-errCh:
+		t.Fatalf("query logged-in users returned error: %v", err)
+	case users := <-resultCh:
+		if len(users) != 1 || users[0].NodeID != targetNodeID || users[0].UserID != 2048 || users[0].Username != "bob" {
+			t.Fatalf("unexpected query logged-in users result: %+v", users)
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("expected query logged-in users result")
+	}
+}
+
+func TestQueryLoggedInUsersTimesOutLocally(t *testing.T) {
+	t.Parallel()
+
+	mgr := newHandshakeTestManager(t)
+	targetNodeID := testNodeID(2)
+	sess := &session{
+		manager:         mgr,
+		peerID:          targetNodeID,
+		connectionID:    1,
+		send:            make(chan *internalproto.Envelope, 1),
+		supportsRouting: true,
+	}
+	mgr.peers[targetNodeID] = &peerState{
+		active:   sess,
+		sessions: map[uint64]*session{sess.connectionID: sess},
+	}
+	mgr.routingTable[targetNodeID] = routeEntry{
+		destinationNodeID:    targetNodeID,
+		nextHopPeer:          targetNodeID,
+		selectedConnectionID: sess.connectionID,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+
+	_, err := mgr.QueryLoggedInUsers(ctx, targetNodeID)
+	if err == nil {
+		t.Fatalf("expected query logged-in users timeout")
+	}
+	if !errors.Is(err, app.ErrServiceUnavailable) || !strings.Contains(err.Error(), "timed out querying node") {
+		t.Fatalf("unexpected query logged-in users error: %v", err)
+	}
+
+	select {
+	case envelope := <-sess.send:
+		req := envelope.GetQueryLoggedInUsersRequest()
+		if req == nil || req.TargetNodeId != targetNodeID {
+			t.Fatalf("unexpected query request: %+v", envelope)
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("expected query request before local timeout")
+	}
+
+	mgr.mu.Lock()
+	pendingCount := len(mgr.pendingLoggedInUsers)
+	mgr.mu.Unlock()
+	if pendingCount != 0 {
+		t.Fatalf("expected pending logged-in users query to be cleared after timeout, got %d", pendingCount)
+	}
+}
+
+func TestHandleQueryLoggedInUsersRequestForwardsToNextHop(t *testing.T) {
+	t.Parallel()
+
+	mgr := newHandshakeTestManager(t)
+	incoming := &session{
+		manager:         mgr,
+		peerID:          testNodeID(4),
+		connectionID:    4,
+		send:            make(chan *internalproto.Envelope, 1),
+		supportsRouting: true,
+	}
+	nextHop := &session{
+		manager:         mgr,
+		peerID:          testNodeID(2),
+		connectionID:    2,
+		send:            make(chan *internalproto.Envelope, 1),
+		supportsRouting: true,
+	}
+	mgr.peers[testNodeID(2)] = &peerState{
+		active:   nextHop,
+		sessions: map[uint64]*session{nextHop.connectionID: nextHop},
+	}
+	mgr.routingTable[testNodeID(3)] = routeEntry{
+		destinationNodeID:    testNodeID(3),
+		nextHopPeer:          testNodeID(2),
+		selectedConnectionID: nextHop.connectionID,
+	}
+
+	err := mgr.handleQueryLoggedInUsersRequest(incoming, &internalproto.Envelope{
+		NodeId: testNodeID(4),
+		Body: &internalproto.Envelope_QueryLoggedInUsersRequest{
+			QueryLoggedInUsersRequest: &internalproto.QueryLoggedInUsersRequest{
+				RequestId:     11,
+				TargetNodeId:  testNodeID(3),
+				OriginNodeId:  testNodeID(4),
+				RemainingHops: 3,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("handle query logged-in users request: %v", err)
+	}
+
+	select {
+	case envelope := <-nextHop.send:
+		req := envelope.GetQueryLoggedInUsersRequest()
+		if req == nil || req.RequestId != 11 || req.TargetNodeId != testNodeID(3) || req.OriginNodeId != testNodeID(4) || req.RemainingHops != 2 {
+			t.Fatalf("unexpected forwarded query request: %+v", envelope)
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("expected forwarded query request")
+	}
+}
+
+func TestHandleQueryLoggedInUsersRequestReturnsHopLimitError(t *testing.T) {
+	t.Parallel()
+
+	mgr := newHandshakeTestManager(t)
+	incoming := &session{
+		manager:         mgr,
+		peerID:          testNodeID(4),
+		connectionID:    4,
+		send:            make(chan *internalproto.Envelope, 1),
+		supportsRouting: true,
+	}
+	origin := &session{
+		manager:         mgr,
+		peerID:          testNodeID(2),
+		connectionID:    2,
+		send:            make(chan *internalproto.Envelope, 1),
+		supportsRouting: true,
+	}
+	mgr.peers[testNodeID(2)] = &peerState{
+		active:   origin,
+		sessions: map[uint64]*session{origin.connectionID: origin},
+	}
+	mgr.routingTable[testNodeID(2)] = routeEntry{
+		destinationNodeID:    testNodeID(2),
+		nextHopPeer:          testNodeID(2),
+		selectedConnectionID: origin.connectionID,
+	}
+
+	err := mgr.handleQueryLoggedInUsersRequest(incoming, &internalproto.Envelope{
+		NodeId: testNodeID(4),
+		Body: &internalproto.Envelope_QueryLoggedInUsersRequest{
+			QueryLoggedInUsersRequest: &internalproto.QueryLoggedInUsersRequest{
+				RequestId:     12,
+				TargetNodeId:  testNodeID(3),
+				OriginNodeId:  testNodeID(2),
+				RemainingHops: 0,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("handle query logged-in users request: %v", err)
+	}
+
+	select {
+	case envelope := <-origin.send:
+		resp := envelope.GetQueryLoggedInUsersResponse()
+		if resp == nil || resp.RequestId != 12 || resp.OriginNodeId != testNodeID(2) || resp.TargetNodeId != testNodeID(3) || resp.ErrorCode != "service_unavailable" || !strings.Contains(resp.ErrorMessage, "hop limit") {
+			t.Fatalf("unexpected hop limit response: %+v", envelope)
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("expected hop limit response")
+	}
+}
+
+func TestHandleQueryLoggedInUsersResponseForwardsByRoute(t *testing.T) {
+	t.Parallel()
+
+	mgr := newHandshakeTestManager(t)
+	incoming := &session{
+		manager:         mgr,
+		peerID:          testNodeID(3),
+		connectionID:    3,
+		send:            make(chan *internalproto.Envelope, 1),
+		supportsRouting: true,
+	}
+	originRoute := &session{
+		manager:         mgr,
+		peerID:          testNodeID(2),
+		connectionID:    2,
+		send:            make(chan *internalproto.Envelope, 1),
+		supportsRouting: true,
+	}
+	mgr.peers[testNodeID(2)] = &peerState{
+		active:   originRoute,
+		sessions: map[uint64]*session{originRoute.connectionID: originRoute},
+	}
+	mgr.routingTable[testNodeID(4)] = routeEntry{
+		destinationNodeID:    testNodeID(4),
+		nextHopPeer:          testNodeID(2),
+		selectedConnectionID: originRoute.connectionID,
+	}
+
+	err := mgr.handleQueryLoggedInUsersResponse(incoming, &internalproto.Envelope{
+		NodeId: testNodeID(3),
+		Body: &internalproto.Envelope_QueryLoggedInUsersResponse{
+			QueryLoggedInUsersResponse: &internalproto.QueryLoggedInUsersResponse{
+				RequestId:     13,
+				TargetNodeId:  testNodeID(5),
+				OriginNodeId:  testNodeID(4),
+				RemainingHops: 2,
+				Items: []*internalproto.ClusterLoggedInUser{{
+					NodeId:   testNodeID(5),
+					UserId:   4097,
+					Username: "routed",
+				}},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("handle query logged-in users response: %v", err)
+	}
+
+	select {
+	case envelope := <-originRoute.send:
+		resp := envelope.GetQueryLoggedInUsersResponse()
+		if resp == nil || resp.RequestId != 13 || resp.OriginNodeId != testNodeID(4) || resp.RemainingHops != 1 || len(resp.Items) != 1 {
+			t.Fatalf("unexpected forwarded query response: %+v", envelope)
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("expected forwarded query response")
+	}
+
+	select {
+	case envelope := <-incoming.send:
+		t.Fatalf("response should not be returned on incoming session: %+v", envelope)
+	default:
+	}
+}
+
+func TestHandleQueryLoggedInUsersResponseIgnoresLateOriginResponse(t *testing.T) {
+	t.Parallel()
+
+	logOutput := captureClusterLogs(t)
+	mgr := newHandshakeTestManager(t)
+	incoming := &session{
+		manager:         mgr,
+		peerID:          testNodeID(2),
+		connectionID:    2,
+		send:            make(chan *internalproto.Envelope, 1),
+		supportsRouting: true,
+	}
+
+	err := mgr.handleQueryLoggedInUsersResponse(incoming, &internalproto.Envelope{
+		NodeId: testNodeID(2),
+		Body: &internalproto.Envelope_QueryLoggedInUsersResponse{
+			QueryLoggedInUsersResponse: &internalproto.QueryLoggedInUsersResponse{
+				RequestId:     99,
+				TargetNodeId:  testNodeID(2),
+				OriginNodeId:  testNodeID(1),
+				RemainingHops: 3,
+				Items: []*internalproto.ClusterLoggedInUser{{
+					NodeId:   testNodeID(2),
+					UserId:   2048,
+					Username: "late",
+				}},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("handle late query logged-in users response: %v", err)
+	}
+	if !strings.Contains(logOutput.String(), `"event":"query_logged_in_users_response_ignored"`) {
+		t.Fatalf("expected late response ignore log, got %s", logOutput.String())
+	}
+
+	mgr.mu.Lock()
+	pendingCount := len(mgr.pendingLoggedInUsers)
+	mgr.mu.Unlock()
+	if pendingCount != 0 {
+		t.Fatalf("expected no pending origin query after late response, got %d", pendingCount)
 	}
 }
 
@@ -1797,6 +2199,110 @@ func TestTransientPacketRoutesAcrossMultipleHops(t *testing.T) {
 	}
 }
 
+func TestClientWebSocketListNodeLoggedInUsersRoutesAcrossMultipleHops(t *testing.T) {
+	t.Parallel()
+
+	lnA := mustListen(t)
+	lnB := mustListen(t)
+	lnC := mustListen(t)
+
+	nodeA := newClusterTestNode(t, "node-a", 1, lnA, []Peer{{URL: wsURL(lnB)}})
+	nodeB := newClusterTestNode(t, "node-b", 2, lnB, []Peer{{URL: wsURL(lnA)}, {URL: wsURL(lnC)}})
+	nodeC := newClusterTestNode(t, "node-c", 3, lnC, []Peer{{URL: wsURL(lnB)}})
+
+	nodeA.start(t)
+	nodeB.start(t)
+	nodeC.start(t)
+
+	waitFor(t, 10*time.Second, func() bool {
+		return nodeA.activePeer(testNodeID(2)) &&
+			nodeB.activePeer(testNodeID(1)) &&
+			nodeB.activePeer(testNodeID(3)) &&
+			nodeC.activePeer(testNodeID(2))
+	})
+
+	passwordHash, err := auth.HashPassword("alice-password")
+	if err != nil {
+		t.Fatalf("hash alice password: %v", err)
+	}
+	alice, _, err := nodeA.store.CreateUser(context.Background(), store.CreateUserParams{
+		Username:     "alice",
+		PasswordHash: passwordHash,
+		Role:         store.RoleUser,
+	})
+	if err != nil {
+		t.Fatalf("create alice: %v", err)
+	}
+
+	charlieHash, err := auth.HashPassword("charlie-password")
+	if err != nil {
+		t.Fatalf("hash charlie password: %v", err)
+	}
+	charlie, _, err := nodeC.store.CreateUser(context.Background(), store.CreateUserParams{
+		Username:     "charlie",
+		PasswordHash: charlieHash,
+		Role:         store.RoleUser,
+	})
+	if err != nil {
+		t.Fatalf("create charlie: %v", err)
+	}
+
+	serverC := httptest.NewServer(nodeC.server.Handler)
+	defer serverC.Close()
+	connC := dialClusterClientWebSocket(t, serverC.URL)
+	defer connC.Close()
+	writeClusterClientEnvelope(t, connC, &internalproto.ClientEnvelope{
+		Body: &internalproto.ClientEnvelope_Login{
+			Login: &internalproto.LoginRequest{
+				User:     &internalproto.UserRef{NodeId: charlie.NodeID, UserId: charlie.ID},
+				Password: "charlie-password",
+			},
+		},
+	})
+	if loginResp := readClusterServerEnvelope(t, connC).GetLoginResponse(); loginResp == nil {
+		t.Fatalf("expected login response for charlie")
+	}
+
+	nodeC.manager.broadcastRoutingUpdate()
+	nodeB.manager.broadcastRoutingUpdate()
+	waitFor(t, 10*time.Second, func() bool {
+		return nodeA.manager.bestRouteSession(nodeC.id) != nil
+	})
+
+	serverA := httptest.NewServer(nodeA.server.Handler)
+	defer serverA.Close()
+	connA := dialClusterClientWebSocket(t, serverA.URL)
+	defer connA.Close()
+	writeClusterClientEnvelope(t, connA, &internalproto.ClientEnvelope{
+		Body: &internalproto.ClientEnvelope_Login{
+			Login: &internalproto.LoginRequest{
+				User:     &internalproto.UserRef{NodeId: alice.NodeID, UserId: alice.ID},
+				Password: "alice-password",
+			},
+		},
+	})
+	if loginResp := readClusterServerEnvelope(t, connA).GetLoginResponse(); loginResp == nil {
+		t.Fatalf("expected login response for alice")
+	}
+
+	writeClusterClientEnvelope(t, connA, &internalproto.ClientEnvelope{
+		Body: &internalproto.ClientEnvelope_ListNodeLoggedInUsers{
+			ListNodeLoggedInUsers: &internalproto.ListNodeLoggedInUsersRequest{
+				RequestId: 1005,
+				NodeId:    nodeC.id,
+			},
+		},
+	})
+
+	resp := readClusterServerEnvelope(t, connA).GetListNodeLoggedInUsersResponse()
+	if resp == nil || resp.RequestId != 1005 || resp.TargetNodeId != nodeC.id || resp.Count != 1 || len(resp.Items) != 1 {
+		t.Fatalf("unexpected logged-in users response: %+v", resp)
+	}
+	if resp.Items[0].GetNodeId() != charlie.NodeID || resp.Items[0].GetUserId() != charlie.ID || resp.Items[0].GetUsername() != "charlie" {
+		t.Fatalf("unexpected logged-in user item: %+v", resp.Items[0])
+	}
+}
+
 type testNode struct {
 	id         int64
 	store      *store.Store
@@ -1851,6 +2357,7 @@ func newClusterTestNodeWithWindowAndSkew(t *testing.T, nodeID string, slot uint1
 	svc := api.New(st, manager)
 	httpAPI := api.NewHTTP(svc)
 	manager.SetTransientHandler(httpAPI.ReceiveTransientPacket)
+	manager.SetLoggedInUsersProvider(httpAPI.ListLoggedInUsers)
 	rootMux := http.NewServeMux()
 	rootMux.Handle("/", httpAPI.Handler())
 	rootMux.Handle(manager.AdvertisePath(), manager.Handler())

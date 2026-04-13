@@ -23,25 +23,27 @@ import (
 )
 
 const (
-	websocketPath            = "/internal/cluster/ws"
-	writeWait                = 10 * time.Second
-	pingInterval             = 15 * time.Second
-	readTimeout              = 45 * time.Second
-	outboundQueueSize        = 128
-	managerPublishQueue      = 256
-	pullBatchSize            = 128
-	timeSyncSampleCount      = 5
-	timeSyncInterval         = 30 * time.Second
-	timeSyncTimeout          = 3 * time.Second
-	catchupRetryInterval     = time.Second
-	antiEntropyInterval      = 60 * time.Second
-	writeGateGrace           = 90 * time.Second
-	routingUpdateInterval    = 5 * time.Second
-	routeRetryInterval       = 200 * time.Millisecond
-	packetSeenTTL            = 30 * time.Second
-	routeRetryTTL            = 3 * time.Second
-	defaultPacketTTLHops     = 8
-	routingSwitchThresholdMs = 15
+	websocketPath                    = "/internal/cluster/ws"
+	writeWait                        = 10 * time.Second
+	pingInterval                     = 15 * time.Second
+	readTimeout                      = 45 * time.Second
+	outboundQueueSize                = 128
+	managerPublishQueue              = 256
+	pullBatchSize                    = 128
+	timeSyncSampleCount              = 5
+	timeSyncInterval                 = 30 * time.Second
+	timeSyncTimeout                  = 3 * time.Second
+	queryLoggedInUsersTimeout        = 3 * time.Second
+	catchupRetryInterval             = time.Second
+	antiEntropyInterval              = 60 * time.Second
+	writeGateGrace                   = 90 * time.Second
+	routingUpdateInterval            = 5 * time.Second
+	routeRetryInterval               = 200 * time.Millisecond
+	packetSeenTTL                    = 30 * time.Second
+	routeRetryTTL                    = 3 * time.Second
+	defaultPacketTTLHops             = 8
+	defaultLoggedInUsersQueryMaxHops = 8
+	routingSwitchThresholdMs         = 15
 )
 
 var marshalOptions = proto.MarshalOptions{Deterministic: true}
@@ -67,13 +69,16 @@ type Manager struct {
 	peers           map[int64]*peerState
 	configuredPeers []*configuredPeer
 
-	lastSuccessfulClockSync time.Time
-	timeSyncer              func(*session) (timeSyncSample, error)
-	transientHandler        func(store.TransientPacket) bool
-	routingGeneration       uint64
-	routingTable            map[int64]routeEntry
-	seenPackets             map[string]time.Time
-	retryQueue              map[string]queuedPacket
+	lastSuccessfulClockSync  time.Time
+	timeSyncer               func(*session) (timeSyncSample, error)
+	transientHandler         func(store.TransientPacket) bool
+	loggedInUsersProvider    func(context.Context) ([]app.LoggedInUserSummary, error)
+	routingGeneration        uint64
+	routingTable             map[int64]routeEntry
+	seenPackets              map[string]time.Time
+	retryQueue               map[string]queuedPacket
+	nextLoggedInUsersQueryID uint64
+	pendingLoggedInUsers     map[uint64]chan loggedInUsersQueryResult
 }
 
 type configuredPeer struct {
@@ -168,6 +173,11 @@ type timeSyncResult struct {
 	err          error
 }
 
+type loggedInUsersQueryResult struct {
+	response *internalproto.QueryLoggedInUsersResponse
+	err      error
+}
+
 type timeSyncSample struct {
 	offsetMs int64
 	rttMs    int64
@@ -196,14 +206,15 @@ func NewManager(cfg Config, st *store.Store) (*Manager, error) {
 		upgrader: websocket.Upgrader{
 			CheckOrigin: func(*http.Request) bool { return true },
 		},
-		mux:             http.NewServeMux(),
-		publishCh:       make(chan store.Event, managerPublishQueue),
-		dialer:          websocket.DefaultDialer,
-		peers:           make(map[int64]*peerState, len(cfg.Peers)),
-		configuredPeers: configuredPeers,
-		routingTable:    make(map[int64]routeEntry),
-		seenPackets:     make(map[string]time.Time),
-		retryQueue:      make(map[string]queuedPacket),
+		mux:                  http.NewServeMux(),
+		publishCh:            make(chan store.Event, managerPublishQueue),
+		dialer:               websocket.DefaultDialer,
+		peers:                make(map[int64]*peerState, len(cfg.Peers)),
+		configuredPeers:      configuredPeers,
+		routingTable:         make(map[int64]routeEntry),
+		seenPackets:          make(map[string]time.Time),
+		retryQueue:           make(map[string]queuedPacket),
+		pendingLoggedInUsers: make(map[uint64]chan loggedInUsersQueryResult),
 	}
 	mgr.mux.HandleFunc("GET "+cfg.AdvertisePath, mgr.handleWebSocket)
 	return mgr, nil
@@ -282,6 +293,75 @@ func (m *Manager) SetTransientHandler(handler func(store.TransientPacket) bool) 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.transientHandler = handler
+}
+
+func (m *Manager) SetLoggedInUsersProvider(provider func(context.Context) ([]app.LoggedInUserSummary, error)) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.loggedInUsersProvider = provider
+}
+
+func (m *Manager) QueryLoggedInUsers(ctx context.Context, nodeID int64) ([]app.LoggedInUserSummary, error) {
+	if m == nil {
+		return nil, fmt.Errorf("%w: cluster manager is not configured", app.ErrServiceUnavailable)
+	}
+	if nodeID <= 0 {
+		return nil, fmt.Errorf("%w: target node id cannot be empty", store.ErrInvalidInput)
+	}
+	if nodeID == m.cfg.NodeID {
+		return m.listLocalLoggedInUsers(ctx)
+	}
+
+	sess := m.bestRouteSession(nodeID)
+	if sess == nil {
+		return nil, fmt.Errorf("%w: node %d is not reachable", app.ErrServiceUnavailable, nodeID)
+	}
+
+	requestID, resultCh := m.beginLoggedInUsersQuery()
+	sess.enqueue(&internalproto.Envelope{
+		NodeId: m.cfg.NodeID,
+		Body: &internalproto.Envelope_QueryLoggedInUsersRequest{
+			QueryLoggedInUsersRequest: &internalproto.QueryLoggedInUsersRequest{
+				RequestId:     requestID,
+				TargetNodeId:  nodeID,
+				OriginNodeId:  m.cfg.NodeID,
+				RemainingHops: defaultLoggedInUsersQueryMaxHops,
+			},
+		},
+	})
+
+	timeoutCtx := ctx
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		timeoutCtx, cancel = context.WithTimeout(ctx, queryLoggedInUsersTimeout)
+		defer cancel()
+	}
+
+	select {
+	case <-timeoutCtx.Done():
+		m.cancelLoggedInUsersQuery(requestID, timeoutCtx.Err())
+		if errors.Is(timeoutCtx.Err(), context.DeadlineExceeded) {
+			return nil, fmt.Errorf("%w: timed out querying node %d logged-in users", app.ErrServiceUnavailable, nodeID)
+		}
+		return nil, timeoutCtx.Err()
+	case result := <-resultCh:
+		if result.err != nil {
+			if errors.Is(result.err, context.DeadlineExceeded) {
+				return nil, fmt.Errorf("%w: timed out querying node %d logged-in users", app.ErrServiceUnavailable, nodeID)
+			}
+			if errors.Is(result.err, errSessionClosed) {
+				return nil, fmt.Errorf("%w: peer session closed while querying node %d", app.ErrServiceUnavailable, nodeID)
+			}
+			return nil, result.err
+		}
+		if err := clusterQueryError(result.response); err != nil {
+			return nil, err
+		}
+		return loggedInUsersFromCluster(result.response.GetItems()), nil
+	}
 }
 
 func (m *Manager) RouteTransientPacket(_ context.Context, packet store.TransientPacket) error {
@@ -590,6 +670,14 @@ func (m *Manager) readLoop(sess *session) {
 			if err := m.handleTimeSyncResponse(sess, &envelope); err != nil {
 				return
 			}
+		case *internalproto.Envelope_QueryLoggedInUsersRequest:
+			if err := m.handleQueryLoggedInUsersRequest(sess, &envelope); err != nil {
+				return
+			}
+		case *internalproto.Envelope_QueryLoggedInUsersResponse:
+			if err := m.handleQueryLoggedInUsersResponse(sess, &envelope); err != nil {
+				return
+			}
 		case *internalproto.Envelope_Ack:
 			if err := m.handleAck(sess, &envelope); err != nil {
 				return
@@ -780,6 +868,154 @@ func (m *Manager) handleTimeSyncResponse(sess *session, envelope *internalproto.
 	}) {
 		return nil
 	}
+	return nil
+}
+
+func (m *Manager) handleQueryLoggedInUsersRequest(sess *session, envelope *internalproto.Envelope) error {
+	if err := validatePeerEnvelope(sess, envelope); err != nil {
+		return err
+	}
+
+	req := envelope.GetQueryLoggedInUsersRequest()
+	if req == nil {
+		return errors.New("query logged-in users request body cannot be empty")
+	}
+	if req.RequestId == 0 {
+		return errors.New("query logged-in users request id cannot be empty")
+	}
+	if req.OriginNodeId <= 0 {
+		return errors.New("query logged-in users origin node id cannot be empty")
+	}
+	if req.TargetNodeId <= 0 {
+		return errors.New("query logged-in users target node id cannot be empty")
+	}
+
+	if req.TargetNodeId == m.cfg.NodeID {
+		response := &internalproto.QueryLoggedInUsersResponse{
+			RequestId:     req.RequestId,
+			TargetNodeId:  req.TargetNodeId,
+			OriginNodeId:  req.OriginNodeId,
+			RemainingHops: req.RemainingHops,
+		}
+		users, err := m.listLocalLoggedInUsers(context.Background())
+		if err != nil {
+			response.ErrorCode = "service_unavailable"
+			response.ErrorMessage = err.Error()
+		} else {
+			response.Items = clusterLoggedInUsers(users)
+		}
+		return m.forwardQueryLoggedInUsersResponse(response)
+	}
+
+	if req.RemainingHops <= 0 {
+		return m.forwardQueryLoggedInUsersResponse(&internalproto.QueryLoggedInUsersResponse{
+			RequestId:     req.RequestId,
+			TargetNodeId:  req.TargetNodeId,
+			OriginNodeId:  req.OriginNodeId,
+			ErrorCode:     "service_unavailable",
+			ErrorMessage:  fmt.Sprintf("route hop limit exceeded while querying node %d", req.TargetNodeId),
+			RemainingHops: 0,
+		})
+	}
+
+	next := proto.Clone(req).(*internalproto.QueryLoggedInUsersRequest)
+	next.RemainingHops--
+	if err := m.forwardQueryLoggedInUsersRequest(next); err != nil {
+		return m.forwardQueryLoggedInUsersResponse(&internalproto.QueryLoggedInUsersResponse{
+			RequestId:     req.RequestId,
+			TargetNodeId:  req.TargetNodeId,
+			OriginNodeId:  req.OriginNodeId,
+			ErrorCode:     "service_unavailable",
+			ErrorMessage:  err.Error(),
+			RemainingHops: next.RemainingHops,
+		})
+	}
+	return nil
+}
+
+func (m *Manager) handleQueryLoggedInUsersResponse(sess *session, envelope *internalproto.Envelope) error {
+	if err := validatePeerEnvelope(sess, envelope); err != nil {
+		return err
+	}
+
+	resp := envelope.GetQueryLoggedInUsersResponse()
+	if resp == nil {
+		return errors.New("query logged-in users response body cannot be empty")
+	}
+	if resp.RequestId == 0 {
+		return errors.New("query logged-in users response id cannot be empty")
+	}
+	if resp.OriginNodeId <= 0 {
+		return errors.New("query logged-in users response origin node id cannot be empty")
+	}
+	if resp.TargetNodeId <= 0 {
+		return errors.New("query logged-in users response target node id cannot be empty")
+	}
+	if resp.OriginNodeId == m.cfg.NodeID {
+		if !m.resolveLoggedInUsersQuery(resp.RequestId, loggedInUsersQueryResult{response: resp}) {
+			m.logDebug("query_logged_in_users_response_ignored").
+				Uint64("request_id", resp.RequestId).
+				Int64("origin_node_id", resp.OriginNodeId).
+				Int64("target_node_id", resp.TargetNodeId).
+				Int32("remaining_hops", resp.RemainingHops).
+				Msg("ignoring late logged-in users response without pending origin query")
+		}
+		return nil
+	}
+	if resp.RemainingHops <= 0 {
+		m.logWarn("query_logged_in_users_response_dropped", nil).
+			Uint64("request_id", resp.RequestId).
+			Int64("origin_node_id", resp.OriginNodeId).
+			Int64("target_node_id", resp.TargetNodeId).
+			Int32("remaining_hops", resp.RemainingHops).
+			Msg("dropping logged-in users response because hop limit was reached")
+		return nil
+	}
+
+	next := proto.Clone(resp).(*internalproto.QueryLoggedInUsersResponse)
+	next.RemainingHops--
+	if err := m.forwardQueryLoggedInUsersResponse(next); err != nil {
+		m.logWarn("query_logged_in_users_response_forward_failed", err).
+			Uint64("request_id", resp.RequestId).
+			Int64("origin_node_id", resp.OriginNodeId).
+			Int64("target_node_id", resp.TargetNodeId).
+			Int32("remaining_hops", next.RemainingHops).
+			Msg("failed to forward logged-in users response")
+	}
+	return nil
+}
+
+func (m *Manager) forwardQueryLoggedInUsersRequest(req *internalproto.QueryLoggedInUsersRequest) error {
+	if req == nil {
+		return errors.New("query logged-in users request cannot be empty")
+	}
+	sess := m.bestRouteSession(req.TargetNodeId)
+	if sess == nil {
+		return fmt.Errorf("%w: node %d is not reachable", app.ErrServiceUnavailable, req.TargetNodeId)
+	}
+	sess.enqueue(&internalproto.Envelope{
+		NodeId: m.cfg.NodeID,
+		Body: &internalproto.Envelope_QueryLoggedInUsersRequest{
+			QueryLoggedInUsersRequest: req,
+		},
+	})
+	return nil
+}
+
+func (m *Manager) forwardQueryLoggedInUsersResponse(resp *internalproto.QueryLoggedInUsersResponse) error {
+	if resp == nil {
+		return errors.New("query logged-in users response cannot be empty")
+	}
+	sess := m.bestRouteSession(resp.OriginNodeId)
+	if sess == nil {
+		return fmt.Errorf("%w: node %d is not reachable", app.ErrServiceUnavailable, resp.OriginNodeId)
+	}
+	sess.enqueue(&internalproto.Envelope{
+		NodeId: m.cfg.NodeID,
+		Body: &internalproto.Envelope_QueryLoggedInUsersResponse{
+			QueryLoggedInUsersResponse: resp,
+		},
+	})
 	return nil
 }
 
@@ -1346,6 +1582,63 @@ func (m *Manager) validateBatchHLC(events []*internalproto.ReplicatedEvent) erro
 	return nil
 }
 
+func (m *Manager) listLocalLoggedInUsers(ctx context.Context) ([]app.LoggedInUserSummary, error) {
+	m.mu.Lock()
+	provider := m.loggedInUsersProvider
+	m.mu.Unlock()
+	if provider == nil {
+		return nil, fmt.Errorf("%w: local logged-in users provider is not configured", app.ErrServiceUnavailable)
+	}
+	return provider(ctx)
+}
+
+func clusterLoggedInUsers(users []app.LoggedInUserSummary) []*internalproto.ClusterLoggedInUser {
+	items := make([]*internalproto.ClusterLoggedInUser, 0, len(users))
+	for _, user := range users {
+		items = append(items, &internalproto.ClusterLoggedInUser{
+			NodeId:   user.NodeID,
+			UserId:   user.UserID,
+			Username: user.Username,
+		})
+	}
+	return items
+}
+
+func loggedInUsersFromCluster(users []*internalproto.ClusterLoggedInUser) []app.LoggedInUserSummary {
+	items := make([]app.LoggedInUserSummary, 0, len(users))
+	for _, user := range users {
+		if user == nil {
+			continue
+		}
+		items = append(items, app.LoggedInUserSummary{
+			NodeID:   user.NodeId,
+			UserID:   user.UserId,
+			Username: user.Username,
+		})
+	}
+	return items
+}
+
+func clusterQueryError(resp *internalproto.QueryLoggedInUsersResponse) error {
+	if resp == nil || strings.TrimSpace(resp.ErrorCode) == "" {
+		return nil
+	}
+	message := strings.TrimSpace(resp.ErrorMessage)
+	if message == "" {
+		message = "cluster query failed"
+	}
+	switch resp.ErrorCode {
+	case "invalid_request":
+		return fmt.Errorf("%w: %s", store.ErrInvalidInput, message)
+	case "not_found":
+		return fmt.Errorf("%w: %s", store.ErrNotFound, message)
+	case "forbidden":
+		return fmt.Errorf("%w: %s", store.ErrForbidden, message)
+	default:
+		return fmt.Errorf("%w: %s", app.ErrServiceUnavailable, message)
+	}
+}
+
 func normalizedMessageWindowSize(size int) int {
 	if size <= 0 {
 		return store.DefaultMessageWindowSize
@@ -1732,6 +2025,50 @@ func (s *session) resolveTimeSync(requestID uint64, result timeSyncResult) bool 
 		delete(s.pendingTimeSync, requestID)
 	}
 	s.mu.Unlock()
+
+	if !ok {
+		return false
+	}
+	ch <- result
+	close(ch)
+	return true
+}
+
+func (m *Manager) beginLoggedInUsersQuery() (uint64, chan loggedInUsersQueryResult) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.nextLoggedInUsersQueryID++
+	requestID := m.nextLoggedInUsersQueryID
+	ch := make(chan loggedInUsersQueryResult, 1)
+	m.pendingLoggedInUsers[requestID] = ch
+	return requestID, ch
+}
+
+func (m *Manager) cancelLoggedInUsersQuery(requestID uint64, err error) {
+	m.mu.Lock()
+	ch, ok := m.pendingLoggedInUsers[requestID]
+	if ok {
+		delete(m.pendingLoggedInUsers, requestID)
+	}
+	m.mu.Unlock()
+
+	if !ok {
+		return
+	}
+	select {
+	case ch <- loggedInUsersQueryResult{err: err}:
+	default:
+	}
+	close(ch)
+}
+
+func (m *Manager) resolveLoggedInUsersQuery(requestID uint64, result loggedInUsersQueryResult) bool {
+	m.mu.Lock()
+	ch, ok := m.pendingLoggedInUsers[requestID]
+	if ok {
+		delete(m.pendingLoggedInUsers, requestID)
+	}
+	m.mu.Unlock()
 
 	if !ok {
 		return false

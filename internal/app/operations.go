@@ -9,6 +9,12 @@ type ClusterStatus struct {
 	Peers             []ClusterPeerStatus
 }
 
+type LoggedInUserSummary struct {
+	NodeID   int64
+	UserID   int64
+	Username string
+}
+
 type ClusterPeerOriginStatus struct {
 	OriginNodeID      int64
 	RemoteLastEventID uint64

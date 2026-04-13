@@ -19,6 +19,8 @@
 ## 运维接口
 
 - `GET /healthz`：公开存活检查，只返回服务进程是否可响应。
+- `GET /cluster/nodes`：已登录接口，返回当前节点视角下已连接的集群节点列表，仅包含 `node_id`、`is_local`、`configured_url`。
+- `GET /cluster/nodes/{node_id}/logged-in-users`：已登录接口，查询某个节点当前 WebSocket 已登录用户列表，返回 `node_id`、`user_id`、`username`。
 - `GET /ops/status`：管理员接口，返回本节点事件进度、peer 连接状态、未确认事件数、反熵状态、冲突数和消息裁剪统计。
 - `GET /metrics`：管理员接口，返回 Prometheus text exposition 格式指标。
 - `GET /events?after=0&limit=100`：管理员接口，用于调试本地事件日志。
@@ -32,6 +34,8 @@ TOKEN="$(curl -sS -X POST http://127.0.0.1:8080/auth/login \
 
 curl -H "Authorization: Bearer ${TOKEN}" http://127.0.0.1:8080/ops/status
 curl -H "Authorization: Bearer ${TOKEN}" http://127.0.0.1:8080/metrics
+curl -H "Authorization: Bearer ${TOKEN}" http://127.0.0.1:8080/cluster/nodes
+curl -H "Authorization: Bearer ${TOKEN}" http://127.0.0.1:8080/cluster/nodes/4096/logged-in-users
 ```
 
 ## 备份策略

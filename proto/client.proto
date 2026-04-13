@@ -21,6 +21,8 @@ message ClientEnvelope {
     ListEventsRequest list_events = 13;
     OperationsStatusRequest operations_status = 14;
     MetricsRequest metrics = 15;
+    ListClusterNodesRequest list_cluster_nodes = 16;
+    ListNodeLoggedInUsersRequest list_node_logged_in_users = 17;
   }
 }
 
@@ -43,6 +45,8 @@ message ServerEnvelope {
     ListEventsResponse list_events_response = 15;
     OperationsStatusResponse operations_status_response = 16;
     MetricsResponse metrics_response = 17;
+    ListClusterNodesResponse list_cluster_nodes_response = 18;
+    ListNodeLoggedInUsersResponse list_node_logged_in_users_response = 19;
   }
 }
 
@@ -228,6 +232,40 @@ message OperationsStatusResponse {
 message MetricsResponse {
   uint64 request_id = 1;
   string text = 2;
+}
+
+message ListClusterNodesRequest {
+  uint64 request_id = 1;
+}
+
+message ListClusterNodesResponse {
+  uint64 request_id = 1;
+  repeated ClusterNode items = 2;
+  int32 count = 3;
+}
+
+message ListNodeLoggedInUsersRequest {
+  uint64 request_id = 1;
+  int64 node_id = 2;
+}
+
+message ListNodeLoggedInUsersResponse {
+  uint64 request_id = 1;
+  int64 target_node_id = 2;
+  repeated LoggedInUser items = 3;
+  int32 count = 4;
+}
+
+message ClusterNode {
+  int64 node_id = 1;
+  bool is_local = 2;
+  string configured_url = 3;
+}
+
+message LoggedInUser {
+  int64 node_id = 1;
+  int64 user_id = 2;
+  string username = 3;
 }
 
 message StringField {

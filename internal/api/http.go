@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -107,6 +108,7 @@ func NewHTTP(service *Service, opts ...HTTPOptions) *HTTP {
 	}
 	if service != nil {
 		service.SetTransientPacketReceiver(h)
+		service.SetLoggedInUserProvider(h)
 	}
 	h.routes()
 	return h
@@ -130,6 +132,8 @@ func (h *HTTP) routes() {
 	h.mux.HandleFunc("POST /nodes/{node_id}/users/{user_id}/subscriptions", h.handleSubscribeChannel)
 	h.mux.HandleFunc("DELETE /nodes/{node_id}/users/{user_id}/subscriptions/{channel_node_id}/{channel_user_id}", h.handleUnsubscribeChannel)
 	h.mux.HandleFunc("GET /events", h.handleListEvents)
+	h.mux.HandleFunc("GET /cluster/nodes", h.handleClusterNodes)
+	h.mux.HandleFunc("GET /cluster/nodes/{node_id}/logged-in-users", h.handleNodeLoggedInUsers)
 	h.mux.HandleFunc("GET /ops/status", h.handleOpsStatus)
 	h.mux.HandleFunc("GET /metrics", h.handleMetrics)
 }
@@ -570,6 +574,35 @@ func (h *HTTP) handleOpsStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, status)
 }
 
+func (h *HTTP) handleClusterNodes(w http.ResponseWriter, r *http.Request) {
+	if _, ok := h.requireAuthenticated(w, r); !ok {
+		return
+	}
+
+	nodes, err := h.service.ClusterNodes(r.Context())
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, nodes)
+}
+
+func (h *HTTP) handleNodeLoggedInUsers(w http.ResponseWriter, r *http.Request) {
+	if _, ok := h.requireAuthenticated(w, r); !ok {
+		return
+	}
+	nodeID, ok := parsePositivePathInt(w, r, "node_id")
+	if !ok {
+		return
+	}
+	users, err := h.service.ListNodeLoggedInUsers(r.Context(), nodeID)
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, users)
+}
+
 func (h *HTTP) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	if _, ok := h.requireAdmin(w, r); !ok {
 		return
@@ -723,6 +756,38 @@ func (h *HTTP) ReceiveTransientPacket(packet store.TransientPacket) bool {
 	return delivered
 }
 
+func (h *HTTP) ListLoggedInUsers(context.Context) ([]app.LoggedInUserSummary, error) {
+	if h == nil {
+		return nil, nil
+	}
+	h.sessionsMu.RLock()
+	users := make([]app.LoggedInUserSummary, 0, len(h.sessions))
+	for key, bucket := range h.sessions {
+		var username string
+		for sess := range bucket {
+			if sess == nil || sess.principal == nil {
+				continue
+			}
+			username = sess.principal.User.Username
+			break
+		}
+		users = append(users, app.LoggedInUserSummary{
+			NodeID:   key.NodeID,
+			UserID:   key.UserID,
+			Username: username,
+		})
+	}
+	h.sessionsMu.RUnlock()
+
+	sort.Slice(users, func(i, j int) bool {
+		if users[i].NodeID != users[j].NodeID {
+			return users[i].NodeID < users[j].NodeID
+		}
+		return users[i].UserID < users[j].UserID
+	})
+	return users, nil
+}
+
 func subscriptionResponseFromStore(subscription store.Subscription) subscriptionResponse {
 	response := subscriptionResponse{
 		Subscriber:   subscription.Subscriber,
@@ -776,6 +841,8 @@ func writeStoreError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, app.ErrClockNotSynchronized):
 		writeError(w, http.StatusServiceUnavailable, app.ErrClockNotSynchronized.Error())
+	case errors.Is(err, app.ErrServiceUnavailable):
+		writeError(w, http.StatusServiceUnavailable, err.Error())
 	case errors.Is(err, store.ErrForbidden):
 		writeError(w, http.StatusForbidden, "forbidden")
 	case errors.Is(err, store.ErrInvalidInput):

@@ -230,6 +230,10 @@ func (m *Manager) bestRouteSession(targetNodeID int64) *session {
 }
 
 func (m *Manager) broadcastRoutingUpdate() {
+	if !m.routingSupported() {
+		return
+	}
+
 	m.mu.Lock()
 	sessions := make([]*session, 0)
 	for _, peer := range m.peers {

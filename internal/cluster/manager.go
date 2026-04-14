@@ -73,6 +73,7 @@ type Manager struct {
 	timeSyncer               func(*session) (timeSyncSample, error)
 	transientHandler         func(store.TransientPacket) bool
 	loggedInUsersProvider    func(context.Context) ([]app.LoggedInUserSummary, error)
+	supportsRouting          bool
 	routingGeneration        uint64
 	routingTable             map[int64]routeEntry
 	seenPackets              map[string]time.Time
@@ -211,6 +212,7 @@ func NewManager(cfg Config, st *store.Store) (*Manager, error) {
 		dialer:               websocket.DefaultDialer,
 		peers:                make(map[int64]*peerState, len(cfg.Peers)),
 		configuredPeers:      configuredPeers,
+		supportsRouting:      true,
 		routingTable:         make(map[int64]routeEntry),
 		seenPackets:          make(map[string]time.Time),
 		retryQueue:           make(map[string]queuedPacket),
@@ -302,6 +304,24 @@ func (m *Manager) SetLoggedInUsersProvider(provider func(context.Context) ([]app
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.loggedInUsersProvider = provider
+}
+
+func (m *Manager) setSupportsRouting(supports bool) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.supportsRouting = supports
+}
+
+func (m *Manager) routingSupported() bool {
+	if m == nil {
+		return false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.supportsRouting
 }
 
 func (m *Manager) QueryLoggedInUsers(ctx context.Context, nodeID int64) ([]app.LoggedInUserSummary, error) {
@@ -597,7 +617,7 @@ func (m *Manager) buildHelloEnvelope(sessions ...*session) (*internalproto.Envel
 				OriginProgress:    progress,
 				SnapshotVersion:   internalproto.SnapshotVersion,
 				MessageWindowSize: uint32(m.cfg.MessageWindowSize),
-				SupportsRouting:   true,
+				SupportsRouting:   m.routingSupported(),
 				ConnectionId:      connectionIDForHello(sess),
 			},
 		},

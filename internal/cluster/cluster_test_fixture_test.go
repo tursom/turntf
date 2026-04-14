@@ -49,14 +49,19 @@ func (b *clusterLogBuffer) String() string {
 }
 
 type clusterTestNode struct {
-	id      int64
-	name    string
-	store   *store.Store
-	service *api.Service
-	manager *Manager
-	server  *http.Server
-	ln      net.Listener
-	baseURL string
+	id             int64
+	name           string
+	store          *store.Store
+	service        *api.Service
+	manager        *Manager
+	server         *http.Server
+	ln             net.Listener
+	baseURL        string
+	timeSyncScript *clusterTestTimeSyncScript
+
+	startMu        sync.Mutex
+	managerStarted bool
+	serverStarted  bool
 }
 
 type clusterTestNodeConfig struct {
@@ -66,20 +71,77 @@ type clusterTestNodeConfig struct {
 	MessageWindowSize int
 	ClockSkewMs       int64
 	MaxClockSkewMs    int64
+	TimeSyncSamples   []timeSyncSample
+	DisableRouting    bool
 }
 
 type clusterTestNodeSpec struct {
 	Name              string
 	Slot              uint16
 	PeerNames         []string
+	PeerLinks         []clusterTestPeerLinkSpec
 	MessageWindowSize int
 	ClockSkewMs       int64
 	MaxClockSkewMs    int64
+	TimeSyncSamples   []timeSyncSample
+	DisableRouting    bool
+}
+
+type clusterTestPeerLinkSpec struct {
+	Alias            string
+	Target           string
+	InitiallyBlocked bool
 }
 
 type clusterPeerExpectation struct {
 	node   *clusterTestNode
 	peerID int64
+}
+
+type clusterTestTimeSyncScript struct {
+	mu       sync.Mutex
+	samples  []timeSyncSample
+	fallback timeSyncSample
+}
+
+func newClusterTestTimeSyncScript(samples []timeSyncSample) *clusterTestTimeSyncScript {
+	script := &clusterTestTimeSyncScript{
+		fallback: timeSyncSample{offsetMs: 0, rttMs: 1},
+	}
+	script.Set(samples...)
+	return script
+}
+
+func (s *clusterTestTimeSyncScript) Set(samples ...timeSyncSample) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.samples = append([]timeSyncSample(nil), samples...)
+	if len(samples) > 0 {
+		s.fallback = samples[len(samples)-1]
+	}
+}
+
+func (s *clusterTestTimeSyncScript) Next(*session) (timeSyncSample, error) {
+	if s == nil {
+		return timeSyncSample{offsetMs: 0, rttMs: 1}, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if len(s.samples) == 0 {
+		return s.fallback, nil
+	}
+	next := s.samples[0]
+	s.samples = s.samples[1:]
+	s.fallback = next
+	if next.rttMs <= 0 {
+		next.rttMs = 1
+	}
+	return next, nil
 }
 
 func newClusterTestNodeFixture(t *testing.T, cfg clusterTestNodeConfig) *clusterTestNode {
@@ -123,6 +185,8 @@ func newClusterTestNodes(t *testing.T, specs ...clusterTestNodeSpec) map[string]
 			MessageWindowSize: spec.MessageWindowSize,
 			ClockSkewMs:       spec.ClockSkewMs,
 			MaxClockSkewMs:    spec.MaxClockSkewMs,
+			TimeSyncSamples:   spec.TimeSyncSamples,
+			DisableRouting:    spec.DisableRouting,
 		}
 		if cfg.MessageWindowSize == 0 {
 			cfg.MessageWindowSize = store.DefaultMessageWindowSize
@@ -185,6 +249,14 @@ func newClusterTestNodeFixtureWithListener(t *testing.T, cfg clusterTestNodeConf
 	if err != nil {
 		t.Fatalf("new manager: %v", err)
 	}
+	if cfg.DisableRouting {
+		manager.setSupportsRouting(false)
+	}
+	var timeSyncScript *clusterTestTimeSyncScript
+	if len(cfg.TimeSyncSamples) > 0 {
+		timeSyncScript = newClusterTestTimeSyncScript(cfg.TimeSyncSamples)
+		manager.timeSyncer = timeSyncScript.Next
+	}
 
 	svc := api.New(st, manager)
 	httpAPI := api.NewHTTP(svc)
@@ -196,14 +268,15 @@ func newClusterTestNodeFixtureWithListener(t *testing.T, cfg clusterTestNodeConf
 	rootMux.Handle(manager.AdvertisePath(), manager.Handler())
 
 	node := &clusterTestNode{
-		id:      numericNodeID,
-		name:    cfg.Name,
-		store:   st,
-		service: svc,
-		manager: manager,
-		server:  &http.Server{Handler: rootMux},
-		ln:      ln,
-		baseURL: "http://" + ln.Addr().String(),
+		id:             numericNodeID,
+		name:           cfg.Name,
+		store:          st,
+		service:        svc,
+		manager:        manager,
+		server:         &http.Server{Handler: rootMux},
+		ln:             ln,
+		baseURL:        "http://" + ln.Addr().String(),
+		timeSyncScript: timeSyncScript,
 	}
 
 	t.Cleanup(func() {
@@ -361,6 +434,13 @@ func waitForRouteReachable(t *testing.T, timeout time.Duration, node *clusterTes
 	})
 }
 
+func waitForRouteUnreachable(t *testing.T, timeout time.Duration, node *clusterTestNode, targetNodeID int64) {
+	t.Helper()
+	eventually(t, timeout, func() bool {
+		return node.manager.bestRouteSession(targetNodeID) == nil
+	})
+}
+
 func waitForClusterRoutes(t *testing.T, timeout time.Duration, node *clusterTestNode, targetNodeIDs ...int64) {
 	t.Helper()
 	eventually(t, timeout, func() bool {
@@ -375,14 +455,48 @@ func waitForClusterRoutes(t *testing.T, timeout time.Duration, node *clusterTest
 
 func (n *clusterTestNode) Start(t *testing.T) {
 	t.Helper()
+	n.StartManager(t)
+	n.StartHTTPServer(t)
+}
 
+func (n *clusterTestNode) StartManager(t *testing.T) {
+	t.Helper()
+
+	n.startMu.Lock()
+	if n.managerStarted {
+		n.startMu.Unlock()
+		return
+	}
+	n.managerStarted = true
+	n.startMu.Unlock()
 	n.manager.Start(context.Background())
+}
+
+func (n *clusterTestNode) StartHTTPServer(t *testing.T) {
+	t.Helper()
+
+	n.startMu.Lock()
+	if n.serverStarted {
+		n.startMu.Unlock()
+		return
+	}
+	n.serverStarted = true
+	n.startMu.Unlock()
+
 	go func() {
 		err := n.server.Serve(n.ln)
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
 			panic(err)
 		}
 	}()
+}
+
+func (n *clusterTestNode) SetTimeSyncSamples(samples ...timeSyncSample) {
+	if n.timeSyncScript == nil {
+		n.timeSyncScript = newClusterTestTimeSyncScript(nil)
+		n.manager.timeSyncer = n.timeSyncScript.Next
+	}
+	n.timeSyncScript.Set(samples...)
 }
 
 func (n *clusterTestNode) ActivePeer(peerID int64) bool {
@@ -398,6 +512,17 @@ func (n *clusterTestNode) LastAck(peerID int64) uint64 {
 		return 0
 	}
 	return peer.lastAck
+}
+
+func (n *clusterTestNode) PeerClockOffset(peerID int64) int64 {
+	n.manager.mu.Lock()
+	defer n.manager.mu.Unlock()
+
+	peer, ok := n.manager.peers[peerID]
+	if !ok {
+		return 0
+	}
+	return peer.clockOffsetMs
 }
 
 func (n *clusterTestNode) CurrentSession(peerID int64) *session {

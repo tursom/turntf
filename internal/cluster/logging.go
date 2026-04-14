@@ -63,6 +63,9 @@ func addSessionLogFields(e *zerolog.Event, sess *session) *zerolog.Event {
 	e = e.
 		Str("direction", sessionDirection(sess)).
 		Uint64("connection_id", sess.connectionID)
+	if transport := sessionTransport(sess); transport != "" {
+		e = e.Str("transport", transport)
+	}
 	if sess.peerID > 0 {
 		e = e.Int64("peer_node_id", sess.peerID)
 	}
@@ -87,10 +90,17 @@ func addPacketLogFields(e *zerolog.Event, packet store.TransientPacket) *zerolog
 }
 
 func sessionRemoteAddr(sess *session) string {
-	if sess == nil || sess.conn == nil || sess.conn.RemoteAddr() == nil {
+	if sess == nil || sess.conn == nil {
 		return ""
 	}
-	return sess.conn.RemoteAddr().String()
+	return sess.conn.RemoteAddr()
+}
+
+func sessionTransport(sess *session) string {
+	if sess == nil || sess.conn == nil {
+		return ""
+	}
+	return sess.conn.Transport()
 }
 
 func configuredPeerURL(sess *session) string {

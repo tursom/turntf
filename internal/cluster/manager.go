@@ -12,7 +12,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gorilla/websocket"
 	"github.com/rs/zerolog/log"
 	"google.golang.org/protobuf/proto"
 
@@ -54,10 +53,9 @@ var errSessionClosed = errors.New("session closed")
 var errClockProtectionRejected = errors.New("clock protection rejected")
 
 type Manager struct {
-	cfg      Config
-	store    *store.Store
-	clock    *clock.Clock
-	upgrader websocket.Upgrader
+	cfg   Config
+	store *store.Store
+	clock *clock.Clock
 
 	mux       *http.ServeMux
 	publishCh chan store.Event
@@ -66,7 +64,8 @@ type Manager struct {
 	wg        sync.WaitGroup
 	startOnce sync.Once
 	closeOnce sync.Once
-	dialer    *websocket.Dialer
+	dialer    Dialer
+	websocket *webSocketTransport
 
 	mu              sync.Mutex
 	peers           map[int64]*peerState
@@ -146,7 +145,7 @@ type peerState struct {
 
 type session struct {
 	manager  *Manager
-	conn     *websocket.Conn
+	conn     TransportConn
 	outbound bool
 
 	configuredPeer *configuredPeer
@@ -245,15 +244,12 @@ func NewManager(cfg Config, st *store.Store) (*Manager, error) {
 	}
 
 	mgr := &Manager{
-		cfg:   cfg,
-		store: st,
-		clock: clockRef,
-		upgrader: websocket.Upgrader{
-			CheckOrigin: func(*http.Request) bool { return true },
-		},
+		cfg:                   cfg,
+		store:                 st,
+		clock:                 clockRef,
+		websocket:             newWebSocketTransport(),
 		mux:                   http.NewServeMux(),
 		publishCh:             make(chan store.Event, managerPublishQueue),
-		dialer:                websocket.DefaultDialer,
 		peers:                 make(map[int64]*peerState, len(cfg.Peers)),
 		configuredPeers:       configuredPeers,
 		discoveredPeers:       make(map[string]*discoveredPeerState),
@@ -267,6 +263,7 @@ func NewManager(cfg Config, st *store.Store) (*Manager, error) {
 		pendingLoggedInUsers:  make(map[uint64]chan loggedInUsersQueryResult),
 		clockStateTransitions: make(map[clockStateTransitionKey]uint64),
 	}
+	mgr.dialer = mgr.websocket
 	if !cfg.DiscoveryDisabled {
 		if err := mgr.loadDiscoveredPeers(context.Background()); err != nil {
 			return nil, err
@@ -554,7 +551,7 @@ func (m *Manager) dialLoop(peer *configuredPeer) {
 			Str("direction", "outbound").
 			Str("peer_url", peer.URL).
 			Msg("starting outbound peer dial")
-		conn, _, err := m.dialer.DialContext(m.ctx, peer.URL, nil)
+		conn, err := m.dialer.Dial(m.ctx, peer.URL)
 		if err != nil {
 			m.recordConfiguredPeerDialFailure(peer, err)
 			wait := backoff[minInt(attempt, len(backoff)-1)]
@@ -593,12 +590,13 @@ func (m *Manager) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	conn, err := m.upgrader.Upgrade(w, r, nil)
+	conn, err := m.websocket.Upgrade(w, r)
 	if err != nil {
 		return
 	}
 	m.logInfo("peer_inbound_accepted").
 		Str("direction", "inbound").
+		Str("transport", conn.Transport()).
 		Str("remote_addr", r.RemoteAddr).
 		Str("path", r.URL.Path).
 		Msg("accepted inbound peer websocket")
@@ -611,7 +609,7 @@ func (m *Manager) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}()
 }
 
-func (m *Manager) newSession(conn *websocket.Conn, outbound bool, configuredPeer *configuredPeer) *session {
+func (m *Manager) newSession(conn TransportConn, outbound bool, configuredPeer *configuredPeer) *session {
 	m.mu.Lock()
 	m.routingGeneration++
 	connectionID := m.routingGeneration
@@ -637,12 +635,6 @@ func (m *Manager) runSession(sess *session) {
 	defer sess.close()
 	defer m.deactivateSession(sess)
 
-	sess.conn.SetReadLimit(8 << 20)
-	_ = sess.conn.SetReadDeadline(time.Now().Add(readTimeout))
-	sess.conn.SetPongHandler(func(string) error {
-		return sess.conn.SetReadDeadline(time.Now().Add(readTimeout))
-	})
-
 	hello, err := m.buildHelloEnvelope(sess)
 	if err != nil {
 		log.Warn().Err(err).Str("component", "cluster").Str("event", "build_hello_failed").Msg("build hello failed")
@@ -657,6 +649,7 @@ func (m *Manager) runSession(sess *session) {
 
 	sess.enqueue(hello)
 	m.readLoop(sess)
+	sess.close()
 	<-writeDone
 }
 
@@ -697,17 +690,14 @@ func (m *Manager) buildHelloEnvelope(sessions ...*session) (*internalproto.Envel
 }
 
 func (m *Manager) writeLoop(sess *session) {
-	ticker := time.NewTicker(pingInterval)
-	defer ticker.Stop()
-
 	for {
 		select {
 		case <-m.ctx.Done():
-			_ = sess.conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, "shutdown"), time.Now().Add(writeWait))
+			closeTransport(sess.conn, "shutdown")
 			return
 		case envelope, ok := <-sess.send:
 			if !ok {
-				_ = sess.conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, "session closed"), time.Now().Add(writeWait))
+				closeTransport(sess.conn, "session closed")
 				return
 			}
 
@@ -717,13 +707,7 @@ func (m *Manager) writeLoop(sess *session) {
 				return
 			}
 
-			_ = sess.conn.SetWriteDeadline(time.Now().Add(writeWait))
-			if err := sess.conn.WriteMessage(websocket.BinaryMessage, data); err != nil {
-				return
-			}
-		case <-ticker.C:
-			_ = sess.conn.SetWriteDeadline(time.Now().Add(writeWait))
-			if err := sess.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+			if err := sess.conn.Send(m.ctx, data); err != nil {
 				return
 			}
 		}
@@ -732,7 +716,7 @@ func (m *Manager) writeLoop(sess *session) {
 
 func (m *Manager) readLoop(sess *session) {
 	for {
-		_, data, err := sess.conn.ReadMessage()
+		data, err := sess.conn.Receive(m.ctx)
 		if err != nil {
 			return
 		}

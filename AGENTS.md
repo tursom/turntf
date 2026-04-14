@@ -8,6 +8,7 @@
 ## Commits
 
 - Use Conventional Commits: `<type>(<scope>): <summary>`.
+- Commit should use English.
 
 ## Language
 

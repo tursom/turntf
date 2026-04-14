@@ -296,6 +296,9 @@ func (m *Manager) Start(parent context.Context) {
 
 		for _, peer := range m.configuredPeers {
 			peer := peer
+			if !isWebSocketPeerURL(peer.URL) {
+				continue
+			}
 			m.wg.Add(1)
 			go m.dialLoop(peer)
 		}
@@ -585,13 +588,17 @@ func (m *Manager) dialLoop(peer *configuredPeer) {
 }
 
 func (m *Manager) handleWebSocket(w http.ResponseWriter, r *http.Request) {
-	if m.ctx == nil {
+	if m.ctx == nil || m.ctx.Err() != nil {
 		http.Error(w, "cluster manager not started", http.StatusServiceUnavailable)
 		return
 	}
 
 	conn, err := m.websocket.Upgrade(w, r)
 	if err != nil {
+		return
+	}
+	if m.ctx.Err() != nil {
+		closeTransport(conn, "shutdown")
 		return
 	}
 	m.logInfo("peer_inbound_accepted").

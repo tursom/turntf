@@ -85,3 +85,40 @@ func TestMembershipUpdateRejectsInvalidAdvertisements(t *testing.T) {
 		t.Fatalf("expected no discovered peers, got %+v", status.Discovery)
 	}
 }
+
+func TestBuildMembershipEnvelopeSkipsZeroMQURLs(t *testing.T) {
+	node := newClusterTestNodeFixture(t, clusterTestNodeConfig{
+		Name:             "node-a",
+		Slot:             1,
+		DiscoveryEnabled: true,
+	})
+	mgr := node.manager
+	mgr.configuredPeers = append(mgr.configuredPeers, &configuredPeer{
+		URL:    "zmq+tcp://127.0.0.1:9091",
+		nodeID: testNodeID(2),
+		source: peerSourceStatic,
+	})
+	mgr.discoveredPeers["zmq+tcp://127.0.0.1:9092"] = &discoveredPeerState{
+		nodeID: testNodeID(3),
+		url:    "zmq+tcp://127.0.0.1:9092",
+		state:  discoveryStateConnected,
+	}
+	mgr.selfKnownURLs["zmq+tcp://127.0.0.1:9093"] = 7
+
+	envelope := mgr.buildMembershipEnvelope()
+	if envelope == nil {
+		t.Fatal("expected membership envelope")
+	}
+	update := envelope.GetMembershipUpdate()
+	if update == nil {
+		t.Fatal("expected membership update body")
+	}
+	for _, item := range update.Peers {
+		if item == nil {
+			continue
+		}
+		if isZeroMQPeerURL(item.Url) {
+			t.Fatalf("expected zeromq url to be skipped from membership advertisement: %+v", item)
+		}
+	}
+}

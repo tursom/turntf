@@ -62,6 +62,7 @@ type loggingConfig struct {
 type clusterFileConfig struct {
 	AdvertisePath                   string           `toml:"advertise_path"`
 	Secret                          string           `toml:"secret"`
+	ZeroMQ                          zeroMQFileConfig `toml:"zeromq"`
 	MaxClockSkewMs                  *int64           `toml:"max_clock_skew_ms"`
 	ClockSyncTimeoutMs              *int64           `toml:"clock_sync_timeout_ms"`
 	ClockCredibleRttMs              *int64           `toml:"clock_credible_rtt_ms"`
@@ -76,6 +77,11 @@ type clusterFileConfig struct {
 
 type peerFileConfig struct {
 	URL string `toml:"url"`
+}
+
+type zeroMQFileConfig struct {
+	Enabled bool   `toml:"enabled"`
+	BindURL string `toml:"bind_url"`
 }
 
 type runtimeServeConfig struct {
@@ -218,8 +224,12 @@ func (c serveConfig) runtimeConfig(configPath string) (runtimeServeConfig, error
 		clockRecoverAfterHealthySamples = *c.Cluster.ClockRecoverAfterHealthySamples
 	}
 	clusterCfg := cluster.Config{
-		AdvertisePath:                   strings.TrimSpace(c.Cluster.AdvertisePath),
-		ClusterSecret:                   strings.TrimSpace(c.Cluster.Secret),
+		AdvertisePath: strings.TrimSpace(c.Cluster.AdvertisePath),
+		ClusterSecret: strings.TrimSpace(c.Cluster.Secret),
+		ZeroMQ: cluster.ZeroMQConfig{
+			Enabled: c.Cluster.ZeroMQ.Enabled,
+			BindURL: strings.TrimSpace(c.Cluster.ZeroMQ.BindURL),
+		},
 		Peers:                           peers,
 		MessageWindowSize:               messageWindowSize,
 		MaxClockSkewMs:                  maxClockSkewMs,
@@ -233,7 +243,7 @@ func (c serveConfig) runtimeConfig(configPath string) (runtimeServeConfig, error
 		ClockRecoverAfterHealthySamples: clockRecoverAfterHealthySamples,
 	}
 	clusterCfg = clusterCfg.WithDefaults()
-	if err := validateClusterFileConfig(clusterCfg); err != nil {
+	if err := validateClusterFileConfig(&clusterCfg); err != nil {
 		return runtimeServeConfig{}, fmt.Errorf("invalid cluster config: %w", err)
 	}
 	if clusterCfg.Enabled() && strings.TrimSpace(c.Auth.TokenSecret) == clusterCfg.ClusterSecret {
@@ -263,56 +273,17 @@ func (c serveConfig) runtimeConfig(configPath string) (runtimeServeConfig, error
 	}, nil
 }
 
-func validateClusterFileConfig(c cluster.Config) error {
-	if c.MaxClockSkewMs < 0 {
-		return fmt.Errorf("cluster max clock skew must be non-negative")
+func validateClusterFileConfig(c *cluster.Config) error {
+	if c == nil {
+		return fmt.Errorf("cluster config cannot be nil")
 	}
-	if c.ClockSyncTimeoutMs < 0 {
-		return fmt.Errorf("cluster clock sync timeout must be non-negative")
+	validating := *c
+	if validating.NodeID == 0 {
+		validating.NodeID = 1
 	}
-	if c.ClockCredibleRttMs < 0 {
-		return fmt.Errorf("cluster clock credible rtt must be non-negative")
+	if err := validating.Validate(); err != nil {
+		return err
 	}
-	if c.ClockTrustedFreshMs < 0 {
-		return fmt.Errorf("cluster clock trusted fresh window must be non-negative")
-	}
-	if c.ClockObserveGraceMs < 0 {
-		return fmt.Errorf("cluster clock observe grace must be non-negative")
-	}
-	if c.ClockWriteGateGraceMs < 0 {
-		return fmt.Errorf("cluster clock write gate grace must be non-negative")
-	}
-	if c.ClockRejectAfterFailures < 0 {
-		return fmt.Errorf("cluster clock reject-after-failures must be non-negative")
-	}
-	if c.ClockRejectAfterSkewSamples < 0 {
-		return fmt.Errorf("cluster clock reject-after-skew-samples must be non-negative")
-	}
-	if c.ClockRecoverAfterHealthySamples < 0 {
-		return fmt.Errorf("cluster clock recover-after-healthy-samples must be non-negative")
-	}
-	if c.Enabled() {
-		if strings.TrimSpace(c.ClusterSecret) == "" {
-			return fmt.Errorf("cluster secret cannot be empty")
-		}
-		if strings.TrimSpace(c.AdvertisePath) == "" {
-			return fmt.Errorf("cluster advertise path cannot be empty when cluster mode is enabled")
-		}
-		if !strings.HasPrefix(strings.TrimSpace(c.AdvertisePath), "/") {
-			return fmt.Errorf("cluster advertise path must start with /")
-		}
-	}
-
-	seenPeers := make(map[string]struct{}, len(c.Peers))
-	for _, peer := range c.Peers {
-		url := strings.TrimSpace(peer.URL)
-		if url == "" {
-			return fmt.Errorf("peer url cannot be empty")
-		}
-		if _, ok := seenPeers[url]; ok {
-			return fmt.Errorf("duplicate peer url %q", url)
-		}
-		seenPeers[url] = struct{}{}
-	}
+	*c = validating
 	return nil
 }

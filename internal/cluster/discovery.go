@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/url"
 	"sort"
 	"strings"
 	"time"
@@ -300,6 +299,9 @@ func (m *Manager) reconcileDiscoveredDialers() {
 	dynamicCount := len(m.dynamicPeers)
 	staticURLs := make(map[string]struct{}, len(m.configuredPeers))
 	for _, peer := range m.configuredPeers {
+		if !isWebSocketPeerURL(peer.URL) {
+			continue
+		}
 		if normalized, err := normalizePeerURL(peer.URL); err == nil {
 			staticURLs[normalized] = struct{}{}
 		}
@@ -315,6 +317,9 @@ func (m *Manager) reconcileDiscoveredDialers() {
 			continue
 		}
 		if peer.state == discoveryStateExpired {
+			continue
+		}
+		if !isWebSocketPeerURL(peer.url) {
 			continue
 		}
 		if active := m.peers[peer.nodeID]; active != nil && active.active != nil {
@@ -417,6 +422,9 @@ func (m *Manager) buildMembershipEnvelope() *internalproto.Envelope {
 	seen := make(map[string]struct{})
 	add := func(nodeID int64, rawURL string, itemGeneration uint64) {
 		if nodeID <= 0 || strings.TrimSpace(rawURL) == "" {
+			return
+		}
+		if !isWebSocketPeerURL(rawURL) {
 			return
 		}
 		normalized, err := normalizePeerURL(rawURL)
@@ -533,30 +541,6 @@ func (m *Manager) recordDiscoveryPersistFailure() {
 	m.mu.Lock()
 	m.discoveryPersistFailures++
 	m.mu.Unlock()
-}
-
-func normalizePeerURL(raw string) (string, error) {
-	trimmed := strings.TrimSpace(raw)
-	if trimmed == "" {
-		return "", errors.New("peer url cannot be empty")
-	}
-	parsed, err := url.Parse(trimmed)
-	if err != nil {
-		return "", fmt.Errorf("parse peer url: %w", err)
-	}
-	scheme := strings.ToLower(parsed.Scheme)
-	if scheme != "ws" && scheme != "wss" {
-		return "", fmt.Errorf("peer url scheme must be ws or wss")
-	}
-	if strings.TrimSpace(parsed.Host) == "" {
-		return "", errors.New("peer url host cannot be empty")
-	}
-	if parsed.Fragment != "" {
-		return "", errors.New("peer url fragment is not allowed")
-	}
-	parsed.Scheme = scheme
-	parsed.Host = strings.ToLower(parsed.Host)
-	return parsed.String(), nil
 }
 
 func timestampWallTime(wallTimeMs int64) time.Time {

@@ -735,6 +735,179 @@ url = "ws://127.0.0.1:9081/internal/cluster/ws"
 	}
 }
 
+func TestLoadServeRuntimeConfigSupportsZeroMQConfigAndPeerValidation(t *testing.T) {
+	t.Parallel()
+
+	configPath := filepath.Join(t.TempDir(), "zeromq.toml")
+	writeTestConfig(t, configPath, `
+[api]
+listen_addr = ":8080"
+
+[store]
+db_path = "./data/node-a.db"
+
+[cluster]
+advertise_path = "/internal/cluster/ws"
+secret = "secret"
+
+[cluster.zeromq]
+enabled = true
+bind_url = "tcp://0.0.0.0:9090"
+
+[[cluster.peers]]
+url = "WS://Example.COM/internal/cluster/ws"
+
+[[cluster.peers]]
+url = "zmq+tcp://Example.COM:9091"
+`)
+
+	cfg, err := loadServeRuntimeConfig(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if !cfg.Cluster.ZeroMQ.Enabled {
+		t.Fatalf("expected zeromq to be enabled")
+	}
+	if cfg.Cluster.ZeroMQ.BindURL != "tcp://0.0.0.0:9090" {
+		t.Fatalf("unexpected zeromq bind url: %q", cfg.Cluster.ZeroMQ.BindURL)
+	}
+	if cfg.Cluster.Peers[0].URL != "ws://example.com/internal/cluster/ws" {
+		t.Fatalf("unexpected normalized websocket peer url: %q", cfg.Cluster.Peers[0].URL)
+	}
+	if cfg.Cluster.Peers[1].URL != "zmq+tcp://example.com:9091" {
+		t.Fatalf("unexpected normalized zeromq peer url: %q", cfg.Cluster.Peers[1].URL)
+	}
+}
+
+func TestLoadServeRuntimeConfigZeroMQDefaultsDisabled(t *testing.T) {
+	t.Parallel()
+
+	configPath := filepath.Join(t.TempDir(), "zeromq-default.toml")
+	writeTestConfig(t, configPath, `
+[api]
+listen_addr = ":8080"
+
+[store]
+db_path = "./data/node-a.db"
+
+[cluster.zeromq]
+bind_url = "tcp://0.0.0.0:9090"
+`)
+
+	cfg, err := loadServeRuntimeConfig(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if cfg.Cluster.Enabled() {
+		t.Fatalf("expected cluster mode to stay disabled when zeromq is only preconfigured")
+	}
+	if cfg.Cluster.ZeroMQ.Enabled {
+		t.Fatalf("expected zeromq to default to disabled")
+	}
+	if cfg.Cluster.ZeroMQ.BindURL != "tcp://0.0.0.0:9090" {
+		t.Fatalf("unexpected preserved zeromq bind url: %q", cfg.Cluster.ZeroMQ.BindURL)
+	}
+}
+
+func TestLoadServeRuntimeConfigRejectsInvalidZeroMQConfig(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		body    string
+		wantErr string
+	}{
+		{
+			name: "enabled without bind url",
+			body: `
+[api]
+listen_addr = ":8080"
+
+[store]
+db_path = "./data/node-a.db"
+
+[cluster]
+advertise_path = "/internal/cluster/ws"
+secret = "secret"
+
+[cluster.zeromq]
+enabled = true
+`,
+			wantErr: "zeromq bind url cannot be empty",
+		},
+		{
+			name: "invalid bind url scheme",
+			body: `
+[api]
+listen_addr = ":8080"
+
+[store]
+db_path = "./data/node-a.db"
+
+[cluster]
+advertise_path = "/internal/cluster/ws"
+secret = "secret"
+
+[cluster.zeromq]
+enabled = true
+bind_url = "ws://127.0.0.1:9090"
+`,
+			wantErr: "zeromq bind url scheme must be tcp",
+		},
+		{
+			name: "invalid zeromq peer wildcard",
+			body: `
+[api]
+listen_addr = ":8080"
+
+[store]
+db_path = "./data/node-a.db"
+
+[cluster]
+advertise_path = "/internal/cluster/ws"
+secret = "secret"
+
+[[cluster.peers]]
+url = "zmq+tcp://0.0.0.0:9091"
+`,
+			wantErr: "peer url host cannot be a wildcard address",
+		},
+		{
+			name: "duplicate normalized peer urls",
+			body: `
+[api]
+listen_addr = ":8080"
+
+[store]
+db_path = "./data/node-a.db"
+
+[cluster]
+advertise_path = "/internal/cluster/ws"
+secret = "secret"
+
+[[cluster.peers]]
+url = "WS://Example.COM/internal/cluster/ws"
+
+[[cluster.peers]]
+url = "ws://example.com/internal/cluster/ws"
+`,
+			wantErr: `duplicate peer url "ws://example.com/internal/cluster/ws"`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			configPath := filepath.Join(t.TempDir(), "zeromq-invalid.toml")
+			writeTestConfig(t, configPath, tt.body)
+
+			_, err := loadServeRuntimeConfig(configPath)
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
 func TestServeHandlerLeavesClusterRouteHiddenWhenDisabled(t *testing.T) {
 	t.Parallel()
 

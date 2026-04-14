@@ -9,10 +9,16 @@ type Peer struct {
 	URL string
 }
 
+type ZeroMQConfig struct {
+	Enabled bool
+	BindURL string
+}
+
 type Config struct {
 	NodeID                          int64
 	AdvertisePath                   string
 	ClusterSecret                   string
+	ZeroMQ                          ZeroMQConfig
 	Peers                           []Peer
 	DiscoveryDisabled               bool
 	MessageWindowSize               int
@@ -66,10 +72,13 @@ func (c Config) WithDefaults() Config {
 }
 
 func (c Config) Enabled() bool {
-	return strings.TrimSpace(c.AdvertisePath) != "" || strings.TrimSpace(c.ClusterSecret) != "" || len(c.Peers) > 0
+	return c.ZeroMQ.Enabled || strings.TrimSpace(c.AdvertisePath) != "" || strings.TrimSpace(c.ClusterSecret) != "" || len(c.Peers) > 0
 }
 
-func (c Config) Validate() error {
+func (c *Config) Validate() error {
+	if c == nil {
+		return fmt.Errorf("cluster config cannot be nil")
+	}
 	if c.NodeID <= 0 {
 		return fmt.Errorf("node id cannot be empty")
 	}
@@ -101,28 +110,40 @@ func (c Config) Validate() error {
 		return fmt.Errorf("cluster clock recover-after-healthy-samples must be non-negative")
 	}
 
+	c.AdvertisePath = strings.TrimSpace(c.AdvertisePath)
+	c.ClusterSecret = strings.TrimSpace(c.ClusterSecret)
+	c.ZeroMQ.BindURL = strings.TrimSpace(c.ZeroMQ.BindURL)
+
 	if c.Enabled() {
-		if strings.TrimSpace(c.ClusterSecret) == "" {
+		if c.ClusterSecret == "" {
 			return fmt.Errorf("cluster secret cannot be empty")
 		}
-		if strings.TrimSpace(c.AdvertisePath) == "" {
+		if c.AdvertisePath == "" {
 			return fmt.Errorf("cluster advertise path cannot be empty when cluster mode is enabled")
 		}
-		if !strings.HasPrefix(strings.TrimSpace(c.AdvertisePath), "/") {
+		if !strings.HasPrefix(c.AdvertisePath, "/") {
 			return fmt.Errorf("cluster advertise path must start with /")
 		}
 	}
+	if c.ZeroMQ.Enabled {
+		normalizedBindURL, err := normalizeZeroMQBindURL(c.ZeroMQ.BindURL)
+		if err != nil {
+			return err
+		}
+		c.ZeroMQ.BindURL = normalizedBindURL
+	}
 
 	seenPeers := make(map[string]struct{}, len(c.Peers))
-	for _, peer := range c.Peers {
-		url := strings.TrimSpace(peer.URL)
-		if url == "" {
-			return fmt.Errorf("peer url cannot be empty")
+	for idx := range c.Peers {
+		normalizedURL, err := normalizeConfiguredPeerURL(c.Peers[idx].URL)
+		if err != nil {
+			return err
 		}
-		if _, ok := seenPeers[url]; ok {
-			return fmt.Errorf("duplicate peer url %q", url)
+		if _, ok := seenPeers[normalizedURL]; ok {
+			return fmt.Errorf("duplicate peer url %q", normalizedURL)
 		}
-		seenPeers[url] = struct{}{}
+		seenPeers[normalizedURL] = struct{}{}
+		c.Peers[idx].URL = normalizedURL
 	}
 	return nil
 }

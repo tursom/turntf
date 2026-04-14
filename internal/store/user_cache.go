@@ -9,9 +9,9 @@ import (
 type cachedUserRepository struct {
 	delegate UserRepository
 
-	mu                  sync.RWMutex
-	users               map[userCacheKey]User
-	broadcastUserKeys   []UserKey
+	mu                sync.RWMutex
+	users             map[userCacheKey]User
+	broadcastUserKeys []UserKey
 }
 
 type userCacheKey struct {

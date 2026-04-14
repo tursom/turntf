@@ -7,9 +7,11 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -26,6 +28,25 @@ import (
 )
 
 const clusterTestAdminPassword = "root-password"
+
+var clusterLogCaptureMu sync.Mutex
+
+type clusterLogBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *clusterLogBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *clusterLogBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
 
 type clusterTestNode struct {
 	id      int64
@@ -255,11 +276,67 @@ func waitForReplicatedMessages(t *testing.T, timeout time.Duration, node *cluste
 	})
 }
 
+func waitForMessagesEqual(t *testing.T, timeout time.Duration, node *clusterTestNode, key store.UserKey, limit int, expectedBodies ...string) {
+	t.Helper()
+	waitForReplicatedMessages(t, timeout, node, key, limit, func(messages []store.Message) bool {
+		if len(messages) != len(expectedBodies) {
+			return false
+		}
+		for i, expectedBody := range expectedBodies {
+			if string(messages[i].Body) != expectedBody {
+				return false
+			}
+		}
+		return true
+	})
+}
+
+func waitForUsersConverged(t *testing.T, timeout time.Duration, key store.UserKey, expectedUsername, expectedProfile string, nodes ...*clusterTestNode) {
+	t.Helper()
+	eventually(t, timeout, func() bool {
+		for _, node := range nodes {
+			user, err := node.store.GetUser(context.Background(), key)
+			if err != nil {
+				return false
+			}
+			if user.Username != expectedUsername || user.Profile != expectedProfile {
+				return false
+			}
+		}
+		return true
+	})
+}
+
+func waitForUserDeletedEverywhere(t *testing.T, timeout time.Duration, key store.UserKey, nodes ...*clusterTestNode) {
+	t.Helper()
+	eventually(t, timeout, func() bool {
+		for _, node := range nodes {
+			if _, err := node.store.GetUser(context.Background(), key); !errors.Is(err, store.ErrNotFound) {
+				return false
+			}
+		}
+		return true
+	})
+}
+
+func waitForEventCount(t *testing.T, timeout time.Duration, node *clusterTestNode, afterID int64, limit, expectedCount int) {
+	t.Helper()
+	eventually(t, timeout, func() bool {
+		events, err := node.store.ListEvents(context.Background(), afterID, limit)
+		return err == nil && len(events) == expectedCount
+	})
+}
+
 func waitForPeerAckReached(t *testing.T, timeout time.Duration, node *clusterTestNode, peerID int64, minAck uint64) {
 	t.Helper()
 	eventually(t, timeout, func() bool {
 		return node.LastAck(peerID) >= minAck
 	})
+}
+
+func assertPeerAckReached(t *testing.T, timeout time.Duration, node *clusterTestNode, peerID int64, minAck uint64) {
+	t.Helper()
+	waitForPeerAckReached(t, timeout, node, peerID, minAck)
 }
 
 func waitForSessionReconnect(t *testing.T, timeout time.Duration, node *clusterTestNode, peerID int64, oldSession *session) *session {
@@ -281,6 +358,18 @@ func waitForRouteReachable(t *testing.T, timeout time.Duration, node *clusterTes
 	t.Helper()
 	eventually(t, timeout, func() bool {
 		return node.manager.bestRouteSession(targetNodeID) != nil
+	})
+}
+
+func waitForClusterRoutes(t *testing.T, timeout time.Duration, node *clusterTestNode, targetNodeIDs ...int64) {
+	t.Helper()
+	eventually(t, timeout, func() bool {
+		for _, targetNodeID := range targetNodeIDs {
+			if node.manager.bestRouteSession(targetNodeID) == nil {
+				return false
+			}
+		}
+		return true
 	})
 }
 
@@ -473,6 +562,16 @@ func doJSONRequestWithHeaders(baseURL, method, path string, body any, wantStatus
 	return data.Bytes(), nil
 }
 
+func newClusterHTTPTestServer(t *testing.T, handler http.Handler) *httptest.Server {
+	t.Helper()
+
+	server := httptest.NewUnstartedServer(handler)
+	server.Listener = mustListen(t)
+	server.Start()
+	t.Cleanup(server.Close)
+	return server
+}
+
 func mustJSON(t *testing.T, data []byte, dst any) {
 	t.Helper()
 	if err := json.Unmarshal(data, dst); err != nil {
@@ -480,16 +579,18 @@ func mustJSON(t *testing.T, data []byte, dst any) {
 	}
 }
 
-func captureClusterLogs(t *testing.T) *bytes.Buffer {
+func captureClusterLogs(t *testing.T) *clusterLogBuffer {
 	t.Helper()
 
+	clusterLogCaptureMu.Lock()
 	originalLogger := log.Logger
-	var logOutput bytes.Buffer
-	log.Logger = zerolog.New(&logOutput)
+	logOutput := &clusterLogBuffer{}
+	log.Logger = zerolog.New(logOutput)
 	t.Cleanup(func() {
 		log.Logger = originalLogger
+		clusterLogCaptureMu.Unlock()
 	})
-	return &logOutput
+	return logOutput
 }
 
 func newHandshakeTestManager(t *testing.T) *Manager {

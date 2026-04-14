@@ -8,3 +8,7 @@
 ## Commits
 
 - Use Conventional Commits: `<type>(<scope>): <summary>`.
+
+## Language
+
+- Write plans and documentation in Chinese.

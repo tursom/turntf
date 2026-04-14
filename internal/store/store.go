@@ -2082,36 +2082,99 @@ WHERE user_id = ? AND deleted_at_hlc IS NULL
 		return nil
 	}
 
-	now := s.clock.Now().String()
-	if _, err := tx.ExecContext(ctx, `
-UPDATE users
-SET role = ?,
-    system_reserved = 1,
-    updated_at_hlc = ?,
-    version_role = CASE
-        WHEN role != ? AND version_role < ? THEN ?
-        ELSE version_role
-    END
-WHERE node_id = ? AND user_id = ? AND deleted_at_hlc IS NULL
-  AND (role != ? OR system_reserved != 1)
-`, RoleSuperAdmin, now, RoleSuperAdmin, now, now, minNodeID.Int64, BootstrapAdminUserID, RoleSuperAdmin); err != nil {
-		return fmt.Errorf("promote bootstrap admin: %w", err)
+	rows, err := tx.QueryContext(ctx, `
+SELECT node_id, role, system_reserved, updated_at_hlc, version_role
+FROM users
+WHERE user_id = ? AND deleted_at_hlc IS NULL
+  AND ((node_id = ? AND (role != ? OR system_reserved != 1))
+       OR (node_id != ? AND (role = ? OR system_reserved != 0)))
+ORDER BY node_id ASC
+`, BootstrapAdminUserID, minNodeID.Int64, RoleSuperAdmin, minNodeID.Int64, RoleSuperAdmin)
+	if err != nil {
+		return fmt.Errorf("query bootstrap admins for reconciliation: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `
+	defer rows.Close()
+
+	type bootstrapAdminReconciliation struct {
+		nodeID         int64
+		role           string
+		systemReserved bool
+		updatedAt      clock.Timestamp
+		versionRole    clock.Timestamp
+	}
+	reconciliations := make([]bootstrapAdminReconciliation, 0)
+	for rows.Next() {
+		var item bootstrapAdminReconciliation
+		var systemReserved int
+		var updatedAtRaw, versionRoleRaw string
+		if err := rows.Scan(&item.nodeID, &item.role, &systemReserved, &updatedAtRaw, &versionRoleRaw); err != nil {
+			return fmt.Errorf("scan bootstrap admin for reconciliation: %w", err)
+		}
+		item.systemReserved = systemReserved != 0
+		item.updatedAt, err = clock.ParseTimestamp(updatedAtRaw)
+		if err != nil {
+			return fmt.Errorf("parse bootstrap admin updated_at: %w", err)
+		}
+		item.versionRole, err = clock.ParseTimestamp(versionRoleRaw)
+		if err != nil {
+			return fmt.Errorf("parse bootstrap admin version_role: %w", err)
+		}
+		reconciliations = append(reconciliations, item)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate bootstrap admins for reconciliation: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close bootstrap admin reconciliation rows: %w", err)
+	}
+
+	for _, item := range reconciliations {
+		targetRole := item.role
+		targetSystemReserved := item.systemReserved
+		if item.nodeID == minNodeID.Int64 {
+			targetRole = RoleSuperAdmin
+			targetSystemReserved = true
+		} else {
+			if item.role == RoleSuperAdmin {
+				targetRole = RoleUser
+			}
+			targetSystemReserved = false
+		}
+
+		roleChanged := targetRole != item.role
+		updatedAt := nextUserInvariantTimestamp(item.updatedAt, item.versionRole)
+		versionRole := item.versionRole
+		if roleChanged {
+			versionRole = updatedAt
+		}
+
+		if _, err := tx.ExecContext(ctx, `
 UPDATE users
-SET role = CASE WHEN role = ? THEN ? ELSE role END,
-    system_reserved = 0,
-    updated_at_hlc = ?,
-    version_role = CASE
-        WHEN role = ? AND version_role < ? THEN ?
-        ELSE version_role
-    END
-WHERE user_id = ? AND node_id != ? AND deleted_at_hlc IS NULL
-  AND (role = ? OR system_reserved != 0)
-`, RoleSuperAdmin, RoleUser, now, RoleSuperAdmin, now, now, BootstrapAdminUserID, minNodeID.Int64, RoleSuperAdmin); err != nil {
-		return fmt.Errorf("demote non-owner bootstrap admins: %w", err)
+SET role = ?, system_reserved = ?, updated_at_hlc = ?, version_role = ?
+WHERE node_id = ? AND user_id = ? AND deleted_at_hlc IS NULL
+`, targetRole, boolToInt(targetSystemReserved), updatedAt.String(), versionRole.String(), item.nodeID, BootstrapAdminUserID); err != nil {
+			return fmt.Errorf("reconcile bootstrap admin %d: %w", item.nodeID, err)
+		}
 	}
 	return nil
+}
+
+func nextUserInvariantTimestamp(updatedAt, versionRole clock.Timestamp) clock.Timestamp {
+	if versionRole.Compare(updatedAt) > 0 {
+		return nextDeterministicTimestamp(versionRole)
+	}
+	return nextDeterministicTimestamp(updatedAt)
+}
+
+func nextDeterministicTimestamp(base clock.Timestamp) clock.Timestamp {
+	next := base
+	if next.Logical == ^uint16(0) {
+		next.WallTimeMs++
+		next.Logical = 0
+		return next
+	}
+	next.Logical++
+	return next
 }
 
 func boolToInt(value bool) int {

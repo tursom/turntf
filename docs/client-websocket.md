@@ -65,7 +65,7 @@ ServerEnvelope {
 - `seq`：该生产节点为目标用户生成的消息序号。
 - 客户端收到并持久化消息后，应保存 `(node_id, seq)`。
 - 客户端重连登录时，把已持久化的游标放入 `LoginRequest.seen_messages`，服务端会跳过这些消息。
-- 服务端推送的 `Message` 仍包含 `user_node_id` 和 `user_id`，用于说明该消息归属的目标用户、channel 或 broadcast 地址。
+- 服务端推送的 `Message` 通过 `recipient: UserRef` 标识该消息归属的目标用户、channel 或 broadcast 地址。
 
 注意：当前服务端只在连接内存中使用 `AckMessage` 更新去重集合，不会把客户端 ack 状态写入数据库。可靠重连依赖客户端在下次 `LoginRequest.seen_messages` 中上报已持久化游标。
 
@@ -79,8 +79,7 @@ ServerEnvelope {
 ServerEnvelope {
   message_pushed: MessagePushed {
     message: {
-      user_node_id: 4096
-      user_id: 1025
+      recipient: { node_id: 4096, user_id: 1025 }
       node_id: 4096
       seq: 3
       sender: { node_id: 4096, user_id: 1 }
@@ -185,8 +184,7 @@ ServerEnvelope {
   send_message_response: SendMessageResponse {
     request_id: 42
     message: {
-      user_node_id: 4096
-      user_id: 1025
+      recipient: { node_id: 4096, user_id: 1025 }
       node_id: 4096
       seq: 4
       sender: { node_id: 4096, user_id: 1 }
@@ -273,10 +271,8 @@ ServerEnvelope {
     request_id: 1002
     items: [
       {
-        subscriber_node_id: 4096
-        subscriber_user_id: 1025
-        channel_node_id: 4096
-        channel_user_id: 1026
+        subscriber: { node_id: 4096, user_id: 1025 }
+        channel: { node_id: 4096, user_id: 1026 }
         subscribed_at: "..."
       }
     ]

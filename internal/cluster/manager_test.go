@@ -921,7 +921,7 @@ func TestTokenSignedByNodeAIsAcceptedByNodeB(t *testing.T) {
 	}
 }
 
-func TestHandleEventBatchSendsAckAfterSuccessfulApply(t *testing.T) {
+func TestHandleEventBatchAckMeansAppliedToLocalState(t *testing.T) {
 	t.Parallel()
 
 	sourceStore := newReplicationTestStore(t, "node-a", 1)
@@ -960,10 +960,10 @@ func TestHandleEventBatchSendsAckAfterSuccessfulApply(t *testing.T) {
 
 	replicatedUser, err := targetStore.GetUser(context.Background(), user.Key())
 	if err != nil {
-		t.Fatalf("expected replicated user: %v", err)
+		t.Fatalf("expected replicated user after local apply: %v", err)
 	}
 	if replicatedUser.Username != user.Username {
-		t.Fatalf("unexpected replicated user: %+v", replicatedUser)
+		t.Fatalf("expected replicated user to match source after local apply, got %+v", replicatedUser)
 	}
 
 	cursor, err := targetStore.GetOriginCursor(context.Background(), testNodeID(1))
@@ -971,7 +971,7 @@ func TestHandleEventBatchSendsAckAfterSuccessfulApply(t *testing.T) {
 		t.Fatalf("get origin cursor: %v", err)
 	}
 	if cursor.AppliedEventID != event.EventID {
-		t.Fatalf("unexpected applied event id: got=%d want=%d", cursor.AppliedEventID, event.EventID)
+		t.Fatalf("expected local origin cursor to advance after apply, got=%d want=%d", cursor.AppliedEventID, event.EventID)
 	}
 
 	select {
@@ -997,7 +997,7 @@ func TestHandleEventBatchSendsAckAfterSuccessfulApply(t *testing.T) {
 	}
 }
 
-func TestHandleEventBatchDuplicateDeliveryIsIdempotentAndAcks(t *testing.T) {
+func TestHandleEventBatchDuplicateDeliveryIsIdempotentAndStillAcks(t *testing.T) {
 	t.Parallel()
 
 	sourceStore := newReplicationTestStore(t, "node-a", 1)
@@ -1056,7 +1056,7 @@ func TestHandleEventBatchDuplicateDeliveryIsIdempotentAndAcks(t *testing.T) {
 		t.Fatalf("list target users: %v", err)
 	}
 	if len(users) != 1 || users[0].ID != user.ID {
-		t.Fatalf("expected one replicated user after duplicate delivery, got %+v", users)
+		t.Fatalf("expected duplicate delivery to converge to one local user, got %+v", users)
 	}
 
 	events, err := targetStore.ListEvents(context.Background(), 0, 10)
@@ -1064,7 +1064,7 @@ func TestHandleEventBatchDuplicateDeliveryIsIdempotentAndAcks(t *testing.T) {
 		t.Fatalf("list target events: %v", err)
 	}
 	if len(events) != 1 || events[0].EventID != event.EventID {
-		t.Fatalf("expected one replicated event after duplicate delivery, got %+v", events)
+		t.Fatalf("expected duplicate delivery to be absorbed idempotently, got %+v", events)
 	}
 }
 
@@ -1836,7 +1836,7 @@ func TestLateJoiningNodeCatchesUpAcrossMultiplePullBatches(t *testing.T) {
 	}
 }
 
-func TestLateJoiningNodeTrimsCatchupToLocalWindow(t *testing.T) {
+func TestLateJoiningNodeCatchupConvergesToLocalMessageWindow(t *testing.T) {
 	lnA := mustListen(t)
 	lnB := mustListen(t)
 
@@ -1877,7 +1877,7 @@ func TestLateJoiningNodeTrimsCatchupToLocalWindow(t *testing.T) {
 	})
 }
 
-func TestSnapshotRepairOverWebSocketRepairsRowsOutsideEventLog(t *testing.T) {
+func TestSnapshotRepairOverWebSocketConvergesWithoutEventReplay(t *testing.T) {
 	lnA := mustListen(t)
 	lnB := mustListen(t)
 

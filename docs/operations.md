@@ -1,6 +1,6 @@
 # 运维与上线手册
 
-本文档记录分布式通知服务的小规模上线建议、备份策略、节点恢复流程和核心监控项。默认每个节点使用本地 SQLite，节点间通过 WebSocket + Protobuf 复制；事件日志和消息投影也可配置为 Pebble 后端。
+本文档记录分布式通知服务的小规模上线建议、备份策略、节点恢复流程和核心监控项。默认每个节点使用本地 SQLite，节点间通过 WebSocket + Protobuf 复制；事件日志和消息投影也可配置为 Pebble 后端。复制语义边界请先参考 [复制语义专题文档](/root/dev/sys/turntf/docs/replication-semantics.md)。
 
 ## 小规模部署建议
 
@@ -38,6 +38,15 @@ curl -H "Authorization: Bearer ${TOKEN}" http://127.0.0.1:8080/cluster/nodes
 curl -H "Authorization: Bearer ${TOKEN}" http://127.0.0.1:8080/cluster/nodes/4096/logged-in-users
 ```
 
+## 预期延迟与异常判断
+
+- 本地写接口返回成功，只代表当前节点本地持久状态已提交；不能据此判断 peer 已追平。
+- `Ack` 只代表对端本地已应用到对应 `origin_node_id/event_id`，不代表全局提交完成。
+- 节点重连后的短暂 `pending_catchup`、`unconfirmed_events` 或 `pending_snapshot_partitions` 非零，属于预期最终一致延迟。
+- 反熵快照修复期间，不同节点短时间看到不同消息集合或订阅可见性差异，属于允许暂态；修复长期不完成才应视为异常。
+- 若集群节点 `message_window_size` 不一致，用户与订阅仍应收敛，但消息窗口不承诺得到相同结果；这属于配置差异，不应按消息复制故障处理。
+- 发往 `(node_id, 3)` 的瞬时包未送达时，应先按“在线路由尽力转发失败”排查，而不是按持久复制故障处理，因为它不参与事件日志、补拉或快照。
+
 ## 备份策略
 
 - 备份对象至少包括每个节点自己的 SQLite 文件，默认 `./data/turntf.db`。
@@ -72,14 +81,14 @@ sqlite3 ./data/turntf.db ".backup './backup/turntf-$(date +%Y%m%d%H%M%S).db'"
 
 - `notifier_event_log_last_sequence{node_id}`：本地事件日志最新 sequence。持续增长代表本节点有写入或复制事件入库。
 - `notifier_peer_connected{node_id,peer_node_id}`：peer 是否已连接。正常值为 `1`。
-- `notifier_peer_origin_unconfirmed_events{node_id,peer_node_id,origin_node_id}`：本地某个 origin 的事件尚未被 peer ack 的数量。持续升高通常表示对端断开或复制阻塞。
-- `notifier_peer_origin_applied_event_id{node_id,peer_node_id,origin_node_id}`：本地对该 origin 已应用到的最新 `event_id`。
+- `notifier_peer_origin_unconfirmed_events{node_id,peer_node_id,origin_node_id}`：本地某个 origin 的事件尚未被 peer `Ack` 的数量，对应“本地已写入但尚未收到该 peer 本地应用确认”的复制阶段。持续升高通常表示对端断开或复制阻塞。
+- `notifier_peer_origin_applied_event_id{node_id,peer_node_id,origin_node_id}`：本地对该 origin 已应用到的最新 `event_id`，对应“本节点本地复制应用进度”。
 - `notifier_peer_origin_remote_last_event_id{node_id,peer_node_id,origin_node_id}`：最近从 peer 观察到的该 origin 最新 `event_id`。
-- `notifier_peer_pending_snapshot_partitions{node_id,peer_node_id}`：待完成的反熵快照分片数量。短暂非零正常，长期非零需要排查快照修复。
+- `notifier_peer_pending_snapshot_partitions{node_id,peer_node_id}`：待完成的反熵快照分片数量，对应“反熵快照修复阶段”。短暂非零正常，长期非零需要排查快照修复。
 - `notifier_user_conflicts_total{node_id}`：累计用户冲突记录数。
 - `notifier_message_trimmed_total{node_id}`：累计被本地消息窗口裁剪的消息数。
 - `notifier_clock_offset_ms{node_id,peer_node_id}`：最近一次可信校时偏移。
-- `notifier_write_gate_ready{node_id}`：本节点是否允许本地写入。集群模式下为 `0` 通常表示尚未完成可信校时。
+- `notifier_write_gate_ready{node_id}`：本节点是否允许本地写入，对应“写闸门是否已进入可信复制状态”。集群模式下为 `0` 通常表示尚未完成可信校时。
 
 当前版本暂未单独暴露瞬时包路由指标。排查时优先结合 `/ops/status`、peer 连通性和应用层日志定位。
 
@@ -100,8 +109,8 @@ file_path = "./data/notifier.log"
 ## 常见告警排查
 
 - peer 长期未连接：检查 `cluster.peers.url`、防火墙、反向代理 WebSocket 支持和 `cluster.advertise_path`。
-- `notifier_write_gate_ready` 为 `0`：检查是否至少有一个 peer 完成校时，或是否时钟偏差超过 `cluster.max_clock_skew_ms`。
-- `notifier_peer_origin_unconfirmed_events` 持续升高：检查对端是否在线、是否能应用该 origin 的事件、日志中是否有 HMAC、HLC 或 schema 错误。
-- `notifier_peer_pending_snapshot_partitions` 长期非零：检查快照版本是否一致、消息窗口大小是否一致、目标用户是否已被墓碑删除。
+- `notifier_write_gate_ready` 为 `0`：检查是否至少有一个 peer 完成校时，或是否时钟偏差超过 `cluster.max_clock_skew_ms`。如果只是刚启动且尚未完成首次校时，属于预期延迟。
+- `notifier_peer_origin_unconfirmed_events` 持续升高：先区分是短暂补拉中的预期积压，还是长时间无下降的异常；异常时检查对端是否在线、是否能应用该 origin 的事件、日志中是否有 HMAC、HLC 或 schema 错误。
+- `notifier_peer_pending_snapshot_partitions` 长期非零：检查快照版本是否一致、消息窗口大小是否一致、目标用户是否已被墓碑删除。短时间非零不代表故障，长期不归零才需要处理。
 - `notifier_clock_offset_ms` 接近阈值：检查 NTP 或宿主机时间源，必要时先修复系统时间再恢复写入。
-- 目标用户瞬时包未送达：先确认目标用户是否在线，再检查目标节点是否仍可达；如果业务需要离线补发，不应使用 `transient` 瞬时包模式。
+- 目标用户瞬时包未送达：先确认目标用户是否在线，再检查目标节点是否仍可达；如果业务需要离线补发，不应使用 `transient` 瞬时包模式。不要把它当作事件复制或快照修复失败处理。

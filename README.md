@@ -26,7 +26,8 @@
 ```text
 .
 ├── cmd/notifier/main.go            # 当前 CLI 入口
-├── docs/distributed-system-plan.md # 分布式实施计划
+├── docs/distributed-system-roadmap.md # 分布式系统未来演进路线图
+├── docs/replication-semantics.md   # 复制语义专题文档
 ├── docs/operations.md              # 运维与上线手册
 ├── internal/api                    # 应用服务层
 ├── internal/auth                   # token 与鉴权
@@ -55,7 +56,8 @@
 
 当前仓库不再承载旧的单机通知服务实现，默认目标就是新的分布式项目。
 
-实施计划见 [docs/distributed-system-plan.md](/root/dev/sys/turntf/docs/distributed-system-plan.md)。
+未来演进路线图见 [docs/distributed-system-roadmap.md](/root/dev/sys/turntf/docs/distributed-system-roadmap.md)。
+复制语义规范见 [docs/replication-semantics.md](/root/dev/sys/turntf/docs/replication-semantics.md)。
 
 当前同步实现已经收紧到以下边界：
 
@@ -76,6 +78,9 @@
 - `applied_events`：本地已应用复制事件的去重表，用 `(source_node_id, event_id)` 组合键避免广播和补拉重叠时重复执行
 - 消息在本地写入和复制应用时都会按每用户最近 N 条裁剪，默认 `N=500`
 - 若 peer 的 `message_window_size` 不一致，连接会继续建立并记录告警；各节点最终按自己的 N 收敛
+- 写接口返回成功只代表“本地写入成功并已写入本地持久状态”，不代表集群已经全局提交或所有 peer 都已追平
+- `Ack` 只代表“对端已经把该 `origin_node_id/event_id` 应用到自己的本地状态”，不代表其他节点也已应用，更不代表快照修复已经完成
+- 用户、订阅、事件日志和持久消息属于最终一致持久状态；`TransientPacket` 属于瞬时包，不写事件日志，不参与 `Ack`、补拉、快照或重启恢复
 
 ## 启动 API 服务
 
@@ -255,27 +260,35 @@ url = "ws://127.0.0.1:9081/internal/cluster/ws"
 
 当前集群同步行为：
 
-- 本地 `POST /users`、`PATCH /nodes/{node_id}/users/{user_id}`、`DELETE /nodes/{node_id}/users/{user_id}`、订阅变更、`POST /nodes/{node_id}/users/{user_id}/messages` 成功后，会异步广播对应事件
-- 对端节点成功应用事件后返回 `Ack`
-- 两节点在线时，创建用户和写消息可以自动同步
-- 发往 `(node_id, 3)` 的瞬时包不会写入事件日志，不参与 `Ack`、补拉、快照和消息窗口；它们只在内存中经 `RoutingUpdate` 维护的动态路由表转发
+本地成功与复制确认：
+
+- 本地 `POST /users`、`PATCH /nodes/{node_id}/users/{user_id}`、`DELETE /nodes/{node_id}/users/{user_id}`、订阅变更、`POST /nodes/{node_id}/users/{user_id}/messages` 成功后，会先提交本地状态，再异步广播对应事件
+- 对端节点成功应用事件后返回 `Ack`；该确认只说明“对端本地已应用”，不是全局提交确认
 - 集群模式下，节点只有在首次成功校时后才接受本地写入；未校时时写接口会返回 `503`
+- 两节点在线时，创建用户和写消息通常会很快同步，但允许存在短暂复制延迟
+
+允许的暂态：
+
 - 节点短时离线后重连，会按 `origin_cursors` 对比远端 `origin_progress`，逐个 `origin_node_id` 自动补拉未追平的事件
 - 节点会在握手完成后和运行过程中进行反熵摘要比对；用户快照使用全量单分片 `users/full`，消息快照按生产节点 `messages/{node_id}` 分片
-- 摘要不一致时，节点会请求对应快照分片并增量合并到本地；用户仍按字段级 LWW 和墓碑删除优先收敛，消息仍按本地 `message_window_size` 裁剪
-- 当两个节点 `message_window_size` 不一致时，反熵只修复用户分片，避免不同窗口大小导致消息分片反复互拉
+- 摘要不一致时，节点会请求对应快照分片并增量合并到本地；在快照修复完成前，不同节点可能短暂看到不同数据集合
 - 拉取重放与实时广播重叠时，重复事件会被 `applied_events` 按 `(source_node_id, event_id)` 幂等吸收
+- 当两个节点 `message_window_size` 不一致时，反熵只修复用户分片，避免不同窗口大小导致消息分片反复互拉
+- 启用了 `cluster.max_clock_skew_ms` 时，时钟偏差超限或未来时间戳事件会导致该 peer 被拒绝/断开，直到校时恢复正常
+
+最终收敛与非承诺边界：
+
 - 用户复制按 `(node_id, user_id)` 做字段级 LWW 合并，用户名允许重复
 - 删除通过 `tombstones` 传播，旧的创建/更新事件不会把已删除用户重新复活
 - channel 订阅关系通过事件日志和快照复制；订阅后只合并订阅时间之后的 channel 消息，取消订阅后不再合并该 channel 消息
-- 启用了 `cluster.max_clock_skew_ms` 时，时钟偏差超限或未来时间戳事件会导致该 peer 被拒绝/断开，避免污染 LWW
 - `tombstones`：删除墓碑表，用来记录“这个对象已经被删过”，避免旧事件在延迟到达时把数据错误复活
 - 消息复制按 `(user_node_id, user_id, node_id, seq)` 幂等去重，并在本地和复制应用时都裁剪到最近 N 条
 - 广播消息发送到任意 `role=broadcast` 地址后只存一份；普通用户读取消息时会动态合并所有广播地址的消息，因此未来新用户也能看到仍在本地窗口内的广播消息
 - 当集群所有节点使用相同的 `message_window_size` 时，同一用户的最近 N 条消息会收敛到相同结果
-- 任意节点签发的登录 token 都可以在其他节点使用，只要它们共享同一 `auth.token_secret`
+- 发往 `(node_id, 3)` 的瞬时包不会写入事件日志，不参与 `Ack`、补拉、快照和消息窗口；它们只在内存中经 `RoutingUpdate` 维护的动态路由表转发
 - 瞬时包动态路由只服务 `(node_id, 3)` 地址，主代价按链路平滑 RTT 加抖动惩罚计算；hop 数仅用于 TTL 防环，不作为主选路指标
 - 瞬时包支持 `best_effort` 和 `route_retry` 两种模式；`route_retry` 只使用内存 TTL 重试队列，节点重启后即丢失
+- 任意节点签发的登录 token 都可以在其他节点使用，只要它们共享同一 `auth.token_secret`
 - 所有集群 `Envelope` 在收发两端都使用 `cluster.secret` 做 HMAC 鉴权
 - `/cluster/nodes` 提供已登录用户可访问的已连接集群节点列表，仅包含 `node_id`、`is_local`、`configured_url`
 - `/ops/status` 提供管理员可访问的本节点运维快照，包括 peer 状态、未确认事件、反熵进度、冲突数和消息裁剪统计
@@ -284,4 +297,4 @@ url = "ws://127.0.0.1:9081/internal/cluster/ws"
 
 ## 运维与上线
 
-运维接口、指标说明、部署建议、备份策略和节点恢复流程见 [docs/operations.md](/root/dev/sys/turntf/docs/operations.md)。
+复制阶段判断、指标说明、部署建议、备份策略和节点恢复流程见 [docs/operations.md](/root/dev/sys/turntf/docs/operations.md)。

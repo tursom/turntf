@@ -1237,7 +1237,7 @@ VALUES(?, ?, ?, ?, ?, ?)
 	}
 }
 
-func TestApplyReplicatedEventIsIdempotent(t *testing.T) {
+func TestApplyReplicatedEventDuplicateDeliveryIsIdempotent(t *testing.T) {
 	t.Parallel()
 
 	source := openNamedTestStore(t, "node-a", 1)
@@ -1269,7 +1269,7 @@ func TestApplyReplicatedEventIsIdempotent(t *testing.T) {
 		t.Fatalf("get replicated user: %v", err)
 	}
 	if loaded.Username != "replicated-user" {
-		t.Fatalf("unexpected replicated user: %+v", loaded)
+		t.Fatalf("expected duplicate replicated event to converge to one user state, got %+v", loaded)
 	}
 
 	events, err := target.ListEvents(ctx, 0, 10)
@@ -1281,7 +1281,7 @@ func TestApplyReplicatedEventIsIdempotent(t *testing.T) {
 	}
 }
 
-func TestApplyReplicatedEventsAllowsSameEventIDFromDifferentOrigins(t *testing.T) {
+func TestApplyReplicatedEventsKeepsDistinctOriginsSeparate(t *testing.T) {
 	t.Parallel()
 
 	sourceA := openNamedTestStore(t, "node-a", 1)
@@ -1331,7 +1331,7 @@ func TestApplyReplicatedEventsAllowsSameEventIDFromDifferentOrigins(t *testing.T
 		t.Fatalf("list replicated events: %v", err)
 	}
 	if len(events) != 2 {
-		t.Fatalf("expected both replicated events to be stored, got %d", len(events))
+		t.Fatalf("expected same event_id from different origins to remain distinct, got %d events", len(events))
 	}
 }
 
@@ -1409,7 +1409,7 @@ func TestReplicatedDuplicateUsernameUsersRemainDistinctByID(t *testing.T) {
 	assertUsersDistinctByKey(t, observerBA)
 }
 
-func TestApplyReplicatedMessageIsIdempotent(t *testing.T) {
+func TestApplyReplicatedMessageDuplicateDeliveryIsIdempotent(t *testing.T) {
 	t.Parallel()
 
 	source := openNamedTestStore(t, "node-a", 1)
@@ -1452,11 +1452,11 @@ func TestApplyReplicatedMessageIsIdempotent(t *testing.T) {
 		t.Fatalf("list replicated messages: %v", err)
 	}
 	if len(messages) != 1 || messages[0].NodeID != message.NodeID || messages[0].Seq != message.Seq {
-		t.Fatalf("unexpected replicated messages: %+v", messages)
+		t.Fatalf("expected duplicate replicated message to be absorbed once, got %+v", messages)
 	}
 }
 
-func TestReplicatedChannelSubscriptionMakesChannelMessagesVisible(t *testing.T) {
+func TestReplicatedChannelSubscriptionRespectsSubscriptionVisibilityBoundary(t *testing.T) {
 	t.Parallel()
 
 	source := openNamedTestStore(t, "node-a", 1)
@@ -1516,11 +1516,11 @@ func TestReplicatedChannelSubscriptionMakesChannelMessagesVisible(t *testing.T) 
 		t.Fatalf("list target messages: %v", err)
 	}
 	if !messagesContainBody(messages, "replicated channel message") {
-		t.Fatalf("expected replicated channel message to be visible: %+v", messages)
+		t.Fatalf("expected subscribed user to see channel message after replicated subscription, got %+v", messages)
 	}
 }
 
-func TestReplicatedMessagesTrimToConfiguredWindow(t *testing.T) {
+func TestReplicatedMessagesConvergeToConfiguredWindowBoundary(t *testing.T) {
 	t.Parallel()
 
 	source := openNamedTestStore(t, "node-a", 1)
@@ -1567,7 +1567,7 @@ func TestReplicatedMessagesTrimToConfiguredWindow(t *testing.T) {
 	}
 }
 
-func TestReplicatedMessageTrimUsesNodeAndSeqForSameTimestamp(t *testing.T) {
+func TestReplicatedMessageWindowTrimUsesNodeAndSeqTieBreaker(t *testing.T) {
 	t.Parallel()
 
 	target := openNamedTestStoreWithWindow(t, "node-b", 2, 1)
@@ -1767,7 +1767,7 @@ func TestReplicatedUserUpdatesLatestFieldWins(t *testing.T) {
 	}
 }
 
-func TestReplicatedDeletePreventsResurrection(t *testing.T) {
+func TestReplicatedDeleteTombstonePreventsResurrection(t *testing.T) {
 	t.Parallel()
 
 	source := openNamedTestStore(t, "node-a", 1)
@@ -1867,7 +1867,7 @@ func TestReplicatedUpdateUpsertsWithoutRegressingOnOlderCreate(t *testing.T) {
 	}
 }
 
-func TestSnapshotUsersChunkRepairsDeletedUser(t *testing.T) {
+func TestSnapshotUsersChunkConvergesDeletedUserViaTombstone(t *testing.T) {
 	t.Parallel()
 
 	source := openNamedTestStore(t, "node-a", 1)
@@ -1900,7 +1900,7 @@ func TestSnapshotUsersChunkRepairsDeletedUser(t *testing.T) {
 	}
 
 	if _, err := target.GetUser(ctx, user.Key()); err != ErrNotFound {
-		t.Fatalf("expected snapshot tombstone to hide user, got %v", err)
+		t.Fatalf("expected snapshot tombstone to keep deleted user hidden, got %v", err)
 	}
 }
 
@@ -1964,7 +1964,7 @@ func TestSnapshotUsersChunkKeepsRemoteReservedUsers(t *testing.T) {
 	}
 }
 
-func TestSnapshotMessagesChunkIsIdempotentAndTrimsToLocalWindow(t *testing.T) {
+func TestSnapshotMessagesChunkIsIdempotentAndConvergesToLocalWindow(t *testing.T) {
 	t.Parallel()
 
 	source := openNamedTestStore(t, "node-a", 1)
@@ -2018,11 +2018,11 @@ func TestSnapshotMessagesChunkIsIdempotentAndTrimsToLocalWindow(t *testing.T) {
 		t.Fatalf("expected 2 messages after snapshot trim, got %d", len(messages))
 	}
 	if string(messages[0].Body) != "message-3" || string(messages[1].Body) != "message-2" {
-		t.Fatalf("unexpected snapshot messages: %+v", messages)
+		t.Fatalf("expected snapshot repair to converge to local window, got %+v", messages)
 	}
 }
 
-func TestSnapshotSubscriptionsChunkRepairsSubscriptionVisibility(t *testing.T) {
+func TestSnapshotSubscriptionsChunkRepairsSubscriptionVisibilityBoundary(t *testing.T) {
 	t.Parallel()
 
 	source := openNamedTestStore(t, "node-a", 1)
@@ -2087,7 +2087,7 @@ func TestSnapshotSubscriptionsChunkRepairsSubscriptionVisibility(t *testing.T) {
 		t.Fatalf("list target messages: %v", err)
 	}
 	if !messagesContainBody(messages, "snapshot channel message") {
-		t.Fatalf("expected snapshot channel message to be visible: %+v", messages)
+		t.Fatalf("expected snapshot-repaired subscription visibility to include channel message, got %+v", messages)
 	}
 }
 

@@ -86,7 +86,7 @@ curl -sS -X POST http://127.0.0.1:8080/nodes/4096/users/1025/subscriptions \
 
 客户端至少需要持久化两类数据：
 
-- 消息表：保存完整 `Message`，包括 `user_node_id`、`user_id`、`node_id`、`seq`、`sender_node_id`、`sender_user_id`、`body`、`created_at_hlc`。
+- 消息表：保存完整 `Message`，包括 `recipient_node_id`、`recipient_user_id`、`node_id`、`seq`、`sender_node_id`、`sender_user_id`、`body`、`created_at_hlc`。
 - 游标表：保存已成功持久化消息的 `(node_id, seq)`。
 
 如果业务使用瞬时包，可选再维护一张短期去重表记录 `packet_id`；这属于应用层优化，不属于协议可靠性要求。
@@ -100,7 +100,7 @@ messages primary key: (node_id, seq)
 如果客户端需要区分消息目标，可额外建立索引：
 
 ```text
-target index: (user_node_id, user_id, created_at_hlc)
+target index: (recipient_node_id, recipient_user_id, created_at_hlc)
 ```
 
 处理顺序必须是：
@@ -162,8 +162,7 @@ ServerEnvelope {
 ServerEnvelope {
   message_pushed: MessagePushed {
     message: {
-      user_node_id: 4096
-      user_id: 1025
+      recipient: { node_id: 4096, user_id: 1025 }
       node_id: 4096
       seq: 3
       sender: { node_id: 4096, user_id: 1 }
@@ -220,8 +219,7 @@ ServerEnvelope {
   send_message_response: SendMessageResponse {
     request_id: 42
     message: {
-      user_node_id: 4096
-      user_id: 1025
+      recipient: { node_id: 4096, user_id: 1025 }
       node_id: 4096
       seq: 4
       sender: { node_id: 4096, user_id: 1025 }

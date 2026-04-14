@@ -68,8 +68,7 @@ type Manager struct {
 	websocket *webSocketTransport
 	dialers   map[string]Dialer
 
-	zeroMQListener        Listener
-	zeroMQListenerFactory func(bindURL string) Listener
+	zeroMQListenerRunning bool
 
 	mu              sync.Mutex
 	peers           map[int64]*peerState
@@ -253,7 +252,6 @@ func NewManager(cfg Config, st *store.Store) (*Manager, error) {
 		clock:                 clockRef,
 		websocket:             newWebSocketTransport(),
 		dialers:               make(map[string]Dialer, 2),
-		zeroMQListenerFactory: newZeroMQListener,
 		mux:                   http.NewServeMux(),
 		publishCh:             make(chan store.Event, managerPublishQueue),
 		peers:                 make(map[int64]*peerState, len(cfg.Peers)),
@@ -305,9 +303,6 @@ func (m *Manager) validateConfiguredTransports() error {
 	if (needsZeroMQDial || needsZeroMQListener) && !zeroMQEnabled() {
 		return errZeroMQNotBuilt
 	}
-	if needsZeroMQListener && m.zeroMQListenerFactory == nil {
-		return errors.New("zeromq listener factory is not configured")
-	}
 	return nil
 }
 
@@ -351,19 +346,6 @@ func (m *Manager) Start(parent context.Context) error {
 			m.cancel()
 			return
 		}
-		if m.cfg.zeroMQListenerEnabled() {
-			listener := m.zeroMQListenerFactory(m.cfg.ZeroMQ.BindURL)
-			if err := listener.Start(m.ctx, m.handleZeroMQConn); err != nil {
-				m.startErr = err
-				m.cancel()
-				return
-			}
-			m.zeroMQListener = listener
-			m.logInfo("zeromq_listener_started").
-				Str("transport", transportZeroMQ).
-				Str("bind_url", m.cfg.ZeroMQ.BindURL).
-				Msg("started zeromq listener")
-		}
 
 		m.wg.Add(1)
 		go m.publishLoop()
@@ -383,7 +365,7 @@ func (m *Manager) Start(parent context.Context) error {
 	return m.startErr
 }
 
-func (m *Manager) handleZeroMQConn(conn TransportConn) {
+func (m *Manager) AcceptZeroMQConn(conn TransportConn) {
 	if conn == nil {
 		return
 	}
@@ -406,13 +388,19 @@ func (m *Manager) handleZeroMQConn(conn TransportConn) {
 	}()
 }
 
+func (m *Manager) SetZeroMQListenerRunning(running bool) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.zeroMQListenerRunning = running
+}
+
 func (m *Manager) Close() error {
 	m.closeOnce.Do(func() {
 		if m.cancel != nil {
 			m.cancel()
-		}
-		if m.zeroMQListener != nil {
-			_ = m.zeroMQListener.Close()
 		}
 
 		m.mu.Lock()

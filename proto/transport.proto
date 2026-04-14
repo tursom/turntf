@@ -1,0 +1,16 @@
+syntax = "proto3";
+
+package notifier.transport.v1;
+
+option go_package = "github.com/tursom/turntf/internal/proto;proto";
+
+message ZeroMQMuxHello {
+  enum Role {
+    ZERO_MQ_ROLE_UNSPECIFIED = 0;
+    ZERO_MQ_ROLE_CLUSTER = 1;
+    ZERO_MQ_ROLE_CLIENT = 2;
+  }
+
+  Role role = 1;
+  string protocol_version = 2;
+}

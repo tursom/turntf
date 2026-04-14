@@ -29,14 +29,30 @@ var clientWSUpgrader = websocket.Upgrader{
 	CheckOrigin: func(*http.Request) bool { return true },
 }
 
+var errNonBinaryClientFrame = errors.New("client transport received non-binary frame")
+
 type clientMessageCursor struct {
 	nodeID int64
 	seq    int64
 }
 
+type clientTransportConn interface {
+	Send(ctx context.Context, payload []byte) error
+	Receive(ctx context.Context) ([]byte, error)
+	Close() error
+	RemoteAddr() string
+	Transport() string
+}
+
+type clientWSConn struct {
+	conn    *websocket.Conn
+	writeMu sync.Mutex
+}
+
 type clientWSSession struct {
 	http       *HTTP
-	conn       *websocket.Conn
+	conn       clientTransportConn
+	protocol   string
 	remoteAddr string
 	principal  *requestPrincipal
 	seen       map[clientMessageCursor]struct{}
@@ -53,28 +69,124 @@ func (h *HTTP) handleClientWebSocket(w http.ResponseWriter, r *http.Request) {
 			Str("protocol", "ws").
 			Str("path", r.URL.Path).
 			Str("remote_addr", r.RemoteAddr).
-			Str("event", "client_ws_upgrade_failed").
-			Msg("client websocket upgrade failed")
+			Str("event", "client_transport_upgrade_failed").
+			Msg("client transport upgrade failed")
+		return
+	}
+	h.serveClientConn(newClientWSConn(conn), r.Context(), r.URL.Path)
+}
+
+func (h *HTTP) AcceptZeroMQConn(conn clientTransportConn) {
+	if conn == nil {
+		return
+	}
+	h.serveClientConn(conn, context.Background(), "")
+}
+
+func newClientWSConn(conn *websocket.Conn) *clientWSConn {
+	conn.SetReadLimit(1 << 20)
+	_ = conn.SetReadDeadline(time.Now().Add(clientWSReadTimeout))
+	conn.SetPongHandler(func(string) error {
+		return conn.SetReadDeadline(time.Now().Add(clientWSReadTimeout))
+	})
+	return &clientWSConn{conn: conn}
+}
+
+func (c *clientWSConn) Send(ctx context.Context, payload []byte) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+
+	if err := c.conn.SetWriteDeadline(clientWriteDeadline(ctx)); err != nil {
+		return err
+	}
+	return c.conn.WriteMessage(websocket.BinaryMessage, payload)
+}
+
+func (c *clientWSConn) Receive(ctx context.Context) ([]byte, error) {
+	select {
+	case <-ctxDone(ctx):
+		return nil, ctx.Err()
+	default:
+	}
+
+	messageType, data, err := c.conn.ReadMessage()
+	if err != nil {
+		if ctx != nil && ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		return nil, err
+	}
+	if messageType != websocket.BinaryMessage {
+		return nil, errNonBinaryClientFrame
+	}
+	return data, nil
+}
+
+func (c *clientWSConn) Close() error {
+	return c.conn.Close()
+}
+
+func (c *clientWSConn) RemoteAddr() string {
+	if c.conn == nil || c.conn.RemoteAddr() == nil {
+		return ""
+	}
+	return c.conn.RemoteAddr().String()
+}
+
+func (c *clientWSConn) Transport() string {
+	return "ws"
+}
+
+func clientWriteDeadline(ctx context.Context) time.Time {
+	deadline := time.Now().Add(clientWSWriteWait)
+	if ctxDeadline, ok := ctx.Deadline(); ok && ctxDeadline.Before(deadline) {
+		return ctxDeadline
+	}
+	return deadline
+}
+
+func ctxDone(ctx context.Context) <-chan struct{} {
+	if ctx == nil {
+		return nil
+	}
+	return ctx.Done()
+}
+
+func (h *HTTP) serveClientConn(conn clientTransportConn, baseCtx context.Context, path string) {
+	if conn == nil {
 		return
 	}
 	sess := &clientWSSession{
 		http:       h,
 		conn:       conn,
-		remoteAddr: r.RemoteAddr,
+		protocol:   conn.Transport(),
+		remoteAddr: conn.RemoteAddr(),
 		seen:       make(map[clientMessageCursor]struct{}),
 	}
 	defer conn.Close()
 	log.Info().
 		Str("component", "api").
-		Str("protocol", "ws").
-		Str("path", r.URL.Path).
-		Str("remote_addr", r.RemoteAddr).
-		Str("event", "client_ws_connected").
-		Msg("client websocket connected")
+		Str("protocol", sess.protocol).
+		Str("path", path).
+		Str("remote_addr", sess.remoteAddr).
+		Str("event", "client_transport_connected").
+		Msg("client transport connected")
 
-	if err := sess.login(r.Context()); err != nil {
-		sess.logWarn("client_ws_login_failed", err).
-			Msg("client websocket login failed")
+	if baseCtx == nil {
+		baseCtx = context.Background()
+	}
+	if err := sess.login(baseCtx); err != nil {
+		sess.logWarn("client_login_failed", err).
+			Msg("client transport login failed")
 		_ = sess.writeEnvelope(&internalproto.ServerEnvelope{
 			Body: &internalproto.ServerEnvelope_Error{
 				Error: clientWSError("unauthorized", err.Error(), 0),
@@ -84,30 +196,30 @@ func (h *HTTP) handleClientWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 	defer h.unregisterClientSession(sess.principal.User.Key(), sess)
 
-	ctx, cancel := context.WithCancel(r.Context())
+	ctx, cancel := context.WithCancel(baseCtx)
 	defer cancel()
 
 	errCh := make(chan error, 2)
 	go func() { errCh <- sess.readLoop(ctx) }()
 	go func() { errCh <- sess.pushLoop(ctx) }()
 
-	err = <-errCh
+	err := <-errCh
 	if err != nil && !errors.Is(err, context.Canceled) {
-		sess.logWarn("client_ws_closed_with_error", err).
-			Msg("client websocket closed with error")
+		sess.logWarn("client_closed_with_error", err).
+			Msg("client transport closed with error")
 		return
 	}
-	sess.logInfo("client_ws_closed").
-		Msg("client websocket closed")
+	sess.logInfo("client_closed").
+		Msg("client transport closed")
 }
 
 func (s *clientWSSession) login(ctx context.Context) error {
-	messageType, data, err := s.conn.ReadMessage()
+	data, err := s.conn.Receive(ctx)
 	if err != nil {
+		if errors.Is(err, errNonBinaryClientFrame) {
+			return fmt.Errorf("first message must be protobuf binary login")
+		}
 		return fmt.Errorf("read login: %w", err)
-	}
-	if messageType != websocket.BinaryMessage {
-		return fmt.Errorf("first message must be protobuf binary login")
 	}
 	var envelope internalproto.ClientEnvelope
 	if err := gproto.Unmarshal(data, &envelope); err != nil {
@@ -133,8 +245,8 @@ func (s *clientWSSession) login(ctx context.Context) error {
 	}
 	s.principal = &requestPrincipal{User: user}
 	s.http.registerClientSession(s.principal.User.Key(), s)
-	s.logInfo("client_ws_authenticated").
-		Msg("client websocket authenticated")
+	s.logInfo("client_authenticated").
+		Msg("client transport authenticated")
 	if err := s.writeEnvelope(&internalproto.ServerEnvelope{
 		Body: &internalproto.ServerEnvelope_LoginResponse{
 			LoginResponse: &internalproto.LoginResponse{
@@ -154,34 +266,28 @@ func (s *clientWSSession) login(ctx context.Context) error {
 }
 
 func (s *clientWSSession) readLoop(ctx context.Context) error {
-	s.conn.SetReadLimit(1 << 20)
-	_ = s.conn.SetReadDeadline(time.Now().Add(clientWSReadTimeout))
-	s.conn.SetPongHandler(func(string) error {
-		return s.conn.SetReadDeadline(time.Now().Add(clientWSReadTimeout))
-	})
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		default:
 		}
-		messageType, data, err := s.conn.ReadMessage()
+		data, err := s.conn.Receive(ctx)
 		if err != nil {
-			return err
-		}
-		if messageType != websocket.BinaryMessage {
-			s.logWarn("client_ws_invalid_frame", errors.New("non-binary websocket frame")).
-				Int("message_type", messageType).
-				Msg("client websocket received invalid frame")
-			if err := s.writeError("invalid_frame", "client websocket only accepts protobuf binary frames", 0); err != nil {
-				return err
+			if errors.Is(err, errNonBinaryClientFrame) {
+				s.logWarn("client_invalid_frame", err).
+					Msg("client transport received invalid frame")
+				if writeErr := s.writeError("invalid_frame", "client transport only accepts protobuf binary frames", 0); writeErr != nil {
+					return writeErr
+				}
+				continue
 			}
-			continue
+			return err
 		}
 		var envelope internalproto.ClientEnvelope
 		if err := gproto.Unmarshal(data, &envelope); err != nil {
-			s.logWarn("client_ws_invalid_protobuf", err).
-				Msg("client websocket received invalid protobuf")
+			s.logWarn("client_invalid_protobuf", err).
+				Msg("client transport received invalid protobuf")
 			if writeErr := s.writeError("invalid_protobuf", "invalid protobuf frame", 0); writeErr != nil {
 				return writeErr
 			}
@@ -193,7 +299,7 @@ func (s *clientWSSession) readLoop(ctx context.Context) error {
 				Int64("target_node_id", body.SendMessage.GetTarget().GetNodeId()).
 				Int64("target_user_id", body.SendMessage.GetTarget().GetUserId()).
 				Str("delivery_kind", body.SendMessage.GetDeliveryKind().String()).
-				Msg("client websocket request")
+				Msg("client transport request")
 			if err := s.handleSendMessage(ctx, body.SendMessage); err != nil {
 				return err
 			}
@@ -201,7 +307,7 @@ func (s *clientWSSession) readLoop(ctx context.Context) error {
 			s.logRequest("create_user", requestIDForClientEnvelopeBody(body)).
 				Str("role", body.CreateUser.GetRole()).
 				Str("username", body.CreateUser.GetUsername()).
-				Msg("client websocket request")
+				Msg("client transport request")
 			if err := s.handleCreateUser(ctx, body.CreateUser); err != nil {
 				return err
 			}
@@ -209,7 +315,7 @@ func (s *clientWSSession) readLoop(ctx context.Context) error {
 			s.logRequest("get_user", requestIDForClientEnvelopeBody(body)).
 				Int64("target_node_id", body.GetUser.GetUser().GetNodeId()).
 				Int64("target_user_id", body.GetUser.GetUser().GetUserId()).
-				Msg("client websocket request")
+				Msg("client transport request")
 			if err := s.handleGetUser(ctx, body.GetUser); err != nil {
 				return err
 			}
@@ -217,7 +323,7 @@ func (s *clientWSSession) readLoop(ctx context.Context) error {
 			s.logRequest("update_user", requestIDForClientEnvelopeBody(body)).
 				Int64("target_node_id", body.UpdateUser.GetUser().GetNodeId()).
 				Int64("target_user_id", body.UpdateUser.GetUser().GetUserId()).
-				Msg("client websocket request")
+				Msg("client transport request")
 			if err := s.handleUpdateUser(ctx, body.UpdateUser); err != nil {
 				return err
 			}
@@ -225,7 +331,7 @@ func (s *clientWSSession) readLoop(ctx context.Context) error {
 			s.logRequest("delete_user", requestIDForClientEnvelopeBody(body)).
 				Int64("target_node_id", body.DeleteUser.GetUser().GetNodeId()).
 				Int64("target_user_id", body.DeleteUser.GetUser().GetUserId()).
-				Msg("client websocket request")
+				Msg("client transport request")
 			if err := s.handleDeleteUser(ctx, body.DeleteUser); err != nil {
 				return err
 			}
@@ -234,7 +340,7 @@ func (s *clientWSSession) readLoop(ctx context.Context) error {
 				Int64("target_node_id", body.ListMessages.GetUser().GetNodeId()).
 				Int64("target_user_id", body.ListMessages.GetUser().GetUserId()).
 				Int32("limit", body.ListMessages.GetLimit()).
-				Msg("client websocket request")
+				Msg("client transport request")
 			if err := s.handleListMessages(ctx, body.ListMessages); err != nil {
 				return err
 			}
@@ -244,7 +350,7 @@ func (s *clientWSSession) readLoop(ctx context.Context) error {
 				Int64("subscriber_user_id", body.SubscribeChannel.GetSubscriber().GetUserId()).
 				Int64("channel_node_id", body.SubscribeChannel.GetChannel().GetNodeId()).
 				Int64("channel_user_id", body.SubscribeChannel.GetChannel().GetUserId()).
-				Msg("client websocket request")
+				Msg("client transport request")
 			if err := s.handleSubscribeChannel(ctx, body.SubscribeChannel); err != nil {
 				return err
 			}
@@ -254,7 +360,7 @@ func (s *clientWSSession) readLoop(ctx context.Context) error {
 				Int64("subscriber_user_id", body.UnsubscribeChannel.GetSubscriber().GetUserId()).
 				Int64("channel_node_id", body.UnsubscribeChannel.GetChannel().GetNodeId()).
 				Int64("channel_user_id", body.UnsubscribeChannel.GetChannel().GetUserId()).
-				Msg("client websocket request")
+				Msg("client transport request")
 			if err := s.handleUnsubscribeChannel(ctx, body.UnsubscribeChannel); err != nil {
 				return err
 			}
@@ -262,7 +368,7 @@ func (s *clientWSSession) readLoop(ctx context.Context) error {
 			s.logRequest("list_subscriptions", requestIDForClientEnvelopeBody(body)).
 				Int64("subscriber_node_id", body.ListSubscriptions.GetSubscriber().GetNodeId()).
 				Int64("subscriber_user_id", body.ListSubscriptions.GetSubscriber().GetUserId()).
-				Msg("client websocket request")
+				Msg("client transport request")
 			if err := s.handleListSubscriptions(ctx, body.ListSubscriptions); err != nil {
 				return err
 			}
@@ -272,7 +378,7 @@ func (s *clientWSSession) readLoop(ctx context.Context) error {
 				Int64("owner_user_id", body.BlockUser.GetOwner().GetUserId()).
 				Int64("blocked_node_id", body.BlockUser.GetBlocked().GetNodeId()).
 				Int64("blocked_user_id", body.BlockUser.GetBlocked().GetUserId()).
-				Msg("client websocket request")
+				Msg("client transport request")
 			if err := s.handleBlockUser(ctx, body.BlockUser); err != nil {
 				return err
 			}
@@ -282,7 +388,7 @@ func (s *clientWSSession) readLoop(ctx context.Context) error {
 				Int64("owner_user_id", body.UnblockUser.GetOwner().GetUserId()).
 				Int64("blocked_node_id", body.UnblockUser.GetBlocked().GetNodeId()).
 				Int64("blocked_user_id", body.UnblockUser.GetBlocked().GetUserId()).
-				Msg("client websocket request")
+				Msg("client transport request")
 			if err := s.handleUnblockUser(ctx, body.UnblockUser); err != nil {
 				return err
 			}
@@ -290,7 +396,7 @@ func (s *clientWSSession) readLoop(ctx context.Context) error {
 			s.logRequest("list_blocked_users", requestIDForClientEnvelopeBody(body)).
 				Int64("owner_node_id", body.ListBlockedUsers.GetOwner().GetNodeId()).
 				Int64("owner_user_id", body.ListBlockedUsers.GetOwner().GetUserId()).
-				Msg("client websocket request")
+				Msg("client transport request")
 			if err := s.handleListBlockedUsers(ctx, body.ListBlockedUsers); err != nil {
 				return err
 			}
@@ -298,32 +404,32 @@ func (s *clientWSSession) readLoop(ctx context.Context) error {
 			s.logRequest("list_events", requestIDForClientEnvelopeBody(body)).
 				Int64("after", body.ListEvents.GetAfter()).
 				Int32("limit", body.ListEvents.GetLimit()).
-				Msg("client websocket request")
+				Msg("client transport request")
 			if err := s.handleListEvents(ctx, body.ListEvents); err != nil {
 				return err
 			}
 		case *internalproto.ClientEnvelope_OperationsStatus:
 			s.logRequest("operations_status", requestIDForClientEnvelopeBody(body)).
-				Msg("client websocket request")
+				Msg("client transport request")
 			if err := s.handleOperationsStatus(ctx, body.OperationsStatus); err != nil {
 				return err
 			}
 		case *internalproto.ClientEnvelope_ListClusterNodes:
 			s.logRequest("list_cluster_nodes", requestIDForClientEnvelopeBody(body)).
-				Msg("client websocket request")
+				Msg("client transport request")
 			if err := s.handleListClusterNodes(ctx, body.ListClusterNodes); err != nil {
 				return err
 			}
 		case *internalproto.ClientEnvelope_ListNodeLoggedInUsers:
 			s.logRequest("list_node_logged_in_users", requestIDForClientEnvelopeBody(body)).
 				Int64("target_node_id", body.ListNodeLoggedInUsers.GetNodeId()).
-				Msg("client websocket request")
+				Msg("client transport request")
 			if err := s.handleListNodeLoggedInUsers(ctx, body.ListNodeLoggedInUsers); err != nil {
 				return err
 			}
 		case *internalproto.ClientEnvelope_Metrics:
 			s.logRequest("metrics", requestIDForClientEnvelopeBody(body)).
-				Msg("client websocket request")
+				Msg("client transport request")
 			if err := s.handleMetrics(ctx, body.Metrics); err != nil {
 				return err
 			}
@@ -332,7 +438,7 @@ func (s *clientWSSession) readLoop(ctx context.Context) error {
 				s.logDebug("ack_message", requestIDForClientEnvelopeBody(body)).
 					Int64("cursor_node_id", ack.Cursor.NodeId).
 					Int64("cursor_seq", ack.Cursor.Seq).
-					Msg("client websocket acknowledgement")
+					Msg("client transport acknowledgement")
 				s.markSeen(ack.Cursor.NodeId, ack.Cursor.Seq)
 			}
 		case *internalproto.ClientEnvelope_Ping:
@@ -341,22 +447,22 @@ func (s *clientWSSession) readLoop(ctx context.Context) error {
 				requestID = body.Ping.RequestId
 			}
 			s.logDebug("ping", requestID).
-				Msg("client websocket ping")
+				Msg("client transport ping")
 			if err := s.writeEnvelope(&internalproto.ServerEnvelope{
 				Body: &internalproto.ServerEnvelope_Pong{Pong: &internalproto.Pong{RequestId: requestID}},
 			}); err != nil {
 				return err
 			}
 		case *internalproto.ClientEnvelope_Login:
-			s.logWarn("client_ws_redundant_login", errors.New("login frame after authentication")).
+			s.logWarn("client_redundant_login", errors.New("login frame after authentication")).
 				Uint64("request_id", requestIDForClientEnvelopeBody(body)).
-				Msg("client websocket received login after authentication")
+				Msg("client transport received login after authentication")
 			if err := s.writeError("already_authenticated", "login is only allowed as the first frame", 0); err != nil {
 				return err
 			}
 		default:
-			s.logWarn("client_ws_invalid_message", errors.New("unsupported client message")).
-				Msg("client websocket received unsupported client message")
+			s.logWarn("client_invalid_message", errors.New("unsupported client message")).
+				Msg("client transport received unsupported client message")
 			if err := s.writeError("invalid_message", "unsupported client message", 0); err != nil {
 				return err
 			}
@@ -551,10 +657,10 @@ func (s *clientWSSession) markSeen(nodeID, seq int64) {
 }
 
 func (s *clientWSSession) writeError(code, message string, requestID uint64) error {
-	s.logWarn("client_ws_error_response", errors.New(message)).
+	s.logWarn("client_error_response", errors.New(message)).
 		Str("code", code).
 		Uint64("request_id", requestID).
-		Msg("client websocket returning error")
+		Msg("client transport returning error")
 	return s.writeEnvelope(&internalproto.ServerEnvelope{
 		Body: &internalproto.ServerEnvelope_Error{Error: clientWSError(code, message, requestID)},
 	})
@@ -563,7 +669,7 @@ func (s *clientWSSession) writeError(code, message string, requestID uint64) err
 func (s *clientWSSession) logInfo(event string) *zerolog.Event {
 	e := log.Info().
 		Str("component", "api").
-		Str("protocol", "ws").
+		Str("protocol", s.protocol).
 		Str("event", event).
 		Str("remote_addr", s.remoteAddr)
 	if s.principal != nil {
@@ -577,7 +683,7 @@ func (s *clientWSSession) logInfo(event string) *zerolog.Event {
 func (s *clientWSSession) logWarn(event string, err error) *zerolog.Event {
 	e := log.Warn().
 		Str("component", "api").
-		Str("protocol", "ws").
+		Str("protocol", s.protocol).
 		Str("event", event).
 		Str("remote_addr", s.remoteAddr)
 	if err != nil {
@@ -594,8 +700,8 @@ func (s *clientWSSession) logWarn(event string, err error) *zerolog.Event {
 func (s *clientWSSession) logDebug(action string, requestID uint64) *zerolog.Event {
 	e := log.Debug().
 		Str("component", "api").
-		Str("protocol", "ws").
-		Str("event", "client_ws_request").
+		Str("protocol", s.protocol).
+		Str("event", "client_request").
 		Str("action", action).
 		Str("remote_addr", s.remoteAddr)
 	if requestID != 0 {
@@ -610,7 +716,7 @@ func (s *clientWSSession) logDebug(action string, requestID uint64) *zerolog.Eve
 }
 
 func (s *clientWSSession) logRequest(action string, requestID uint64) *zerolog.Event {
-	e := s.logInfo("client_ws_request").Str("action", action)
+	e := s.logInfo("client_request").Str("action", action)
 	if requestID != 0 {
 		e = e.Uint64("request_id", requestID)
 	}
@@ -665,10 +771,7 @@ func (s *clientWSSession) writeEnvelope(envelope *internalproto.ServerEnvelope) 
 	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	if err := s.conn.SetWriteDeadline(time.Now().Add(clientWSWriteWait)); err != nil {
-		return err
-	}
-	return s.conn.WriteMessage(websocket.BinaryMessage, data)
+	return s.conn.Send(context.Background(), data)
 }
 
 func clientWSError(code, message string, requestID uint64) *internalproto.Error {

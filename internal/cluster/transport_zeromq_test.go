@@ -9,6 +9,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pebbe/zmq4"
+	gproto "google.golang.org/protobuf/proto"
+
+	internalproto "github.com/tursom/turntf/internal/proto"
 	"github.com/tursom/turntf/internal/store"
 )
 
@@ -191,6 +195,117 @@ func TestZeroMQRouterDistributesIdentitiesToDistinctConnections(t *testing.T) {
 	}
 }
 
+func TestZeroMQMuxListenerRoutesClusterAndClientRoles(t *testing.T) {
+	addr := nextZeroMQTCPAddress(t)
+	listener := NewZeroMQMuxListener(addr)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	clusterAccepted := make(chan TransportConn, 1)
+	clientAccepted := make(chan TransportConn, 1)
+	listener.SetClusterAccept(func(conn TransportConn) {
+		clusterAccepted <- conn
+	})
+	listener.SetClientAccept(func(conn TransportConn) {
+		clientAccepted <- conn
+	})
+	if err := listener.Start(ctx); err != nil {
+		t.Fatalf("start zeromq mux listener: %v", err)
+	}
+	defer listener.Close()
+
+	clusterSocket := newZeroMQRoleSocket(t, addr, internalproto.ZeroMQMuxHello_ZERO_MQ_ROLE_CLUSTER)
+	defer clusterSocket.Close()
+	clientSocket := newZeroMQRoleSocket(t, addr, internalproto.ZeroMQMuxHello_ZERO_MQ_ROLE_CLIENT)
+	defer clientSocket.Close()
+
+	if _, err := clusterSocket.SendBytes([]byte("cluster payload"), 0); err != nil {
+		t.Fatalf("send cluster payload: %v", err)
+	}
+	if _, err := clientSocket.SendBytes([]byte("client payload"), 0); err != nil {
+		t.Fatalf("send client payload: %v", err)
+	}
+
+	clusterConn := waitForAcceptedTransport(t, clusterAccepted, nil)
+	defer clusterConn.Close()
+	clientConn := waitForAcceptedTransport(t, clientAccepted, nil)
+	defer clientConn.Close()
+
+	clusterPayload, err := clusterConn.Receive(ctx)
+	if err != nil {
+		t.Fatalf("receive cluster payload: %v", err)
+	}
+	if !bytes.Equal(clusterPayload, []byte("cluster payload")) {
+		t.Fatalf("unexpected cluster payload: %q", clusterPayload)
+	}
+	clientPayload, err := clientConn.Receive(ctx)
+	if err != nil {
+		t.Fatalf("receive client payload: %v", err)
+	}
+	if !bytes.Equal(clientPayload, []byte("client payload")) {
+		t.Fatalf("unexpected client payload: %q", clientPayload)
+	}
+
+	if err := clusterConn.Send(ctx, []byte("cluster reply")); err != nil {
+		t.Fatalf("send cluster reply: %v", err)
+	}
+	if err := clientConn.Send(ctx, []byte("client reply")); err != nil {
+		t.Fatalf("send client reply: %v", err)
+	}
+
+	if got := recvZeroMQPayload(t, clusterSocket); !bytes.Equal(got, []byte("cluster reply")) {
+		t.Fatalf("unexpected cluster reply: %q", got)
+	}
+	if got := recvZeroMQPayload(t, clientSocket); !bytes.Equal(got, []byte("client reply")) {
+		t.Fatalf("unexpected client reply: %q", got)
+	}
+}
+
+func TestZeroMQMuxListenerRejectsInvalidHello(t *testing.T) {
+	addr := nextZeroMQTCPAddress(t)
+	listener := NewZeroMQMuxListener(addr)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	accepted := make(chan TransportConn, 1)
+	listener.SetClusterAccept(func(conn TransportConn) {
+		accepted <- conn
+	})
+	if err := listener.Start(ctx); err != nil {
+		t.Fatalf("start zeromq mux listener: %v", err)
+	}
+	defer listener.Close()
+
+	socket, err := zmq4.NewSocket(zmq4.DEALER)
+	if err != nil {
+		t.Fatalf("new zeromq socket: %v", err)
+	}
+	defer socket.Close()
+	if err := configureZeroMQSocket(socket); err != nil {
+		t.Fatalf("configure zeromq socket: %v", err)
+	}
+	identity, err := newZeroMQIdentity()
+	if err != nil {
+		t.Fatalf("new zeromq identity: %v", err)
+	}
+	if err := socket.SetIdentity(identity); err != nil {
+		t.Fatalf("set zeromq identity: %v", err)
+	}
+	if err := socket.Connect(addr); err != nil {
+		t.Fatalf("connect zeromq socket: %v", err)
+	}
+	if _, err := socket.SendBytes([]byte("not-protobuf"), 0); err != nil {
+		t.Fatalf("send invalid mux hello: %v", err)
+	}
+
+	select {
+	case conn := <-accepted:
+		conn.Close()
+		t.Fatal("expected invalid mux hello to be rejected")
+	case <-time.After(500 * time.Millisecond):
+	}
+}
+
 func TestManagerStartDialsZeroMQAndWebSocketStaticPeers(t *testing.T) {
 	mgr, err := NewManager(Config{
 		NodeID:            testNodeID(1),
@@ -214,9 +329,6 @@ func TestManagerStartDialsZeroMQAndWebSocketStaticPeers(t *testing.T) {
 	zmqDialer := &recordingDialer{urls: make(chan string, 4)}
 	mgr.dialers[transportWebSocket] = wsDialer
 	mgr.dialers[transportZeroMQ] = zmqDialer
-	mgr.zeroMQListenerFactory = func(bindURL string) Listener {
-		return &fakeListener{}
-	}
 
 	if err := mgr.Start(context.Background()); err != nil {
 		t.Fatalf("start manager: %v", err)
@@ -242,7 +354,7 @@ func TestManagerStartDialsZeroMQAndWebSocketStaticPeers(t *testing.T) {
 	}
 }
 
-func TestManagerStartOutboundOnlyZeroMQSkipsListener(t *testing.T) {
+func TestManagerStartOutboundOnlyZeroMQStillDialsStaticPeers(t *testing.T) {
 	mgr, err := NewManager(Config{
 		NodeID:            testNodeID(1),
 		AdvertisePath:     websocketPath,
@@ -260,12 +372,7 @@ func TestManagerStartOutboundOnlyZeroMQSkipsListener(t *testing.T) {
 	}
 
 	zmqDialer := &recordingDialer{urls: make(chan string, 4)}
-	listenerStarted := false
 	mgr.dialers[transportZeroMQ] = zmqDialer
-	mgr.zeroMQListenerFactory = func(bindURL string) Listener {
-		listenerStarted = true
-		return &fakeListener{}
-	}
 
 	if err := mgr.Start(context.Background()); err != nil {
 		t.Fatalf("start manager: %v", err)
@@ -279,10 +386,6 @@ func TestManagerStartOutboundOnlyZeroMQSkipsListener(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("expected zeromq static peer to start dialing")
-	}
-
-	if listenerStarted {
-		t.Fatal("expected outbound-only zeromq mode to skip listener startup")
 	}
 }
 
@@ -473,4 +576,56 @@ func nextZeroMQTCPAddress(t *testing.T) string {
 	}
 	defer ln.Close()
 	return "tcp://" + ln.Addr().String()
+}
+
+func newZeroMQRoleSocket(t *testing.T, bindURL string, role internalproto.ZeroMQMuxHello_Role) *zmq4.Socket {
+	t.Helper()
+
+	socket, err := zmq4.NewSocket(zmq4.DEALER)
+	if err != nil {
+		t.Fatalf("new zeromq socket: %v", err)
+	}
+	if err := configureZeroMQSocket(socket); err != nil {
+		socket.Close()
+		t.Fatalf("configure zeromq socket: %v", err)
+	}
+	identity, err := newZeroMQIdentity()
+	if err != nil {
+		socket.Close()
+		t.Fatalf("new zeromq identity: %v", err)
+	}
+	if err := socket.SetIdentity(identity); err != nil {
+		socket.Close()
+		t.Fatalf("set zeromq identity: %v", err)
+	}
+	if err := socket.Connect(bindURL); err != nil {
+		socket.Close()
+		t.Fatalf("connect zeromq socket: %v", err)
+	}
+	data, err := gproto.Marshal(&internalproto.ZeroMQMuxHello{
+		Role:            role,
+		ProtocolVersion: internalproto.ZeroMQMuxProtocolVersion,
+	})
+	if err != nil {
+		socket.Close()
+		t.Fatalf("marshal zeromq mux hello: %v", err)
+	}
+	if _, err := socket.SendBytes(data, 0); err != nil {
+		socket.Close()
+		t.Fatalf("send zeromq mux hello: %v", err)
+	}
+	return socket
+}
+
+func recvZeroMQPayload(t *testing.T, socket *zmq4.Socket) []byte {
+	t.Helper()
+
+	frames, err := socket.RecvMessageBytes(0)
+	if err != nil {
+		t.Fatalf("receive zeromq payload: %v", err)
+	}
+	if len(frames) == 0 {
+		t.Fatal("expected zeromq payload")
+	}
+	return frames[len(frames)-1]
 }

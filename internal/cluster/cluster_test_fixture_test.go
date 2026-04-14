@@ -54,14 +54,16 @@ type clusterTestNode struct {
 	store          *store.Store
 	service        *api.Service
 	manager        *Manager
+	zeroMQListener *ZeroMQMuxListener
 	server         *http.Server
 	ln             net.Listener
 	baseURL        string
 	timeSyncScript *clusterTestTimeSyncScript
 
-	startMu        sync.Mutex
-	managerStarted bool
-	serverStarted  bool
+	startMu         sync.Mutex
+	managerStarted  bool
+	serverStarted   bool
+	listenerStarted bool
 }
 
 type clusterTestNodeConfig struct {
@@ -281,12 +283,22 @@ func newClusterTestNodeFixtureWithListener(t *testing.T, cfg clusterTestNodeConf
 	rootMux.Handle("/", httpAPI.Handler())
 	rootMux.Handle(manager.AdvertisePath(), manager.Handler())
 
+	var zeroMQListener *ZeroMQMuxListener
+	if cfg.ZeroMQEnabled && strings.TrimSpace(cfg.ZeroMQBindURL) != "" {
+		zeroMQListener = NewZeroMQMuxListener(cfg.ZeroMQBindURL)
+		zeroMQListener.SetClusterAccept(manager.AcceptZeroMQConn)
+		zeroMQListener.SetClientAccept(func(conn TransportConn) {
+			httpAPI.AcceptZeroMQConn(conn)
+		})
+	}
+
 	node := &clusterTestNode{
 		id:             numericNodeID,
 		name:           cfg.Name,
 		store:          st,
 		service:        svc,
 		manager:        manager,
+		zeroMQListener: zeroMQListener,
 		server:         &http.Server{Handler: rootMux},
 		ln:             ln,
 		baseURL:        "http://" + ln.Addr().String(),
@@ -294,6 +306,9 @@ func newClusterTestNodeFixtureWithListener(t *testing.T, cfg clusterTestNodeConf
 	}
 
 	t.Cleanup(func() {
+		if node.zeroMQListener != nil {
+			_ = node.zeroMQListener.Close()
+		}
 		_ = node.manager.Close()
 		_ = node.server.Close()
 		_ = node.ln.Close()
@@ -486,6 +501,20 @@ func (n *clusterTestNode) StartManager(t *testing.T) {
 	if err := n.manager.Start(context.Background()); err != nil {
 		t.Fatalf("start cluster manager: %v", err)
 	}
+	if n.zeroMQListener == nil {
+		return
+	}
+	n.startMu.Lock()
+	if n.listenerStarted {
+		n.startMu.Unlock()
+		return
+	}
+	n.listenerStarted = true
+	n.startMu.Unlock()
+	if err := n.zeroMQListener.Start(context.Background()); err != nil {
+		t.Fatalf("start zeromq listener: %v", err)
+	}
+	n.manager.SetZeroMQListenerRunning(true)
 }
 
 func (n *clusterTestNode) StartHTTPServer(t *testing.T) {

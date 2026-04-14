@@ -5,13 +5,17 @@ package cluster
 import (
 	"context"
 	"errors"
+
+	internalproto "github.com/tursom/turntf/internal/proto"
 )
 
 var errZeroMQNotBuilt = errors.New("zeromq support was not built into this binary")
 
 type zeroMQDialer struct{}
 
-type zeroMQListener struct {
+type zeroMQClusterListener struct{ mux *ZeroMQMuxListener }
+
+type ZeroMQMuxListener struct {
 	bindURL string
 }
 
@@ -24,17 +28,37 @@ func newZeroMQDialer() Dialer {
 }
 
 func newZeroMQListener(bindURL string) Listener {
-	return &zeroMQListener{bindURL: bindURL}
+	return &zeroMQClusterListener{mux: NewZeroMQMuxListener(bindURL)}
+}
+
+func NewZeroMQMuxListener(bindURL string) *ZeroMQMuxListener {
+	return &ZeroMQMuxListener{bindURL: bindURL}
+}
+
+func (l *ZeroMQMuxListener) SetClusterAccept(func(TransportConn)) {}
+
+func (l *ZeroMQMuxListener) SetClientAccept(func(TransportConn)) {}
+
+func writeZeroMQMuxHello(context.Context, TransportConn, internalproto.ZeroMQMuxHello_Role) error {
+	return errZeroMQNotBuilt
 }
 
 func (d *zeroMQDialer) Dial(context.Context, string) (TransportConn, error) {
 	return nil, errZeroMQNotBuilt
 }
 
-func (l *zeroMQListener) Start(context.Context, func(TransportConn)) error {
+func (l *zeroMQClusterListener) Start(context.Context, func(TransportConn)) error {
 	return errZeroMQNotBuilt
 }
 
-func (l *zeroMQListener) Close() error {
+func (l *zeroMQClusterListener) Close() error {
+	return nil
+}
+
+func (l *ZeroMQMuxListener) Start(context.Context) error {
+	return errZeroMQNotBuilt
+}
+
+func (l *ZeroMQMuxListener) Close() error {
 	return nil
 }

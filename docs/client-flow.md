@@ -1,13 +1,13 @@
 # 客户端全流程接入文档
 
-本文档面向业务客户端和接入方，描述从准备账号到稳定收发消息的完整流程。底层 WebSocket 协议字段见 [客户端 WebSocket 接口](/root/dev/sys/turntf/docs/client-websocket.md)。
+本文档面向业务客户端和接入方，描述从准备账号到稳定收发消息的完整流程。底层长连接协议字段见 [客户端 WebSocket 接口](/root/dev/sys/turntf/docs/client-websocket.md)。
 
 ## 角色与接口
 
 客户端会用到两类接口：
 
 - HTTP JSON API：保留用于脚本、管理后台和调试。
-- WebSocket Protobuf API：现已覆盖除 HTTP 登录外的全部客户端能力，既可用于普通客户端收发消息，也可用于管理员执行用户、订阅、历史和运维查询。
+- 长连接 Protobuf API：现已覆盖除 HTTP 登录外的全部客户端能力，既可用于普通客户端收发消息，也可用于管理员执行用户、订阅、历史和运维查询。可选传输为 WebSocket 或 ZeroMQ。
 
 核心地址：
 
@@ -18,7 +18,8 @@
 - `GET /nodes/{node_id}/users/{user_id}/messages?limit=N`：HTTP 查询消息，`body` 是 base64 字节。
 - `POST /nodes/{node_id}/users/{user_id}/messages`：HTTP 写消息，`body` 是 base64 字节。
 - `POST /nodes/{node_id}/users/{user_id}/messages`：HTTP 发送消息；当 `delivery_kind = transient` 时走不落库瞬时投递。
-- `GET /ws/client`：客户端长连接，连接后第一帧必须是 protobuf `LoginRequest`；登录成功后还可继续发送用户管理、订阅管理、历史查询和运维查询 RPC。
+- `GET /ws/client`：客户端 WebSocket 长连接，连接后第一帧必须是 protobuf `LoginRequest`。
+- `zmq+tcp://host:port`：客户端 ZeroMQ 长连接，对应服务端 `cluster.zeromq.bind_url`；第一帧必须是 `ZeroMQMuxHello{role=CLIENT, protocol_version="zeromq-mux-v1"}`，第二帧必须是 protobuf `LoginRequest`。
 
 ## 端到端流程
 
@@ -27,14 +28,15 @@
 3. 可选：用户本人或管理员维护 channel 订阅。
 4. 可选：用户本人或管理员维护黑名单。
 5. 客户端本地初始化消息表和游标表。
-6. 客户端连接 `GET /ws/client`。
-7. 客户端发送第一帧 `ClientEnvelope.login`，携带 `node_id`、`user_id`、`password` 和本地已持久化游标 `seen_messages`。
-8. 服务端返回 `LoginResponse`，随后补发当前用户可见且未见过的历史消息。
-9. 客户端收到 `MessagePushed` 后先落库，再保存 `(node_id, seq)` 游标，最后可选发送 `AckMessage`。
-10. 客户端可继续通过同一条 WebSocket 发送查询或管理 RPC，例如 `get_user`、`list_messages`、`subscribe_channel`、`block_user`、`list_cluster_nodes`、`list_events`、`metrics`。
-11. 客户端通过同一条 WebSocket 发送 `SendMessageRequest` 写普通持久化消息。
-12. 如需向在线目标用户发送非持久化数据包，客户端直接把 `target` 设为最终目标用户，并把 `delivery_kind` 设为 `TRANSIENT`。
-13. 网络断开后，客户端用本地游标重连，服务端按 `seen_messages` 跳过已持久化消息。
+6. 客户端选择 WebSocket 或 ZeroMQ 长连接接入。
+7. 如果使用 ZeroMQ，先发送 `ZeroMQMuxHello{role=CLIENT, protocol_version="zeromq-mux-v1"}`。
+8. 客户端发送登录帧 `ClientEnvelope.login`，携带 `node_id`、`user_id`、`password` 和本地已持久化游标 `seen_messages`。
+9. 服务端返回 `LoginResponse`，随后补发当前用户可见且未见过的历史消息。
+10. 客户端收到 `MessagePushed` 后先落库，再保存 `(node_id, seq)` 游标，最后可选发送 `AckMessage`。
+11. 客户端可继续通过同一条长连接发送查询或管理 RPC，例如 `get_user`、`list_messages`、`subscribe_channel`、`block_user`、`list_cluster_nodes`、`list_events`、`metrics`。
+12. 客户端通过同一条长连接发送 `SendMessageRequest` 写普通持久化消息。
+13. 如需向在线目标用户发送非持久化数据包，客户端直接把 `target` 设为最终目标用户，并把 `delivery_kind` 设为 `TRANSIENT`。
+14. 网络断开后，客户端用本地游标重连，服务端按 `seen_messages` 跳过已持久化消息。
 
 ## 服务端准备
 

@@ -74,6 +74,8 @@ func runServe(args []string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
+	runCtx, cancelRun := context.WithCancel(context.Background())
+	defer cancelRun()
 	closeLogger, err := configureLogger(cfg.Logging, os.Stderr)
 	if err != nil {
 		return err
@@ -108,7 +110,7 @@ func runServe(args []string, stdout io.Writer) error {
 			return err
 		}
 		defer manager.Close()
-		if err := manager.Start(context.Background()); err != nil {
+		if err := manager.Start(runCtx); err != nil {
 			return err
 		}
 	}
@@ -122,6 +124,24 @@ func runServe(args []string, stdout io.Writer) error {
 	if manager != nil {
 		manager.SetTransientHandler(httpAPI.ReceiveTransientPacket)
 		manager.SetLoggedInUsersProvider(httpAPI.ListLoggedInUsers)
+	}
+	var zeroMQListener *cluster.ZeroMQMuxListener
+	if manager != nil && cfg.Cluster.ZeroMQ.Enabled && strings.TrimSpace(cfg.Cluster.ZeroMQ.BindURL) != "" {
+		zeroMQListener = cluster.NewZeroMQMuxListener(cfg.Cluster.ZeroMQ.BindURL)
+		zeroMQListener.SetClusterAccept(manager.AcceptZeroMQConn)
+		zeroMQListener.SetClientAccept(func(conn cluster.TransportConn) {
+			httpAPI.AcceptZeroMQConn(conn)
+		})
+		if err := zeroMQListener.Start(runCtx); err != nil {
+			return err
+		}
+		defer zeroMQListener.Close()
+		manager.SetZeroMQListenerRunning(true)
+		log.Info().
+			Str("component", "notifier").
+			Str("event", "zeromq_listener_started").
+			Str("bind_url", cfg.Cluster.ZeroMQ.BindURL).
+			Msg("zeromq listener started")
 	}
 	apiServer := &http.Server{
 		Addr:              cfg.APIAddr,

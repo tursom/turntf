@@ -240,6 +240,7 @@ url = "ws://127.0.0.1:9081/internal/cluster/ws"
 - `POST /nodes/{node_id}/users/{user_id}/messages`
 - `GET /nodes/{node_id}/users/{user_id}/messages?limit=N`
 - `GET /ws/client` 作为客户端 WebSocket Protobuf 长连接端点；连接后第一帧必须发送 `LoginRequest`。登录成功后，客户端可在同一连接上执行原先 HTTP JSON API 的全部已登录能力，包括消息收发、用户管理、订阅管理、历史查询和运维查询；接入流程见 [客户端全流程接入文档](/root/dev/sys/turntf/docs/client-flow.md)，协议见 [客户端 WebSocket 接口](/root/dev/sys/turntf/docs/client-websocket.md)
+- 当 `cluster.zeromq.enabled = true` 且 `cluster.zeromq.bind_url` 非空时，业务客户端也可以通过同一地址对应的 `zmq+tcp://host:port` 建立 ZeroMQ 长连接；首包必须发送 `ZeroMQMuxHello{role=CLIENT, protocol_version="zeromq-mux-v1"}`，第二包开始复用与 `/ws/client` 完全相同的 `ClientEnvelope/ServerEnvelope` 协议
 - `POST /nodes/{node_id}/users/{user_id}/subscriptions`
 - `DELETE /nodes/{node_id}/users/{user_id}/subscriptions/{channel_node_id}/{channel_user_id}`
 - `GET /nodes/{node_id}/users/{user_id}/subscriptions`
@@ -249,6 +250,7 @@ url = "ws://127.0.0.1:9081/internal/cluster/ws"
 - `GET /metrics`
 - `GET /healthz`
 - `GET /internal/cluster/ws` 作为节点间 WebSocket 同步端点，仅在启用集群模式时挂载到 API 监听器
+- ZeroMQ 节点间同步与 ZeroMQ 客户端长连接共用 `cluster.zeromq.bind_url` 对应的 ROUTER socket；ZeroMQ 节点 peer 的首包必须发送 `ZeroMQMuxHello{role=CLUSTER, protocol_version="zeromq-mux-v1"}`
 
 当前认证与授权边界：
 

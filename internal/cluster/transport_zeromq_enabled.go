@@ -12,6 +12,9 @@ import (
 	"time"
 
 	"github.com/pebbe/zmq4"
+	gproto "google.golang.org/protobuf/proto"
+
+	internalproto "github.com/tursom/turntf/internal/proto"
 )
 
 const zeroMQPollInterval = 100 * time.Millisecond
@@ -20,8 +23,15 @@ var errZeroMQNotBuilt error
 
 type zeroMQDialer struct{}
 
-type zeroMQListener struct {
+type zeroMQClusterListener struct {
+	mux *ZeroMQMuxListener
+}
+
+type ZeroMQMuxListener struct {
 	bindURL string
+
+	clusterAccept func(TransportConn)
+	clientAccept  func(TransportConn)
 
 	sendCh       chan zeroMQRouterOutbound
 	connClosedCh chan string
@@ -40,6 +50,7 @@ type zeroMQRouterOutbound struct {
 type zeroMQRouterPeer struct {
 	identity []byte
 	conn     *zeroMQTransportConn
+	role     internalproto.ZeroMQMuxHello_Role
 }
 
 type zeroMQTransportConn struct {
@@ -68,7 +79,11 @@ func newZeroMQDialer() Dialer {
 }
 
 func newZeroMQListener(bindURL string) Listener {
-	return &zeroMQListener{
+	return &zeroMQClusterListener{mux: NewZeroMQMuxListener(bindURL)}
+}
+
+func NewZeroMQMuxListener(bindURL string) *ZeroMQMuxListener {
+	return &ZeroMQMuxListener{
 		bindURL:      bindURL,
 		sendCh:       make(chan zeroMQRouterOutbound, outboundQueueSize),
 		connClosedCh: make(chan string, outboundQueueSize),
@@ -76,7 +91,21 @@ func newZeroMQListener(bindURL string) Listener {
 	}
 }
 
-func (d *zeroMQDialer) Dial(_ context.Context, peerURL string) (TransportConn, error) {
+func (l *ZeroMQMuxListener) SetClusterAccept(accept func(TransportConn)) {
+	if l == nil {
+		return
+	}
+	l.clusterAccept = accept
+}
+
+func (l *ZeroMQMuxListener) SetClientAccept(accept func(TransportConn)) {
+	if l == nil {
+		return
+	}
+	l.clientAccept = accept
+}
+
+func (d *zeroMQDialer) Dial(ctx context.Context, peerURL string) (TransportConn, error) {
 	socket, err := zmq4.NewSocket(zmq4.DEALER)
 	if err != nil {
 		return nil, fmt.Errorf("create zeromq dealer socket: %w", err)
@@ -113,10 +142,23 @@ func (d *zeroMQDialer) Dial(_ context.Context, peerURL string) (TransportConn, e
 		done:       make(chan struct{}),
 	}
 	go runZeroMQDealer(socket, conn)
+	if err := writeZeroMQMuxHello(ctx, conn, internalproto.ZeroMQMuxHello_ZERO_MQ_ROLE_CLUSTER); err != nil {
+		conn.finish(err)
+		return nil, err
+	}
 	return conn, nil
 }
 
-func (l *zeroMQListener) Start(ctx context.Context, accept func(TransportConn)) error {
+func (l *zeroMQClusterListener) Start(ctx context.Context, accept func(TransportConn)) error {
+	l.mux.SetClusterAccept(accept)
+	return l.mux.Start(ctx)
+}
+
+func (l *zeroMQClusterListener) Close() error {
+	return l.mux.Close()
+}
+
+func (l *ZeroMQMuxListener) Start(ctx context.Context) error {
 	socket, err := zmq4.NewSocket(zmq4.ROUTER)
 	if err != nil {
 		return fmt.Errorf("create zeromq router socket: %w", err)
@@ -136,12 +178,12 @@ func (l *zeroMQListener) Start(ctx context.Context, accept func(TransportConn)) 
 		defer func() {
 			_ = socket.Close()
 		}()
-		runZeroMQRouter(ctx, socket, l, accept)
+		runZeroMQRouter(ctx, socket, l)
 	}()
 	return nil
 }
 
-func (l *zeroMQListener) Close() error {
+func (l *ZeroMQMuxListener) Close() error {
 	l.closeOnce.Do(func() {
 		close(l.done)
 	})
@@ -232,7 +274,7 @@ func runZeroMQDealer(socket *zmq4.Socket, conn *zeroMQTransportConn) {
 	}
 }
 
-func runZeroMQRouter(ctx context.Context, socket *zmq4.Socket, listener *zeroMQListener, accept func(TransportConn)) {
+func runZeroMQRouter(ctx context.Context, socket *zmq4.Socket, listener *ZeroMQMuxListener) {
 	peers := make(map[string]*zeroMQRouterPeer)
 	pending := make([]zeroMQRouterOutbound, 0, outboundQueueSize)
 	closePeer := func(identityKey string) {
@@ -294,13 +336,23 @@ func runZeroMQRouter(ctx context.Context, socket *zmq4.Socket, listener *zeroMQL
 				identityKey := hex.EncodeToString(identity)
 				peer, ok := peers[identityKey]
 				if !ok {
+					role, err := parseZeroMQMuxHello(payload)
+					if err != nil {
+						continue
+					}
+					accept := listener.acceptHandler(role)
+					if accept == nil {
+						continue
+					}
 					peer = &zeroMQRouterPeer{
 						identity: identity,
+						role:     role,
 						conn: listener.newInboundConn(identityKey, identity, func(c TransportConn) {
 							go accept(c)
 						}),
 					}
 					peers[identityKey] = peer
+					continue
 				}
 				if !peer.conn.deliver(payload) {
 					closePeer(identityKey)
@@ -320,7 +372,18 @@ func runZeroMQRouter(ctx context.Context, socket *zmq4.Socket, listener *zeroMQL
 	}
 }
 
-func (l *zeroMQListener) newInboundConn(identityKey string, identity []byte, accept func(TransportConn)) *zeroMQTransportConn {
+func (l *ZeroMQMuxListener) acceptHandler(role internalproto.ZeroMQMuxHello_Role) func(TransportConn) {
+	switch role {
+	case internalproto.ZeroMQMuxHello_ZERO_MQ_ROLE_CLUSTER:
+		return l.clusterAccept
+	case internalproto.ZeroMQMuxHello_ZERO_MQ_ROLE_CLIENT:
+		return l.clientAccept
+	default:
+		return nil
+	}
+}
+
+func (l *ZeroMQMuxListener) newInboundConn(identityKey string, identity []byte, accept func(TransportConn)) *zeroMQTransportConn {
 	conn := &zeroMQTransportConn{
 		direction:  "inbound",
 		localAddr:  l.bindURL,
@@ -457,6 +520,36 @@ func zeroMQDialAddress(peerURL string) (string, error) {
 	}
 	parsed.Scheme = zeroMQBindSchemeTCP
 	return parsed.String(), nil
+}
+
+func writeZeroMQMuxHello(ctx context.Context, conn TransportConn, role internalproto.ZeroMQMuxHello_Role) error {
+	data, err := gproto.Marshal(&internalproto.ZeroMQMuxHello{
+		Role:            role,
+		ProtocolVersion: internalproto.ZeroMQMuxProtocolVersion,
+	})
+	if err != nil {
+		return fmt.Errorf("marshal zeromq mux hello: %w", err)
+	}
+	if err := conn.Send(ctx, data); err != nil {
+		return fmt.Errorf("send zeromq mux hello: %w", err)
+	}
+	return nil
+}
+
+func parseZeroMQMuxHello(payload []byte) (internalproto.ZeroMQMuxHello_Role, error) {
+	var hello internalproto.ZeroMQMuxHello
+	if err := gproto.Unmarshal(payload, &hello); err != nil {
+		return internalproto.ZeroMQMuxHello_ZERO_MQ_ROLE_UNSPECIFIED, err
+	}
+	if hello.ProtocolVersion != internalproto.ZeroMQMuxProtocolVersion {
+		return internalproto.ZeroMQMuxHello_ZERO_MQ_ROLE_UNSPECIFIED, fmt.Errorf("unsupported zeromq mux protocol version %q", hello.ProtocolVersion)
+	}
+	switch hello.Role {
+	case internalproto.ZeroMQMuxHello_ZERO_MQ_ROLE_CLUSTER, internalproto.ZeroMQMuxHello_ZERO_MQ_ROLE_CLIENT:
+		return hello.Role, nil
+	default:
+		return internalproto.ZeroMQMuxHello_ZERO_MQ_ROLE_UNSPECIFIED, fmt.Errorf("unsupported zeromq mux role %q", hello.Role.String())
+	}
 }
 
 func newZeroMQIdentity() (string, error) {

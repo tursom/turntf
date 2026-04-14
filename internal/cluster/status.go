@@ -155,7 +155,7 @@ func (m *Manager) Status(context.Context) (app.ClusterStatus, error) {
 		PeersByState:          make(map[string]int),
 		PeersByScheme:         make(map[string]int),
 		ZeroMQMode:            m.cfg.zeroMQMode(),
-		ZeroMQListenerRunning: m.zeroMQListener != nil,
+		ZeroMQListenerRunning: m.zeroMQListenerRunning,
 	}
 	for _, peer := range m.discoveredPeers {
 		if peer == nil || peer.state == "" {

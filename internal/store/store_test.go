@@ -1027,6 +1027,197 @@ func TestChannelSubscriptionAndBroadcastMessageVisibility(t *testing.T) {
 	}
 }
 
+func TestBlacklistLifecycleAndRoleValidation(t *testing.T) {
+	t.Parallel()
+
+	st := openTestStore(t)
+	defer st.Close()
+
+	ctx := context.Background()
+	alice, _, err := st.CreateUser(ctx, CreateUserParams{
+		Username:     "alice",
+		PasswordHash: "hash-alice",
+	})
+	if err != nil {
+		t.Fatalf("create alice: %v", err)
+	}
+	bob, _, err := st.CreateUser(ctx, CreateUserParams{
+		Username:     "bob",
+		PasswordHash: "hash-bob",
+	})
+	if err != nil {
+		t.Fatalf("create bob: %v", err)
+	}
+	channel, _, err := st.CreateUser(ctx, CreateUserParams{
+		Username: "alerts",
+		Role:     RoleChannel,
+	})
+	if err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+
+	entry, event, err := st.BlockUser(ctx, BlacklistParams{
+		Owner:   alice.Key(),
+		Blocked: bob.Key(),
+	})
+	if err != nil {
+		t.Fatalf("block bob: %v", err)
+	}
+	if event.EventType != EventTypeUserBlocked || entry.Owner != alice.Key() || entry.Blocked != bob.Key() {
+		t.Fatalf("unexpected blacklist block result: entry=%+v event=%+v", entry, event)
+	}
+
+	duplicate, duplicateEvent, err := st.BlockUser(ctx, BlacklistParams{
+		Owner:   alice.Key(),
+		Blocked: bob.Key(),
+	})
+	if err != nil {
+		t.Fatalf("duplicate block should be idempotent: %v", err)
+	}
+	if duplicateEvent.EventID != 0 || duplicate.BlockedAt != entry.BlockedAt {
+		t.Fatalf("unexpected duplicate block result: entry=%+v event=%+v", duplicate, duplicateEvent)
+	}
+
+	entries, err := st.ListBlockedUsers(ctx, alice.Key())
+	if err != nil {
+		t.Fatalf("list blocked users: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Blocked != bob.Key() {
+		t.Fatalf("unexpected blocked users: %+v", entries)
+	}
+
+	unblocked, unblockEvent, err := st.UnblockUser(ctx, BlacklistParams{
+		Owner:   alice.Key(),
+		Blocked: bob.Key(),
+	})
+	if err != nil {
+		t.Fatalf("unblock bob: %v", err)
+	}
+	if unblockEvent.EventType != EventTypeUserUnblocked || unblocked.DeletedAt == nil {
+		t.Fatalf("unexpected unblock result: entry=%+v event=%+v", unblocked, unblockEvent)
+	}
+	if _, _, err := st.UnblockUser(ctx, BlacklistParams{
+		Owner:   alice.Key(),
+		Blocked: bob.Key(),
+	}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected repeated unblock to return not found, got %v", err)
+	}
+	if _, _, err := st.BlockUser(ctx, BlacklistParams{
+		Owner:   alice.Key(),
+		Blocked: alice.Key(),
+	}); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("expected self block to fail, got %v", err)
+	}
+	if _, _, err := st.BlockUser(ctx, BlacklistParams{
+		Owner:   alice.Key(),
+		Blocked: channel.Key(),
+	}); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("expected channel block to fail, got %v", err)
+	}
+}
+
+func TestBlacklistRejectsDirectMessagesButKeepsHistoryAndChannelVisibility(t *testing.T) {
+	t.Parallel()
+
+	st := openTestStore(t)
+	defer st.Close()
+
+	ctx := context.Background()
+	alice, _, err := st.CreateUser(ctx, CreateUserParams{
+		Username:     "alice",
+		PasswordHash: "hash-alice",
+	})
+	if err != nil {
+		t.Fatalf("create alice: %v", err)
+	}
+	bob, _, err := st.CreateUser(ctx, CreateUserParams{
+		Username:     "bob",
+		PasswordHash: "hash-bob",
+	})
+	if err != nil {
+		t.Fatalf("create bob: %v", err)
+	}
+	channel, _, err := st.CreateUser(ctx, CreateUserParams{
+		Username: "alerts",
+		Role:     RoleChannel,
+	})
+	if err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+	if _, _, err := st.SubscribeChannel(ctx, ChannelSubscriptionParams{
+		Subscriber: alice.Key(),
+		Channel:    channel.Key(),
+	}); err != nil {
+		t.Fatalf("subscribe alice channel: %v", err)
+	}
+	if _, _, err := st.SubscribeChannel(ctx, ChannelSubscriptionParams{
+		Subscriber: bob.Key(),
+		Channel:    channel.Key(),
+	}); err != nil {
+		t.Fatalf("subscribe bob channel: %v", err)
+	}
+
+	if _, _, err := st.CreateMessage(ctx, CreateMessageParams{
+		UserKey: alice.Key(),
+		Sender:  bob.Key(),
+		Body:    []byte("before blacklist"),
+	}); err != nil {
+		t.Fatalf("create message before blacklist: %v", err)
+	}
+	if _, _, err := st.BlockUser(ctx, BlacklistParams{
+		Owner:   alice.Key(),
+		Blocked: bob.Key(),
+	}); err != nil {
+		t.Fatalf("block bob: %v", err)
+	}
+	if _, _, err := st.CreateMessage(ctx, CreateMessageParams{
+		UserKey: alice.Key(),
+		Sender:  bob.Key(),
+		Body:    []byte("after blacklist"),
+	}); !errors.Is(err, ErrBlockedByBlacklist) {
+		t.Fatalf("expected direct message after blacklist to fail, got %v", err)
+	}
+	if _, _, err := st.CreateMessage(ctx, CreateMessageParams{
+		UserKey: channel.Key(),
+		Sender:  bob.Key(),
+		Body:    []byte("channel survives blacklist"),
+	}); err != nil {
+		t.Fatalf("expected channel message to ignore blacklist, got %v", err)
+	}
+
+	aliceMessages, err := st.ListMessagesByUser(ctx, alice.Key(), 20)
+	if err != nil {
+		t.Fatalf("list alice messages: %v", err)
+	}
+	if !messagesContainBody(aliceMessages, "before blacklist") || !messagesContainBody(aliceMessages, "channel survives blacklist") {
+		t.Fatalf("expected history and channel message to remain visible, got %+v", aliceMessages)
+	}
+	if messagesContainBody(aliceMessages, "after blacklist") {
+		t.Fatalf("unexpected blocked direct message in alice inbox: %+v", aliceMessages)
+	}
+
+	if _, _, err := st.UnblockUser(ctx, BlacklistParams{
+		Owner:   alice.Key(),
+		Blocked: bob.Key(),
+	}); err != nil {
+		t.Fatalf("unblock bob: %v", err)
+	}
+	if _, _, err := st.CreateMessage(ctx, CreateMessageParams{
+		UserKey: alice.Key(),
+		Sender:  bob.Key(),
+		Body:    []byte("after unblock"),
+	}); err != nil {
+		t.Fatalf("create message after unblock: %v", err)
+	}
+	aliceMessages, err = st.ListMessagesByUser(ctx, alice.Key(), 20)
+	if err != nil {
+		t.Fatalf("list alice messages after unblock: %v", err)
+	}
+	if !messagesContainBody(aliceMessages, "after unblock") {
+		t.Fatalf("expected direct message after unblock to be visible, got %+v", aliceMessages)
+	}
+}
+
 func messagesContainBody(messages []Message, body string) bool {
 	for _, message := range messages {
 		if string(message.Body) == body {
@@ -1520,6 +1711,93 @@ func TestReplicatedChannelSubscriptionRespectsSubscriptionVisibilityBoundary(t *
 	}
 }
 
+func TestReplicatedBlacklistHidesOnlyMessagesAfterBlockedAt(t *testing.T) {
+	t.Parallel()
+
+	source := openNamedTestStore(t, "node-a", 1)
+	defer source.Close()
+
+	target := openNamedTestStore(t, "node-b", 2)
+	defer target.Close()
+
+	ctx := context.Background()
+	alice, aliceEvent, err := source.CreateUser(ctx, CreateUserParams{
+		Username:     "alice",
+		PasswordHash: "hash-alice",
+	})
+	if err != nil {
+		t.Fatalf("create alice: %v", err)
+	}
+	bob, bobEvent, err := source.CreateUser(ctx, CreateUserParams{
+		Username:     "bob",
+		PasswordHash: "hash-bob",
+	})
+	if err != nil {
+		t.Fatalf("create bob: %v", err)
+	}
+	for name, event := range map[string]Event{
+		"alice": aliceEvent,
+		"bob":   bobEvent,
+	} {
+		if err := target.ApplyReplicatedEvent(ctx, ToReplicatedEvent(event)); err != nil {
+			t.Fatalf("apply %s create event: %v", name, err)
+		}
+	}
+
+	_, beforeEvent, err := source.CreateMessage(ctx, CreateMessageParams{
+		UserKey: alice.Key(),
+		Sender:  bob.Key(),
+		Body:    []byte("before block"),
+	})
+	if err != nil {
+		t.Fatalf("create before-block message: %v", err)
+	}
+	if err := target.ApplyReplicatedEvent(ctx, ToReplicatedEvent(beforeEvent)); err != nil {
+		t.Fatalf("apply before-block message: %v", err)
+	}
+
+	entry, blockEvent, err := source.BlockUser(ctx, BlacklistParams{
+		Owner:   alice.Key(),
+		Blocked: bob.Key(),
+	})
+	if err != nil {
+		t.Fatalf("block bob: %v", err)
+	}
+	if err := target.ApplyReplicatedEvent(ctx, ToReplicatedEvent(blockEvent)); err != nil {
+		t.Fatalf("apply blacklist event: %v", err)
+	}
+
+	afterCreatedAt := nextDeterministicTimestamp(entry.BlockedAt)
+	afterEvent := Event{
+		EventID:         9001,
+		EventType:       EventTypeMessageCreated,
+		Aggregate:       "message",
+		AggregateNodeID: testNodeID(9),
+		AggregateID:     1,
+		HLC:             afterCreatedAt,
+		OriginNodeID:    testNodeID(9),
+		Body: messageCreatedProtoFromMessage(Message{
+			Recipient: alice.Key(),
+			NodeID:    testNodeID(9),
+			Seq:       1,
+			Sender:    bob.Key(),
+			Body:      []byte("after block"),
+			CreatedAt: afterCreatedAt,
+		}),
+	}
+	if err := target.ApplyReplicatedEvent(ctx, ToReplicatedEvent(afterEvent)); err != nil {
+		t.Fatalf("apply after-block message: %v", err)
+	}
+
+	messages, err := target.ListMessagesByUser(ctx, alice.Key(), 20)
+	if err != nil {
+		t.Fatalf("list messages: %v", err)
+	}
+	if !messagesContainBody(messages, "before block") || messagesContainBody(messages, "after block") {
+		t.Fatalf("unexpected replicated blacklist visibility: %+v", messages)
+	}
+}
+
 func TestReplicatedMessagesConvergeToConfiguredWindowBoundary(t *testing.T) {
 	t.Parallel()
 
@@ -1595,11 +1873,11 @@ func TestReplicatedMessageWindowTrimUsesNodeAndSeqTieBreaker(t *testing.T) {
 		HLC:             sharedHLC,
 		OriginNodeID:    testNodeID(1),
 		Body: &proto.MessageCreatedEvent{
-			Recipient:   &proto.ClusterUserRef{NodeId: user.NodeID, UserId: user.ID},
-			NodeId:      testNodeID(1),
-			Seq:         1,
-			Sender:      &proto.ClusterUserRef{NodeId: testSenderKey(9, 1).NodeID, UserId: testSenderKey(9, 1).UserID},
-			Body:        []byte("older-seq"),
+			Recipient:    &proto.ClusterUserRef{NodeId: user.NodeID, UserId: user.ID},
+			NodeId:       testNodeID(1),
+			Seq:          1,
+			Sender:       &proto.ClusterUserRef{NodeId: testSenderKey(9, 1).NodeID, UserId: testSenderKey(9, 1).UserID},
+			Body:         []byte("older-seq"),
 			CreatedAtHlc: sharedHLC.String(),
 		},
 	})); err != nil {
@@ -1614,11 +1892,11 @@ func TestReplicatedMessageWindowTrimUsesNodeAndSeqTieBreaker(t *testing.T) {
 		HLC:             sharedHLC,
 		OriginNodeID:    testNodeID(1),
 		Body: &proto.MessageCreatedEvent{
-			Recipient:   &proto.ClusterUserRef{NodeId: user.NodeID, UserId: user.ID},
-			NodeId:      testNodeID(1),
-			Seq:         2,
-			Sender:      &proto.ClusterUserRef{NodeId: testSenderKey(9, 1).NodeID, UserId: testSenderKey(9, 1).UserID},
-			Body:        []byte("newer-seq"),
+			Recipient:    &proto.ClusterUserRef{NodeId: user.NodeID, UserId: user.ID},
+			NodeId:       testNodeID(1),
+			Seq:          2,
+			Sender:       &proto.ClusterUserRef{NodeId: testSenderKey(9, 1).NodeID, UserId: testSenderKey(9, 1).UserID},
+			Body:         []byte("newer-seq"),
 			CreatedAtHlc: sharedHLC.String(),
 		},
 	})); err != nil {
@@ -2088,6 +2366,104 @@ func TestSnapshotSubscriptionsChunkRepairsSubscriptionVisibilityBoundary(t *test
 	}
 	if !messagesContainBody(messages, "snapshot channel message") {
 		t.Fatalf("expected snapshot-repaired subscription visibility to include channel message, got %+v", messages)
+	}
+}
+
+func TestSnapshotBlacklistsChunkRepairsDirectVisibilityBoundary(t *testing.T) {
+	t.Parallel()
+
+	source := openNamedTestStore(t, "node-a", 1)
+	defer source.Close()
+
+	target := openNamedTestStore(t, "node-b", 2)
+	defer target.Close()
+
+	ctx := context.Background()
+	alice, _, err := source.CreateUser(ctx, CreateUserParams{
+		Username:     "snapshot-alice",
+		PasswordHash: "hash-alice",
+	})
+	if err != nil {
+		t.Fatalf("create alice: %v", err)
+	}
+	bob, _, err := source.CreateUser(ctx, CreateUserParams{
+		Username:     "snapshot-bob",
+		PasswordHash: "hash-bob",
+	})
+	if err != nil {
+		t.Fatalf("create bob: %v", err)
+	}
+	if _, _, err := source.CreateMessage(ctx, CreateMessageParams{
+		UserKey: alice.Key(),
+		Sender:  bob.Key(),
+		Body:    []byte("snapshot before block"),
+	}); err != nil {
+		t.Fatalf("create before-block message: %v", err)
+	}
+	entry, _, err := source.BlockUser(ctx, BlacklistParams{
+		Owner:   alice.Key(),
+		Blocked: bob.Key(),
+	})
+	if err != nil {
+		t.Fatalf("block bob: %v", err)
+	}
+	afterCreatedAt := nextDeterministicTimestamp(entry.BlockedAt)
+	afterEvent := Event{
+		EventID:         9101,
+		EventType:       EventTypeMessageCreated,
+		Aggregate:       "message",
+		AggregateNodeID: testNodeID(9),
+		AggregateID:     1,
+		HLC:             afterCreatedAt,
+		OriginNodeID:    testNodeID(9),
+		Body: messageCreatedProtoFromMessage(Message{
+			Recipient: alice.Key(),
+			NodeID:    testNodeID(9),
+			Seq:       1,
+			Sender:    bob.Key(),
+			Body:      []byte("snapshot after block"),
+			CreatedAt: afterCreatedAt,
+		}),
+	}
+	if err := source.ApplyReplicatedEvent(ctx, ToReplicatedEvent(afterEvent)); err != nil {
+		t.Fatalf("apply after-block replicated message to source: %v", err)
+	}
+
+	userChunk, err := source.BuildSnapshotChunk(ctx, SnapshotUsersPartition)
+	if err != nil {
+		t.Fatalf("build users snapshot chunk: %v", err)
+	}
+	if err := target.ApplySnapshotChunk(ctx, userChunk); err != nil {
+		t.Fatalf("apply users snapshot chunk: %v", err)
+	}
+	blacklistChunk, err := source.BuildSnapshotChunk(ctx, SnapshotBlacklistsPartition)
+	if err != nil {
+		t.Fatalf("build blacklists snapshot chunk: %v", err)
+	}
+	if err := target.ApplySnapshotChunk(ctx, blacklistChunk); err != nil {
+		t.Fatalf("apply blacklists snapshot chunk: %v", err)
+	}
+	firstMessageChunk, err := source.BuildSnapshotChunk(ctx, MessageSnapshotPartition(testNodeID(1)))
+	if err != nil {
+		t.Fatalf("build local message snapshot chunk: %v", err)
+	}
+	if err := target.ApplySnapshotChunk(ctx, firstMessageChunk); err != nil {
+		t.Fatalf("apply local message snapshot chunk: %v", err)
+	}
+	secondMessageChunk, err := source.BuildSnapshotChunk(ctx, MessageSnapshotPartition(testNodeID(9)))
+	if err != nil {
+		t.Fatalf("build remote message snapshot chunk: %v", err)
+	}
+	if err := target.ApplySnapshotChunk(ctx, secondMessageChunk); err != nil {
+		t.Fatalf("apply remote message snapshot chunk: %v", err)
+	}
+
+	messages, err := target.ListMessagesByUser(ctx, alice.Key(), 20)
+	if err != nil {
+		t.Fatalf("list messages: %v", err)
+	}
+	if !messagesContainBody(messages, "snapshot before block") || messagesContainBody(messages, "snapshot after block") {
+		t.Fatalf("unexpected snapshot blacklist visibility: %+v", messages)
 	}
 }
 

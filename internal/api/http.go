@@ -60,6 +60,11 @@ type subscriptionRequest struct {
 	ChannelUserID int64 `json:"channel_user_id"`
 }
 
+type blacklistRequest struct {
+	BlockedNodeID int64 `json:"blocked_node_id"`
+	BlockedUserID int64 `json:"blocked_user_id"`
+}
+
 type loginRequest struct {
 	NodeID   int64  `json:"node_id"`
 	UserID   int64  `json:"user_id"`
@@ -131,6 +136,9 @@ func (h *HTTP) routes() {
 	h.mux.HandleFunc("GET /nodes/{node_id}/users/{user_id}/subscriptions", h.handleListSubscriptions)
 	h.mux.HandleFunc("POST /nodes/{node_id}/users/{user_id}/subscriptions", h.handleSubscribeChannel)
 	h.mux.HandleFunc("DELETE /nodes/{node_id}/users/{user_id}/subscriptions/{channel_node_id}/{channel_user_id}", h.handleUnsubscribeChannel)
+	h.mux.HandleFunc("GET /nodes/{node_id}/users/{user_id}/blacklist", h.handleListBlockedUsers)
+	h.mux.HandleFunc("POST /nodes/{node_id}/users/{user_id}/blacklist", h.handleBlockUser)
+	h.mux.HandleFunc("DELETE /nodes/{node_id}/users/{user_id}/blacklist/{blocked_node_id}/{blocked_user_id}", h.handleUnblockUser)
 	h.mux.HandleFunc("GET /events", h.handleListEvents)
 	h.mux.HandleFunc("GET /cluster/nodes", h.handleClusterNodes)
 	h.mux.HandleFunc("GET /cluster/nodes/{node_id}/logged-in-users", h.handleNodeLoggedInUsers)
@@ -519,6 +527,81 @@ func (h *HTTP) handleListSubscriptions(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (h *HTTP) handleBlockUser(w http.ResponseWriter, r *http.Request) {
+	owner, ok := parsePathUserKey(w, r)
+	if !ok {
+		return
+	}
+	if _, ok := h.requireSelfOrAdmin(w, r, owner); !ok {
+		return
+	}
+
+	var req blacklistRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	entry, _, err := h.service.BlockUser(r.Context(), store.BlacklistParams{
+		Owner:   owner,
+		Blocked: store.UserKey{NodeID: req.BlockedNodeID, UserID: req.BlockedUserID},
+	})
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, blacklistResponseFromStore(entry))
+}
+
+func (h *HTTP) handleUnblockUser(w http.ResponseWriter, r *http.Request) {
+	owner, ok := parsePathUserKey(w, r)
+	if !ok {
+		return
+	}
+	if _, ok := h.requireSelfOrAdmin(w, r, owner); !ok {
+		return
+	}
+	blockedNodeID, ok := parsePositivePathInt(w, r, "blocked_node_id")
+	if !ok {
+		return
+	}
+	blockedUserID, ok := parsePositivePathInt(w, r, "blocked_user_id")
+	if !ok {
+		return
+	}
+	entry, _, err := h.service.UnblockUser(r.Context(), store.BlacklistParams{
+		Owner:   owner,
+		Blocked: store.UserKey{NodeID: blockedNodeID, UserID: blockedUserID},
+	})
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, blacklistResponseFromStore(entry))
+}
+
+func (h *HTTP) handleListBlockedUsers(w http.ResponseWriter, r *http.Request) {
+	owner, ok := parsePathUserKey(w, r)
+	if !ok {
+		return
+	}
+	if _, ok := h.requireSelfOrAdmin(w, r, owner); !ok {
+		return
+	}
+	entries, err := h.service.ListBlockedUsers(r.Context(), owner)
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	items := make([]blacklistResponse, 0, len(entries))
+	for _, entry := range entries {
+		items = append(items, blacklistResponseFromStore(entry))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"items": items,
+		"count": len(items),
+	})
+}
+
 func (h *HTTP) handleListEvents(w http.ResponseWriter, r *http.Request) {
 	if _, ok := h.requireAdmin(w, r); !ok {
 		return
@@ -657,6 +740,14 @@ type subscriptionResponse struct {
 	OriginNodeID int64         `json:"origin_node_id"`
 }
 
+type blacklistResponse struct {
+	Owner        store.UserKey `json:"owner"`
+	Blocked      store.UserKey `json:"blocked"`
+	BlockedAt    string        `json:"blocked_at"`
+	DeletedAt    string        `json:"deleted_at,omitempty"`
+	OriginNodeID int64         `json:"origin_node_id"`
+}
+
 type eventResponse struct {
 	Sequence        int64           `json:"sequence"`
 	EventID         int64           `json:"event_id"`
@@ -737,6 +828,11 @@ func (h *HTTP) unregisterClientSession(key store.UserKey, sess *clientWSSession)
 }
 
 func (h *HTTP) ReceiveTransientPacket(packet store.TransientPacket) bool {
+	blocked, err := h.service.IsBlockedByRecipient(context.Background(), packet.Recipient, packet.Sender)
+	if err == nil && blocked {
+		h.service.RecordBlacklistHit()
+		return false
+	}
 	h.sessionsMu.RLock()
 	bucket := h.sessions[packet.Recipient]
 	sessions := make([]*clientWSSession, 0, len(bucket))
@@ -801,6 +897,19 @@ func subscriptionResponseFromStore(subscription store.Subscription) subscription
 	return response
 }
 
+func blacklistResponseFromStore(entry store.BlacklistEntry) blacklistResponse {
+	response := blacklistResponse{
+		Owner:        entry.Owner,
+		Blocked:      entry.Blocked,
+		BlockedAt:    entry.BlockedAt.String(),
+		OriginNodeID: entry.OriginNodeID,
+	}
+	if entry.DeletedAt != nil {
+		response.DeletedAt = entry.DeletedAt.String()
+	}
+	return response
+}
+
 func eventResponseFromStore(event store.Event) eventResponse {
 	return eventResponse{
 		Sequence:        event.Sequence,
@@ -843,6 +952,8 @@ func writeStoreError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusServiceUnavailable, app.ErrClockNotSynchronized.Error())
 	case errors.Is(err, app.ErrServiceUnavailable):
 		writeError(w, http.StatusServiceUnavailable, err.Error())
+	case errors.Is(err, store.ErrBlockedByBlacklist):
+		writeError(w, http.StatusForbidden, "forbidden")
 	case errors.Is(err, store.ErrForbidden):
 		writeError(w, http.StatusForbidden, "forbidden")
 	case errors.Is(err, store.ErrInvalidInput):

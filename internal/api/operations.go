@@ -218,6 +218,8 @@ func (s *Service) Metrics(ctx context.Context) (string, error) {
 	writeGauge(&buf, "notifier_user_conflicts_total", map[string]string{"node_id": nodeIDLabel}, float64(status.ConflictTotal))
 	writeMetricHelp(&buf, "notifier_message_trimmed_total", "Total messages trimmed by the local window.", "counter")
 	writeGauge(&buf, "notifier_message_trimmed_total", map[string]string{"node_id": nodeIDLabel}, float64(status.MessageTrim.TrimmedTotal))
+	writeMetricHelp(&buf, "notifier_blacklist_rejected_total", "Total message or packet deliveries rejected by blacklist rules.", "counter")
+	writeGauge(&buf, "notifier_blacklist_rejected_total", map[string]string{"node_id": nodeIDLabel}, float64(s.BlacklistHitsTotal()))
 	writeMetricHelp(&buf, "notifier_pending_projections", "Pending event projections waiting to be replayed.", "gauge")
 	writeGauge(&buf, "notifier_pending_projections", map[string]string{"node_id": nodeIDLabel}, float64(status.Projection.PendingTotal))
 	writeMetricHelp(&buf, "notifier_write_gate_ready", "Whether the node currently allows local writes.", "gauge")

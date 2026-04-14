@@ -69,6 +69,8 @@ message ReplicatedEvent {
     MessageCreatedEvent message_created = 10;
     ChannelSubscribedEvent channel_subscribed = 11;
     ChannelUnsubscribedEvent channel_unsubscribed = 12;
+    UserBlockedEvent user_blocked = 13;
+    UserUnblockedEvent user_unblocked = 14;
   }
 }
 
@@ -143,6 +145,21 @@ message ChannelUnsubscribedEvent {
   int64 origin_node_id = 7;
 }
 
+message UserBlockedEvent {
+  ClusterUserRef owner = 1;
+  ClusterUserRef blocked = 3;
+  string blocked_at_hlc = 5;
+  int64 origin_node_id = 6;
+}
+
+message UserUnblockedEvent {
+  ClusterUserRef owner = 1;
+  ClusterUserRef blocked = 3;
+  string blocked_at_hlc = 5;
+  string deleted_at_hlc = 6;
+  int64 origin_node_id = 7;
+}
+
 message PullEvents {
   int64 origin_node_id = 1;
   uint64 after_event_id = 2;
@@ -168,6 +185,7 @@ enum SnapshotPartitionKind {
   SNAPSHOT_PARTITION_KIND_USERS = 1;
   SNAPSHOT_PARTITION_KIND_MESSAGES = 2;
   SNAPSHOT_PARTITION_KIND_SUBSCRIPTIONS = 3;
+  SNAPSHOT_PARTITION_KIND_BLACKLISTS = 4;
 }
 
 message SnapshotPartitionDigest {
@@ -183,6 +201,7 @@ message SnapshotRow {
     SnapshotTombstoneRow tombstone = 2;
     SnapshotMessageRow message = 3;
     SnapshotSubscriptionRow subscription = 4;
+    SnapshotBlacklistRow blacklist = 5;
   }
 }
 
@@ -226,6 +245,14 @@ message SnapshotSubscriptionRow {
   ClusterUserRef subscriber = 1;
   ClusterUserRef channel = 3;
   string subscribed_at_hlc = 5;
+  string deleted_at_hlc = 6;
+  int64 origin_node_id = 7;
+}
+
+message SnapshotBlacklistRow {
+  ClusterUserRef owner = 1;
+  ClusterUserRef blocked = 3;
+  string blocked_at_hlc = 5;
   string deleted_at_hlc = 6;
   int64 origin_node_id = 7;
 }

@@ -23,6 +23,7 @@ type sqliteMessageProjectionRepository struct {
 	clock             *clock.Clock
 	messageWindowSize int
 	userRepository    UserRepository
+	blacklists        BlacklistRepository
 }
 
 func (r *sqliteEventLogRepository) Append(ctx context.Context, event Event) (Event, error) {
@@ -240,48 +241,58 @@ func (r *sqliteMessageProjectionRepository) ListMessagesByUser(ctx context.Conte
 		return r.listRawMessagesByUser(ctx, key, limit)
 	}
 
-	rows, err := r.db.QueryContext(ctx, `
-SELECT user_node_id, user_id, node_id, seq, sender_node_id, sender_user_id, body, created_at_hlc
-FROM messages
-WHERE (user_node_id = ? AND user_id = ?)
-   OR EXISTS (
-        SELECT 1
-        FROM users broadcast_users
-        WHERE broadcast_users.node_id = messages.user_node_id
-          AND broadcast_users.user_id = messages.user_id
-          AND broadcast_users.role = ?
-          AND broadcast_users.deleted_at_hlc IS NULL
-   )
-   OR EXISTS (
-        SELECT 1
-        FROM channel_subscriptions subscriptions
-        WHERE subscriptions.subscriber_node_id = ?
-          AND subscriptions.subscriber_user_id = ?
-          AND subscriptions.channel_node_id = messages.user_node_id
-          AND subscriptions.channel_user_id = messages.user_id
-          AND subscriptions.deleted_at_hlc IS NULL
-          AND messages.created_at_hlc >= subscriptions.subscribed_at_hlc
-   )
-ORDER BY created_at_hlc DESC, node_id ASC, seq DESC
-LIMIT ?
-`, key.NodeID, key.UserID, RoleBroadcast, key.NodeID, key.UserID, limit)
-	if err != nil {
-		return nil, fmt.Errorf("list messages: %w", err)
+	candidates := make([]Message, 0, limit)
+	seen := make(map[string]struct{})
+	add := func(messages []Message) {
+		for _, message := range messages {
+			id := messageIdentity(message)
+			if _, ok := seen[id]; ok {
+				continue
+			}
+			seen[id] = struct{}{}
+			candidates = append(candidates, message)
+		}
 	}
-	defer rows.Close()
 
-	var messages []Message
-	for rows.Next() {
-		message, err := scanMessage(rows)
+	direct, err := r.listRawMessagesByUser(ctx, key, 0)
+	if err != nil {
+		return nil, err
+	}
+	direct, err = filterDirectMessagesByBlacklist(ctx, r.userRepository, r.blacklists, key, direct)
+	if err != nil {
+		return nil, err
+	}
+	add(direct)
+
+	broadcasts, err := r.userRepository.ListBroadcastUserKeys(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, broadcast := range broadcasts {
+		messages, err := r.listRawMessagesByUser(ctx, broadcast, 0)
 		if err != nil {
 			return nil, err
 		}
-		messages = append(messages, message)
+		add(messages)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate messages: %w", err)
+
+	subscriptions, err := (&sqliteSubscriptionRepository{db: r.db}).ListActiveSubscriptions(ctx, key)
+	if err != nil {
+		return nil, err
 	}
-	return messages, nil
+	for _, subscription := range subscriptions {
+		messages, err := r.listRawMessagesByUserSince(ctx, subscription.Channel, 0, &subscription.SubscribedAt)
+		if err != nil {
+			return nil, err
+		}
+		add(messages)
+	}
+
+	sortMessages(candidates)
+	if len(candidates) > limit {
+		candidates = candidates[:limit]
+	}
+	return candidates, nil
 }
 
 func (r *sqliteMessageProjectionRepository) BuildMessageSnapshotRows(ctx context.Context, producer int64) ([]*clusterproto.SnapshotRow, error) {
@@ -405,13 +416,28 @@ VALUES(?, ?, ?, ?, ?, ?, ?, ?)
 }
 
 func (r *sqliteMessageProjectionRepository) listRawMessagesByUser(ctx context.Context, key UserKey, limit int) ([]Message, error) {
-	rows, err := r.db.QueryContext(ctx, `
+	return r.listRawMessagesByUserSince(ctx, key, limit, nil)
+}
+
+func (r *sqliteMessageProjectionRepository) listRawMessagesByUserSince(ctx context.Context, key UserKey, limit int, since *clock.Timestamp) ([]Message, error) {
+	if limit <= 0 || limit > 1000 {
+		limit = 1000
+	}
+	query := `
 SELECT user_node_id, user_id, node_id, seq, sender_node_id, sender_user_id, body, created_at_hlc
 FROM messages
-WHERE user_node_id = ? AND user_id = ?
+WHERE user_node_id = ? AND user_id = ?`
+	args := []any{key.NodeID, key.UserID}
+	if since != nil {
+		query += ` AND created_at_hlc >= ?`
+		args = append(args, since.String())
+	}
+	query += `
 ORDER BY created_at_hlc DESC, node_id ASC, seq DESC
-LIMIT ?
-`, key.NodeID, key.UserID, limit)
+LIMIT ?`
+	args = append(args, limit)
+
+	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list raw messages: %w", err)
 	}
@@ -429,6 +455,109 @@ LIMIT ?
 		return nil, fmt.Errorf("iterate raw messages: %w", err)
 	}
 	return messages, nil
+}
+
+type sqliteBlacklistRepository struct {
+	db *sql.DB
+}
+
+func (r *sqliteBlacklistRepository) ListActiveBlockedUsers(ctx context.Context, owner UserKey) ([]BlacklistEntry, error) {
+	if err := owner.Validate(); err != nil {
+		return nil, err
+	}
+	rows, err := r.db.QueryContext(ctx, `
+SELECT owner_node_id, owner_user_id, blocked_node_id, blocked_user_id, blocked_at_hlc, deleted_at_hlc, origin_node_id
+FROM user_blacklists
+WHERE owner_node_id = ? AND owner_user_id = ? AND deleted_at_hlc IS NULL
+ORDER BY blocked_node_id ASC, blocked_user_id ASC
+`, owner.NodeID, owner.UserID)
+	if err != nil {
+		return nil, fmt.Errorf("list active blacklists: %w", err)
+	}
+	defer rows.Close()
+
+	entries := make([]BlacklistEntry, 0)
+	for rows.Next() {
+		entry, err := scanBlacklistEntry(rows)
+		if err != nil {
+			return nil, err
+		}
+		entries = append(entries, entry)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate active blacklists: %w", err)
+	}
+	return entries, nil
+}
+
+func (r *sqliteBlacklistRepository) HasActiveBlock(ctx context.Context, owner, blocked UserKey, createdAt *clock.Timestamp) (bool, error) {
+	if err := owner.Validate(); err != nil {
+		return false, err
+	}
+	if err := blocked.Validate(); err != nil {
+		return false, err
+	}
+	query := `
+SELECT COUNT(*)
+FROM user_blacklists
+WHERE owner_node_id = ? AND owner_user_id = ?
+  AND blocked_node_id = ? AND blocked_user_id = ?
+  AND deleted_at_hlc IS NULL`
+	args := []any{owner.NodeID, owner.UserID, blocked.NodeID, blocked.UserID}
+	if createdAt != nil {
+		query += ` AND blocked_at_hlc <= ?`
+		args = append(args, createdAt.String())
+	}
+	var count int
+	if err := r.db.QueryRowContext(ctx, query, args...).Scan(&count); err != nil {
+		return false, fmt.Errorf("check blacklist: %w", err)
+	}
+	return count > 0, nil
+}
+
+func filterDirectMessagesByBlacklist(ctx context.Context, userRepo UserRepository, blacklistRepo BlacklistRepository, owner UserKey, messages []Message) ([]Message, error) {
+	if blacklistRepo == nil || len(messages) == 0 {
+		return messages, nil
+	}
+	entries, err := blacklistRepo.ListActiveBlockedUsers(ctx, owner)
+	if err != nil {
+		return nil, err
+	}
+	if len(entries) == 0 {
+		return messages, nil
+	}
+
+	blockedAtBySender := make(map[UserKey]clock.Timestamp, len(entries))
+	for _, entry := range entries {
+		blockedAtBySender[entry.Blocked] = entry.BlockedAt
+	}
+	senderRoleCache := make(map[UserKey]string, len(entries))
+	filtered := make([]Message, 0, len(messages))
+	for _, message := range messages {
+		blockedAt, blocked := blockedAtBySender[message.Sender]
+		if !blocked || message.CreatedAt.Compare(blockedAt) < 0 {
+			filtered = append(filtered, message)
+			continue
+		}
+		role, ok := senderRoleCache[message.Sender]
+		if !ok {
+			sender, err := userRepo.GetUser(ctx, message.Sender, false)
+			if err != nil {
+				if errors.Is(err, ErrNotFound) {
+					role = ""
+				} else {
+					return nil, err
+				}
+			} else {
+				role = sender.Role
+			}
+			senderRoleCache[message.Sender] = role
+		}
+		if role != RoleUser {
+			filtered = append(filtered, message)
+		}
+	}
+	return filtered, nil
 }
 
 type sqliteUserRepository struct {

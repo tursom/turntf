@@ -278,6 +278,100 @@ func (s *clientWSSession) handleListSubscriptions(ctx context.Context, req *inte
 	})
 }
 
+func (s *clientWSSession) handleBlockUser(ctx context.Context, req *internalproto.BlockUserRequest) error {
+	if req == nil {
+		return s.writeError("invalid_request", "block_user cannot be empty", 0)
+	}
+	owner, err := userKeyFromProto(req.Owner)
+	if err != nil {
+		return s.writeStoreOrRequestError(req.RequestId, err)
+	}
+	blocked, err := userKeyFromProto(req.Blocked)
+	if err != nil {
+		return s.writeStoreOrRequestError(req.RequestId, err)
+	}
+	if err := s.requireSelfOrAdminPrincipal(owner); err != nil {
+		return s.writeStoreOrRequestError(req.RequestId, err)
+	}
+	entry, _, err := s.http.service.BlockUser(ctx, store.BlacklistParams{
+		Owner:   owner,
+		Blocked: blocked,
+	})
+	if err != nil {
+		return s.writeStoreOrRequestError(req.RequestId, err)
+	}
+	return s.writeEnvelope(&internalproto.ServerEnvelope{
+		Body: &internalproto.ServerEnvelope_BlockUserResponse{
+			BlockUserResponse: &internalproto.BlockUserResponse{
+				RequestId: req.RequestId,
+				Entry:     clientProtoBlacklistEntry(entry),
+			},
+		},
+	})
+}
+
+func (s *clientWSSession) handleUnblockUser(ctx context.Context, req *internalproto.UnblockUserRequest) error {
+	if req == nil {
+		return s.writeError("invalid_request", "unblock_user cannot be empty", 0)
+	}
+	owner, err := userKeyFromProto(req.Owner)
+	if err != nil {
+		return s.writeStoreOrRequestError(req.RequestId, err)
+	}
+	blocked, err := userKeyFromProto(req.Blocked)
+	if err != nil {
+		return s.writeStoreOrRequestError(req.RequestId, err)
+	}
+	if err := s.requireSelfOrAdminPrincipal(owner); err != nil {
+		return s.writeStoreOrRequestError(req.RequestId, err)
+	}
+	entry, _, err := s.http.service.UnblockUser(ctx, store.BlacklistParams{
+		Owner:   owner,
+		Blocked: blocked,
+	})
+	if err != nil {
+		return s.writeStoreOrRequestError(req.RequestId, err)
+	}
+	return s.writeEnvelope(&internalproto.ServerEnvelope{
+		Body: &internalproto.ServerEnvelope_UnblockUserResponse{
+			UnblockUserResponse: &internalproto.UnblockUserResponse{
+				RequestId: req.RequestId,
+				Entry:     clientProtoBlacklistEntry(entry),
+			},
+		},
+	})
+}
+
+func (s *clientWSSession) handleListBlockedUsers(ctx context.Context, req *internalproto.ListBlockedUsersRequest) error {
+	if req == nil {
+		return s.writeError("invalid_request", "list_blocked_users cannot be empty", 0)
+	}
+	owner, err := userKeyFromProto(req.Owner)
+	if err != nil {
+		return s.writeStoreOrRequestError(req.RequestId, err)
+	}
+	if err := s.requireSelfOrAdminPrincipal(owner); err != nil {
+		return s.writeStoreOrRequestError(req.RequestId, err)
+	}
+	entries, err := s.http.service.ListBlockedUsers(ctx, owner)
+	if err != nil {
+		return s.writeStoreOrRequestError(req.RequestId, err)
+	}
+	items := make([]*internalproto.BlacklistEntry, 0, len(entries))
+	for _, entry := range entries {
+		items = append(items, clientProtoBlacklistEntry(entry))
+	}
+	return s.writeEnvelope(&internalproto.ServerEnvelope{
+		Body: &internalproto.ServerEnvelope_ListBlockedUsersResponse{
+			ListBlockedUsersResponse: &internalproto.ListBlockedUsersResponse{
+				RequestId: req.RequestId,
+				Items:     items,
+				Count:     int32(len(items)),
+			},
+		},
+	})
+}
+
 func (s *clientWSSession) handleListEvents(ctx context.Context, req *internalproto.ListEventsRequest) error {
 	if req == nil {
 		return s.writeError("invalid_request", "list_events cannot be empty", 0)
@@ -482,6 +576,19 @@ func clientProtoSubscription(subscription store.Subscription) *internalproto.Sub
 	return item
 }
 
+func clientProtoBlacklistEntry(entry store.BlacklistEntry) *internalproto.BlacklistEntry {
+	item := &internalproto.BlacklistEntry{
+		Owner:        &internalproto.UserRef{NodeId: entry.Owner.NodeID, UserId: entry.Owner.UserID},
+		Blocked:      &internalproto.UserRef{NodeId: entry.Blocked.NodeID, UserId: entry.Blocked.UserID},
+		BlockedAt:    entry.BlockedAt.String(),
+		OriginNodeId: entry.OriginNodeID,
+	}
+	if entry.DeletedAt != nil {
+		item.DeletedAt = entry.DeletedAt.String()
+	}
+	return item
+}
+
 func clientProtoEvent(event store.Event) (*internalproto.Event, error) {
 	eventJSON, err := json.Marshal(event.Body)
 	if err != nil {
@@ -578,6 +685,9 @@ func (s *clientWSSession) writeStoreOrRequestError(requestID uint64, err error) 
 	case errors.Is(err, app.ErrServiceUnavailable):
 		code = "service_unavailable"
 		message = err.Error()
+	case errors.Is(err, store.ErrBlockedByBlacklist):
+		code = "forbidden"
+		message = "forbidden"
 	case errors.Is(err, store.ErrForbidden):
 		code = "forbidden"
 		message = "forbidden"

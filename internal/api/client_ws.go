@@ -266,6 +266,34 @@ func (s *clientWSSession) readLoop(ctx context.Context) error {
 			if err := s.handleListSubscriptions(ctx, body.ListSubscriptions); err != nil {
 				return err
 			}
+		case *internalproto.ClientEnvelope_BlockUser:
+			s.logRequest("block_user", requestIDForClientEnvelopeBody(body)).
+				Int64("owner_node_id", body.BlockUser.GetOwner().GetNodeId()).
+				Int64("owner_user_id", body.BlockUser.GetOwner().GetUserId()).
+				Int64("blocked_node_id", body.BlockUser.GetBlocked().GetNodeId()).
+				Int64("blocked_user_id", body.BlockUser.GetBlocked().GetUserId()).
+				Msg("client websocket request")
+			if err := s.handleBlockUser(ctx, body.BlockUser); err != nil {
+				return err
+			}
+		case *internalproto.ClientEnvelope_UnblockUser:
+			s.logRequest("unblock_user", requestIDForClientEnvelopeBody(body)).
+				Int64("owner_node_id", body.UnblockUser.GetOwner().GetNodeId()).
+				Int64("owner_user_id", body.UnblockUser.GetOwner().GetUserId()).
+				Int64("blocked_node_id", body.UnblockUser.GetBlocked().GetNodeId()).
+				Int64("blocked_user_id", body.UnblockUser.GetBlocked().GetUserId()).
+				Msg("client websocket request")
+			if err := s.handleUnblockUser(ctx, body.UnblockUser); err != nil {
+				return err
+			}
+		case *internalproto.ClientEnvelope_ListBlockedUsers:
+			s.logRequest("list_blocked_users", requestIDForClientEnvelopeBody(body)).
+				Int64("owner_node_id", body.ListBlockedUsers.GetOwner().GetNodeId()).
+				Int64("owner_user_id", body.ListBlockedUsers.GetOwner().GetUserId()).
+				Msg("client websocket request")
+			if err := s.handleListBlockedUsers(ctx, body.ListBlockedUsers); err != nil {
+				return err
+			}
 		case *internalproto.ClientEnvelope_ListEvents:
 			s.logRequest("list_events", requestIDForClientEnvelopeBody(body)).
 				Int64("after", body.ListEvents.GetAfter()).
@@ -466,7 +494,11 @@ func (s *clientWSSession) canSeeMessage(ctx context.Context, message store.Messa
 	}
 	key := message.UserKey()
 	if key == s.principal.User.Key() {
-		return true, nil
+		blocked, err := s.http.service.IsMessageBlockedByBlacklist(ctx, s.principal.User.Key(), message.Sender, message.CreatedAt)
+		if err != nil {
+			return false, err
+		}
+		return !blocked, nil
 	}
 	target, err := s.http.service.GetUser(ctx, key)
 	if err != nil {

@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -189,6 +191,107 @@ func TestAuthenticatedHTTPLoginAndAuthorization(t *testing.T) {
 	doJSONWithHeaders(t, testAPI.handler, http.MethodGet, userMessagesPath(channel.NodeID, channel.UserID), nil, map[string]string{
 		"Authorization": "Bearer " + adminToken,
 	}, http.StatusOK)
+}
+
+func TestBlacklistHTTPAPIRejectsDirectMessagesButKeepsChannelVisibility(t *testing.T) {
+	t.Parallel()
+
+	testAPI := newAuthenticatedTestAPI(t)
+	handler := testAPI.handler
+	adminKey := store.UserKey{NodeID: testNodeID(1), UserID: store.BootstrapAdminUserID}
+	adminToken := loginToken(t, handler, adminKey, "root-password")
+	aliceKey := createUserAs(t, handler, adminToken, "alice", "alice-password", store.RoleUser)
+	bobKey := createUserAs(t, handler, adminToken, "bob", "bob-password", store.RoleUser)
+	channelKey := createUserAs(t, handler, adminToken, "orders", "", store.RoleChannel)
+
+	aliceToken := loginToken(t, handler, aliceKey, "alice-password")
+	bobToken := loginToken(t, handler, bobKey, "bob-password")
+
+	doJSONWithHeaders(t, handler, http.MethodPost, subscriptionsPath(aliceKey.NodeID, aliceKey.UserID), map[string]any{
+		"channel_node_id": channelKey.NodeID,
+		"channel_user_id": channelKey.UserID,
+	}, map[string]string{
+		"Authorization": "Bearer " + aliceToken,
+	}, http.StatusCreated)
+	doJSONWithHeaders(t, handler, http.MethodPost, subscriptionsPath(bobKey.NodeID, bobKey.UserID), map[string]any{
+		"channel_node_id": channelKey.NodeID,
+		"channel_user_id": channelKey.UserID,
+	}, map[string]string{
+		"Authorization": "Bearer " + bobToken,
+	}, http.StatusCreated)
+
+	if _, _, err := testAPI.http.service.CreateMessage(context.Background(), store.CreateMessageParams{
+		UserKey: aliceKey,
+		Sender:  bobKey,
+		Body:    []byte("before blacklist"),
+	}); err != nil {
+		t.Fatalf("create direct message before blacklist: %v", err)
+	}
+
+	doJSONWithHeaders(t, handler, http.MethodPost, blacklistPath(aliceKey.NodeID, aliceKey.UserID), map[string]any{
+		"blocked_node_id": bobKey.NodeID,
+		"blocked_user_id": bobKey.UserID,
+	}, map[string]string{
+		"Authorization": "Bearer " + aliceToken,
+	}, http.StatusCreated)
+
+	var blockedList struct {
+		Items []struct {
+			Blocked store.UserKey `json:"blocked"`
+		} `json:"items"`
+		Count int `json:"count"`
+	}
+	mustJSON(t, doJSONWithHeaders(t, handler, http.MethodGet, blacklistPath(aliceKey.NodeID, aliceKey.UserID), nil, map[string]string{
+		"Authorization": "Bearer " + aliceToken,
+	}, http.StatusOK), &blockedList)
+	if blockedList.Count != 1 || blockedList.Items[0].Blocked != bobKey {
+		t.Fatalf("unexpected blocked users list: %+v", blockedList)
+	}
+
+	if _, _, err := testAPI.http.service.CreateMessage(context.Background(), store.CreateMessageParams{
+		UserKey: aliceKey,
+		Sender:  bobKey,
+		Body:    []byte("after blacklist"),
+	}); !errors.Is(err, store.ErrBlockedByBlacklist) {
+		t.Fatalf("expected service direct message to be blocked, got %v", err)
+	}
+
+	doJSONWithHeaders(t, handler, http.MethodPost, userMessagesPath(channelKey.NodeID, channelKey.UserID), map[string]any{
+		"body": []byte("channel after blacklist"),
+	}, map[string]string{
+		"Authorization": "Bearer " + bobToken,
+	}, http.StatusCreated)
+
+	var aliceMessages struct {
+		Items []authMessageItem `json:"items"`
+	}
+	mustJSON(t, doJSONWithHeaders(t, handler, http.MethodGet, userMessagesPath(aliceKey.NodeID, aliceKey.UserID)+"?limit=20", nil, map[string]string{
+		"Authorization": "Bearer " + aliceToken,
+	}, http.StatusOK), &aliceMessages)
+	if !responseMessagesContainBody(aliceMessages.Items, "before blacklist") || !responseMessagesContainBody(aliceMessages.Items, "channel after blacklist") {
+		t.Fatalf("expected history and channel message to remain visible: %+v", aliceMessages)
+	}
+	if responseMessagesContainBody(aliceMessages.Items, "after blacklist") {
+		t.Fatalf("unexpected blocked direct message in list: %+v", aliceMessages)
+	}
+
+	doJSONWithHeaders(t, handler, http.MethodDelete, blacklistPath(aliceKey.NodeID, aliceKey.UserID)+"/"+strconv.FormatInt(bobKey.NodeID, 10)+"/"+strconv.FormatInt(bobKey.UserID, 10), nil, map[string]string{
+		"Authorization": "Bearer " + adminToken,
+	}, http.StatusOK)
+	if _, _, err := testAPI.http.service.CreateMessage(context.Background(), store.CreateMessageParams{
+		UserKey: aliceKey,
+		Sender:  bobKey,
+		Body:    []byte("after unblock"),
+	}); err != nil {
+		t.Fatalf("create direct message after unblock: %v", err)
+	}
+
+	metrics := doPlain(t, handler, http.MethodGet, "/metrics", map[string]string{
+		"Authorization": "Bearer " + adminToken,
+	}, http.StatusOK)
+	if !strings.Contains(metrics, "notifier_blacklist_rejected_total") {
+		t.Fatalf("metrics missing blacklist counter: %s", metrics)
+	}
 }
 
 func TestClusterNodesHTTPRequiresAuthenticationAndAllowsUsers(t *testing.T) {
@@ -994,6 +1097,64 @@ func TestClientWebSocketRPCRespectsUserAuthorizationAndSubscriptions(t *testing.
 	}
 }
 
+func TestClientWebSocketBlacklistRPC(t *testing.T) {
+	t.Parallel()
+
+	testAPI := newAuthenticatedTestAPI(t)
+	server := httptest.NewServer(testAPI.handler)
+	defer server.Close()
+
+	adminKey := store.UserKey{NodeID: testNodeID(1), UserID: store.BootstrapAdminUserID}
+	adminToken := loginToken(t, testAPI.handler, adminKey, "root-password")
+	aliceKey := createUserAs(t, testAPI.handler, adminToken, "alice", "alice-password", store.RoleUser)
+	bobKey := createUserAs(t, testAPI.handler, adminToken, "bob", "bob-password", store.RoleUser)
+
+	conn := dialClientWebSocket(t, server.URL)
+	defer conn.Close()
+	loginClientWebSocket(t, conn, aliceKey, "alice-password")
+
+	writeClientEnvelope(t, conn, &internalproto.ClientEnvelope{
+		Body: &internalproto.ClientEnvelope_BlockUser{
+			BlockUser: &internalproto.BlockUserRequest{
+				RequestId: 30,
+				Owner:     &internalproto.UserRef{NodeId: aliceKey.NodeID, UserId: aliceKey.UserID},
+				Blocked:   &internalproto.UserRef{NodeId: bobKey.NodeID, UserId: bobKey.UserID},
+			},
+		},
+	})
+	blockResp := readServerEnvelope(t, conn).GetBlockUserResponse()
+	if blockResp == nil || blockResp.RequestId != 30 || !senderMatchesRef(blockResp.Entry.GetBlocked(), bobKey) {
+		t.Fatalf("unexpected block response: %+v", blockResp)
+	}
+
+	writeClientEnvelope(t, conn, &internalproto.ClientEnvelope{
+		Body: &internalproto.ClientEnvelope_ListBlockedUsers{
+			ListBlockedUsers: &internalproto.ListBlockedUsersRequest{
+				RequestId: 31,
+				Owner:     &internalproto.UserRef{NodeId: aliceKey.NodeID, UserId: aliceKey.UserID},
+			},
+		},
+	})
+	listResp := readServerEnvelope(t, conn).GetListBlockedUsersResponse()
+	if listResp == nil || listResp.RequestId != 31 || listResp.Count != 1 || !senderMatchesRef(listResp.Items[0].GetBlocked(), bobKey) {
+		t.Fatalf("unexpected list blocked users response: %+v", listResp)
+	}
+
+	writeClientEnvelope(t, conn, &internalproto.ClientEnvelope{
+		Body: &internalproto.ClientEnvelope_UnblockUser{
+			UnblockUser: &internalproto.UnblockUserRequest{
+				RequestId: 32,
+				Owner:     &internalproto.UserRef{NodeId: aliceKey.NodeID, UserId: aliceKey.UserID},
+				Blocked:   &internalproto.UserRef{NodeId: bobKey.NodeID, UserId: bobKey.UserID},
+			},
+		},
+	})
+	unblockResp := readServerEnvelope(t, conn).GetUnblockUserResponse()
+	if unblockResp == nil || unblockResp.RequestId != 32 || unblockResp.Entry.GetDeletedAt() == "" {
+		t.Fatalf("unexpected unblock response: %+v", unblockResp)
+	}
+}
+
 func loginClientWebSocket(t *testing.T, conn *websocket.Conn, key store.UserKey, password string) {
 	t.Helper()
 	writeClientEnvelope(t, conn, &internalproto.ClientEnvelope{
@@ -1054,6 +1215,10 @@ func createUserAs(t *testing.T, handler http.Handler, token, username, password,
 
 func subscriptionsPath(nodeID, userID int64) string {
 	return userPath(nodeID, userID) + "/subscriptions"
+}
+
+func blacklistPath(nodeID, userID int64) string {
+	return userPath(nodeID, userID) + "/blacklist"
 }
 
 type authMessageItem struct {

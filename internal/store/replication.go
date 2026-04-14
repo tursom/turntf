@@ -81,6 +81,14 @@ func (s *Store) ApplyReplicatedEvent(ctx context.Context, event *internalproto.R
 		if err := s.applyReplicatedChannelSubscription(ctx, tx, body, true, decoded.OriginNodeID); err != nil {
 			return err
 		}
+	case *internalproto.UserBlockedEvent:
+		if err := s.applyReplicatedBlacklist(ctx, tx, body, false, decoded.OriginNodeID); err != nil {
+			return err
+		}
+	case *internalproto.UserUnblockedEvent:
+		if err := s.applyReplicatedBlacklist(ctx, tx, body, true, decoded.OriginNodeID); err != nil {
+			return err
+		}
 	default:
 		return fmt.Errorf("%w: unsupported replicated event body %T", ErrInvalidInput, decoded.Body)
 	}
@@ -263,6 +271,44 @@ func (s *Store) applyReplicatedChannelSubscription(ctx context.Context, tx *sql.
 	return s.upsertSubscriptionTx(ctx, tx, subscription)
 }
 
+func (s *Store) applyReplicatedBlacklist(ctx context.Context, tx *sql.Tx, body internalproto.EventBody, deleted bool, originNodeID int64) error {
+	entry, err := blacklistFromEventBody(body)
+	if err != nil {
+		return err
+	}
+	if originNodeID != 0 && originNodeID != entry.OriginNodeID {
+		return fmt.Errorf("%w: blacklist origin node id %d does not match event origin %d", ErrInvalidInput, entry.OriginNodeID, originNodeID)
+	}
+
+	if deleted {
+		if entry.DeletedAt == nil {
+			return fmt.Errorf("%w: user_unblocked missing deleted_at", ErrInvalidInput)
+		}
+	} else if entry.DeletedAt != nil {
+		return fmt.Errorf("%w: user_blocked cannot include deleted_at", ErrInvalidInput)
+	}
+
+	if entry.DeletedAt == nil {
+		if err := s.validateBlacklistUsersTx(ctx, tx, entry.Owner, entry.Blocked); err != nil {
+			return err
+		}
+	} else {
+		if _, err := s.getUserByIDTx(ctx, tx, entry.Owner, false); err != nil {
+			if errors.Is(err, ErrNotFound) {
+				return nil
+			}
+			return err
+		}
+		if _, err := s.getUserByIDTx(ctx, tx, entry.Blocked, false); err != nil {
+			if errors.Is(err, ErrNotFound) {
+				return nil
+			}
+			return err
+		}
+	}
+	return s.upsertBlacklistEntryTx(ctx, tx, entry)
+}
+
 func subscriptionFromEventBody(body internalproto.EventBody) (Subscription, error) {
 	switch typed := body.(type) {
 	case *internalproto.ChannelSubscribedEvent:
@@ -271,6 +317,17 @@ func subscriptionFromEventBody(body internalproto.EventBody) (Subscription, erro
 		return subscriptionFromChannelData(typed.Subscriber, typed.Channel, typed.SubscribedAtHlc, typed.DeletedAtHlc, typed.OriginNodeId)
 	default:
 		return Subscription{}, fmt.Errorf("%w: unsupported subscription body %T", ErrInvalidInput, body)
+	}
+}
+
+func blacklistFromEventBody(body internalproto.EventBody) (BlacklistEntry, error) {
+	switch typed := body.(type) {
+	case *internalproto.UserBlockedEvent:
+		return blacklistFromData(typed.Owner, typed.Blocked, typed.BlockedAtHlc, "", typed.OriginNodeId)
+	case *internalproto.UserUnblockedEvent:
+		return blacklistFromData(typed.Owner, typed.Blocked, typed.BlockedAtHlc, typed.DeletedAtHlc, typed.OriginNodeId)
+	default:
+		return BlacklistEntry{}, fmt.Errorf("%w: unsupported blacklist body %T", ErrInvalidInput, body)
 	}
 }
 
@@ -308,6 +365,42 @@ func subscriptionFromChannelData(subscriberRef, channelRef *internalproto.Cluste
 		return Subscription{}, fmt.Errorf("%w: subscription origin node id is required", ErrInvalidInput)
 	}
 	return subscription, nil
+}
+
+func blacklistFromData(ownerRef, blockedRef *internalproto.ClusterUserRef, blockedAtRaw, deletedAtRaw string, originNodeID int64) (BlacklistEntry, error) {
+	if ownerRef == nil {
+		return BlacklistEntry{}, fmt.Errorf("%w: owner cannot be empty", ErrInvalidInput)
+	}
+	if blockedRef == nil {
+		return BlacklistEntry{}, fmt.Errorf("%w: blocked cannot be empty", ErrInvalidInput)
+	}
+	entry := BlacklistEntry{
+		Owner:        UserKey{NodeID: ownerRef.NodeId, UserID: ownerRef.UserId},
+		Blocked:      UserKey{NodeID: blockedRef.NodeId, UserID: blockedRef.UserId},
+		OriginNodeID: originNodeID,
+	}
+	if err := entry.Owner.Validate(); err != nil {
+		return BlacklistEntry{}, err
+	}
+	if err := entry.Blocked.Validate(); err != nil {
+		return BlacklistEntry{}, err
+	}
+	blockedAt, err := parseRequiredTimestamp(blockedAtRaw, "blacklist blocked_at")
+	if err != nil {
+		return BlacklistEntry{}, err
+	}
+	entry.BlockedAt = blockedAt
+	if strings.TrimSpace(deletedAtRaw) != "" {
+		deletedAt, err := parseRequiredTimestamp(deletedAtRaw, "blacklist deleted_at")
+		if err != nil {
+			return BlacklistEntry{}, err
+		}
+		entry.DeletedAt = &deletedAt
+	}
+	if entry.OriginNodeID <= 0 {
+		return BlacklistEntry{}, fmt.Errorf("%w: blacklist origin node id is required", ErrInvalidInput)
+	}
+	return entry, nil
 }
 
 func (s *Store) isEventAppliedTx(ctx context.Context, tx *sql.Tx, sourceNodeID, eventID int64) (bool, error) {

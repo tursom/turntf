@@ -20,10 +20,11 @@ import (
 )
 
 var (
-	ErrConflict     = errors.New("conflict")
-	ErrForbidden    = errors.New("forbidden")
-	ErrNotFound     = errors.New("not found")
-	ErrInvalidInput = errors.New("invalid input")
+	ErrConflict           = errors.New("conflict")
+	ErrForbidden          = errors.New("forbidden")
+	ErrNotFound           = errors.New("not found")
+	ErrInvalidInput       = errors.New("invalid input")
+	ErrBlockedByBlacklist = errors.New("blocked by blacklist")
 )
 
 const DefaultMessageWindowSize = 500
@@ -44,7 +45,7 @@ const (
 	BroadcastUserID      = int64(2)
 	NodeIngressUserID    = int64(3)
 	ReservedUserIDMax    = int64(1024)
-	defaultSchemaVersion = "12"
+	defaultSchemaVersion = "13"
 	schemaMetaNodeIDKey  = "node_id"
 )
 
@@ -76,6 +77,7 @@ type Store struct {
 	eventLog          EventLogRepository
 	userRepository    UserRepository
 	subscriptions     SubscriptionRepository
+	blacklists        BlacklistRepository
 	messageTrim       MessageTrimRepository
 	messageProjection MessageProjectionRepository
 }
@@ -136,6 +138,14 @@ type Subscription struct {
 	Subscriber   UserKey          `json:"subscriber"`
 	Channel      UserKey          `json:"channel"`
 	SubscribedAt clock.Timestamp  `json:"subscribed_at"`
+	DeletedAt    *clock.Timestamp `json:"deleted_at,omitempty"`
+	OriginNodeID int64            `json:"origin_node_id"`
+}
+
+type BlacklistEntry struct {
+	Owner        UserKey          `json:"owner"`
+	Blocked      UserKey          `json:"blocked"`
+	BlockedAt    clock.Timestamp  `json:"blocked_at"`
 	DeletedAt    *clock.Timestamp `json:"deleted_at,omitempty"`
 	OriginNodeID int64            `json:"origin_node_id"`
 }
@@ -226,6 +236,11 @@ type ChannelSubscriptionParams struct {
 	Channel    UserKey
 }
 
+type BlacklistParams struct {
+	Owner   UserKey
+	Blocked UserKey
+}
+
 type BootstrapAdminConfig struct {
 	Username     string
 	PasswordHash string
@@ -279,6 +294,7 @@ func Open(dbPath string, opts Options) (*Store, error) {
 		clock:             opts.Clock,
 		userRepository:    newCachedUserRepository(&sqliteUserRepository{db: db}),
 		subscriptions:     &sqliteSubscriptionRepository{db: db},
+		blacklists:        &sqliteBlacklistRepository{db: db},
 	}
 	return st, nil
 }
@@ -358,6 +374,19 @@ CREATE TABLE IF NOT EXISTS channel_subscriptions (
     FOREIGN KEY(subscriber_node_id, subscriber_user_id) REFERENCES users(node_id, user_id),
     FOREIGN KEY(channel_node_id, channel_user_id) REFERENCES users(node_id, user_id),
     PRIMARY KEY(subscriber_node_id, subscriber_user_id, channel_node_id, channel_user_id)
+);
+
+CREATE TABLE IF NOT EXISTS user_blacklists (
+    owner_node_id INTEGER NOT NULL,
+    owner_user_id INTEGER NOT NULL,
+    blocked_node_id INTEGER NOT NULL,
+    blocked_user_id INTEGER NOT NULL,
+    blocked_at_hlc TEXT NOT NULL,
+    deleted_at_hlc TEXT,
+    origin_node_id INTEGER NOT NULL,
+    FOREIGN KEY(owner_node_id, owner_user_id) REFERENCES users(node_id, user_id),
+    FOREIGN KEY(blocked_node_id, blocked_user_id) REFERENCES users(node_id, user_id),
+    PRIMARY KEY(owner_node_id, owner_user_id, blocked_node_id, blocked_user_id)
 );
 
 CREATE TABLE IF NOT EXISTS event_log (
@@ -448,6 +477,8 @@ CREATE INDEX IF NOT EXISTS idx_messages_user_created ON messages(user_node_id, u
 CREATE INDEX IF NOT EXISTS idx_messages_node ON messages(node_id, user_node_id, user_id, seq);
 CREATE INDEX IF NOT EXISTS idx_subscriptions_subscriber ON channel_subscriptions(subscriber_node_id, subscriber_user_id, deleted_at_hlc);
 CREATE INDEX IF NOT EXISTS idx_subscriptions_channel ON channel_subscriptions(channel_node_id, channel_user_id, deleted_at_hlc);
+CREATE INDEX IF NOT EXISTS idx_blacklists_owner ON user_blacklists(owner_node_id, owner_user_id, deleted_at_hlc);
+CREATE INDEX IF NOT EXISTS idx_blacklists_blocked ON user_blacklists(blocked_node_id, blocked_user_id, deleted_at_hlc);
 CREATE INDEX IF NOT EXISTS idx_event_log_origin_event ON event_log(origin_node_id, event_id);
 CREATE INDEX IF NOT EXISTS idx_pending_projections_failed ON pending_projections(last_failed_at_hlc, origin_node_id, event_id);
 `); err != nil {
@@ -518,6 +549,7 @@ VALUES(?, ?)
 			clock:             s.clock,
 			messageWindowSize: s.messageWindowSize,
 			userRepository:    s.userRepository,
+			blacklists:        s.blacklists,
 		}
 		s.eventLog = &sqliteEventLogRepository{
 			db:     s.db,
@@ -531,6 +563,7 @@ VALUES(?, ?)
 			messageWindowSize: s.messageWindowSize,
 			userRepository:    s.userRepository,
 			subscriptions:     s.subscriptions,
+			blacklists:        s.blacklists,
 			messageTrim:       s.messageTrim,
 		}
 		s.eventLog = &pebbleEventLogRepository{
@@ -905,7 +938,23 @@ func (s *Store) CreateMessage(ctx context.Context, params CreateMessageParams) (
 	}
 	defer tx.Rollback()
 
-	if _, err := s.getUserTx(ctx, tx, params.UserKey, false); err != nil {
+	recipient, err := s.getUserTx(ctx, tx, params.UserKey, false)
+	if err != nil {
+		return Message{}, Event{}, err
+	}
+	sender, err := s.getUserTx(ctx, tx, params.Sender, false)
+	switch {
+	case err == nil:
+		if recipient.CanLogin() && sender.Role == RoleUser {
+			blocked, err := s.isBlockedByRecipientTx(ctx, tx, recipient.Key(), sender.Key(), nil)
+			if err != nil {
+				return Message{}, Event{}, err
+			}
+			if blocked {
+				return Message{}, Event{}, ErrBlockedByBlacklist
+			}
+		}
+	case !errors.Is(err, ErrNotFound):
 		return Message{}, Event{}, err
 	}
 
@@ -1102,6 +1151,175 @@ WHERE subscriber_node_id = ? AND subscriber_user_id = ?
 	return count > 0, nil
 }
 
+func (s *Store) BlockUser(ctx context.Context, params BlacklistParams) (BlacklistEntry, Event, error) {
+	if err := params.Owner.Validate(); err != nil {
+		return BlacklistEntry{}, Event{}, err
+	}
+	if err := params.Blocked.Validate(); err != nil {
+		return BlacklistEntry{}, Event{}, err
+	}
+	if params.Owner == params.Blocked {
+		return BlacklistEntry{}, Event{}, fmt.Errorf("%w: owner cannot block itself", ErrInvalidInput)
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return BlacklistEntry{}, Event{}, fmt.Errorf("begin block user: %w", err)
+	}
+	defer tx.Rollback()
+
+	if err := s.validateBlacklistUsersTx(ctx, tx, params.Owner, params.Blocked); err != nil {
+		return BlacklistEntry{}, Event{}, err
+	}
+
+	current, err := s.getBlacklistEntryTx(ctx, tx, params.Owner, params.Blocked)
+	switch {
+	case err == nil && current.DeletedAt == nil:
+		if err := tx.Commit(); err != nil {
+			return BlacklistEntry{}, Event{}, fmt.Errorf("commit block user noop: %w", err)
+		}
+		return current, Event{}, nil
+	case err != nil && !errors.Is(err, ErrNotFound):
+		return BlacklistEntry{}, Event{}, err
+	}
+
+	now := s.clock.Now()
+	entry := BlacklistEntry{
+		Owner:        params.Owner,
+		Blocked:      params.Blocked,
+		BlockedAt:    now,
+		OriginNodeID: s.nodeID,
+	}
+	if err == nil {
+		entry = current
+		entry.BlockedAt = now
+		entry.DeletedAt = nil
+		entry.OriginNodeID = s.nodeID
+	}
+	if err := s.upsertBlacklistEntryTx(ctx, tx, entry); err != nil {
+		return BlacklistEntry{}, Event{}, err
+	}
+
+	event, err := s.insertEvent(ctx, tx, Event{
+		EventType:       EventTypeUserBlocked,
+		Aggregate:       "blacklist",
+		AggregateNodeID: params.Owner.NodeID,
+		AggregateID:     params.Owner.UserID,
+		HLC:             now,
+		Body:            userBlockedProtoFromBlacklist(entry),
+	})
+	if err != nil {
+		return BlacklistEntry{}, Event{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return BlacklistEntry{}, Event{}, fmt.Errorf("commit block user: %w", err)
+	}
+	return entry, event, nil
+}
+
+func (s *Store) UnblockUser(ctx context.Context, params BlacklistParams) (BlacklistEntry, Event, error) {
+	if err := params.Owner.Validate(); err != nil {
+		return BlacklistEntry{}, Event{}, err
+	}
+	if err := params.Blocked.Validate(); err != nil {
+		return BlacklistEntry{}, Event{}, err
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return BlacklistEntry{}, Event{}, fmt.Errorf("begin unblock user: %w", err)
+	}
+	defer tx.Rollback()
+
+	current, err := s.getBlacklistEntryTx(ctx, tx, params.Owner, params.Blocked)
+	if err != nil {
+		return BlacklistEntry{}, Event{}, err
+	}
+	if current.DeletedAt != nil {
+		return BlacklistEntry{}, Event{}, ErrNotFound
+	}
+
+	now := s.clock.Now()
+	current.DeletedAt = &now
+	current.OriginNodeID = s.nodeID
+	if err := s.upsertBlacklistEntryTx(ctx, tx, current); err != nil {
+		return BlacklistEntry{}, Event{}, err
+	}
+
+	event, err := s.insertEvent(ctx, tx, Event{
+		EventType:       EventTypeUserUnblocked,
+		Aggregate:       "blacklist",
+		AggregateNodeID: params.Owner.NodeID,
+		AggregateID:     params.Owner.UserID,
+		HLC:             now,
+		Body:            userUnblockedProtoFromBlacklist(current),
+	})
+	if err != nil {
+		return BlacklistEntry{}, Event{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return BlacklistEntry{}, Event{}, fmt.Errorf("commit unblock user: %w", err)
+	}
+	return current, event, nil
+}
+
+func (s *Store) ListBlockedUsers(ctx context.Context, owner UserKey) ([]BlacklistEntry, error) {
+	if err := owner.Validate(); err != nil {
+		return nil, err
+	}
+	if _, err := s.GetUser(ctx, owner); err != nil {
+		return nil, err
+	}
+	return s.blacklists.ListActiveBlockedUsers(ctx, owner)
+}
+
+func (s *Store) IsBlockedByRecipient(ctx context.Context, recipient, sender UserKey) (bool, error) {
+	if err := recipient.Validate(); err != nil {
+		return false, err
+	}
+	if err := sender.Validate(); err != nil {
+		return false, err
+	}
+	recipientUser, err := s.GetUser(ctx, recipient)
+	if err != nil {
+		return false, err
+	}
+	if !recipientUser.CanLogin() {
+		return false, nil
+	}
+	senderUser, err := s.GetUser(ctx, sender)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	if senderUser.Role != RoleUser {
+		return false, nil
+	}
+	return s.blacklists.HasActiveBlock(ctx, recipient, sender, nil)
+}
+
+func (s *Store) IsMessageHiddenByBlacklist(ctx context.Context, owner, sender UserKey, createdAt clock.Timestamp) (bool, error) {
+	if err := owner.Validate(); err != nil {
+		return false, err
+	}
+	if err := sender.Validate(); err != nil {
+		return false, err
+	}
+	senderUser, err := s.GetUser(ctx, sender)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	if senderUser.Role != RoleUser {
+		return false, nil
+	}
+	return s.blacklists.HasActiveBlock(ctx, owner, sender, &createdAt)
+}
+
 func (s *Store) ListEvents(ctx context.Context, afterSequence int64, limit int) ([]Event, error) {
 	return s.eventLog.ListEvents(ctx, afterSequence, limit)
 }
@@ -1237,6 +1455,24 @@ func (s *Store) validateSubscriptionUsersTx(ctx context.Context, tx *sql.Tx, sub
 	return nil
 }
 
+func (s *Store) validateBlacklistUsersTx(ctx context.Context, tx *sql.Tx, ownerKey, blockedKey UserKey) error {
+	owner, err := s.getUserByIDTx(ctx, tx, ownerKey, false)
+	if err != nil {
+		return err
+	}
+	if !owner.CanLogin() {
+		return fmt.Errorf("%w: blacklist owner must be a login user", ErrInvalidInput)
+	}
+	blocked, err := s.getUserByIDTx(ctx, tx, blockedKey, false)
+	if err != nil {
+		return err
+	}
+	if blocked.Role != RoleUser {
+		return fmt.Errorf("%w: blacklist target must be a user", ErrInvalidInput)
+	}
+	return nil
+}
+
 func (s *Store) getSubscriptionTx(ctx context.Context, tx *sql.Tx, subscriber, channel UserKey) (Subscription, error) {
 	row := tx.QueryRowContext(ctx, `
 SELECT subscriber_node_id, subscriber_user_id, channel_node_id, channel_user_id, subscribed_at_hlc, deleted_at_hlc, origin_node_id
@@ -1304,6 +1540,78 @@ ON CONFLICT(subscriber_node_id, subscriber_user_id, channel_node_id, channel_use
 		return fmt.Errorf("upsert channel subscription: %w", err)
 	}
 	return nil
+}
+
+func (s *Store) getBlacklistEntryTx(ctx context.Context, tx *sql.Tx, owner, blocked UserKey) (BlacklistEntry, error) {
+	row := tx.QueryRowContext(ctx, `
+SELECT owner_node_id, owner_user_id, blocked_node_id, blocked_user_id, blocked_at_hlc, deleted_at_hlc, origin_node_id
+FROM user_blacklists
+WHERE owner_node_id = ? AND owner_user_id = ? AND blocked_node_id = ? AND blocked_user_id = ?
+`, owner.NodeID, owner.UserID, blocked.NodeID, blocked.UserID)
+	entry, err := scanBlacklistEntry(row)
+	if err == sql.ErrNoRows {
+		return BlacklistEntry{}, ErrNotFound
+	}
+	if err != nil {
+		return BlacklistEntry{}, err
+	}
+	return entry, nil
+}
+
+func (s *Store) upsertBlacklistEntryTx(ctx context.Context, tx *sql.Tx, entry BlacklistEntry) error {
+	if err := entry.Owner.Validate(); err != nil {
+		return err
+	}
+	if err := entry.Blocked.Validate(); err != nil {
+		return err
+	}
+	if entry.BlockedAt == (clock.Timestamp{}) {
+		return fmt.Errorf("%w: blocked_at is required", ErrInvalidInput)
+	}
+	if entry.OriginNodeID <= 0 {
+		return fmt.Errorf("%w: blacklist origin node id is required", ErrInvalidInput)
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO user_blacklists(
+    owner_node_id, owner_user_id, blocked_node_id, blocked_user_id, blocked_at_hlc, deleted_at_hlc, origin_node_id
+)
+VALUES(?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(owner_node_id, owner_user_id, blocked_node_id, blocked_user_id) DO UPDATE SET
+    blocked_at_hlc = excluded.blocked_at_hlc,
+    deleted_at_hlc = excluded.deleted_at_hlc,
+    origin_node_id = excluded.origin_node_id
+`, entry.Owner.NodeID, entry.Owner.UserID, entry.Blocked.NodeID, entry.Blocked.UserID,
+		entry.BlockedAt.String(), nullableTimestampString(entry.DeletedAt), entry.OriginNodeID); err != nil {
+		return fmt.Errorf("upsert blacklist: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) isBlockedByRecipientTx(ctx context.Context, tx *sql.Tx, owner, blocked UserKey, createdAt *clock.Timestamp) (bool, error) {
+	if err := owner.Validate(); err != nil {
+		return false, err
+	}
+	if err := blocked.Validate(); err != nil {
+		return false, err
+	}
+
+	query := `
+SELECT COUNT(*)
+FROM user_blacklists
+WHERE owner_node_id = ? AND owner_user_id = ?
+  AND blocked_node_id = ? AND blocked_user_id = ?
+  AND deleted_at_hlc IS NULL`
+	args := []any{owner.NodeID, owner.UserID, blocked.NodeID, blocked.UserID}
+	if createdAt != nil {
+		query += ` AND blocked_at_hlc <= ?`
+		args = append(args, createdAt.String())
+	}
+	var count int
+	if err := tx.QueryRowContext(ctx, query, args...).Scan(&count); err != nil {
+		return false, fmt.Errorf("check blacklist: %w", err)
+	}
+	return count > 0, nil
 }
 
 func validateMessageIdentity(key UserKey, nodeID int64, seq int64) error {
@@ -1580,6 +1888,40 @@ func scanSubscription(scanner interface {
 		subscription.DeletedAt = &deletedAt
 	}
 	return subscription, nil
+}
+
+func scanBlacklistEntry(scanner interface {
+	Scan(dest ...any) error
+}) (BlacklistEntry, error) {
+	var entry BlacklistEntry
+	var blockedAtRaw string
+	var deletedAtRaw sql.NullString
+
+	if err := scanner.Scan(
+		&entry.Owner.NodeID,
+		&entry.Owner.UserID,
+		&entry.Blocked.NodeID,
+		&entry.Blocked.UserID,
+		&blockedAtRaw,
+		&deletedAtRaw,
+		&entry.OriginNodeID,
+	); err != nil {
+		return BlacklistEntry{}, err
+	}
+
+	blockedAt, err := clock.ParseTimestamp(blockedAtRaw)
+	if err != nil {
+		return BlacklistEntry{}, fmt.Errorf("parse blacklist blocked_at: %w", err)
+	}
+	entry.BlockedAt = blockedAt
+	if deletedAtRaw.Valid {
+		deletedAt, err := clock.ParseTimestamp(deletedAtRaw.String)
+		if err != nil {
+			return BlacklistEntry{}, fmt.Errorf("parse blacklist deleted_at: %w", err)
+		}
+		entry.DeletedAt = &deletedAt
+	}
+	return entry, nil
 }
 
 func scanEvent(scanner interface {

@@ -135,11 +135,11 @@ func TestReplicatedEventTypedBodyHelpers(t *testing.T) {
 		{
 			name: "message_created",
 			body: &MessageCreatedEvent{
-				Recipient:   &ClusterUserRef{NodeId: testNodeID, UserId: 1001},
-				NodeId:      testNodeID,
-				Seq:         7,
-				Sender:      &ClusterUserRef{NodeId: testNodeID, UserId: 1001},
-				Body:        []byte("hello"),
+				Recipient:    &ClusterUserRef{NodeId: testNodeID, UserId: 1001},
+				NodeId:       testNodeID,
+				Seq:          7,
+				Sender:       &ClusterUserRef{NodeId: testNodeID, UserId: 1001},
+				Body:         []byte("hello"),
 				CreatedAtHlc: "1740000000000-00003-0000000000000004096",
 			},
 			eventType: "message_created",
@@ -147,23 +147,44 @@ func TestReplicatedEventTypedBodyHelpers(t *testing.T) {
 		{
 			name: "channel_subscribed",
 			body: &ChannelSubscribedEvent{
-				Subscriber:    &ClusterUserRef{NodeId: testNodeID, UserId: 1001},
-				Channel:       &ClusterUserRef{NodeId: testNodeID, UserId: 2002},
+				Subscriber:      &ClusterUserRef{NodeId: testNodeID, UserId: 1001},
+				Channel:         &ClusterUserRef{NodeId: testNodeID, UserId: 2002},
 				SubscribedAtHlc: "1740000000000-00004-0000000000000004096",
-				OriginNodeId:  testNodeID,
+				OriginNodeId:    testNodeID,
 			},
 			eventType: "channel_subscribed",
 		},
 		{
 			name: "channel_unsubscribed",
 			body: &ChannelUnsubscribedEvent{
-				Subscriber:    &ClusterUserRef{NodeId: testNodeID, UserId: 1001},
-				Channel:       &ClusterUserRef{NodeId: testNodeID, UserId: 2002},
+				Subscriber:      &ClusterUserRef{NodeId: testNodeID, UserId: 1001},
+				Channel:         &ClusterUserRef{NodeId: testNodeID, UserId: 2002},
 				SubscribedAtHlc: "1740000000000-00004-0000000000000004096",
-				DeletedAtHlc:  "1740000000000-00005-0000000000000004096",
-				OriginNodeId:  testNodeID,
+				DeletedAtHlc:    "1740000000000-00005-0000000000000004096",
+				OriginNodeId:    testNodeID,
 			},
 			eventType: "channel_unsubscribed",
+		},
+		{
+			name: "user_blocked",
+			body: &UserBlockedEvent{
+				Owner:        &ClusterUserRef{NodeId: testNodeID, UserId: 1001},
+				Blocked:      &ClusterUserRef{NodeId: testNodeID, UserId: 2002},
+				BlockedAtHlc: "1740000000000-00006-0000000000000004096",
+				OriginNodeId: testNodeID,
+			},
+			eventType: "user_blocked",
+		},
+		{
+			name: "user_unblocked",
+			body: &UserUnblockedEvent{
+				Owner:        &ClusterUserRef{NodeId: testNodeID, UserId: 1001},
+				Blocked:      &ClusterUserRef{NodeId: testNodeID, UserId: 2002},
+				BlockedAtHlc: "1740000000000-00006-0000000000000004096",
+				DeletedAtHlc: "1740000000000-00007-0000000000000004096",
+				OriginNodeId: testNodeID,
+			},
+			eventType: "user_unblocked",
 		},
 	}
 
@@ -250,11 +271,11 @@ func TestSnapshotMessageRowRoundTripUsesTripleIdentity(t *testing.T) {
 					{
 						Body: &SnapshotRow_Message{
 							Message: &SnapshotMessageRow{
-								Recipient:   &ClusterUserRef{NodeId: testNodeID, UserId: 42},
-								NodeId:      testNodeID,
-								Seq:         7,
-								Sender:      &ClusterUserRef{NodeId: testNodeID, UserId: 42},
-								Body:        []byte("hello"),
+								Recipient:    &ClusterUserRef{NodeId: testNodeID, UserId: 42},
+								NodeId:       testNodeID,
+								Seq:          7,
+								Sender:       &ClusterUserRef{NodeId: testNodeID, UserId: 42},
+								Body:         []byte("hello"),
 								CreatedAtHlc: "1740000000000-00001-0000000000000004096",
 							},
 						},
@@ -294,10 +315,10 @@ func TestSnapshotSubscriptionRowRoundTrip(t *testing.T) {
 					{
 						Body: &SnapshotRow_Subscription{
 							Subscription: &SnapshotSubscriptionRow{
-								Subscriber:    &ClusterUserRef{NodeId: testNodeID, UserId: 42},
-								Channel:       &ClusterUserRef{NodeId: testNodeID, UserId: 99},
+								Subscriber:      &ClusterUserRef{NodeId: testNodeID, UserId: 42},
+								Channel:         &ClusterUserRef{NodeId: testNodeID, UserId: 99},
 								SubscribedAtHlc: "1740000000000-00001-0000000000000004096",
-								OriginNodeId:  testNodeID,
+								OriginNodeId:    testNodeID,
 							},
 						},
 					},

@@ -12,6 +12,8 @@ func (*UserDeletedEvent) eventType() string         { return "user_deleted" }
 func (*MessageCreatedEvent) eventType() string      { return "message_created" }
 func (*ChannelSubscribedEvent) eventType() string   { return "channel_subscribed" }
 func (*ChannelUnsubscribedEvent) eventType() string { return "channel_unsubscribed" }
+func (*UserBlockedEvent) eventType() string         { return "user_blocked" }
+func (*UserUnblockedEvent) eventType() string       { return "user_unblocked" }
 
 func EventTypeFromBody(body EventBody) string {
 	if body == nil {
@@ -37,6 +39,10 @@ func (e *ReplicatedEvent) GetTypedBody() EventBody {
 		return body.ChannelSubscribed
 	case *ReplicatedEvent_ChannelUnsubscribed:
 		return body.ChannelUnsubscribed
+	case *ReplicatedEvent_UserBlocked:
+		return body.UserBlocked
+	case *ReplicatedEvent_UserUnblocked:
+		return body.UserUnblocked
 	default:
 		return nil
 	}
@@ -61,6 +67,10 @@ func (e *ReplicatedEvent) SetTypedBody(body EventBody) error {
 		e.Body = &ReplicatedEvent_ChannelSubscribed{ChannelSubscribed: typed}
 	case *ChannelUnsubscribedEvent:
 		e.Body = &ReplicatedEvent_ChannelUnsubscribed{ChannelUnsubscribed: typed}
+	case *UserBlockedEvent:
+		e.Body = &ReplicatedEvent_UserBlocked{UserBlocked: typed}
+	case *UserUnblockedEvent:
+		e.Body = &ReplicatedEvent_UserUnblocked{UserUnblocked: typed}
 	default:
 		return fmt.Errorf("unsupported event body %T", body)
 	}

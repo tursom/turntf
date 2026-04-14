@@ -2,11 +2,13 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
 
 	"github.com/tursom/turntf/internal/app"
+	"github.com/tursom/turntf/internal/clock"
 	"github.com/tursom/turntf/internal/store"
 )
 
@@ -48,6 +50,7 @@ type Service struct {
 	transientRecvMu sync.RWMutex
 	transientRecv   TransientPacketReceiver
 	nextTransientID atomic.Uint64
+	blacklistHits   atomic.Uint64
 }
 
 func New(st *store.Store, eventSink EventSink) *Service {
@@ -126,6 +129,9 @@ func (s *Service) CreateMessage(ctx context.Context, params store.CreateMessageP
 		return store.Message{}, store.Event{}, err
 	}
 	message, event, err := s.store.CreateMessage(ctx, params)
+	if errors.Is(err, store.ErrBlockedByBlacklist) {
+		s.recordBlacklistHit()
+	}
 	if err == nil {
 		s.eventSink.Publish(event)
 	}
@@ -158,6 +164,14 @@ func (s *Service) DispatchTransientPacket(ctx context.Context, recipient store.U
 	}
 	if !recipientUser.CanLogin() {
 		return store.TransientPacket{}, fmt.Errorf("%w: transient recipient must be a login user", store.ErrInvalidInput)
+	}
+	blocked, err := s.store.IsBlockedByRecipient(ctx, recipient, sender)
+	if err != nil {
+		return store.TransientPacket{}, err
+	}
+	if blocked {
+		s.recordBlacklistHit()
+		return store.TransientPacket{}, store.ErrBlockedByBlacklist
 	}
 	packet := store.TransientPacket{
 		PacketID:     s.nextTransientID.Add(1),
@@ -229,9 +243,55 @@ func (s *Service) ListEvents(ctx context.Context, afterSequence int64, limit int
 	return s.store.ListEvents(ctx, afterSequence, limit)
 }
 
+func (s *Service) BlockUser(ctx context.Context, params store.BlacklistParams) (store.BlacklistEntry, store.Event, error) {
+	if err := s.allowWrite(ctx); err != nil {
+		return store.BlacklistEntry{}, store.Event{}, err
+	}
+	entry, event, err := s.store.BlockUser(ctx, params)
+	if err == nil && event.EventID != 0 {
+		s.eventSink.Publish(event)
+	}
+	return entry, event, err
+}
+
+func (s *Service) UnblockUser(ctx context.Context, params store.BlacklistParams) (store.BlacklistEntry, store.Event, error) {
+	if err := s.allowWrite(ctx); err != nil {
+		return store.BlacklistEntry{}, store.Event{}, err
+	}
+	entry, event, err := s.store.UnblockUser(ctx, params)
+	if err == nil {
+		s.eventSink.Publish(event)
+	}
+	return entry, event, err
+}
+
+func (s *Service) ListBlockedUsers(ctx context.Context, owner store.UserKey) ([]store.BlacklistEntry, error) {
+	return s.store.ListBlockedUsers(ctx, owner)
+}
+
+func (s *Service) IsMessageBlockedByBlacklist(ctx context.Context, owner, sender store.UserKey, createdAt clock.Timestamp) (bool, error) {
+	return s.store.IsMessageHiddenByBlacklist(ctx, owner, sender, createdAt)
+}
+
+func (s *Service) IsBlockedByRecipient(ctx context.Context, recipient, sender store.UserKey) (bool, error) {
+	return s.store.IsBlockedByRecipient(ctx, recipient, sender)
+}
+
+func (s *Service) BlacklistHitsTotal() uint64 {
+	return s.blacklistHits.Load()
+}
+
+func (s *Service) RecordBlacklistHit() {
+	s.recordBlacklistHit()
+}
+
 func (s *Service) allowWrite(ctx context.Context) error {
 	if s.writeGate == nil {
 		return nil
 	}
 	return s.writeGate.AllowWrite(ctx)
+}
+
+func (s *Service) recordBlacklistHit() {
+	s.blacklistHits.Add(1)
 }

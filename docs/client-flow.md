@@ -14,6 +14,7 @@
 - `POST /auth/login`：HTTP 登录，返回 Bearer token，主要用于管理后台或 HTTP 客户端。
 - `POST /users`：管理员创建普通用户或 channel。
 - `POST /nodes/{node_id}/users/{user_id}/subscriptions`：维护用户对 channel 的订阅。
+- `POST /nodes/{node_id}/users/{user_id}/blacklist`：维护用户拒收的普通用户列表。
 - `GET /nodes/{node_id}/users/{user_id}/messages?limit=N`：HTTP 查询消息，`body` 是 base64 字节。
 - `POST /nodes/{node_id}/users/{user_id}/messages`：HTTP 写消息，`body` 是 base64 字节。
 - `POST /nodes/{node_id}/users/{user_id}/messages`：HTTP 发送消息；当 `delivery_kind = transient` 时走不落库瞬时投递。
@@ -24,15 +25,16 @@
 1. 服务端、管理后台或管理员 WS 客户端创建登录用户。
 2. 可选：管理员创建 channel 用户。
 3. 可选：用户本人或管理员维护 channel 订阅。
-4. 客户端本地初始化消息表和游标表。
-5. 客户端连接 `GET /ws/client`。
-6. 客户端发送第一帧 `ClientEnvelope.login`，携带 `node_id`、`user_id`、`password` 和本地已持久化游标 `seen_messages`。
-7. 服务端返回 `LoginResponse`，随后补发当前用户可见且未见过的历史消息。
-8. 客户端收到 `MessagePushed` 后先落库，再保存 `(node_id, seq)` 游标，最后可选发送 `AckMessage`。
-9. 客户端可继续通过同一条 WebSocket 发送查询或管理 RPC，例如 `get_user`、`list_messages`、`subscribe_channel`、`list_cluster_nodes`、`list_events`、`metrics`。
-10. 客户端通过同一条 WebSocket 发送 `SendMessageRequest` 写普通持久化消息。
-11. 如需向在线目标用户发送非持久化数据包，客户端直接把 `target` 设为最终目标用户，并把 `delivery_kind` 设为 `TRANSIENT`。
-12. 网络断开后，客户端用本地游标重连，服务端按 `seen_messages` 跳过已持久化消息。
+4. 可选：用户本人或管理员维护黑名单。
+5. 客户端本地初始化消息表和游标表。
+6. 客户端连接 `GET /ws/client`。
+7. 客户端发送第一帧 `ClientEnvelope.login`，携带 `node_id`、`user_id`、`password` 和本地已持久化游标 `seen_messages`。
+8. 服务端返回 `LoginResponse`，随后补发当前用户可见且未见过的历史消息。
+9. 客户端收到 `MessagePushed` 后先落库，再保存 `(node_id, seq)` 游标，最后可选发送 `AckMessage`。
+10. 客户端可继续通过同一条 WebSocket 发送查询或管理 RPC，例如 `get_user`、`list_messages`、`subscribe_channel`、`block_user`、`list_cluster_nodes`、`list_events`、`metrics`。
+11. 客户端通过同一条 WebSocket 发送 `SendMessageRequest` 写普通持久化消息。
+12. 如需向在线目标用户发送非持久化数据包，客户端直接把 `target` 设为最终目标用户，并把 `delivery_kind` 设为 `TRANSIENT`。
+13. 网络断开后，客户端用本地游标重连，服务端按 `seen_messages` 跳过已持久化消息。
 
 ## 服务端准备
 
@@ -81,6 +83,17 @@ curl -sS -X POST http://127.0.0.1:8080/nodes/4096/users/1025/subscriptions \
 ```
 
 订阅只影响订阅时间之后的 channel 消息。订阅前的 channel 历史不会补给该用户。
+
+### 配置黑名单
+
+```bash
+curl -sS -X POST http://127.0.0.1:8080/nodes/4096/users/1025/blacklist \
+  -H "Authorization: Bearer ${ADMIN_TOKEN}" \
+  -H 'Content-Type: application/json' \
+  -d '{"blocked_node_id":4096,"blocked_user_id":1027}'
+```
+
+黑名单只影响后续新的普通用户直发消息，不删除历史消息，也不影响 channel、broadcast 或 node 地址。
 
 ## 客户端本地状态
 
@@ -190,6 +203,7 @@ else:
 - 普通用户能看到发给自己的消息。
 - 普通用户能看到所有 broadcast 消息。
 - 普通用户能看到订阅后发送到已订阅 channel 的消息。
+- 如果用户已拉黑某个普通用户，则拉黑之后来自该发送方的新直发消息不会出现在列表或实时推送中。
 - 管理员能看到任意目标地址的消息。
 
 瞬时包规则：

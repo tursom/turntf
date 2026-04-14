@@ -14,6 +14,8 @@ const (
 	EventTypeMessageCreated      EventType = "message_created"
 	EventTypeChannelSubscribed   EventType = "channel_subscribed"
 	EventTypeChannelUnsubscribed EventType = "channel_unsubscribed"
+	EventTypeUserBlocked         EventType = "user_blocked"
+	EventTypeUserUnblocked       EventType = "user_unblocked"
 )
 
 func eventTypeOf(body internalproto.EventBody) EventType {
@@ -75,33 +77,55 @@ func userDeletedProtoFromKey(key UserKey, deletedAt clock.Timestamp) *internalpr
 
 func messageCreatedProtoFromMessage(message Message) *internalproto.MessageCreatedEvent {
 	return &internalproto.MessageCreatedEvent{
-		Recipient:   &internalproto.ClusterUserRef{NodeId: message.Recipient.NodeID, UserId: message.Recipient.UserID},
-		NodeId:      message.NodeID,
-		Seq:         message.Seq,
-		Sender:      &internalproto.ClusterUserRef{NodeId: message.Sender.NodeID, UserId: message.Sender.UserID},
-		Body:        message.Body,
+		Recipient:    &internalproto.ClusterUserRef{NodeId: message.Recipient.NodeID, UserId: message.Recipient.UserID},
+		NodeId:       message.NodeID,
+		Seq:          message.Seq,
+		Sender:       &internalproto.ClusterUserRef{NodeId: message.Sender.NodeID, UserId: message.Sender.UserID},
+		Body:         message.Body,
 		CreatedAtHlc: message.CreatedAt.String(),
 	}
 }
 
 func channelSubscribedProtoFromSubscription(subscription Subscription) *internalproto.ChannelSubscribedEvent {
 	return &internalproto.ChannelSubscribedEvent{
-		Subscriber:    &internalproto.ClusterUserRef{NodeId: subscription.Subscriber.NodeID, UserId: subscription.Subscriber.UserID},
-		Channel:       &internalproto.ClusterUserRef{NodeId: subscription.Channel.NodeID, UserId: subscription.Channel.UserID},
+		Subscriber:      &internalproto.ClusterUserRef{NodeId: subscription.Subscriber.NodeID, UserId: subscription.Subscriber.UserID},
+		Channel:         &internalproto.ClusterUserRef{NodeId: subscription.Channel.NodeID, UserId: subscription.Channel.UserID},
 		SubscribedAtHlc: subscription.SubscribedAt.String(),
-		OriginNodeId:  subscription.OriginNodeID,
+		OriginNodeId:    subscription.OriginNodeID,
 	}
 }
 
 func channelUnsubscribedProtoFromSubscription(subscription Subscription) *internalproto.ChannelUnsubscribedEvent {
 	event := &internalproto.ChannelUnsubscribedEvent{
-		Subscriber:    &internalproto.ClusterUserRef{NodeId: subscription.Subscriber.NodeID, UserId: subscription.Subscriber.UserID},
-		Channel:       &internalproto.ClusterUserRef{NodeId: subscription.Channel.NodeID, UserId: subscription.Channel.UserID},
+		Subscriber:      &internalproto.ClusterUserRef{NodeId: subscription.Subscriber.NodeID, UserId: subscription.Subscriber.UserID},
+		Channel:         &internalproto.ClusterUserRef{NodeId: subscription.Channel.NodeID, UserId: subscription.Channel.UserID},
 		SubscribedAtHlc: subscription.SubscribedAt.String(),
-		OriginNodeId:  subscription.OriginNodeID,
+		OriginNodeId:    subscription.OriginNodeID,
 	}
 	if subscription.DeletedAt != nil {
 		event.DeletedAtHlc = subscription.DeletedAt.String()
+	}
+	return event
+}
+
+func userBlockedProtoFromBlacklist(entry BlacklistEntry) *internalproto.UserBlockedEvent {
+	return &internalproto.UserBlockedEvent{
+		Owner:        &internalproto.ClusterUserRef{NodeId: entry.Owner.NodeID, UserId: entry.Owner.UserID},
+		Blocked:      &internalproto.ClusterUserRef{NodeId: entry.Blocked.NodeID, UserId: entry.Blocked.UserID},
+		BlockedAtHlc: entry.BlockedAt.String(),
+		OriginNodeId: entry.OriginNodeID,
+	}
+}
+
+func userUnblockedProtoFromBlacklist(entry BlacklistEntry) *internalproto.UserUnblockedEvent {
+	event := &internalproto.UserUnblockedEvent{
+		Owner:        &internalproto.ClusterUserRef{NodeId: entry.Owner.NodeID, UserId: entry.Owner.UserID},
+		Blocked:      &internalproto.ClusterUserRef{NodeId: entry.Blocked.NodeID, UserId: entry.Blocked.UserID},
+		BlockedAtHlc: entry.BlockedAt.String(),
+		OriginNodeId: entry.OriginNodeID,
+	}
+	if entry.DeletedAt != nil {
+		event.DeletedAtHlc = entry.DeletedAt.String()
 	}
 	return event
 }

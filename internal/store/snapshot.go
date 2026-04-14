@@ -20,10 +20,12 @@ import (
 const (
 	SnapshotUsersPartition            = "users/full"
 	SnapshotSubscriptionsPartition    = "subscriptions/full"
+	SnapshotBlacklistsPartition       = "blacklists/full"
 	SnapshotMessagesPrefix            = "messages/"
 	snapshotPartitionKindUsers        = clusterproto.SnapshotPartitionKind_SNAPSHOT_PARTITION_KIND_USERS
 	snapshotPartitionKindMessage      = clusterproto.SnapshotPartitionKind_SNAPSHOT_PARTITION_KIND_MESSAGES
 	snapshotPartitionKindSubscription = clusterproto.SnapshotPartitionKind_SNAPSHOT_PARTITION_KIND_SUBSCRIPTIONS
+	snapshotPartitionKindBlacklist    = clusterproto.SnapshotPartitionKind_SNAPSHOT_PARTITION_KIND_BLACKLISTS
 )
 
 func MessageSnapshotPartition(originNodeID int64) string {
@@ -61,6 +63,21 @@ func (s *Store) BuildSnapshotDigest(ctx context.Context, producerNodeIDs []int64
 		Kind:      snapshotPartitionKindSubscription,
 		RowCount:  uint64(len(subscriptionRows)),
 		Hash:      subscriptionHash,
+	})
+
+	blacklistRows, err := s.buildBlacklistSnapshotRows(ctx)
+	if err != nil {
+		return nil, err
+	}
+	blacklistHash, err := hashSnapshotRows(blacklistRows)
+	if err != nil {
+		return nil, err
+	}
+	partitions = append(partitions, &clusterproto.SnapshotPartitionDigest{
+		Partition: SnapshotBlacklistsPartition,
+		Kind:      snapshotPartitionKindBlacklist,
+		RowCount:  uint64(len(blacklistRows)),
+		Hash:      blacklistHash,
 	})
 
 	for _, producer := range normalizeProducerNodeIDs(producerNodeIDs) {
@@ -104,6 +121,16 @@ func (s *Store) BuildSnapshotChunk(ctx context.Context, partition string) (*clus
 		return &clusterproto.SnapshotChunk{
 			Partition: partition,
 			Kind:      snapshotPartitionKindSubscription,
+			Rows:      rows,
+		}, nil
+	case partition == SnapshotBlacklistsPartition:
+		rows, err := s.buildBlacklistSnapshotRows(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return &clusterproto.SnapshotChunk{
+			Partition: partition,
+			Kind:      snapshotPartitionKindBlacklist,
 			Rows:      rows,
 		}, nil
 	case strings.HasPrefix(partition, SnapshotMessagesPrefix):
@@ -156,6 +183,15 @@ func (s *Store) ApplySnapshotChunk(ctx context.Context, chunk *clusterproto.Snap
 		}
 		for _, row := range chunk.Rows {
 			if err := s.applySubscriptionSnapshotRowTx(ctx, tx, row); err != nil {
+				return err
+			}
+		}
+	case partition == SnapshotBlacklistsPartition:
+		if chunk.Kind != snapshotPartitionKindBlacklist {
+			return fmt.Errorf("%w: blacklists snapshot chunk has kind %s", ErrInvalidInput, chunk.Kind)
+		}
+		for _, row := range chunk.Rows {
+			if err := s.applyBlacklistSnapshotRowTx(ctx, tx, row); err != nil {
 				return err
 			}
 		}
@@ -296,6 +332,31 @@ ORDER BY subscriber_node_id ASC, subscriber_user_id ASC, channel_node_id ASC, ch
 	return snapshotRows, nil
 }
 
+func (s *Store) buildBlacklistSnapshotRows(ctx context.Context) ([]*clusterproto.SnapshotRow, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT owner_node_id, owner_user_id, blocked_node_id, blocked_user_id, blocked_at_hlc, deleted_at_hlc, origin_node_id
+FROM user_blacklists
+ORDER BY owner_node_id ASC, owner_user_id ASC, blocked_node_id ASC, blocked_user_id ASC
+`)
+	if err != nil {
+		return nil, fmt.Errorf("query snapshot blacklists: %w", err)
+	}
+	defer rows.Close()
+
+	snapshotRows := make([]*clusterproto.SnapshotRow, 0)
+	for rows.Next() {
+		entry, err := scanBlacklistEntry(rows)
+		if err != nil {
+			return nil, err
+		}
+		snapshotRows = append(snapshotRows, snapshotRowFromBlacklist(entry))
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate snapshot blacklists: %w", err)
+	}
+	return snapshotRows, nil
+}
+
 func (s *Store) applyUserSnapshotRowTx(ctx context.Context, tx *sql.Tx, row *clusterproto.SnapshotRow) error {
 	if row == nil {
 		return fmt.Errorf("%w: snapshot row cannot be nil", ErrInvalidInput)
@@ -420,6 +481,26 @@ func (s *Store) applySubscriptionSnapshotRowTx(ctx context.Context, tx *sql.Tx, 
 	return s.upsertSubscriptionTx(ctx, tx, subscription)
 }
 
+func (s *Store) applyBlacklistSnapshotRowTx(ctx context.Context, tx *sql.Tx, row *clusterproto.SnapshotRow) error {
+	if row == nil {
+		return fmt.Errorf("%w: snapshot row cannot be nil", ErrInvalidInput)
+	}
+	blacklistRow := row.GetBlacklist()
+	if blacklistRow == nil {
+		return fmt.Errorf("%w: blacklists snapshot contains non-blacklist row", ErrInvalidInput)
+	}
+	entry, err := blacklistFromSnapshotRow(blacklistRow)
+	if err != nil {
+		return err
+	}
+	if entry.DeletedAt == nil {
+		if err := s.validateBlacklistUsersTx(ctx, tx, entry.Owner, entry.Blocked); err != nil {
+			return err
+		}
+	}
+	return s.upsertBlacklistEntryTx(ctx, tx, entry)
+}
+
 func snapshotRowFromUser(user User) *clusterproto.SnapshotRow {
 	return &clusterproto.SnapshotRow{
 		Body: &clusterproto.SnapshotRow_User{
@@ -449,11 +530,11 @@ func snapshotRowFromMessage(message Message) *clusterproto.SnapshotRow {
 	return &clusterproto.SnapshotRow{
 		Body: &clusterproto.SnapshotRow_Message{
 			Message: &clusterproto.SnapshotMessageRow{
-				Recipient:   &clusterproto.ClusterUserRef{NodeId: message.Recipient.NodeID, UserId: message.Recipient.UserID},
-				NodeId:      message.NodeID,
-				Seq:         message.Seq,
-				Sender:      &clusterproto.ClusterUserRef{NodeId: message.Sender.NodeID, UserId: message.Sender.UserID},
-				Body:        message.Body,
+				Recipient:    &clusterproto.ClusterUserRef{NodeId: message.Recipient.NodeID, UserId: message.Recipient.UserID},
+				NodeId:       message.NodeID,
+				Seq:          message.Seq,
+				Sender:       &clusterproto.ClusterUserRef{NodeId: message.Sender.NodeID, UserId: message.Sender.UserID},
+				Body:         message.Body,
 				CreatedAtHlc: message.CreatedAt.String(),
 			},
 		},
@@ -462,10 +543,10 @@ func snapshotRowFromMessage(message Message) *clusterproto.SnapshotRow {
 
 func snapshotRowFromSubscription(subscription Subscription) *clusterproto.SnapshotRow {
 	row := &clusterproto.SnapshotSubscriptionRow{
-		Subscriber:    &clusterproto.ClusterUserRef{NodeId: subscription.Subscriber.NodeID, UserId: subscription.Subscriber.UserID},
-		Channel:       &clusterproto.ClusterUserRef{NodeId: subscription.Channel.NodeID, UserId: subscription.Channel.UserID},
+		Subscriber:      &clusterproto.ClusterUserRef{NodeId: subscription.Subscriber.NodeID, UserId: subscription.Subscriber.UserID},
+		Channel:         &clusterproto.ClusterUserRef{NodeId: subscription.Channel.NodeID, UserId: subscription.Channel.UserID},
 		SubscribedAtHlc: subscription.SubscribedAt.String(),
-		OriginNodeId:  subscription.OriginNodeID,
+		OriginNodeId:    subscription.OriginNodeID,
 	}
 	if subscription.DeletedAt != nil {
 		row.DeletedAtHlc = subscription.DeletedAt.String()
@@ -473,6 +554,23 @@ func snapshotRowFromSubscription(subscription Subscription) *clusterproto.Snapsh
 	return &clusterproto.SnapshotRow{
 		Body: &clusterproto.SnapshotRow_Subscription{
 			Subscription: row,
+		},
+	}
+}
+
+func snapshotRowFromBlacklist(entry BlacklistEntry) *clusterproto.SnapshotRow {
+	row := &clusterproto.SnapshotBlacklistRow{
+		Owner:        &clusterproto.ClusterUserRef{NodeId: entry.Owner.NodeID, UserId: entry.Owner.UserID},
+		Blocked:      &clusterproto.ClusterUserRef{NodeId: entry.Blocked.NodeID, UserId: entry.Blocked.UserID},
+		BlockedAtHlc: entry.BlockedAt.String(),
+		OriginNodeId: entry.OriginNodeID,
+	}
+	if entry.DeletedAt != nil {
+		row.DeletedAtHlc = entry.DeletedAt.String()
+	}
+	return &clusterproto.SnapshotRow{
+		Body: &clusterproto.SnapshotRow_Blacklist{
+			Blacklist: row,
 		},
 	}
 }
@@ -582,6 +680,13 @@ func subscriptionFromSnapshotRow(row *clusterproto.SnapshotSubscriptionRow) (Sub
 		return Subscription{}, fmt.Errorf("%w: snapshot subscription origin node id is required", ErrInvalidInput)
 	}
 	return subscription, nil
+}
+
+func blacklistFromSnapshotRow(row *clusterproto.SnapshotBlacklistRow) (BlacklistEntry, error) {
+	if row == nil {
+		return BlacklistEntry{}, fmt.Errorf("%w: snapshot blacklist cannot be nil", ErrInvalidInput)
+	}
+	return blacklistFromData(row.Owner, row.Blocked, row.BlockedAtHlc, row.DeletedAtHlc, row.OriginNodeId)
 }
 
 func timestampSnapshotString(ts *clock.Timestamp) string {

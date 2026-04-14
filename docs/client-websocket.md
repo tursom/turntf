@@ -223,6 +223,7 @@ ServerEnvelope {
 - 用户管理：`create_user`、`get_user`、`update_user`、`delete_user`
 - 消息与订阅查询：`list_messages`、`list_subscriptions`
 - 订阅管理：`subscribe_channel`、`unsubscribe_channel`
+- 黑名单管理：`block_user`、`unblock_user`、`list_blocked_users`
 - 集群与运维查询：`list_cluster_nodes`、`list_node_logged_in_users`、`list_events`、`operations_status`、`metrics`
 
 示例：管理员创建用户
@@ -261,6 +262,31 @@ ClientEnvelope {
   list_subscriptions: ListSubscriptionsRequest {
     request_id: 1002
     subscriber: { node_id: 4096, user_id: 1025 }
+  }
+}
+```
+
+示例：拉黑某个普通用户
+
+```protobuf
+ClientEnvelope {
+  block_user: BlockUserRequest {
+    request_id: 1006
+    owner: { node_id: 4096, user_id: 1025 }
+    blocked: { node_id: 4096, user_id: 1026 }
+  }
+}
+```
+
+```protobuf
+ServerEnvelope {
+  block_user_response: BlockUserResponse {
+    request_id: 1006
+    entry: {
+      owner: { node_id: 4096, user_id: 1025 }
+      blocked: { node_id: 4096, user_id: 1026 }
+      blocked_at: "..."
+    }
   }
 }
 ```
@@ -354,11 +380,13 @@ ServerEnvelope {
 - `get_user` 允许本人或管理员。
 - `list_messages` 对可登录用户允许本人或管理员；对 channel/broadcast 目标仅管理员可直接查询。
 - `subscribe_channel`、`unsubscribe_channel`、`list_subscriptions` 允许本人或管理员。
+- `block_user`、`unblock_user`、`list_blocked_users` 允许本人或管理员；只能针对 `role=user` 的目标用户配置。
 - `send_message` 的权限规则保持不变。
 
 字段约定：
 
 - `profile_json` 和 `event_json` 是原始 JSON 字节。
+- `block_user` 只会拦截后续新的普通用户直发消息，不会删除已存在历史消息，也不会影响 channel/broadcast/node 地址。
 - 列表响应统一包含 `items` 和 `count`。
 - `metrics_response.text` 直接返回 Prometheus 文本，与 HTTP `/metrics` 内容一致。
 

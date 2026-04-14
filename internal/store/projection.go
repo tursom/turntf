@@ -38,6 +38,11 @@ type SubscriptionRepository interface {
 	ListActiveSubscriptions(context.Context, UserKey) ([]Subscription, error)
 }
 
+type BlacklistRepository interface {
+	ListActiveBlockedUsers(context.Context, UserKey) ([]BlacklistEntry, error)
+	HasActiveBlock(context.Context, UserKey, UserKey, *clock.Timestamp) (bool, error)
+}
+
 type MessageTrimRepository interface {
 	RecordMessageTrim(context.Context, int64) error
 }

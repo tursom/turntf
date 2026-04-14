@@ -23,6 +23,9 @@ message ClientEnvelope {
     MetricsRequest metrics = 15;
     ListClusterNodesRequest list_cluster_nodes = 16;
     ListNodeLoggedInUsersRequest list_node_logged_in_users = 17;
+    BlockUserRequest block_user = 18;
+    UnblockUserRequest unblock_user = 19;
+    ListBlockedUsersRequest list_blocked_users = 20;
   }
 }
 
@@ -47,6 +50,9 @@ message ServerEnvelope {
     MetricsResponse metrics_response = 17;
     ListClusterNodesResponse list_cluster_nodes_response = 18;
     ListNodeLoggedInUsersResponse list_node_logged_in_users_response = 19;
+    BlockUserResponse block_user_response = 20;
+    UnblockUserResponse unblock_user_response = 21;
+    ListBlockedUsersResponse list_blocked_users_response = 22;
   }
 }
 
@@ -161,6 +167,23 @@ message ListSubscriptionsRequest {
   UserRef subscriber = 2;
 }
 
+message BlockUserRequest {
+  uint64 request_id = 1;
+  UserRef owner = 2;
+  UserRef blocked = 3;
+}
+
+message UnblockUserRequest {
+  uint64 request_id = 1;
+  UserRef owner = 2;
+  UserRef blocked = 3;
+}
+
+message ListBlockedUsersRequest {
+  uint64 request_id = 1;
+  UserRef owner = 2;
+}
+
 message ListEventsRequest {
   uint64 request_id = 1;
   int64 after = 2;
@@ -215,6 +238,22 @@ message UnsubscribeChannelResponse {
 message ListSubscriptionsResponse {
   uint64 request_id = 1;
   repeated Subscription items = 2;
+  int32 count = 3;
+}
+
+message BlockUserResponse {
+  uint64 request_id = 1;
+  BlacklistEntry entry = 2;
+}
+
+message UnblockUserResponse {
+  uint64 request_id = 1;
+  BlacklistEntry entry = 2;
+}
+
+message ListBlockedUsersResponse {
+  uint64 request_id = 1;
+  repeated BlacklistEntry items = 2;
   int32 count = 3;
 }
 
@@ -333,6 +372,14 @@ message Subscription {
   UserRef subscriber = 1;
   UserRef channel = 2;
   string subscribed_at = 5;
+  string deleted_at = 6;
+  int64 origin_node_id = 7;
+}
+
+message BlacklistEntry {
+  UserRef owner = 1;
+  UserRef blocked = 2;
+  string blocked_at = 5;
   string deleted_at = 6;
   int64 origin_node_id = 7;
 }

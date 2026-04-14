@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"testing"
 
@@ -162,5 +163,59 @@ func TestServiceDispatchTransientPacketDoesNotPublishEvents(t *testing.T) {
 	}
 	if len(messages) != 0 {
 		t.Fatalf("expected transient dispatch to avoid persistence, got %+v", messages)
+	}
+}
+
+func TestServiceDispatchTransientPacketRespectsBlacklist(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "service-transient-blacklist.db")
+	st, err := store.Open(dbPath, store.Options{
+		NodeID: testNodeID(1),
+	})
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	if err := st.Init(context.Background()); err != nil {
+		t.Fatalf("init store: %v", err)
+	}
+
+	svc := New(st, &recordingSink{})
+	receiver := &recordingTransientReceiver{}
+	svc.SetTransientPacketReceiver(receiver)
+
+	alice, _, err := svc.CreateUser(context.Background(), store.CreateUserParams{
+		Username:     "alice",
+		PasswordHash: "hash-1",
+		Role:         store.RoleUser,
+	})
+	if err != nil {
+		t.Fatalf("create alice: %v", err)
+	}
+	bob, _, err := svc.CreateUser(context.Background(), store.CreateUserParams{
+		Username:     "bob",
+		PasswordHash: "hash-2",
+		Role:         store.RoleUser,
+	})
+	if err != nil {
+		t.Fatalf("create bob: %v", err)
+	}
+	if _, _, err := svc.BlockUser(context.Background(), store.BlacklistParams{
+		Owner:   alice.Key(),
+		Blocked: bob.Key(),
+	}); err != nil {
+		t.Fatalf("block bob: %v", err)
+	}
+
+	if _, err := svc.DispatchTransientPacket(context.Background(), alice.Key(), bob.Key(), []byte("ephemeral"), store.DeliveryModeBestEffort); !errors.Is(err, store.ErrBlockedByBlacklist) {
+		t.Fatalf("expected transient dispatch to be blocked, got %v", err)
+	}
+	if len(receiver.packets) != 0 {
+		t.Fatalf("expected blocked transient packet to avoid delivery, got %+v", receiver.packets)
+	}
+	if svc.BlacklistHitsTotal() != 1 {
+		t.Fatalf("expected blacklist hit counter to increment, got %d", svc.BlacklistHitsTotal())
 	}
 }

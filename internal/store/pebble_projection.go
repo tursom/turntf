@@ -32,6 +32,7 @@ type pebbleMessageProjectionRepository struct {
 	messageWindowSize int
 	userRepository    UserRepository
 	subscriptions     SubscriptionRepository
+	blacklists        BlacklistRepository
 	messageTrim       MessageTrimRepository
 	mu                sync.Mutex
 }
@@ -320,6 +321,10 @@ func (r *pebbleMessageProjectionRepository) ListMessagesByUser(ctx context.Conte
 	}
 
 	direct, err := r.listRawMessagesByUser(ctx, key, 0, nil)
+	if err != nil {
+		return nil, err
+	}
+	direct, err = filterDirectMessagesByBlacklist(ctx, r.userRepository, r.blacklists, key, direct)
 	if err != nil {
 		return nil, err
 	}

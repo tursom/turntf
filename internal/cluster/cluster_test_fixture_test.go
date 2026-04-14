@@ -74,6 +74,7 @@ type clusterTestNodeConfig struct {
 	ClockRejectAfterSkewSamples int
 	TimeSyncSamples             []timeSyncSample
 	DisableRouting              bool
+	DiscoveryEnabled            bool
 }
 
 type clusterTestNodeSpec struct {
@@ -87,6 +88,7 @@ type clusterTestNodeSpec struct {
 	ClockRejectAfterSkewSamples int
 	TimeSyncSamples             []timeSyncSample
 	DisableRouting              bool
+	DiscoveryEnabled            bool
 }
 
 type clusterTestPeerLinkSpec struct {
@@ -190,6 +192,7 @@ func newClusterTestNodes(t *testing.T, specs ...clusterTestNodeSpec) map[string]
 			ClockRejectAfterSkewSamples: spec.ClockRejectAfterSkewSamples,
 			TimeSyncSamples:             spec.TimeSyncSamples,
 			DisableRouting:              spec.DisableRouting,
+			DiscoveryEnabled:            spec.DiscoveryEnabled,
 		}
 		if cfg.MessageWindowSize == 0 {
 			cfg.MessageWindowSize = store.DefaultMessageWindowSize
@@ -246,6 +249,7 @@ func newClusterTestNodeFixtureWithListener(t *testing.T, cfg clusterTestNodeConf
 		AdvertisePath:               websocketPath,
 		ClusterSecret:               "secret",
 		Peers:                       cfg.Peers,
+		DiscoveryDisabled:           !cfg.DiscoveryEnabled,
 		MessageWindowSize:           cfg.MessageWindowSize,
 		MaxClockSkewMs:              cfg.MaxClockSkewMs,
 		ClockRejectAfterSkewSamples: cfg.ClockRejectAfterSkewSamples,
@@ -731,6 +735,7 @@ func newHandshakeTestManager(t *testing.T) *Manager {
 		ClusterSecret:     "secret",
 		MessageWindowSize: store.DefaultMessageWindowSize,
 		MaxClockSkewMs:    DefaultMaxClockSkewMs,
+		DiscoveryDisabled: true,
 		Peers: []Peer{
 			{URL: "ws://127.0.0.1:9081/internal/cluster/ws"},
 		},
@@ -793,6 +798,7 @@ func newReplicationTestManagerWithWindow(t *testing.T, st *store.Store, messageW
 		ClusterSecret:     "secret",
 		MessageWindowSize: messageWindowSize,
 		MaxClockSkewMs:    DefaultMaxClockSkewMs,
+		DiscoveryDisabled: true,
 		Peers: []Peer{
 			{URL: "ws://127.0.0.1:9080/internal/cluster/ws"},
 		},

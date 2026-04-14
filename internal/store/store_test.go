@@ -2501,6 +2501,62 @@ func TestSnapshotBlacklistsChunkRepairsDirectVisibilityBoundary(t *testing.T) {
 	}
 }
 
+func TestDiscoveredPeersPersistAndReload(t *testing.T) {
+	t.Parallel()
+
+	st := openTestStore(t)
+	defer st.Close()
+
+	ctx := context.Background()
+	connectedAt := st.Clock().Now()
+	if err := st.UpsertDiscoveredPeer(ctx, DiscoveredPeer{
+		NodeID:           testNodeID(2),
+		URL:              "ws://127.0.0.1:9081/internal/cluster/ws",
+		SourcePeerNodeID: testNodeID(1),
+		State:            "connected",
+		LastConnectedAt:  &connectedAt,
+		Generation:       7,
+	}); err != nil {
+		t.Fatalf("upsert discovered peer: %v", err)
+	}
+	if err := st.UpsertDiscoveredPeer(ctx, DiscoveredPeer{
+		NodeID:           testNodeID(2),
+		URL:              "ws://127.0.0.1:9081/internal/cluster/ws",
+		SourcePeerNodeID: testNodeID(3),
+		State:            "failed",
+		LastError:        "dial failed",
+		Generation:       6,
+	}); err != nil {
+		t.Fatalf("update discovered peer: %v", err)
+	}
+
+	peers, err := st.ListDiscoveredPeers(ctx)
+	if err != nil {
+		t.Fatalf("list discovered peers: %v", err)
+	}
+	if len(peers) != 1 {
+		t.Fatalf("unexpected discovered peer count: %d", len(peers))
+	}
+	peer := peers[0]
+	if peer.NodeID != testNodeID(2) || peer.SourcePeerNodeID != testNodeID(3) || peer.State != "failed" || peer.LastError != "dial failed" || peer.Generation != 7 {
+		t.Fatalf("unexpected discovered peer: %+v", peer)
+	}
+	if peer.LastConnectedAt == nil || peer.LastConnectedAt.Compare(connectedAt) != 0 {
+		t.Fatalf("expected last connected timestamp to be preserved, got %+v", peer.LastConnectedAt)
+	}
+
+	if err := st.RecordDiscoveredPeerState(ctx, testNodeID(2), peer.URL, "connected", "", true); err != nil {
+		t.Fatalf("record discovered peer state: %v", err)
+	}
+	peers, err = st.ListDiscoveredPeers(ctx)
+	if err != nil {
+		t.Fatalf("list updated discovered peers: %v", err)
+	}
+	if peers[0].State != "connected" || peers[0].LastConnectedAt == nil {
+		t.Fatalf("unexpected updated discovered peer: %+v", peers[0])
+	}
+}
+
 func openTestStore(t *testing.T) *Store {
 	t.Helper()
 

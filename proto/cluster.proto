@@ -21,6 +21,7 @@ message Envelope {
     TransientPacket transient_packet = 14;
     QueryLoggedInUsersRequest query_logged_in_users_request = 15;
     QueryLoggedInUsersResponse query_logged_in_users_response = 16;
+    MembershipUpdate membership_update = 17;
   }
   bytes hmac = 12;
 }
@@ -36,6 +37,7 @@ message Hello {
   uint64 connection_id = 8;
   uint32 smoothed_rtt_ms = 9;
   uint32 jitter_penalty_ms = 10;
+  bool supports_membership = 11;
 }
 
 message OriginProgress {
@@ -304,6 +306,19 @@ message RouteAdvertisement {
   uint32 total_cost_ms = 3;
   uint32 residual_cost_ms = 4;
   uint32 residual_jitter_ms = 5;
+}
+
+message MembershipUpdate {
+  int64 origin_node_id = 1;
+  uint64 generation = 2;
+  repeated PeerAdvertisement peers = 3;
+}
+
+message PeerAdvertisement {
+  int64 node_id = 1;
+  string url = 2;
+  uint64 generation = 3;
+  int64 observed_at_unix_ms = 4;
 }
 
 message TransientPacket {

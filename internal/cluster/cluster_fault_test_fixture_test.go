@@ -176,6 +176,7 @@ func newClusterTestScenario(t *testing.T, specs ...clusterTestNodeSpec) *cluster
 			MaxClockSkewMs:    spec.MaxClockSkewMs,
 			TimeSyncSamples:   spec.TimeSyncSamples,
 			DisableRouting:    spec.DisableRouting,
+			DiscoveryEnabled:  spec.DiscoveryEnabled,
 		}
 		if cfg.MessageWindowSize == 0 {
 			cfg.MessageWindowSize = store.DefaultMessageWindowSize

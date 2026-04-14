@@ -639,6 +639,12 @@ func clientProtoOperationsStatus(status operationsStatus) *internalproto.Operati
 			SnapshotChunksReceivedTotal:  peer.SnapshotChunksRecvTotal,
 			LastSnapshotDigestAt:         peer.LastSnapshotDigestAt,
 			LastSnapshotChunkAt:          peer.LastSnapshotChunkAt,
+			Source:                       peer.Source,
+			DiscoveredUrl:                peer.DiscoveredURL,
+			DiscoveryState:               peer.DiscoveryState,
+			LastDiscoveredAt:             peer.LastDiscoveredAt,
+			LastConnectedAt:              peer.LastConnectedAt,
+			LastDiscoveryError:           peer.LastDiscoveryError,
 		})
 	}
 	return &internalproto.OperationsStatus{
@@ -664,6 +670,7 @@ func clientProtoClusterNode(node clusterNodeResponse) *internalproto.ClusterNode
 		NodeId:        node.NodeID,
 		IsLocal:       node.IsLocal,
 		ConfiguredUrl: node.ConfiguredURL,
+		Source:        node.Source,
 	}
 }
 

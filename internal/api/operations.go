@@ -23,6 +23,7 @@ type clusterNodeResponse struct {
 	NodeID        int64  `json:"node_id"`
 	IsLocal       bool   `json:"is_local"`
 	ConfiguredURL string `json:"configured_url"`
+	Source        string `json:"source,omitempty"`
 }
 
 type clusterNodesResponse struct {
@@ -52,7 +53,18 @@ type operationsStatus struct {
 	ConflictTotal        int64                `json:"conflict_total"`
 	MessageTrim          messageTrimStatus    `json:"message_trim"`
 	Projection           projectionStatus     `json:"projection"`
+	Discovery            discoveryStatus      `json:"discovery"`
 	Peers                []peerStatusResponse `json:"peers"`
+}
+
+type discoveryStatus struct {
+	DiscoveredPeers       int            `json:"discovered_peers"`
+	DynamicPeers          int            `json:"dynamic_peers"`
+	MembershipUpdatesSent uint64         `json:"membership_updates_sent"`
+	MembershipUpdatesRecv uint64         `json:"membership_updates_received"`
+	RejectedTotal         uint64         `json:"rejected_total"`
+	PersistFailuresTotal  uint64         `json:"persist_failures_total"`
+	PeersByState          map[string]int `json:"peers_by_state,omitempty"`
 }
 
 type messageTrimStatus struct {
@@ -78,6 +90,12 @@ type peerOriginStatusResponse struct {
 type peerStatusResponse struct {
 	NodeID                    int64                      `json:"node_id"`
 	ConfiguredURL             string                     `json:"configured_url,omitempty"`
+	Source                    string                     `json:"source,omitempty"`
+	DiscoveredURL             string                     `json:"discovered_url,omitempty"`
+	DiscoveryState            string                     `json:"discovery_state,omitempty"`
+	LastDiscoveredAt          string                     `json:"last_discovered_at,omitempty"`
+	LastConnectedAt           string                     `json:"last_connected_at,omitempty"`
+	LastDiscoveryError        string                     `json:"last_discovery_error,omitempty"`
 	Connected                 bool                       `json:"connected"`
 	SessionDirection          string                     `json:"session_direction,omitempty"`
 	Origins                   []peerOriginStatusResponse `json:"origins"`
@@ -137,6 +155,15 @@ func (s *Service) OperationsStatus(ctx context.Context) (operationsStatus, error
 		Projection: projectionStatus{
 			PendingTotal: storeStats.Projection.PendingTotal,
 			LastFailedAt: timestampString(storeStats.Projection.LastFailedAt),
+		},
+		Discovery: discoveryStatus{
+			DiscoveredPeers:       clusterStatus.Discovery.DiscoveredPeers,
+			DynamicPeers:          clusterStatus.Discovery.DynamicPeers,
+			MembershipUpdatesSent: clusterStatus.Discovery.MembershipUpdatesSent,
+			MembershipUpdatesRecv: clusterStatus.Discovery.MembershipUpdatesRecv,
+			RejectedTotal:         clusterStatus.Discovery.RejectedTotal,
+			PersistFailuresTotal:  clusterStatus.Discovery.PersistFailuresTotal,
+			PeersByState:          clusterStatus.Discovery.PeersByState,
 		},
 		Peers: mergePeerStatus(storeStats.Peers, clusterStatus.Peers),
 	}
@@ -238,6 +265,22 @@ func (s *Service) Metrics(ctx context.Context) (string, error) {
 	writeGauge(&buf, "notifier_write_gate_ready", map[string]string{"node_id": nodeIDLabel}, boolGauge(status.WriteGateReady))
 	writeMetricHelp(&buf, "notifier_clock_state", "Current aggregated cluster clock state for the node.", "gauge")
 	writeGauge(&buf, "notifier_clock_state", map[string]string{"node_id": nodeIDLabel, "state": status.ClockState}, 1)
+	writeMetricHelp(&buf, "notifier_discovered_peers", "Total discovered peer records known by the node.", "gauge")
+	writeGauge(&buf, "notifier_discovered_peers", map[string]string{"node_id": nodeIDLabel}, float64(status.Discovery.DiscoveredPeers))
+	writeMetricHelp(&buf, "notifier_discovered_peers_by_state", "Discovered peer records grouped by discovery state.", "gauge")
+	for state, total := range status.Discovery.PeersByState {
+		writeGauge(&buf, "notifier_discovered_peers_by_state", map[string]string{"node_id": nodeIDLabel, "state": state}, float64(total))
+	}
+	writeMetricHelp(&buf, "notifier_dynamic_peer_dialers", "Dynamic peer dial loops started from discovery.", "gauge")
+	writeGauge(&buf, "notifier_dynamic_peer_dialers", map[string]string{"node_id": nodeIDLabel}, float64(status.Discovery.DynamicPeers))
+	writeMetricHelp(&buf, "notifier_membership_updates_sent_total", "Membership updates sent to peers.", "counter")
+	writeGauge(&buf, "notifier_membership_updates_sent_total", map[string]string{"node_id": nodeIDLabel}, float64(status.Discovery.MembershipUpdatesSent))
+	writeMetricHelp(&buf, "notifier_membership_updates_received_total", "Membership updates received from peers.", "counter")
+	writeGauge(&buf, "notifier_membership_updates_received_total", map[string]string{"node_id": nodeIDLabel}, float64(status.Discovery.MembershipUpdatesRecv))
+	writeMetricHelp(&buf, "notifier_membership_advertisements_rejected_total", "Membership advertisements rejected by discovery validation.", "counter")
+	writeGauge(&buf, "notifier_membership_advertisements_rejected_total", map[string]string{"node_id": nodeIDLabel}, float64(status.Discovery.RejectedTotal))
+	writeMetricHelp(&buf, "notifier_discovered_peer_persist_failures_total", "Discovered peer persistence failures.", "counter")
+	writeGauge(&buf, "notifier_discovered_peer_persist_failures_total", map[string]string{"node_id": nodeIDLabel}, float64(status.Discovery.PersistFailuresTotal))
 
 	writeMetricHelp(&buf, "notifier_peer_connected", "Whether the peer has an active cluster session.", "gauge")
 	writeMetricHelp(&buf, "notifier_peer_origin_acked_event_id", "Highest origin event id acknowledged by the peer.", "gauge")
@@ -323,6 +366,12 @@ func mergePeerStatus(storePeers []store.PeerOperationsStats, clusterPeers []app.
 			unknown = append(unknown, peerStatusResponse{
 				NodeID:                    peer.NodeID,
 				ConfiguredURL:             peer.ConfiguredURL,
+				Source:                    peer.Source,
+				DiscoveredURL:             peer.DiscoveredURL,
+				DiscoveryState:            peer.DiscoveryState,
+				LastDiscoveredAt:          timeString(peer.LastDiscoveredAt),
+				LastConnectedAt:           timeString(peer.LastConnectedAt),
+				LastDiscoveryError:        peer.LastDiscoveryError,
 				Connected:                 peer.Connected,
 				SessionDirection:          peer.SessionDirection,
 				PendingSnapshotPartitions: peer.PendingSnapshotPartitions,
@@ -349,6 +398,12 @@ func mergePeerStatus(storePeers []store.PeerOperationsStats, clusterPeers []app.
 		item := index[peer.NodeID]
 		item.NodeID = peer.NodeID
 		item.ConfiguredURL = peer.ConfiguredURL
+		item.Source = peer.Source
+		item.DiscoveredURL = peer.DiscoveredURL
+		item.DiscoveryState = peer.DiscoveryState
+		item.LastDiscoveredAt = timeString(peer.LastDiscoveredAt)
+		item.LastConnectedAt = timeString(peer.LastConnectedAt)
+		item.LastDiscoveryError = peer.LastDiscoveryError
 		item.Connected = peer.Connected
 		item.SessionDirection = peer.SessionDirection
 		item.PendingSnapshotPartitions = peer.PendingSnapshotPartitions
@@ -414,10 +469,15 @@ func connectedClusterNodes(peers []app.ClusterPeerStatus) []clusterNodeResponse 
 		if !peer.Connected || peer.NodeID <= 0 {
 			continue
 		}
+		peerURL := peer.ConfiguredURL
+		if peerURL == "" {
+			peerURL = peer.DiscoveredURL
+		}
 		nodes = append(nodes, clusterNodeResponse{
 			NodeID:        peer.NodeID,
 			IsLocal:       false,
-			ConfiguredURL: peer.ConfiguredURL,
+			ConfiguredURL: peerURL,
+			Source:        peer.Source,
 		})
 	}
 	sort.Slice(nodes, func(i, j int) bool {

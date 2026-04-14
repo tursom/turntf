@@ -11,6 +11,17 @@ type ClusterStatus struct {
 	LastTrustedClockSync *time.Time
 	ClockTransitions     []ClockStateTransition
 	Peers                []ClusterPeerStatus
+	Discovery            ClusterDiscoveryStatus
+}
+
+type ClusterDiscoveryStatus struct {
+	DiscoveredPeers       int
+	DynamicPeers          int
+	MembershipUpdatesSent uint64
+	MembershipUpdatesRecv uint64
+	RejectedTotal         uint64
+	PersistFailuresTotal  uint64
+	PeersByState          map[string]int
 }
 
 type LoggedInUserSummary struct {
@@ -28,6 +39,12 @@ type ClusterPeerOriginStatus struct {
 type ClusterPeerStatus struct {
 	NodeID                    int64
 	ConfiguredURL             string
+	Source                    string
+	DiscoveredURL             string
+	DiscoveryState            string
+	LastDiscoveredAt          *time.Time
+	LastConnectedAt           *time.Time
+	LastDiscoveryError        string
 	Connected                 bool
 	SessionDirection          string
 	Origins                   []ClusterPeerOriginStatus

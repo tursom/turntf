@@ -23,9 +23,16 @@ func (m *Manager) Status(context.Context) (app.ClusterStatus, error) {
 	transitions := make([]app.ClockStateTransition, 0, len(m.clockStateTransitions))
 	seen := make(map[int64]struct{}, len(m.peers))
 	for _, configured := range m.configuredPeers {
+		discovery := m.discoveryStateByURLLocked(configured.URL)
 		item := app.ClusterPeerStatus{
 			NodeID:                   configured.nodeID,
 			ConfiguredURL:            configured.URL,
+			Source:                   peerSourceStatic,
+			DiscoveredURL:            discovery.url,
+			DiscoveryState:           discovery.state,
+			LastDiscoveredAt:         timePointer(discovery.lastSeenAt),
+			LastConnectedAt:          timePointer(discovery.lastConnectedAt),
+			LastDiscoveryError:       discovery.lastError,
 			SnapshotDigestsSentTotal: 0,
 			SnapshotDigestsRecvTotal: 0,
 			SnapshotChunksSentTotal:  0,
@@ -59,8 +66,19 @@ func (m *Manager) Status(context.Context) (app.ClusterStatus, error) {
 		if _, ok := seen[nodeID]; ok {
 			continue
 		}
+		discovery := m.discoveryStateByNodeIDLocked(nodeID)
+		source := peerSourceInbound
+		if discovery.url != "" {
+			source = peerSourceDiscovered
+		}
 		item := app.ClusterPeerStatus{
 			NodeID:                   nodeID,
+			Source:                   source,
+			DiscoveredURL:            discovery.url,
+			DiscoveryState:           discovery.state,
+			LastDiscoveredAt:         timePointer(discovery.lastSeenAt),
+			LastConnectedAt:          timePointer(discovery.lastConnectedAt),
+			LastDiscoveryError:       discovery.lastError,
 			SnapshotDigestsSentTotal: peer.snapshotDigestsSent,
 			SnapshotDigestsRecvTotal: peer.snapshotDigestsReceived,
 			SnapshotChunksSentTotal:  peer.snapshotChunksSent,
@@ -79,11 +97,47 @@ func (m *Manager) Status(context.Context) (app.ClusterStatus, error) {
 		}
 		peers = append(peers, peerSnapshot{status: item, active: peer.active})
 	}
+	for _, discovered := range m.discoveredPeers {
+		if discovered == nil || discovered.nodeID <= 0 {
+			continue
+		}
+		if _, ok := seen[discovered.nodeID]; ok {
+			continue
+		}
+		if _, ok := m.peers[discovered.nodeID]; ok {
+			continue
+		}
+		seen[discovered.nodeID] = struct{}{}
+		peers = append(peers, peerSnapshot{status: app.ClusterPeerStatus{
+			NodeID:             discovered.nodeID,
+			Source:             peerSourceDiscovered,
+			DiscoveredURL:      discovered.url,
+			DiscoveryState:     discovered.state,
+			LastDiscoveredAt:   timePointer(discovered.lastSeenAt),
+			LastConnectedAt:    timePointer(discovered.lastConnectedAt),
+			LastDiscoveryError: discovered.lastError,
+		}})
+	}
 	m.refreshNodeClockStateLocked()
 	writeGateReady := m.hasWritableClockSyncLocked()
 	clockState := m.clockState
 	clockReason := m.clockReason
 	lastTrustedClockSync := timePointer(m.lastTrustedClockSync)
+	discovery := app.ClusterDiscoveryStatus{
+		DiscoveredPeers:       len(m.discoveredPeers),
+		DynamicPeers:          len(m.dynamicPeers),
+		MembershipUpdatesSent: m.membershipUpdatesSent,
+		MembershipUpdatesRecv: m.membershipUpdatesRecv,
+		RejectedTotal:         m.discoveryRejects,
+		PersistFailuresTotal:  m.discoveryPersistFailures,
+		PeersByState:          make(map[string]int),
+	}
+	for _, peer := range m.discoveredPeers {
+		if peer == nil || peer.state == "" {
+			continue
+		}
+		discovery.PeersByState[peer.state]++
+	}
 	for key, total := range m.clockStateTransitions {
 		transitions = append(transitions, app.ClockStateTransition{
 			FromState: key.FromState,
@@ -102,6 +156,7 @@ func (m *Manager) Status(context.Context) (app.ClusterStatus, error) {
 		ClockReason:          clockReason,
 		LastTrustedClockSync: lastTrustedClockSync,
 		ClockTransitions:     transitions,
+		Discovery:            discovery,
 		Peers:                make([]app.ClusterPeerStatus, 0, len(peers)),
 	}
 	for _, peer := range peers {
@@ -125,11 +180,26 @@ func (m *Manager) ConfiguredPeerNodeIDs() []int64 {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	ids := make([]int64, 0, len(m.configuredPeers))
+	seen := make(map[int64]struct{}, len(m.configuredPeers)+len(m.discoveredPeers))
+	ids := make([]int64, 0, len(m.configuredPeers)+len(m.discoveredPeers))
 	for _, peer := range m.configuredPeers {
 		if peer.nodeID <= 0 {
 			continue
 		}
+		if _, ok := seen[peer.nodeID]; ok {
+			continue
+		}
+		seen[peer.nodeID] = struct{}{}
+		ids = append(ids, peer.nodeID)
+	}
+	for _, peer := range m.discoveredPeers {
+		if peer == nil || peer.nodeID <= 0 {
+			continue
+		}
+		if _, ok := seen[peer.nodeID]; ok {
+			continue
+		}
+		seen[peer.nodeID] = struct{}{}
 		ids = append(ids, peer.nodeID)
 	}
 	return ids

@@ -37,6 +37,9 @@ const (
 	catchupRetryInterval             = time.Second
 	antiEntropyInterval              = 60 * time.Second
 	routingUpdateInterval            = 5 * time.Second
+	membershipUpdateInterval         = 5 * time.Second
+	discoveryCandidateTTL            = 10 * time.Minute
+	maxDynamicDiscoveredPeers        = 8
 	routeRetryInterval               = 200 * time.Millisecond
 	packetSeenTTL                    = 30 * time.Second
 	routeRetryTTL                    = 3 * time.Second
@@ -68,6 +71,9 @@ type Manager struct {
 	mu              sync.Mutex
 	peers           map[int64]*peerState
 	configuredPeers []*configuredPeer
+	discoveredPeers map[string]*discoveredPeerState
+	dynamicPeers    map[string]*configuredPeer
+	selfKnownURLs   map[string]uint64
 
 	lastTrustedClockSync     time.Time
 	clockState               clockState
@@ -77,6 +83,12 @@ type Manager struct {
 	transientHandler         func(store.TransientPacket) bool
 	loggedInUsersProvider    func(context.Context) ([]app.LoggedInUserSummary, error)
 	supportsRouting          bool
+	supportsMembership       bool
+	membershipGeneration     uint64
+	membershipUpdatesSent    uint64
+	membershipUpdatesRecv    uint64
+	discoveryRejects         uint64
+	discoveryPersistFailures uint64
 	routingGeneration        uint64
 	routingTable             map[int64]routeEntry
 	seenPackets              map[string]time.Time
@@ -86,8 +98,23 @@ type Manager struct {
 }
 
 type configuredPeer struct {
-	URL    string
-	nodeID int64
+	URL     string
+	nodeID  int64
+	dynamic bool
+	source  string
+}
+
+type discoveredPeerState struct {
+	nodeID           int64
+	url              string
+	sourcePeerNodeID int64
+	state            string
+	firstSeenAt      time.Time
+	lastSeenAt       time.Time
+	lastConnectedAt  time.Time
+	lastError        string
+	generation       uint64
+	dialing          bool
 }
 
 type peerState struct {
@@ -143,6 +170,7 @@ type session struct {
 	pendingTimeSync         map[uint64]chan timeSyncResult
 	clockOffsetMs           int64
 	supportsRouting         bool
+	supportsMembership      bool
 	smoothedRTTMs           int64
 	jitterPenaltyMs         int64
 	lastRTTUpdate           time.Time
@@ -208,7 +236,7 @@ func NewManager(cfg Config, st *store.Store) (*Manager, error) {
 
 	configuredPeers := make([]*configuredPeer, 0, len(cfg.Peers))
 	for _, peer := range cfg.Peers {
-		configuredPeers = append(configuredPeers, &configuredPeer{URL: peer.URL})
+		configuredPeers = append(configuredPeers, &configuredPeer{URL: peer.URL, source: peerSourceStatic})
 	}
 
 	clockRef := clock.NewClock(cfg.NodeID)
@@ -228,12 +256,21 @@ func NewManager(cfg Config, st *store.Store) (*Manager, error) {
 		dialer:                websocket.DefaultDialer,
 		peers:                 make(map[int64]*peerState, len(cfg.Peers)),
 		configuredPeers:       configuredPeers,
+		discoveredPeers:       make(map[string]*discoveredPeerState),
+		dynamicPeers:          make(map[string]*configuredPeer),
+		selfKnownURLs:         make(map[string]uint64),
 		supportsRouting:       true,
+		supportsMembership:    !cfg.DiscoveryDisabled,
 		routingTable:          make(map[int64]routeEntry),
 		seenPackets:           make(map[string]time.Time),
 		retryQueue:            make(map[string]queuedPacket),
 		pendingLoggedInUsers:  make(map[uint64]chan loggedInUsersQueryResult),
 		clockStateTransitions: make(map[clockStateTransitionKey]uint64),
+	}
+	if !cfg.DiscoveryDisabled {
+		if err := mgr.loadDiscoveredPeers(context.Background()); err != nil {
+			return nil, err
+		}
 	}
 	mgr.mux.HandleFunc("GET "+cfg.AdvertisePath, mgr.handleWebSocket)
 	return mgr, nil
@@ -255,6 +292,10 @@ func (m *Manager) Start(parent context.Context) {
 		go m.publishLoop()
 		m.wg.Add(1)
 		go m.routingLoop()
+		if !m.cfg.DiscoveryDisabled {
+			m.wg.Add(1)
+			go m.discoveryLoop()
+		}
 
 		for _, peer := range m.configuredPeers {
 			peer := peer
@@ -339,6 +380,15 @@ func (m *Manager) routingSupported() bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.supportsRouting
+}
+
+func (m *Manager) membershipSupported() bool {
+	if m == nil {
+		return false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.supportsMembership
 }
 
 func (m *Manager) QueryLoggedInUsers(ctx context.Context, nodeID int64) ([]app.LoggedInUserSummary, error) {
@@ -499,12 +549,14 @@ func (m *Manager) dialLoop(peer *configuredPeer) {
 			}
 		}
 
+		m.recordConfiguredPeerDialing(peer)
 		m.logInfo("peer_dial_started").
 			Str("direction", "outbound").
 			Str("peer_url", peer.URL).
 			Msg("starting outbound peer dial")
 		conn, _, err := m.dialer.DialContext(m.ctx, peer.URL, nil)
 		if err != nil {
+			m.recordConfiguredPeerDialFailure(peer, err)
 			wait := backoff[minInt(attempt, len(backoff)-1)]
 			m.logWarn("peer_dial_failed", err).
 				Str("direction", "outbound").
@@ -525,6 +577,7 @@ func (m *Manager) dialLoop(peer *configuredPeer) {
 		m.logSessionEvent("peer_dial_succeeded", sess).
 			Msg("outbound peer dial succeeded")
 		m.runSession(sess)
+		m.recordConfiguredPeerSessionClosed(peer, sess)
 
 		select {
 		case <-m.ctx.Done():
@@ -574,6 +627,7 @@ func (m *Manager) newSession(conn *websocket.Conn, outbound bool, configuredPeer
 		pendingPulls:         make(map[int64]pendingPullState),
 		pendingTimeSync:      make(map[uint64]chan timeSyncResult),
 		supportsRouting:      true,
+		supportsMembership:   !m.cfg.DiscoveryDisabled,
 	}
 }
 
@@ -628,14 +682,15 @@ func (m *Manager) buildHelloEnvelope(sessions ...*session) (*internalproto.Envel
 		NodeId: m.cfg.NodeID,
 		Body: &internalproto.Envelope_Hello{
 			Hello: &internalproto.Hello{
-				NodeId:            m.cfg.NodeID,
-				AdvertiseAddr:     m.cfg.AdvertisePath,
-				ProtocolVersion:   internalproto.ProtocolVersion,
-				OriginProgress:    progress,
-				SnapshotVersion:   internalproto.SnapshotVersion,
-				MessageWindowSize: uint32(m.cfg.MessageWindowSize),
-				SupportsRouting:   m.routingSupported(),
-				ConnectionId:      connectionIDForHello(sess),
+				NodeId:             m.cfg.NodeID,
+				AdvertiseAddr:      m.cfg.AdvertisePath,
+				ProtocolVersion:    internalproto.ProtocolVersion,
+				OriginProgress:     progress,
+				SnapshotVersion:    internalproto.SnapshotVersion,
+				MessageWindowSize:  uint32(m.cfg.MessageWindowSize),
+				SupportsRouting:    m.routingSupported(),
+				ConnectionId:       connectionIDForHello(sess),
+				SupportsMembership: m.membershipSupported(),
 			},
 		},
 	}, nil
@@ -713,6 +768,10 @@ func (m *Manager) readLoop(sess *session) {
 			}
 		case *internalproto.Envelope_QueryLoggedInUsersResponse:
 			if err := m.handleQueryLoggedInUsersResponse(sess, &envelope); err != nil {
+				return
+			}
+		case *internalproto.Envelope_MembershipUpdate:
+			if err := m.handleMembershipUpdate(sess, &envelope); err != nil {
 				return
 			}
 		case *internalproto.Envelope_Ack:
@@ -810,6 +869,7 @@ func (m *Manager) handleHello(sess *session, envelope *internalproto.Envelope) e
 	sess.remoteSnapshotVersion = hello.SnapshotVersion
 	sess.remoteMessageWindowSize = int(hello.MessageWindowSize)
 	sess.supportsRouting = hello.SupportsRouting
+	sess.supportsMembership = hello.SupportsMembership
 	if hello.ConnectionId != 0 {
 		sess.connectionID = hello.ConnectionId
 	}
@@ -821,6 +881,7 @@ func (m *Manager) handleHello(sess *session, envelope *internalproto.Envelope) e
 		Str("snapshot_version", hello.SnapshotVersion).
 		Uint32("message_window_size", hello.MessageWindowSize).
 		Bool("supports_routing", hello.SupportsRouting).
+		Bool("supports_membership", hello.SupportsMembership).
 		Msg("peer hello accepted")
 
 	if !sess.beginBootstrap() {
@@ -855,6 +916,8 @@ func (m *Manager) bootstrapSession(sess *session) {
 		sess.close()
 		return
 	}
+	m.recordSessionDiscoveryConnected(sess)
+	m.sendMembershipUpdate(sess)
 
 	sess.markReplicationReady()
 	sess.startSyncLoop(func() {
@@ -1865,10 +1928,16 @@ func (m *Manager) deactivateSession(sess *session) {
 		delete(peer.sessions, sess.connectionID)
 	}
 	if ok && peer.trustedSession == sess {
-		peer.trustedSession = nil
-		peer.clockOffsetMs = 0
-		peer.clockState = clockStateObserving
-		wasTrusted = true
+		if peer.active != nil && peer.active != sess {
+			peer.trustedSession = peer.active
+			peer.clockOffsetMs = peer.active.clockOffset()
+			peer.clockState = clockStateTrusted
+		} else {
+			peer.trustedSession = nil
+			peer.clockOffsetMs = 0
+			peer.clockState = clockStateObserving
+			wasTrusted = true
+		}
 	}
 	if ok && len(peer.sessions) == 0 {
 		peer.routeAdverts = nil

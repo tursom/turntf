@@ -365,9 +365,10 @@ ServerEnvelope {
     request_id: 1004
     items: [
       { node_id: 4096, is_local: true },
-      { node_id: 8192, is_local: false, configured_url: "ws://127.0.0.1:9081/internal/cluster/ws" }
+      { node_id: 8192, is_local: false, configured_url: "ws://127.0.0.1:9081/internal/cluster/ws", source: "static" },
+      { node_id: 12288, is_local: false, configured_url: "ws://127.0.0.1:9082/internal/cluster/ws", source: "discovered" }
     ]
-    count: 2
+    count: 3
   }
 }
 ```

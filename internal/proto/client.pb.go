@@ -3338,6 +3338,7 @@ type ClusterNode struct {
 	NodeId        int64                  `protobuf:"varint,1,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
 	IsLocal       bool                   `protobuf:"varint,2,opt,name=is_local,json=isLocal,proto3" json:"is_local,omitempty"`
 	ConfiguredUrl string                 `protobuf:"bytes,3,opt,name=configured_url,json=configuredUrl,proto3" json:"configured_url,omitempty"`
+	Source        string                 `protobuf:"bytes,4,opt,name=source,proto3" json:"source,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3389,6 +3390,13 @@ func (x *ClusterNode) GetIsLocal() bool {
 func (x *ClusterNode) GetConfiguredUrl() string {
 	if x != nil {
 		return x.ConfiguredUrl
+	}
+	return ""
+}
+
+func (x *ClusterNode) GetSource() string {
+	if x != nil {
+		return x.Source
 	}
 	return ""
 }
@@ -4503,6 +4511,12 @@ type PeerStatus struct {
 	SnapshotChunksReceivedTotal  uint64                 `protobuf:"varint,14,opt,name=snapshot_chunks_received_total,json=snapshotChunksReceivedTotal,proto3" json:"snapshot_chunks_received_total,omitempty"`
 	LastSnapshotDigestAt         string                 `protobuf:"bytes,15,opt,name=last_snapshot_digest_at,json=lastSnapshotDigestAt,proto3" json:"last_snapshot_digest_at,omitempty"`
 	LastSnapshotChunkAt          string                 `protobuf:"bytes,16,opt,name=last_snapshot_chunk_at,json=lastSnapshotChunkAt,proto3" json:"last_snapshot_chunk_at,omitempty"`
+	Source                       string                 `protobuf:"bytes,17,opt,name=source,proto3" json:"source,omitempty"`
+	DiscoveredUrl                string                 `protobuf:"bytes,18,opt,name=discovered_url,json=discoveredUrl,proto3" json:"discovered_url,omitempty"`
+	DiscoveryState               string                 `protobuf:"bytes,19,opt,name=discovery_state,json=discoveryState,proto3" json:"discovery_state,omitempty"`
+	LastDiscoveredAt             string                 `protobuf:"bytes,20,opt,name=last_discovered_at,json=lastDiscoveredAt,proto3" json:"last_discovered_at,omitempty"`
+	LastConnectedAt              string                 `protobuf:"bytes,21,opt,name=last_connected_at,json=lastConnectedAt,proto3" json:"last_connected_at,omitempty"`
+	LastDiscoveryError           string                 `protobuf:"bytes,22,opt,name=last_discovery_error,json=lastDiscoveryError,proto3" json:"last_discovery_error,omitempty"`
 	unknownFields                protoimpl.UnknownFields
 	sizeCache                    protoimpl.SizeCache
 }
@@ -4645,6 +4659,48 @@ func (x *PeerStatus) GetLastSnapshotDigestAt() string {
 func (x *PeerStatus) GetLastSnapshotChunkAt() string {
 	if x != nil {
 		return x.LastSnapshotChunkAt
+	}
+	return ""
+}
+
+func (x *PeerStatus) GetSource() string {
+	if x != nil {
+		return x.Source
+	}
+	return ""
+}
+
+func (x *PeerStatus) GetDiscoveredUrl() string {
+	if x != nil {
+		return x.DiscoveredUrl
+	}
+	return ""
+}
+
+func (x *PeerStatus) GetDiscoveryState() string {
+	if x != nil {
+		return x.DiscoveryState
+	}
+	return ""
+}
+
+func (x *PeerStatus) GetLastDiscoveredAt() string {
+	if x != nil {
+		return x.LastDiscoveredAt
+	}
+	return ""
+}
+
+func (x *PeerStatus) GetLastConnectedAt() string {
+	if x != nil {
+		return x.LastConnectedAt
+	}
+	return ""
+}
+
+func (x *PeerStatus) GetLastDiscoveryError() string {
+	if x != nil {
+		return x.LastDiscoveryError
 	}
 	return ""
 }
@@ -4903,11 +4959,12 @@ const file_client_proto_rawDesc = "" +
 	"request_id\x18\x01 \x01(\x04R\trequestId\x12$\n" +
 	"\x0etarget_node_id\x18\x02 \x01(\x03R\ftargetNodeId\x126\n" +
 	"\x05items\x18\x03 \x03(\v2 .notifier.client.v1.LoggedInUserR\x05items\x12\x14\n" +
-	"\x05count\x18\x04 \x01(\x05R\x05count\"h\n" +
+	"\x05count\x18\x04 \x01(\x05R\x05count\"\x80\x01\n" +
 	"\vClusterNode\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\x03R\x06nodeId\x12\x19\n" +
 	"\bis_local\x18\x02 \x01(\bR\aisLocal\x12%\n" +
-	"\x0econfigured_url\x18\x03 \x01(\tR\rconfiguredUrl\"\\\n" +
+	"\x0econfigured_url\x18\x03 \x01(\tR\rconfiguredUrl\x12\x16\n" +
+	"\x06source\x18\x04 \x01(\tR\x06source\"\\\n" +
 	"\fLoggedInUser\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\x03R\x06nodeId\x12\x17\n" +
 	"\auser_id\x18\x02 \x01(\x03R\x06userId\x12\x1a\n" +
@@ -5003,7 +5060,7 @@ const file_client_proto_rawDesc = "" +
 	"\x12unconfirmed_events\x18\x04 \x01(\x03R\x11unconfirmedEvents\x12*\n" +
 	"\x11cursor_updated_at\x18\x05 \x01(\tR\x0fcursorUpdatedAt\x12/\n" +
 	"\x14remote_last_event_id\x18\x06 \x01(\x04R\x11remoteLastEventId\x12'\n" +
-	"\x0fpending_catchup\x18\a \x01(\bR\x0ependingCatchup\"\xd0\x06\n" +
+	"\x0fpending_catchup\x18\a \x01(\bR\x0ependingCatchup\"\xc4\b\n" +
 	"\n" +
 	"PeerStatus\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\x03R\x06nodeId\x12%\n" +
@@ -5022,7 +5079,13 @@ const file_client_proto_rawDesc = "" +
 	"\x1asnapshot_chunks_sent_total\x18\r \x01(\x04R\x17snapshotChunksSentTotal\x12C\n" +
 	"\x1esnapshot_chunks_received_total\x18\x0e \x01(\x04R\x1bsnapshotChunksReceivedTotal\x125\n" +
 	"\x17last_snapshot_digest_at\x18\x0f \x01(\tR\x14lastSnapshotDigestAt\x123\n" +
-	"\x16last_snapshot_chunk_at\x18\x10 \x01(\tR\x13lastSnapshotChunkAt*\x83\x01\n" +
+	"\x16last_snapshot_chunk_at\x18\x10 \x01(\tR\x13lastSnapshotChunkAt\x12\x16\n" +
+	"\x06source\x18\x11 \x01(\tR\x06source\x12%\n" +
+	"\x0ediscovered_url\x18\x12 \x01(\tR\rdiscoveredUrl\x12'\n" +
+	"\x0fdiscovery_state\x18\x13 \x01(\tR\x0ediscoveryState\x12,\n" +
+	"\x12last_discovered_at\x18\x14 \x01(\tR\x10lastDiscoveredAt\x12*\n" +
+	"\x11last_connected_at\x18\x15 \x01(\tR\x0flastConnectedAt\x120\n" +
+	"\x14last_discovery_error\x18\x16 \x01(\tR\x12lastDiscoveryError*\x83\x01\n" +
 	"\x12ClientDeliveryKind\x12$\n" +
 	" CLIENT_DELIVERY_KIND_UNSPECIFIED\x10\x00\x12#\n" +
 	"\x1fCLIENT_DELIVERY_KIND_PERSISTENT\x10\x01\x12\"\n" +

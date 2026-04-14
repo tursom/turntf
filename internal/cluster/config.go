@@ -14,6 +14,7 @@ type Config struct {
 	AdvertisePath                   string
 	ClusterSecret                   string
 	Peers                           []Peer
+	DiscoveryDisabled               bool
 	MessageWindowSize               int
 	MaxClockSkewMs                  int64
 	ClockSyncTimeoutMs              int64

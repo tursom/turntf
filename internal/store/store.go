@@ -467,6 +467,19 @@ CREATE TABLE IF NOT EXISTS pending_projections (
     last_failed_at_hlc TEXT NOT NULL,
     PRIMARY KEY(origin_node_id, event_id)
 );
+
+CREATE TABLE IF NOT EXISTS discovered_peers (
+    node_id INTEGER NOT NULL,
+    url TEXT NOT NULL,
+    source_peer_node_id INTEGER NOT NULL DEFAULT 0,
+    state TEXT NOT NULL,
+    first_seen_at_hlc TEXT NOT NULL,
+    last_seen_at_hlc TEXT NOT NULL,
+    last_connected_at_hlc TEXT,
+    last_error TEXT NOT NULL DEFAULT '',
+    generation INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY(node_id, url)
+);
 `
 	if _, err := s.db.ExecContext(ctx, schema); err != nil {
 		return fmt.Errorf("init schema: %w", err)
@@ -481,6 +494,8 @@ CREATE INDEX IF NOT EXISTS idx_blacklists_owner ON user_blacklists(owner_node_id
 CREATE INDEX IF NOT EXISTS idx_blacklists_blocked ON user_blacklists(blocked_node_id, blocked_user_id, deleted_at_hlc);
 CREATE INDEX IF NOT EXISTS idx_event_log_origin_event ON event_log(origin_node_id, event_id);
 CREATE INDEX IF NOT EXISTS idx_pending_projections_failed ON pending_projections(last_failed_at_hlc, origin_node_id, event_id);
+CREATE INDEX IF NOT EXISTS idx_discovered_peers_url ON discovered_peers(url);
+CREATE INDEX IF NOT EXISTS idx_discovered_peers_state ON discovered_peers(state, last_seen_at_hlc);
 `); err != nil {
 		return fmt.Errorf("init message indexes: %w", err)
 	}

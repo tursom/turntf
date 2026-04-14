@@ -299,6 +299,7 @@ message ClusterNode {
   int64 node_id = 1;
   bool is_local = 2;
   string configured_url = 3;
+  string source = 4;
 }
 
 message LoggedInUser {
@@ -444,4 +445,10 @@ message PeerStatus {
   uint64 snapshot_chunks_received_total = 14;
   string last_snapshot_digest_at = 15;
   string last_snapshot_chunk_at = 16;
+  string source = 17;
+  string discovered_url = 18;
+  string discovery_state = 19;
+  string last_discovered_at = 20;
+  string last_connected_at = 21;
+  string last_discovery_error = 22;
 }

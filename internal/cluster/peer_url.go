@@ -19,7 +19,7 @@ func normalizeConfiguredPeerURL(raw string) (string, error) {
 }
 
 func normalizePeerURL(raw string) (string, error) {
-	return normalizePeerURLScheme(raw, false)
+	return normalizePeerURLScheme(raw, true)
 }
 
 func normalizeZeroMQBindURL(raw string) (string, error) {
@@ -107,7 +107,7 @@ func normalizePeerURLScheme(raw string, allowZeroMQ bool) (string, error) {
 		return parsed.String(), nil
 	case peerSchemeZeroMQTCP:
 		if !allowZeroMQ {
-			return "", fmt.Errorf("peer url scheme must be ws or wss")
+			return "", fmt.Errorf("peer url scheme must be ws, wss, or zmq+tcp")
 		}
 		if strings.TrimSpace(parsed.Hostname()) == "" {
 			return "", errors.New("peer url host cannot be empty")
@@ -135,6 +135,17 @@ func normalizePeerURLScheme(raw string, allowZeroMQ bool) (string, error) {
 			return "", fmt.Errorf("peer url scheme must be ws, wss, or zmq+tcp")
 		}
 		return "", fmt.Errorf("peer url scheme must be ws or wss")
+	}
+}
+
+func transportForPeerURL(raw string) string {
+	switch {
+	case isWebSocketPeerURL(raw):
+		return transportWebSocket
+	case isZeroMQPeerURL(raw):
+		return transportZeroMQ
+	default:
+		return ""
 	}
 }
 

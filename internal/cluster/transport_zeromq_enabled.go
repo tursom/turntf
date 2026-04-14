@@ -360,6 +360,11 @@ func (c *zeroMQTransportConn) Send(ctx context.Context, payload []byte) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	select {
+	case <-c.done:
+		return c.closedErr()
+	default:
+	}
 	if c.sendFn != nil {
 		return c.sendFn(ctx, cloneBytes(payload))
 	}
@@ -430,7 +435,6 @@ func (c *zeroMQTransportConn) finish(err error) {
 		}
 		c.errMu.Unlock()
 		close(c.done)
-		close(c.recvCh)
 		if c.onClose != nil {
 			c.onClose()
 		}

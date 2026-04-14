@@ -8,6 +8,24 @@ import (
 	"github.com/tursom/turntf/internal/app"
 )
 
+func statusTransport(active *session, configuredURL, discoveredURL string) string {
+	if transport := sessionTransport(active); transport != "" {
+		return transport
+	}
+	if transport := transportForPeerURL(configuredURL); transport != "" {
+		return transport
+	}
+	return transportForPeerURL(discoveredURL)
+}
+
+func peerURLSchemeLabel(raw string) string {
+	scheme, ok := peerURLScheme(raw)
+	if !ok {
+		return ""
+	}
+	return scheme
+}
+
 func (m *Manager) Status(context.Context) (app.ClusterStatus, error) {
 	if m == nil {
 		return app.ClusterStatus{WriteGateReady: true}, nil
@@ -27,6 +45,7 @@ func (m *Manager) Status(context.Context) (app.ClusterStatus, error) {
 		item := app.ClusterPeerStatus{
 			NodeID:                   configured.nodeID,
 			ConfiguredURL:            configured.URL,
+			Transport:                statusTransport(nil, configured.URL, discovery.url),
 			Source:                   peerSourceStatic,
 			DiscoveredURL:            discovery.url,
 			DiscoveryState:           discovery.state,
@@ -45,6 +64,7 @@ func (m *Manager) Status(context.Context) (app.ClusterStatus, error) {
 		if peer := m.peers[configured.nodeID]; peer != nil {
 			active = peer.active
 			item.Connected = peer.active != nil
+			item.Transport = statusTransport(peer.active, configured.URL, discovery.url)
 			item.ClockState = string(peer.clockState)
 			item.ClockOffsetMs = peer.clockOffsetMs
 			item.ClockUncertaintyMs = peer.clockUncertaintyMs
@@ -73,6 +93,7 @@ func (m *Manager) Status(context.Context) (app.ClusterStatus, error) {
 		}
 		item := app.ClusterPeerStatus{
 			NodeID:                   nodeID,
+			Transport:                statusTransport(peer.active, "", discovery.url),
 			Source:                   source,
 			DiscoveredURL:            discovery.url,
 			DiscoveryState:           discovery.state,
@@ -110,6 +131,7 @@ func (m *Manager) Status(context.Context) (app.ClusterStatus, error) {
 		seen[discovered.nodeID] = struct{}{}
 		peers = append(peers, peerSnapshot{status: app.ClusterPeerStatus{
 			NodeID:             discovered.nodeID,
+			Transport:          statusTransport(nil, "", discovered.url),
 			Source:             peerSourceDiscovered,
 			DiscoveredURL:      discovered.url,
 			DiscoveryState:     discovered.state,
@@ -131,12 +153,18 @@ func (m *Manager) Status(context.Context) (app.ClusterStatus, error) {
 		RejectedTotal:         m.discoveryRejects,
 		PersistFailuresTotal:  m.discoveryPersistFailures,
 		PeersByState:          make(map[string]int),
+		PeersByScheme:         make(map[string]int),
+		ZeroMQMode:            m.cfg.zeroMQMode(),
+		ZeroMQListenerRunning: m.zeroMQListener != nil,
 	}
 	for _, peer := range m.discoveredPeers {
 		if peer == nil || peer.state == "" {
 			continue
 		}
 		discovery.PeersByState[peer.state]++
+		if scheme := peerURLSchemeLabel(peer.url); scheme != "" {
+			discovery.PeersByScheme[scheme]++
+		}
 	}
 	for key, total := range m.clockStateTransitions {
 		transitions = append(transitions, app.ClockStateTransition{
@@ -162,6 +190,7 @@ func (m *Manager) Status(context.Context) (app.ClusterStatus, error) {
 	for _, peer := range peers {
 		item := peer.status
 		if peer.active != nil {
+			item.Transport = statusTransport(peer.active, item.ConfiguredURL, item.DiscoveredURL)
 			item.SessionDirection = peer.active.direction()
 			item.Origins = peer.active.originStatuses()
 			item.PendingSnapshotPartitions = peer.active.pendingSnapshotCount()

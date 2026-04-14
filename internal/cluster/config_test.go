@@ -163,18 +163,6 @@ func TestConfigValidateRejectsInvalidZeroMQCombinations(t *testing.T) {
 		wantErr string
 	}{
 		{
-			name: "enabled without bind url",
-			cfg: Config{
-				NodeID:        testNodeID(1),
-				AdvertisePath: "/internal/cluster/ws",
-				ClusterSecret: "secret",
-				ZeroMQ: ZeroMQConfig{
-					Enabled: true,
-				},
-			},
-			wantErr: "zeromq bind url cannot be empty",
-		},
-		{
 			name: "duplicate normalized peers",
 			cfg: Config{
 				NodeID:        testNodeID(1),
@@ -198,6 +186,18 @@ func TestConfigValidateRejectsInvalidZeroMQCombinations(t *testing.T) {
 				},
 			},
 			wantErr: "peer url path is not allowed",
+		},
+		{
+			name: "zeromq peer requires zeromq to be enabled",
+			cfg: Config{
+				NodeID:        testNodeID(1),
+				AdvertisePath: "/internal/cluster/ws",
+				ClusterSecret: "secret",
+				Peers: []Peer{
+					{URL: "zmq+tcp://127.0.0.1:9091"},
+				},
+			},
+			wantErr: `zeromq peer url "zmq+tcp://127.0.0.1:9091" requires cluster.zeromq.enabled`,
 		},
 	}
 
@@ -278,12 +278,15 @@ func TestManagerStartFailsWhenZeroMQSupportIsNotBuilt(t *testing.T) {
 			},
 		},
 		{
-			name: "static peer requires zeromq",
+			name: "outbound only zeromq requires zeromq build",
 			cfg: Config{
 				NodeID:            testNodeID(1),
 				AdvertisePath:     websocketPath,
 				ClusterSecret:     "secret",
 				MessageWindowSize: 128,
+				ZeroMQ: ZeroMQConfig{
+					Enabled: true,
+				},
 				Peers: []Peer{
 					{URL: "zmq+tcp://127.0.0.1:9091"},
 				},
@@ -303,5 +306,35 @@ func TestManagerStartFailsWhenZeroMQSupportIsNotBuilt(t *testing.T) {
 				t.Fatalf("expected errZeroMQNotBuilt, got %v", err)
 			}
 		})
+	}
+}
+
+func TestConfigValidateAllowsOutboundOnlyZeroMQ(t *testing.T) {
+	t.Parallel()
+
+	cfg := Config{
+		NodeID:            testNodeID(1),
+		AdvertisePath:     "/internal/cluster/ws",
+		ClusterSecret:     "secret",
+		MessageWindowSize: 128,
+		ZeroMQ: ZeroMQConfig{
+			Enabled: true,
+		},
+		Peers: []Peer{
+			{URL: "zmq+tcp://Example.COM:9091"},
+		},
+	}
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("validate config: %v", err)
+	}
+	if cfg.ZeroMQ.BindURL != "" {
+		t.Fatalf("expected empty zeromq bind url for outbound-only mode, got %q", cfg.ZeroMQ.BindURL)
+	}
+	if cfg.zeroMQMode() != "outbound_only" {
+		t.Fatalf("unexpected zeromq mode: %q", cfg.zeroMQMode())
+	}
+	if cfg.Peers[0].URL != "zmq+tcp://example.com:9091" {
+		t.Fatalf("unexpected normalized zeromq peer: %q", cfg.Peers[0].URL)
 	}
 }

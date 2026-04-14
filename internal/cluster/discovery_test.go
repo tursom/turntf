@@ -86,7 +86,7 @@ func TestMembershipUpdateRejectsInvalidAdvertisements(t *testing.T) {
 	}
 }
 
-func TestBuildMembershipEnvelopeSkipsZeroMQURLs(t *testing.T) {
+func TestBuildMembershipEnvelopeIncludesZeroMQURLs(t *testing.T) {
 	node := newClusterTestNodeFixture(t, clusterTestNodeConfig{
 		Name:             "node-a",
 		Slot:             1,
@@ -113,12 +113,67 @@ func TestBuildMembershipEnvelopeSkipsZeroMQURLs(t *testing.T) {
 	if update == nil {
 		t.Fatal("expected membership update body")
 	}
+	seen := make(map[string]bool)
 	for _, item := range update.Peers {
 		if item == nil {
 			continue
 		}
-		if isZeroMQPeerURL(item.Url) {
-			t.Fatalf("expected zeromq url to be skipped from membership advertisement: %+v", item)
+		seen[item.Url] = true
+	}
+	for _, want := range []string{
+		"zmq+tcp://127.0.0.1:9091",
+		"zmq+tcp://127.0.0.1:9092",
+		"zmq+tcp://127.0.0.1:9093",
+	} {
+		if !seen[want] {
+			t.Fatalf("expected membership advertisement to include %q, got %+v", want, update.Peers)
 		}
+	}
+}
+
+func TestStatusReportsZeroMQModeAndTransport(t *testing.T) {
+	t.Parallel()
+
+	node := newClusterTestNodeFixture(t, clusterTestNodeConfig{
+		Name:             "node-a",
+		Slot:             1,
+		DiscoveryEnabled: true,
+	})
+	mgr := node.manager
+	mgr.cfg.ZeroMQ.Enabled = true
+	mgr.configuredPeers = append(mgr.configuredPeers, &configuredPeer{
+		URL:    "zmq+tcp://127.0.0.1:9091",
+		nodeID: testNodeID(2),
+		source: peerSourceStatic,
+	})
+	mgr.discoveredPeers["zmq+tcp://127.0.0.1:9092"] = &discoveredPeerState{
+		nodeID: testNodeID(3),
+		url:    "zmq+tcp://127.0.0.1:9092",
+		state:  discoveryStateConnected,
+	}
+
+	status, err := mgr.Status(context.Background())
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	if status.Discovery.ZeroMQMode != "outbound_only" {
+		t.Fatalf("unexpected zeromq mode: %+v", status.Discovery)
+	}
+	if status.Discovery.ZeroMQListenerRunning {
+		t.Fatalf("expected zeromq listener to stay stopped in outbound-only mode: %+v", status.Discovery)
+	}
+	if status.Discovery.PeersByScheme["zmq+tcp"] != 1 {
+		t.Fatalf("expected discovered zeromq peer to be counted by scheme, got %+v", status.Discovery.PeersByScheme)
+	}
+
+	seenTransport := make(map[int64]string)
+	for _, peer := range status.Peers {
+		seenTransport[peer.NodeID] = peer.Transport
+	}
+	if seenTransport[testNodeID(2)] != transportZeroMQ {
+		t.Fatalf("expected static zeromq peer transport, got %+v", status.Peers)
+	}
+	if seenTransport[testNodeID(3)] != transportZeroMQ {
+		t.Fatalf("expected discovered zeromq peer transport, got %+v", status.Peers)
 	}
 }

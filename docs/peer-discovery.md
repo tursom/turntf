@@ -113,9 +113,13 @@ membership update 当前会广播三类地址：
 - `rejected_total`：被拒绝的 peer advertisement 数量。
 - `persist_failures_total`：发现记录持久化失败次数。
 - `peers_by_state`：按发现状态聚合的记录数。
+- `peers_by_scheme`：按 URL scheme 聚合的记录数，例如 `ws`、`wss`、`zmq+tcp`。
+- `zeromq_mode`：`disabled`、`outbound_only` 或 `listening`。
+- `zeromq_listener_running`：本地 ZeroMQ listener 是否实际运行。
 
 `GET /ops/status` 的每个 peer 也会额外暴露：
 
+- `transport`：当前 peer 使用的传输，可能是 `websocket` 或 `zeromq`。
 - `source`：peer 来源，可能是 `static`、`discovered` 或 `inbound`。
 - `discovered_url`：发现记录中的 URL。
 - `discovery_state`：发现状态。
@@ -129,7 +133,9 @@ membership update 当前会广播三类地址：
 
 - `notifier_discovered_peers{node_id}`：本节点已知发现记录数。
 - `notifier_discovered_peers_by_state{node_id,state}`：按状态聚合的发现记录数。
+- `notifier_discovered_peers_by_scheme{node_id,scheme}`：按 URL scheme 聚合的发现记录数。
 - `notifier_dynamic_peer_dialers{node_id}`：动态发现拨号器数量。
+- `notifier_zeromq_listener_running{node_id,mode}`：本地 ZeroMQ listener 运行状态。
 - `notifier_membership_updates_sent_total{node_id}`：membership update 发送总数。
 - `notifier_membership_updates_received_total{node_id}`：membership update 接收总数。
 - `notifier_membership_advertisements_rejected_total{node_id}`：被拒绝的广告总数。

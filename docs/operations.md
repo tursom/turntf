@@ -95,7 +95,9 @@ sqlite3 ./data/turntf.db ".backup './backup/turntf-$(date +%Y%m%d%H%M%S).db'"
 - `notifier_write_gate_ready{node_id}`：本节点是否允许本地写入，对应“写闸门是否已进入可信复制状态”。集群模式下为 `0` 通常表示尚未完成可信校时。
 - `notifier_discovered_peers{node_id}`：本节点已知发现记录数。
 - `notifier_discovered_peers_by_state{node_id,state}`：按 `candidate`、`dialing`、`connected`、`failed`、`expired` 聚合的发现记录数。
+- `notifier_discovered_peers_by_scheme{node_id,scheme}`：按 URL scheme 聚合的发现记录数，可用来区分 `ws`、`wss`、`zmq+tcp` 候选。
 - `notifier_dynamic_peer_dialers{node_id}`：由自动发现启动的动态 peer 拨号器数量，当前每节点最多 8 个。
+- `notifier_zeromq_listener_running{node_id,mode}`：本地 ZeroMQ listener 运行状态；`mode` 为 `disabled`、`outbound_only` 或 `listening`。
 - `notifier_membership_updates_sent_total{node_id}` / `notifier_membership_updates_received_total{node_id}`：membership update 收发总数。
 - `notifier_membership_advertisements_rejected_total{node_id}`：被发现逻辑拒绝的广告总数，持续增长时优先检查广告 URL、协议版本和来源身份。
 - `notifier_discovered_peer_persist_failures_total{node_id}`：发现记录写入 SQLite 失败总数。

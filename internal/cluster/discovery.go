@@ -299,9 +299,6 @@ func (m *Manager) reconcileDiscoveredDialers() {
 	dynamicCount := len(m.dynamicPeers)
 	staticURLs := make(map[string]struct{}, len(m.configuredPeers))
 	for _, peer := range m.configuredPeers {
-		if !isWebSocketPeerURL(peer.URL) {
-			continue
-		}
 		if normalized, err := normalizePeerURL(peer.URL); err == nil {
 			staticURLs[normalized] = struct{}{}
 		}
@@ -319,7 +316,7 @@ func (m *Manager) reconcileDiscoveredDialers() {
 		if peer.state == discoveryStateExpired {
 			continue
 		}
-		if !isWebSocketPeerURL(peer.url) {
+		if !m.canDialPeerURL(peer.url) {
 			continue
 		}
 		if active := m.peers[peer.nodeID]; active != nil && active.active != nil {
@@ -422,9 +419,6 @@ func (m *Manager) buildMembershipEnvelope() *internalproto.Envelope {
 	seen := make(map[string]struct{})
 	add := func(nodeID int64, rawURL string, itemGeneration uint64) {
 		if nodeID <= 0 || strings.TrimSpace(rawURL) == "" {
-			return
-		}
-		if !isWebSocketPeerURL(rawURL) {
 			return
 		}
 		normalized, err := normalizePeerURL(rawURL)

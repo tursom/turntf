@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -340,7 +341,7 @@ func TestNodeLoggedInUsersHTTPRequiresAuthenticationAndReturnsDeduplicatedUsers(
 	t.Parallel()
 
 	testAPI := newAuthenticatedTestAPI(t)
-	server := httptest.NewServer(testAPI.handler)
+	server := newIPv4TestServer(t, testAPI.handler)
 	defer server.Close()
 
 	doJSONWithHeaders(t, testAPI.handler, http.MethodGet, "/cluster/nodes/4096/logged-in-users", nil, nil, http.StatusUnauthorized)
@@ -453,7 +454,7 @@ func TestClientWebSocketLoginAndPushesBytesMessages(t *testing.T) {
 	t.Parallel()
 
 	testAPI := newAuthenticatedTestAPI(t)
-	server := httptest.NewServer(testAPI.handler)
+	server := newIPv4TestServer(t, testAPI.handler)
 	defer server.Close()
 
 	adminKey := store.UserKey{NodeID: testNodeID(1), UserID: store.BootstrapAdminUserID}
@@ -499,7 +500,7 @@ func TestClientWebSocketListClusterNodesAllowsUsers(t *testing.T) {
 			},
 		},
 	})
-	server := httptest.NewServer(testAPI.handler)
+	server := newIPv4TestServer(t, testAPI.handler)
 	defer server.Close()
 
 	adminKey := store.UserKey{NodeID: testNodeID(1), UserID: store.BootstrapAdminUserID}
@@ -531,7 +532,7 @@ func TestClientWebSocketListNodeLoggedInUsersAllowsUsers(t *testing.T) {
 	t.Parallel()
 
 	testAPI := newAuthenticatedTestAPI(t)
-	server := httptest.NewServer(testAPI.handler)
+	server := newIPv4TestServer(t, testAPI.handler)
 	defer server.Close()
 
 	adminKey := store.UserKey{NodeID: testNodeID(1), UserID: store.BootstrapAdminUserID}
@@ -579,7 +580,7 @@ func TestClientWebSocketListNodeLoggedInUsersReturnsErrorWhenRemoteNodeUnavailab
 			return nil, fmt.Errorf("%w: node 8192 is not connected", app.ErrServiceUnavailable)
 		},
 	})
-	server := httptest.NewServer(testAPI.handler)
+	server := newIPv4TestServer(t, testAPI.handler)
 	defer server.Close()
 
 	adminKey := store.UserKey{NodeID: testNodeID(1), UserID: store.BootstrapAdminUserID}
@@ -608,7 +609,7 @@ func TestClientWebSocketSeenCursorAndSendMessage(t *testing.T) {
 	t.Parallel()
 
 	testAPI := newAuthenticatedTestAPI(t)
-	server := httptest.NewServer(testAPI.handler)
+	server := newIPv4TestServer(t, testAPI.handler)
 	defer server.Close()
 
 	adminKey := store.UserKey{NodeID: testNodeID(1), UserID: store.BootstrapAdminUserID}
@@ -667,7 +668,7 @@ func TestClientWebSocketTransientSendMessage(t *testing.T) {
 	t.Parallel()
 
 	testAPI := newAuthenticatedTestAPI(t)
-	server := httptest.NewServer(testAPI.handler)
+	server := newIPv4TestServer(t, testAPI.handler)
 	defer server.Close()
 
 	adminKey := store.UserKey{NodeID: testNodeID(1), UserID: store.BootstrapAdminUserID}
@@ -731,7 +732,7 @@ func TestTransientHTTPAndWebSocketPacket(t *testing.T) {
 	t.Parallel()
 
 	testAPI := newAuthenticatedTestAPI(t)
-	server := httptest.NewServer(testAPI.handler)
+	server := newIPv4TestServer(t, testAPI.handler)
 	defer server.Close()
 
 	adminKey := store.UserKey{NodeID: testNodeID(1), UserID: store.BootstrapAdminUserID}
@@ -806,7 +807,7 @@ func TestClientWebSocketAdminRPCProvidesFullHTTPCapabilities(t *testing.T) {
 	t.Parallel()
 
 	testAPI := newAuthenticatedTestAPI(t)
-	server := httptest.NewServer(testAPI.handler)
+	server := newIPv4TestServer(t, testAPI.handler)
 	defer server.Close()
 
 	adminKey := store.UserKey{NodeID: testNodeID(1), UserID: store.BootstrapAdminUserID}
@@ -933,7 +934,7 @@ func TestClientWebSocketRPCRespectsUserAuthorizationAndSubscriptions(t *testing.
 	t.Parallel()
 
 	testAPI := newAuthenticatedTestAPI(t)
-	server := httptest.NewServer(testAPI.handler)
+	server := newIPv4TestServer(t, testAPI.handler)
 	defer server.Close()
 
 	adminKey := store.UserKey{NodeID: testNodeID(1), UserID: store.BootstrapAdminUserID}
@@ -1101,7 +1102,7 @@ func TestClientWebSocketBlacklistRPC(t *testing.T) {
 	t.Parallel()
 
 	testAPI := newAuthenticatedTestAPI(t)
-	server := httptest.NewServer(testAPI.handler)
+	server := newIPv4TestServer(t, testAPI.handler)
 	defer server.Close()
 
 	adminKey := store.UserKey{NodeID: testNodeID(1), UserID: store.BootstrapAdminUserID}
@@ -1318,4 +1319,17 @@ func doJSONWithHeaders(t *testing.T, handler http.Handler, method, path string, 
 		t.Fatalf("unexpected status for %s %s: got=%d want=%d body=%s", method, path, rr.Code, wantStatus, rr.Body.String())
 	}
 	return rr.Body.Bytes()
+}
+
+func newIPv4TestServer(t *testing.T, handler http.Handler) *httptest.Server {
+	t.Helper()
+
+	server := httptest.NewUnstartedServer(handler)
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen on ipv4 loopback: %v", err)
+	}
+	server.Listener = listener
+	server.Start()
+	return server
 }

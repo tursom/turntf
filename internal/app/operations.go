@@ -22,6 +22,9 @@ type ClusterDiscoveryStatus struct {
 	RejectedTotal         uint64
 	PersistFailuresTotal  uint64
 	PeersByState          map[string]int
+	PeersByScheme         map[string]int
+	ZeroMQMode            string
+	ZeroMQListenerRunning bool
 }
 
 type LoggedInUserSummary struct {
@@ -39,6 +42,7 @@ type ClusterPeerOriginStatus struct {
 type ClusterPeerStatus struct {
 	NodeID                    int64
 	ConfiguredURL             string
+	Transport                 string
 	Source                    string
 	DiscoveredURL             string
 	DiscoveryState            string

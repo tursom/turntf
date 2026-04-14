@@ -818,24 +818,6 @@ func TestLoadServeRuntimeConfigRejectsInvalidZeroMQConfig(t *testing.T) {
 		wantErr string
 	}{
 		{
-			name: "enabled without bind url",
-			body: `
-[api]
-listen_addr = ":8080"
-
-[store]
-db_path = "./data/node-a.db"
-
-[cluster]
-advertise_path = "/internal/cluster/ws"
-secret = "secret"
-
-[cluster.zeromq]
-enabled = true
-`,
-			wantErr: "zeromq bind url cannot be empty",
-		},
-		{
 			name: "invalid bind url scheme",
 			body: `
 [api]
@@ -853,6 +835,24 @@ enabled = true
 bind_url = "ws://127.0.0.1:9090"
 `,
 			wantErr: "zeromq bind url scheme must be tcp",
+		},
+		{
+			name: "zeromq peer requires zeromq enabled",
+			body: `
+[api]
+listen_addr = ":8080"
+
+[store]
+db_path = "./data/node-a.db"
+
+[cluster]
+advertise_path = "/internal/cluster/ws"
+secret = "secret"
+
+[[cluster.peers]]
+url = "zmq+tcp://127.0.0.1:9091"
+`,
+			wantErr: `zeromq peer url "zmq+tcp://127.0.0.1:9091" requires cluster.zeromq.enabled`,
 		},
 		{
 			name: "invalid zeromq peer wildcard",
@@ -905,6 +905,43 @@ url = "ws://example.com/internal/cluster/ws"
 				t.Fatalf("unexpected error: %v", err)
 			}
 		})
+	}
+}
+
+func TestLoadServeRuntimeConfigSupportsOutboundOnlyZeroMQ(t *testing.T) {
+	t.Parallel()
+
+	configPath := filepath.Join(t.TempDir(), "zeromq-outbound.toml")
+	writeTestConfig(t, configPath, `
+[api]
+listen_addr = ":8080"
+
+[store]
+db_path = "./data/node-a.db"
+
+[cluster]
+advertise_path = "/internal/cluster/ws"
+secret = "secret"
+
+[cluster.zeromq]
+enabled = true
+
+[[cluster.peers]]
+url = "zmq+tcp://Example.COM:9091"
+`)
+
+	cfg, err := loadServeRuntimeConfig(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if !cfg.Cluster.ZeroMQ.Enabled {
+		t.Fatalf("expected zeromq to be enabled")
+	}
+	if cfg.Cluster.ZeroMQ.BindURL != "" {
+		t.Fatalf("expected empty zeromq bind url in outbound-only mode, got %q", cfg.Cluster.ZeroMQ.BindURL)
+	}
+	if cfg.Cluster.Peers[0].URL != "zmq+tcp://example.com:9091" {
+		t.Fatalf("unexpected normalized zeromq peer url: %q", cfg.Cluster.Peers[0].URL)
 	}
 }
 

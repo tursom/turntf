@@ -292,32 +292,41 @@ func (m *Manager) validateConfiguredTransports() error {
 	if m == nil {
 		return nil
 	}
-	needsZeroMQ := m.cfg.ZeroMQ.Enabled
-	if !needsZeroMQ {
+	needsZeroMQDial := m.cfg.zeroMQDialEnabled()
+	if !needsZeroMQDial {
 		for _, peer := range m.configuredPeers {
 			if peer != nil && isZeroMQPeerURL(peer.URL) {
-				needsZeroMQ = true
+				needsZeroMQDial = true
 				break
 			}
 		}
 	}
-	if needsZeroMQ && !zeroMQEnabled() {
+	needsZeroMQListener := m.cfg.zeroMQListenerEnabled()
+	if (needsZeroMQDial || needsZeroMQListener) && !zeroMQEnabled() {
 		return errZeroMQNotBuilt
 	}
-	if m.cfg.ZeroMQ.Enabled && m.zeroMQListenerFactory == nil {
+	if needsZeroMQListener && m.zeroMQListenerFactory == nil {
 		return errors.New("zeromq listener factory is not configured")
 	}
 	return nil
 }
 
 func (m *Manager) transportForPeerURL(peerURL string) (string, error) {
-	switch {
-	case isWebSocketPeerURL(peerURL):
-		return transportWebSocket, nil
-	case isZeroMQPeerURL(peerURL):
-		return transportZeroMQ, nil
-	default:
+	transport := transportForPeerURL(peerURL)
+	if transport == "" {
 		return "", fmt.Errorf("unsupported peer transport for %q", peerURL)
+	}
+	return transport, nil
+}
+
+func (m *Manager) canDialPeerURL(peerURL string) bool {
+	switch transportForPeerURL(peerURL) {
+	case transportWebSocket:
+		return true
+	case transportZeroMQ:
+		return m != nil && m.cfg.zeroMQDialEnabled()
+	default:
+		return false
 	}
 }
 
@@ -342,7 +351,7 @@ func (m *Manager) Start(parent context.Context) error {
 			m.cancel()
 			return
 		}
-		if m.cfg.ZeroMQ.Enabled {
+		if m.cfg.zeroMQListenerEnabled() {
 			listener := m.zeroMQListenerFactory(m.cfg.ZeroMQ.BindURL)
 			if err := listener.Start(m.ctx, m.handleZeroMQConn); err != nil {
 				m.startErr = err

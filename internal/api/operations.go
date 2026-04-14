@@ -65,6 +65,9 @@ type discoveryStatus struct {
 	RejectedTotal         uint64         `json:"rejected_total"`
 	PersistFailuresTotal  uint64         `json:"persist_failures_total"`
 	PeersByState          map[string]int `json:"peers_by_state,omitempty"`
+	PeersByScheme         map[string]int `json:"peers_by_scheme,omitempty"`
+	ZeroMQMode            string         `json:"zeromq_mode,omitempty"`
+	ZeroMQListenerRunning bool           `json:"zeromq_listener_running"`
 }
 
 type messageTrimStatus struct {
@@ -90,6 +93,7 @@ type peerOriginStatusResponse struct {
 type peerStatusResponse struct {
 	NodeID                    int64                      `json:"node_id"`
 	ConfiguredURL             string                     `json:"configured_url,omitempty"`
+	Transport                 string                     `json:"transport,omitempty"`
 	Source                    string                     `json:"source,omitempty"`
 	DiscoveredURL             string                     `json:"discovered_url,omitempty"`
 	DiscoveryState            string                     `json:"discovery_state,omitempty"`
@@ -164,6 +168,9 @@ func (s *Service) OperationsStatus(ctx context.Context) (operationsStatus, error
 			RejectedTotal:         clusterStatus.Discovery.RejectedTotal,
 			PersistFailuresTotal:  clusterStatus.Discovery.PersistFailuresTotal,
 			PeersByState:          clusterStatus.Discovery.PeersByState,
+			PeersByScheme:         clusterStatus.Discovery.PeersByScheme,
+			ZeroMQMode:            clusterStatus.Discovery.ZeroMQMode,
+			ZeroMQListenerRunning: clusterStatus.Discovery.ZeroMQListenerRunning,
 		},
 		Peers: mergePeerStatus(storeStats.Peers, clusterStatus.Peers),
 	}
@@ -271,8 +278,17 @@ func (s *Service) Metrics(ctx context.Context) (string, error) {
 	for state, total := range status.Discovery.PeersByState {
 		writeGauge(&buf, "notifier_discovered_peers_by_state", map[string]string{"node_id": nodeIDLabel, "state": state}, float64(total))
 	}
+	writeMetricHelp(&buf, "notifier_discovered_peers_by_scheme", "Discovered peer records grouped by peer URL scheme.", "gauge")
+	for scheme, total := range status.Discovery.PeersByScheme {
+		writeGauge(&buf, "notifier_discovered_peers_by_scheme", map[string]string{"node_id": nodeIDLabel, "scheme": scheme}, float64(total))
+	}
 	writeMetricHelp(&buf, "notifier_dynamic_peer_dialers", "Dynamic peer dial loops started from discovery.", "gauge")
 	writeGauge(&buf, "notifier_dynamic_peer_dialers", map[string]string{"node_id": nodeIDLabel}, float64(status.Discovery.DynamicPeers))
+	writeMetricHelp(&buf, "notifier_zeromq_listener_running", "Whether the local ZeroMQ listener is currently running.", "gauge")
+	writeGauge(&buf, "notifier_zeromq_listener_running", map[string]string{
+		"node_id": nodeIDLabel,
+		"mode":    status.Discovery.ZeroMQMode,
+	}, boolGauge(status.Discovery.ZeroMQListenerRunning))
 	writeMetricHelp(&buf, "notifier_membership_updates_sent_total", "Membership updates sent to peers.", "counter")
 	writeGauge(&buf, "notifier_membership_updates_sent_total", map[string]string{"node_id": nodeIDLabel}, float64(status.Discovery.MembershipUpdatesSent))
 	writeMetricHelp(&buf, "notifier_membership_updates_received_total", "Membership updates received from peers.", "counter")
@@ -300,15 +316,22 @@ func (s *Service) Metrics(ctx context.Context) (string, error) {
 			"node_id":      nodeIDLabel,
 			"peer_node_id": strconv.FormatInt(peer.NodeID, 10),
 		}
+		if peer.Transport != "" {
+			peerLabels["transport"] = peer.Transport
+		}
 		writeGauge(&buf, "notifier_peer_connected", peerLabels, boolGauge(peer.Connected))
 		writeGauge(&buf, "notifier_peer_pending_snapshot_partitions", peerLabels, float64(peer.PendingSnapshotPartitions))
 		writeGauge(&buf, "notifier_clock_offset_ms", peerLabels, float64(peer.ClockOffsetMs))
 		if peer.ClockState != "" {
-			writeGauge(&buf, "notifier_peer_clock_state", map[string]string{
+			clockLabels := map[string]string{
 				"node_id":      nodeIDLabel,
 				"peer_node_id": strconv.FormatInt(peer.NodeID, 10),
 				"state":        peer.ClockState,
-			}, 1)
+			}
+			if peer.Transport != "" {
+				clockLabels["transport"] = peer.Transport
+			}
+			writeGauge(&buf, "notifier_peer_clock_state", clockLabels, 1)
 		}
 		writeGauge(&buf, "notifier_peer_clock_uncertainty_ms", peerLabels, float64(peer.ClockUncertaintyMs))
 		writeGauge(&buf, "notifier_peer_clock_failures_total", peerLabels, float64(peer.ClockFailures))
@@ -317,6 +340,9 @@ func (s *Service) Metrics(ctx context.Context) (string, error) {
 				"node_id":        nodeIDLabel,
 				"peer_node_id":   strconv.FormatInt(peer.NodeID, 10),
 				"origin_node_id": strconv.FormatInt(origin.OriginNodeID, 10),
+			}
+			if peer.Transport != "" {
+				labels["transport"] = peer.Transport
 			}
 			writeGauge(&buf, "notifier_peer_origin_acked_event_id", labels, float64(origin.AckedEventID))
 			writeGauge(&buf, "notifier_peer_origin_applied_event_id", labels, float64(origin.AppliedEventID))
@@ -366,6 +392,7 @@ func mergePeerStatus(storePeers []store.PeerOperationsStats, clusterPeers []app.
 			unknown = append(unknown, peerStatusResponse{
 				NodeID:                    peer.NodeID,
 				ConfiguredURL:             peer.ConfiguredURL,
+				Transport:                 peer.Transport,
 				Source:                    peer.Source,
 				DiscoveredURL:             peer.DiscoveredURL,
 				DiscoveryState:            peer.DiscoveryState,
@@ -398,6 +425,7 @@ func mergePeerStatus(storePeers []store.PeerOperationsStats, clusterPeers []app.
 		item := index[peer.NodeID]
 		item.NodeID = peer.NodeID
 		item.ConfiguredURL = peer.ConfiguredURL
+		item.Transport = peer.Transport
 		item.Source = peer.Source
 		item.DiscoveredURL = peer.DiscoveredURL
 		item.DiscoveryState = peer.DiscoveryState

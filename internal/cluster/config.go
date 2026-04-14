@@ -126,11 +126,13 @@ func (c *Config) Validate() error {
 		}
 	}
 	if c.ZeroMQ.Enabled {
-		normalizedBindURL, err := normalizeZeroMQBindURL(c.ZeroMQ.BindURL)
-		if err != nil {
-			return err
+		if c.ZeroMQ.BindURL != "" {
+			normalizedBindURL, err := normalizeZeroMQBindURL(c.ZeroMQ.BindURL)
+			if err != nil {
+				return err
+			}
+			c.ZeroMQ.BindURL = normalizedBindURL
 		}
-		c.ZeroMQ.BindURL = normalizedBindURL
 	}
 
 	seenPeers := make(map[string]struct{}, len(c.Peers))
@@ -139,6 +141,9 @@ func (c *Config) Validate() error {
 		if err != nil {
 			return err
 		}
+		if isZeroMQPeerURL(normalizedURL) && !c.ZeroMQ.Enabled {
+			return fmt.Errorf("zeromq peer url %q requires cluster.zeromq.enabled", normalizedURL)
+		}
 		if _, ok := seenPeers[normalizedURL]; ok {
 			return fmt.Errorf("duplicate peer url %q", normalizedURL)
 		}
@@ -146,4 +151,23 @@ func (c *Config) Validate() error {
 		c.Peers[idx].URL = normalizedURL
 	}
 	return nil
+}
+
+func (c Config) zeroMQDialEnabled() bool {
+	return c.ZeroMQ.Enabled
+}
+
+func (c Config) zeroMQListenerEnabled() bool {
+	return c.ZeroMQ.Enabled && strings.TrimSpace(c.ZeroMQ.BindURL) != ""
+}
+
+func (c Config) zeroMQMode() string {
+	switch {
+	case !c.ZeroMQ.Enabled:
+		return "disabled"
+	case strings.TrimSpace(c.ZeroMQ.BindURL) == "":
+		return "outbound_only"
+	default:
+		return "listening"
+	}
 }

@@ -68,6 +68,8 @@ type clusterTestNodeConfig struct {
 	Name                        string
 	Slot                        uint16
 	Peers                       []Peer
+	ZeroMQEnabled               bool
+	ZeroMQBindURL               string
 	MessageWindowSize           int
 	ClockSkewMs                 int64
 	MaxClockSkewMs              int64
@@ -245,9 +247,13 @@ func newClusterTestNodeFixtureWithListener(t *testing.T, cfg clusterTestNodeConf
 	}
 
 	manager, err := NewManager(Config{
-		NodeID:                      numericNodeID,
-		AdvertisePath:               websocketPath,
-		ClusterSecret:               "secret",
+		NodeID:        numericNodeID,
+		AdvertisePath: websocketPath,
+		ClusterSecret: "secret",
+		ZeroMQ: ZeroMQConfig{
+			Enabled: cfg.ZeroMQEnabled,
+			BindURL: cfg.ZeroMQBindURL,
+		},
 		Peers:                       cfg.Peers,
 		DiscoveryDisabled:           !cfg.DiscoveryEnabled,
 		MessageWindowSize:           cfg.MessageWindowSize,

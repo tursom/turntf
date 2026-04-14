@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -17,7 +18,7 @@ func TestWebSocketTransportSendReceivePayload(t *testing.T) {
 	transport := newWebSocketTransport()
 	accepted := make(chan TransportConn, 1)
 	upgradeErrs := make(chan error, 1)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := newIPv4WebSocketTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := transport.Upgrade(w, r)
 		if err != nil {
 			upgradeErrs <- err
@@ -71,7 +72,7 @@ func TestWebSocketTransportRejectsNonBinaryFrame(t *testing.T) {
 	transport := newWebSocketTransport()
 	receiveErrs := make(chan error, 1)
 	upgradeErrs := make(chan error, 1)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := newIPv4WebSocketTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := transport.Upgrade(w, r)
 		if err != nil {
 			upgradeErrs <- err
@@ -109,7 +110,7 @@ func TestWebSocketTransportReceiveReturnsErrorAfterRemoteClose(t *testing.T) {
 	transport := newWebSocketTransport()
 	accepted := make(chan TransportConn, 1)
 	upgradeErrs := make(chan error, 1)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := newIPv4WebSocketTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := transport.Upgrade(w, r)
 		if err != nil {
 			upgradeErrs <- err
@@ -149,4 +150,17 @@ func waitForAcceptedTransport(t *testing.T, accepted <-chan TransportConn, errs 
 
 func websocketURL(httpURL string) string {
 	return "ws" + strings.TrimPrefix(httpURL, "http")
+}
+
+func newIPv4WebSocketTestServer(t *testing.T, handler http.Handler) *httptest.Server {
+	t.Helper()
+
+	server := httptest.NewUnstartedServer(handler)
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen on ipv4 loopback: %v", err)
+	}
+	server.Listener = listener
+	server.Start()
+	return server
 }

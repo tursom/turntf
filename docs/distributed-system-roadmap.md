@@ -98,6 +98,8 @@
 
 ### 3. 分布式测试框架增强
 
+详细实现计划见 [docs/distributed-test-framework-enhancement.md](/root/dev/sys/turntf/docs/distributed-test-framework-enhancement.md)。
+
 当前状态：
 
 - 现有 `store` 和 `cluster manager` 已有一批覆盖补拉、快照修复、未来时间戳拒绝等单元测试

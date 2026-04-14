@@ -30,13 +30,12 @@ const (
 	outboundQueueSize                = 128
 	managerPublishQueue              = 256
 	pullBatchSize                    = 128
-	timeSyncSampleCount              = 5
+	timeSyncSampleCount              = 7
 	timeSyncInterval                 = 30 * time.Second
-	timeSyncTimeout                  = 3 * time.Second
+	timeSyncTimeout                  = 8 * time.Second
 	queryLoggedInUsersTimeout        = 3 * time.Second
 	catchupRetryInterval             = time.Second
 	antiEntropyInterval              = 60 * time.Second
-	writeGateGrace                   = 90 * time.Second
 	routingUpdateInterval            = 5 * time.Second
 	routeRetryInterval               = 200 * time.Millisecond
 	packetSeenTTL                    = 30 * time.Second
@@ -49,6 +48,7 @@ const (
 var marshalOptions = proto.MarshalOptions{Deterministic: true}
 
 var errSessionClosed = errors.New("session closed")
+var errClockProtectionRejected = errors.New("clock protection rejected")
 
 type Manager struct {
 	cfg      Config
@@ -69,7 +69,10 @@ type Manager struct {
 	peers           map[int64]*peerState
 	configuredPeers []*configuredPeer
 
-	lastSuccessfulClockSync  time.Time
+	lastTrustedClockSync     time.Time
+	clockState               clockState
+	clockReason              string
+	clockStateTransitions    map[clockStateTransitionKey]uint64
 	timeSyncer               func(*session) (timeSyncSample, error)
 	transientHandler         func(store.TransientPacket) bool
 	loggedInUsersProvider    func(context.Context) ([]app.LoggedInUserSummary, error)
@@ -88,14 +91,23 @@ type configuredPeer struct {
 }
 
 type peerState struct {
-	active         *session
-	lastAck        uint64
-	trustedSession *session
-	clockOffsetMs  int64
-	lastClockSync  time.Time
-	sessions       map[uint64]*session
-	routeAdverts   map[int64]routeAdvertisement
-	joinedLogged   bool
+	active                   *session
+	lastAck                  uint64
+	trustedSession           *session
+	clockState               clockState
+	clockOffsetMs            int64
+	clockUncertaintyMs       int64
+	lastClockSync            time.Time
+	lastCredibleClockSync    time.Time
+	clockLastError           string
+	clockSamples             []timeSyncSample
+	clockFailures            uint64
+	clockFailureStreak       int
+	clockSkewViolationStreak int
+	clockHealthyStreak       int
+	sessions                 map[uint64]*session
+	routeAdverts             map[int64]routeAdvertisement
+	joinedLogged             bool
 
 	snapshotDigestsSent     uint64
 	snapshotDigestsReceived uint64
@@ -180,11 +192,15 @@ type loggedInUsersQueryResult struct {
 }
 
 type timeSyncSample struct {
-	offsetMs int64
-	rttMs    int64
+	offsetMs      int64
+	rttMs         int64
+	uncertaintyMs int64
+	sampledAt     time.Time
+	credible      bool
 }
 
 func NewManager(cfg Config, st *store.Store) (*Manager, error) {
+	cfg = cfg.WithDefaults()
 	cfg.MessageWindowSize = normalizedMessageWindowSize(cfg.MessageWindowSize)
 	if err := cfg.Validate(); err != nil {
 		return nil, err
@@ -207,16 +223,17 @@ func NewManager(cfg Config, st *store.Store) (*Manager, error) {
 		upgrader: websocket.Upgrader{
 			CheckOrigin: func(*http.Request) bool { return true },
 		},
-		mux:                  http.NewServeMux(),
-		publishCh:            make(chan store.Event, managerPublishQueue),
-		dialer:               websocket.DefaultDialer,
-		peers:                make(map[int64]*peerState, len(cfg.Peers)),
-		configuredPeers:      configuredPeers,
-		supportsRouting:      true,
-		routingTable:         make(map[int64]routeEntry),
-		seenPackets:          make(map[string]time.Time),
-		retryQueue:           make(map[string]queuedPacket),
-		pendingLoggedInUsers: make(map[uint64]chan loggedInUsersQueryResult),
+		mux:                   http.NewServeMux(),
+		publishCh:             make(chan store.Event, managerPublishQueue),
+		dialer:                websocket.DefaultDialer,
+		peers:                 make(map[int64]*peerState, len(cfg.Peers)),
+		configuredPeers:       configuredPeers,
+		supportsRouting:       true,
+		routingTable:          make(map[int64]routeEntry),
+		seenPackets:           make(map[string]time.Time),
+		retryQueue:            make(map[string]queuedPacket),
+		pendingLoggedInUsers:  make(map[uint64]chan loggedInUsersQueryResult),
+		clockStateTransitions: make(map[clockStateTransitionKey]uint64),
 	}
 	mgr.mux.HandleFunc("GET "+cfg.AdvertisePath, mgr.handleWebSocket)
 	return mgr, nil
@@ -704,6 +721,9 @@ func (m *Manager) readLoop(sess *session) {
 			}
 		case *internalproto.Envelope_EventBatch:
 			if err := m.handleEventBatch(sess, &envelope); err != nil {
+				if errors.Is(err, errClockProtectionRejected) {
+					continue
+				}
 				return
 			}
 		case *internalproto.Envelope_PullEvents:
@@ -712,10 +732,16 @@ func (m *Manager) readLoop(sess *session) {
 			}
 		case *internalproto.Envelope_SnapshotDigest:
 			if err := m.handleSnapshotDigest(sess, &envelope); err != nil {
+				if errors.Is(err, errClockProtectionRejected) {
+					continue
+				}
 				return
 			}
 		case *internalproto.Envelope_SnapshotChunk:
 			if err := m.handleSnapshotChunk(sess, &envelope); err != nil {
+				if errors.Is(err, errClockProtectionRejected) {
+					continue
+				}
 				return
 			}
 		case *internalproto.Envelope_RoutingUpdate:
@@ -724,6 +750,9 @@ func (m *Manager) readLoop(sess *session) {
 			}
 		case *internalproto.Envelope_TransientPacket:
 			if err := m.handleTransientPacket(sess, &envelope); err != nil {
+				if errors.Is(err, errClockProtectionRejected) {
+					continue
+				}
 				return
 			}
 		default:
@@ -808,11 +837,18 @@ func (m *Manager) bootstrapSession(sess *session) {
 		sess.close()
 		return
 	}
-	m.logSessionEvent("time_sync_succeeded", sess).
+	state, reason := m.peerClockState(sess.peerID)
+	logger := m.logSessionEvent("time_sync_succeeded", sess)
+	if state != string(clockStateTrusted) {
+		logger = m.logSessionWarn("time_sync_observing", sess, nil)
+	}
+	logger.
+		Str("clock_state", state).
+		Str("clock_reason", reason).
 		Int64("offset_ms", sess.clockOffset()).
 		Int64("rtt_ms", sess.smoothedRTTMs).
 		Int64("max_clock_skew_ms", m.cfg.MaxClockSkewMs).
-		Msg("time sync succeeded")
+		Msg("time sync completed")
 	if !m.activateSession(sess) {
 		m.logSessionWarn("duplicate_session_rejected", sess, nil).
 			Msg("duplicate session rejected")
@@ -821,7 +857,6 @@ func (m *Manager) bootstrapSession(sess *session) {
 	}
 
 	sess.markReplicationReady()
-	m.markPeerClockSynced(sess, sess.clockOffset())
 	sess.startSyncLoop(func() {
 		m.sessionSyncLoop(sess)
 	})
@@ -1123,7 +1158,16 @@ func (m *Manager) handleEventBatch(sess *session, envelope *internalproto.Envelo
 	if strings.TrimSpace(envelope.SentAtHlc) == "" {
 		return errors.New("event batch sent_at_hlc cannot be empty")
 	}
-	if err := m.validateBatchHLC(events); err != nil {
+	m.mu.Lock()
+	if err := m.allowEventApplyLocked(sess.peerID); err != nil {
+		m.mu.Unlock()
+		m.logSessionWarn("event_batch_rejected_by_clock", sess, nil).
+			Str("reason", err.Error()).
+			Msg("event batch rejected by clock protection")
+		return err
+	}
+	m.mu.Unlock()
+	if err := m.validateBatchHLC(envelope.SentAtHlc, events); err != nil {
 		return err
 	}
 
@@ -1340,18 +1384,8 @@ func (m *Manager) AllowWrite(context.Context) error {
 }
 
 func (m *Manager) hasWritableClockSyncLocked() bool {
-	if len(m.configuredPeers) == 0 && len(m.peers) == 0 {
-		return true
-	}
-	for _, peer := range m.peers {
-		if peer.trustedSession != nil {
-			return true
-		}
-	}
-	if !m.lastSuccessfulClockSync.IsZero() && time.Since(m.lastSuccessfulClockSync) <= writeGateGrace {
-		return true
-	}
-	return false
+	state, _ := m.nodeClockStateLocked()
+	return state == clockStateTrusted || state == clockStateObserving
 }
 
 func (m *Manager) performTimeSync(sess *session) error {
@@ -1365,33 +1399,30 @@ func (m *Manager) performTimeSync(sess *session) error {
 		best, err = m.collectTimeSyncSample(sess)
 	}
 	if err != nil {
-		return err
+		state, reason := m.recordTimeSyncFailure(sess, err)
+		if state == clockStateRejected {
+			return fmt.Errorf("peer %d clock rejected after time sync failure: %s", sess.peerID, reason)
+		}
+		return nil
 	}
 
 	sess.setClockOffset(best.offsetMs)
 	sess.observeRTT(best.rttMs)
-	if m.cfg.MaxClockSkewMs > 0 && absInt64(best.offsetMs) > m.cfg.MaxClockSkewMs {
-		return fmt.Errorf("clock offset %dms exceeds max skew %dms", best.offsetMs, m.cfg.MaxClockSkewMs)
-	}
-
-	warnThreshold := m.cfg.MaxClockSkewMs
-	if warnThreshold == 0 {
-		warnThreshold = DefaultMaxClockSkewMs
-	}
-	if warnThreshold > 0 && absInt64(best.offsetMs) > warnThreshold {
-		m.logSessionWarn("clock_offset_warn", sess, nil).
-			Int64("offset_ms", best.offsetMs).
-			Int64("threshold_ms", warnThreshold).
-			Msg("clock offset exceeds warning threshold")
+	state, reason := m.recordTimeSyncSample(sess, best)
+	if state == clockStateRejected {
+		return fmt.Errorf("peer %d clock rejected after time sync sample: %s", sess.peerID, reason)
 	}
 	return nil
 }
 
 func (m *Manager) collectTimeSyncSample(sess *session) (timeSyncSample, error) {
 	var (
-		best    timeSyncSample
-		found   bool
-		lastErr error
+		best      timeSyncSample
+		found     bool
+		lastErr   error
+		minRTT    int64
+		maxRTT    int64
+		haveRange bool
 	)
 
 	for range timeSyncSampleCount {
@@ -1400,12 +1431,30 @@ func (m *Manager) collectTimeSyncSample(sess *session) (timeSyncSample, error) {
 			lastErr = err
 			continue
 		}
+		if !haveRange {
+			minRTT = sample.rttMs
+			maxRTT = sample.rttMs
+			haveRange = true
+		} else {
+			if sample.rttMs < minRTT {
+				minRTT = sample.rttMs
+			}
+			if sample.rttMs > maxRTT {
+				maxRTT = sample.rttMs
+			}
+		}
 		if !found || sample.rttMs < best.rttMs {
 			best = sample
 			found = true
 		}
 	}
 	if found {
+		jitterMs := maxRTT - minRTT
+		best.uncertaintyMs = maxInt64(best.rttMs/2, jitterMs/2) + 50
+		best.credible = best.rttMs <= m.cfg.ClockCredibleRttMs
+		if best.sampledAt.IsZero() {
+			best.sampledAt = time.Now().UTC()
+		}
 		return best, nil
 	}
 	if lastErr == nil {
@@ -1431,7 +1480,7 @@ func (m *Manager) timeSyncRoundTrip(sess *session) (timeSyncSample, error) {
 		},
 	})
 
-	timer := time.NewTimer(timeSyncTimeout)
+	timer := time.NewTimer(m.clockSyncTimeout())
 	defer timer.Stop()
 
 	select {
@@ -1454,7 +1503,11 @@ func (m *Manager) timeSyncRoundTrip(sess *session) (timeSyncSample, error) {
 		if rttMs < 0 {
 			rttMs = 0
 		}
-		return timeSyncSample{offsetMs: offsetMs, rttMs: rttMs}, nil
+		return timeSyncSample{
+			offsetMs:  offsetMs,
+			rttMs:     rttMs,
+			sampledAt: time.Now().UTC(),
+		}, nil
 	case <-timer.C:
 		sess.cancelTimeSync(requestID, context.DeadlineExceeded)
 		return timeSyncSample{}, fmt.Errorf("time sync with peer %d timed out", sess.peerID)
@@ -1486,11 +1539,19 @@ func (m *Manager) sessionSyncLoop(sess *session) {
 				sess.close()
 				return
 			}
-			m.logSessionDebug("periodic_time_sync_succeeded", sess).
+			state, reason := m.peerClockState(sess.peerID)
+			eventName := "periodic_time_sync_succeeded"
+			logger := m.logSessionDebug(eventName, sess)
+			if state != string(clockStateTrusted) {
+				eventName = "periodic_time_sync_observing"
+				logger = m.logSessionWarn(eventName, sess, nil)
+			}
+			logger.
+				Str("clock_state", state).
+				Str("clock_reason", reason).
 				Int64("offset_ms", sess.clockOffset()).
 				Int64("rtt_ms", sess.smoothedRTTMs).
-				Msg("periodic time sync succeeded")
-			m.markPeerClockSynced(sess, sess.clockOffset())
+				Msg("periodic time sync completed")
 		case <-catchupTicker.C:
 			if sess.isClosed() {
 				return
@@ -1511,35 +1572,13 @@ func (m *Manager) sessionSyncLoop(sess *session) {
 }
 
 func (m *Manager) markPeerClockSynced(sess *session, offsetMs int64) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	peer, ok := m.peers[sess.peerID]
-	if !ok {
-		return
-	}
-	if peer.active != sess {
-		return
-	}
-
-	wasTrusted := peer.trustedSession == sess
-	peer.trustedSession = sess
-	peer.clockOffsetMs = offsetMs
-	peer.lastClockSync = time.Now()
-	m.lastSuccessfulClockSync = peer.lastClockSync
-	if sess.smoothedRTTMs <= 0 {
-		sess.smoothedRTTMs = 1
-	}
-	if peer.sessions != nil {
-		peer.sessions[sess.connectionID] = sess
-	}
-	m.recomputeRoutesLocked()
-	m.recomputeClockOffsetLocked()
-	if !wasTrusted {
-		m.logSessionEvent("peer_clock_trusted", sess).
-			Int64("offset_ms", offsetMs).
-			Msg("peer clock is trusted")
-	}
+	_, _ = m.recordTimeSyncSample(sess, timeSyncSample{
+		offsetMs:      offsetMs,
+		rttMs:         maxInt64(sess.smoothedRTTMs, 1),
+		uncertaintyMs: 50,
+		sampledAt:     time.Now().UTC(),
+		credible:      true,
+	})
 }
 
 func (m *Manager) clearPeerClockSync(sess *session) {
@@ -1553,12 +1592,12 @@ func (m *Manager) clearPeerClockSync(sess *session) {
 	cleared := false
 	if peer.trustedSession == sess {
 		peer.trustedSession = nil
-		peer.clockOffsetMs = 0
-		peer.lastClockSync = time.Time{}
+		peer.clockState = clockStateObserving
 		cleared = true
 	}
 	m.recomputeRoutesLocked()
 	m.recomputeClockOffsetLocked()
+	m.refreshNodeClockStateLocked()
 	if cleared {
 		m.logSessionEvent("peer_clock_untrusted", sess).
 			Msg("peer clock is no longer trusted")
@@ -1573,6 +1612,7 @@ func (m *Manager) recomputeClockOffsetLocked() {
 		}
 	}
 	if len(offsets) == 0 {
+		m.clock.SetOffsetMs(0)
 		return
 	}
 	sort.Slice(offsets, func(i, j int) bool {
@@ -1581,12 +1621,19 @@ func (m *Manager) recomputeClockOffsetLocked() {
 	m.clock.SetOffsetMs(offsets[len(offsets)/2])
 }
 
-func (m *Manager) validateBatchHLC(events []*internalproto.ReplicatedEvent) error {
+func (m *Manager) validateBatchHLC(sentAtRaw string, events []*internalproto.ReplicatedEvent) error {
 	if m.cfg.MaxClockSkewMs == 0 {
 		return nil
 	}
-
 	maxAllowedWallTime := m.clock.WallTimeMs() + m.cfg.MaxClockSkewMs
+	sentAt, err := clock.ParseTimestamp(strings.TrimSpace(sentAtRaw))
+	if err != nil {
+		return fmt.Errorf("parse event batch sent_at_hlc: %w", err)
+	}
+	if sentAt.WallTimeMs > maxAllowedWallTime {
+		return fmt.Errorf("event batch sent_at_hlc %s exceeds local wall time %d by more than %dms", sentAt, m.clock.WallTimeMs(), m.cfg.MaxClockSkewMs)
+	}
+	maxEventHLC := clock.Timestamp{}
 	for _, event := range events {
 		if event == nil {
 			continue
@@ -1598,8 +1645,21 @@ func (m *Manager) validateBatchHLC(events []*internalproto.ReplicatedEvent) erro
 		if hlc.WallTimeMs > maxAllowedWallTime {
 			return fmt.Errorf("replicated event hlc %s exceeds local wall time %d by more than %dms", hlc, m.clock.WallTimeMs(), m.cfg.MaxClockSkewMs)
 		}
+		if maxEventHLC == (clock.Timestamp{}) || hlc.Compare(maxEventHLC) > 0 {
+			maxEventHLC = hlc
+		}
+	}
+	if maxEventHLC != (clock.Timestamp{}) && sentAt.Compare(maxEventHLC) < 0 {
+		return fmt.Errorf("event batch sent_at_hlc %s is earlier than max event hlc %s", sentAt, maxEventHLC)
 	}
 	return nil
+}
+
+func (m *Manager) peerClockState(peerID int64) (string, string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	state, reason := m.peerClockStateLocked(peerID)
+	return string(state), reason
 }
 
 func (m *Manager) listLocalLoggedInUsers(ctx context.Context) ([]app.LoggedInUserSummary, error) {
@@ -1807,7 +1867,7 @@ func (m *Manager) deactivateSession(sess *session) {
 	if ok && peer.trustedSession == sess {
 		peer.trustedSession = nil
 		peer.clockOffsetMs = 0
-		peer.lastClockSync = time.Time{}
+		peer.clockState = clockStateObserving
 		wasTrusted = true
 	}
 	if ok && len(peer.sessions) == 0 {
@@ -1815,6 +1875,7 @@ func (m *Manager) deactivateSession(sess *session) {
 	}
 	m.recomputeRoutesLocked()
 	m.recomputeClockOffsetLocked()
+	m.refreshNodeClockStateLocked()
 	m.mu.Unlock()
 	m.logSessionEvent("peer_session_closed", sess).
 		Bool("was_active", wasActive).
@@ -2238,10 +2299,12 @@ func (m *Manager) bindPeerIdentity(sess *session, peerID int64) error {
 	sess.peerID = peerID
 	if _, ok := m.peers[peerID]; !ok {
 		m.peers[peerID] = &peerState{
+			clockState:   clockStateProbing,
 			sessions:     make(map[uint64]*session),
 			routeAdverts: make(map[int64]routeAdvertisement),
 		}
 	}
 	m.peers[peerID].sessions[sess.connectionID] = sess
+	m.refreshNodeClockStateLocked()
 	return nil
 }

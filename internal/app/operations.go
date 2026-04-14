@@ -3,10 +3,14 @@ package app
 import "time"
 
 type ClusterStatus struct {
-	NodeID            int64
-	MessageWindowSize int
-	WriteGateReady    bool
-	Peers             []ClusterPeerStatus
+	NodeID               int64
+	MessageWindowSize    int
+	WriteGateReady       bool
+	ClockState           string
+	ClockReason          string
+	LastTrustedClockSync *time.Time
+	ClockTransitions     []ClockStateTransition
+	Peers                []ClusterPeerStatus
 }
 
 type LoggedInUserSummary struct {
@@ -30,12 +34,25 @@ type ClusterPeerStatus struct {
 	PendingSnapshotPartitions int
 	RemoteSnapshotVersion     string
 	RemoteMessageWindowSize   int
+	ClockState                string
 	ClockOffsetMs             int64
+	ClockUncertaintyMs        int64
+	ClockFailures             uint64
+	LastClockError            string
 	LastClockSync             *time.Time
+	LastCredibleClockSync     *time.Time
+	TrustedForOffset          bool
 	SnapshotDigestsSentTotal  uint64
 	SnapshotDigestsRecvTotal  uint64
 	SnapshotChunksSentTotal   uint64
 	SnapshotChunksRecvTotal   uint64
 	LastSnapshotDigestAt      *time.Time
 	LastSnapshotChunkAt       *time.Time
+}
+
+type ClockStateTransition struct {
+	FromState string
+	ToState   string
+	Reason    string
+	Total     uint64
 }

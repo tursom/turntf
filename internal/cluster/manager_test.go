@@ -1484,3 +1484,137 @@ func TestHandleEventBatchRejectsFutureTimestampWhenSkewCheckEnabled(t *testing.T
 	default:
 	}
 }
+
+func TestPerformTimeSyncKeepsPeerObservingOnSlowSample(t *testing.T) {
+	t.Parallel()
+
+	st := newReplicationTestStore(t, "node-b", 2)
+	mgr := newReplicationTestManager(t, st)
+	sess := readySnapshotTestSession(mgr, testNodeID(1), store.DefaultMessageWindowSize)
+	mgr.timeSyncer = func(*session) (timeSyncSample, error) {
+		return timeSyncSample{
+			offsetMs: 17,
+			rttMs:    mgr.cfg.ClockCredibleRttMs + 500,
+		}, nil
+	}
+
+	if err := mgr.performTimeSync(sess); err != nil {
+		t.Fatalf("perform time sync: %v", err)
+	}
+
+	state, reason := mgr.peerClockState(sess.peerID)
+	if state != string(clockStateObserving) {
+		t.Fatalf("expected peer to stay observing after slow sample, got state=%s reason=%s", state, reason)
+	}
+}
+
+func TestPerformTimeSyncRejectsAfterRepeatedConfirmedSkew(t *testing.T) {
+	t.Parallel()
+
+	st := newReplicationTestStore(t, "node-b", 2)
+	mgr := newReplicationTestManager(t, st)
+	sess := readySnapshotTestSession(mgr, testNodeID(1), store.DefaultMessageWindowSize)
+	mgr.timeSyncer = func(*session) (timeSyncSample, error) {
+		return timeSyncSample{
+			offsetMs: mgr.cfg.MaxClockSkewMs + 500,
+			rttMs:    10,
+		}, nil
+	}
+
+	for i := 0; i < mgr.cfg.ClockRejectAfterSkewSamples-1; i++ {
+		if err := mgr.performTimeSync(sess); err != nil {
+			t.Fatalf("unexpected early rejection on sample %d: %v", i+1, err)
+		}
+	}
+	if err := mgr.performTimeSync(sess); err == nil {
+		t.Fatalf("expected confirmed skew to reject peer")
+	}
+
+	state, reason := mgr.peerClockState(sess.peerID)
+	if state != string(clockStateRejected) {
+		t.Fatalf("expected rejected peer state, got state=%s reason=%s", state, reason)
+	}
+}
+
+func TestHandleEventBatchRejectsWhenNodeClockBecomesUnwritable(t *testing.T) {
+	t.Parallel()
+
+	sourceStore := newReplicationTestStore(t, "node-a", 1)
+	targetStore := newReplicationTestStore(t, "node-b", 2)
+	mgr := newReplicationTestManager(t, targetStore)
+
+	_, event, err := sourceStore.CreateUser(context.Background(), store.CreateUserParams{
+		Username:     "clock-guard-user",
+		PasswordHash: "hash-1",
+	})
+	if err != nil {
+		t.Fatalf("create source user: %v", err)
+	}
+
+	sess := readySnapshotTestSession(mgr, testNodeID(1), store.DefaultMessageWindowSize)
+	mgr.mu.Lock()
+	peer := mgr.peers[testNodeID(1)]
+	peer.trustedSession = nil
+	peer.clockState = clockStateObserving
+	mgr.lastTrustedClockSync = time.Now().UTC().Add(-2 * mgr.clockWriteGateGraceWindow())
+	mgr.refreshNodeClockStateLocked()
+	mgr.mu.Unlock()
+
+	envelope := &internalproto.Envelope{
+		NodeId:    testNodeID(1),
+		Sequence:  uint64(event.Sequence),
+		SentAtHlc: event.HLC.String(),
+		Body: &internalproto.Envelope_EventBatch{
+			EventBatch: &internalproto.EventBatch{
+				Events: []*internalproto.ReplicatedEvent{store.ToReplicatedEvent(event)},
+			},
+		},
+	}
+
+	if err := mgr.handleEventBatch(sess, envelope); !errors.Is(err, errClockProtectionRejected) {
+		t.Fatalf("expected clock protection rejection, got %v", err)
+	}
+	select {
+	case envelope := <-sess.send:
+		t.Fatalf("did not expect ack after unwritable rejection: %+v", envelope)
+	default:
+	}
+}
+
+func TestHandleSnapshotChunkRejectsFutureTimestamp(t *testing.T) {
+	t.Parallel()
+
+	sourceStore := newReplicationTestStore(t, "node-a", 1)
+	targetStore := newReplicationTestStore(t, "node-b", 2)
+	mgr := newReplicationTestManager(t, targetStore)
+
+	user, _, err := sourceStore.CreateUser(context.Background(), store.CreateUserParams{
+		Username:     "snapshot-future",
+		PasswordHash: "hash-1",
+	})
+	if err != nil {
+		t.Fatalf("create source user: %v", err)
+	}
+	chunk, err := sourceStore.BuildSnapshotChunk(context.Background(), store.SnapshotUsersPartition)
+	if err != nil {
+		t.Fatalf("build snapshot chunk: %v", err)
+	}
+	row := chunk.GetRows()[0].GetUser()
+	future := clock.Timestamp{
+		WallTimeMs: mgr.clock.WallTimeMs() + mgr.cfg.MaxClockSkewMs + 2000,
+		Logical:    0,
+		NodeID:     user.NodeID,
+	}
+	row.UpdatedAtHlc = future.String()
+
+	sess := readySnapshotTestSession(mgr, testNodeID(1), store.DefaultMessageWindowSize)
+	err = mgr.handleSnapshotChunk(sess, &internalproto.Envelope{
+		NodeId: testNodeID(1),
+		Body: &internalproto.Envelope_SnapshotChunk{
+			SnapshotChunk: chunk,
+		},
+	})
+	if err == nil {
+		t.Fatalf("expected future snapshot chunk to be rejected")
+	}
+}

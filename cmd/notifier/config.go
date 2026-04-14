@@ -60,10 +60,18 @@ type loggingConfig struct {
 }
 
 type clusterFileConfig struct {
-	AdvertisePath  string           `toml:"advertise_path"`
-	Secret         string           `toml:"secret"`
-	MaxClockSkewMs *int64           `toml:"max_clock_skew_ms"`
-	Peers          []peerFileConfig `toml:"peers"`
+	AdvertisePath                   string           `toml:"advertise_path"`
+	Secret                          string           `toml:"secret"`
+	MaxClockSkewMs                  *int64           `toml:"max_clock_skew_ms"`
+	ClockSyncTimeoutMs              *int64           `toml:"clock_sync_timeout_ms"`
+	ClockCredibleRttMs              *int64           `toml:"clock_credible_rtt_ms"`
+	ClockTrustedFreshMs             *int64           `toml:"clock_trusted_fresh_ms"`
+	ClockObserveGraceMs             *int64           `toml:"clock_observe_grace_ms"`
+	ClockWriteGateGraceMs           *int64           `toml:"clock_write_gate_grace_ms"`
+	ClockRejectAfterFailures        *int             `toml:"clock_reject_after_failures"`
+	ClockRejectAfterSkewSamples     *int             `toml:"clock_reject_after_skew_samples"`
+	ClockRecoverAfterHealthySamples *int             `toml:"clock_recover_after_healthy_samples"`
+	Peers                           []peerFileConfig `toml:"peers"`
 }
 
 type peerFileConfig struct {
@@ -177,13 +185,54 @@ func (c serveConfig) runtimeConfig(configPath string) (runtimeServeConfig, error
 	if c.Cluster.MaxClockSkewMs != nil {
 		maxClockSkewMs = *c.Cluster.MaxClockSkewMs
 	}
-	clusterCfg := cluster.Config{
-		AdvertisePath:     strings.TrimSpace(c.Cluster.AdvertisePath),
-		ClusterSecret:     strings.TrimSpace(c.Cluster.Secret),
-		Peers:             peers,
-		MessageWindowSize: messageWindowSize,
-		MaxClockSkewMs:    maxClockSkewMs,
+	clockSyncTimeoutMs := cluster.DefaultClockSyncTimeoutMs
+	if c.Cluster.ClockSyncTimeoutMs != nil {
+		clockSyncTimeoutMs = *c.Cluster.ClockSyncTimeoutMs
 	}
+	clockCredibleRttMs := cluster.DefaultClockCredibleRTTMs
+	if c.Cluster.ClockCredibleRttMs != nil {
+		clockCredibleRttMs = *c.Cluster.ClockCredibleRttMs
+	}
+	clockTrustedFreshMs := cluster.DefaultClockTrustedFreshMs
+	if c.Cluster.ClockTrustedFreshMs != nil {
+		clockTrustedFreshMs = *c.Cluster.ClockTrustedFreshMs
+	}
+	clockObserveGraceMs := cluster.DefaultClockObserveGraceMs
+	if c.Cluster.ClockObserveGraceMs != nil {
+		clockObserveGraceMs = *c.Cluster.ClockObserveGraceMs
+	}
+	clockWriteGateGraceMs := cluster.DefaultClockWriteGateGraceMs
+	if c.Cluster.ClockWriteGateGraceMs != nil {
+		clockWriteGateGraceMs = *c.Cluster.ClockWriteGateGraceMs
+	}
+	clockRejectAfterFailures := cluster.DefaultClockRejectAfterFailures
+	if c.Cluster.ClockRejectAfterFailures != nil {
+		clockRejectAfterFailures = *c.Cluster.ClockRejectAfterFailures
+	}
+	clockRejectAfterSkewSamples := cluster.DefaultClockRejectAfterSkewSamples
+	if c.Cluster.ClockRejectAfterSkewSamples != nil {
+		clockRejectAfterSkewSamples = *c.Cluster.ClockRejectAfterSkewSamples
+	}
+	clockRecoverAfterHealthySamples := cluster.DefaultClockRecoverAfterHealthySamples
+	if c.Cluster.ClockRecoverAfterHealthySamples != nil {
+		clockRecoverAfterHealthySamples = *c.Cluster.ClockRecoverAfterHealthySamples
+	}
+	clusterCfg := cluster.Config{
+		AdvertisePath:                   strings.TrimSpace(c.Cluster.AdvertisePath),
+		ClusterSecret:                   strings.TrimSpace(c.Cluster.Secret),
+		Peers:                           peers,
+		MessageWindowSize:               messageWindowSize,
+		MaxClockSkewMs:                  maxClockSkewMs,
+		ClockSyncTimeoutMs:              clockSyncTimeoutMs,
+		ClockCredibleRttMs:              clockCredibleRttMs,
+		ClockTrustedFreshMs:             clockTrustedFreshMs,
+		ClockObserveGraceMs:             clockObserveGraceMs,
+		ClockWriteGateGraceMs:           clockWriteGateGraceMs,
+		ClockRejectAfterFailures:        clockRejectAfterFailures,
+		ClockRejectAfterSkewSamples:     clockRejectAfterSkewSamples,
+		ClockRecoverAfterHealthySamples: clockRecoverAfterHealthySamples,
+	}
+	clusterCfg = clusterCfg.WithDefaults()
 	if err := validateClusterFileConfig(clusterCfg); err != nil {
 		return runtimeServeConfig{}, fmt.Errorf("invalid cluster config: %w", err)
 	}
@@ -217,6 +266,30 @@ func (c serveConfig) runtimeConfig(configPath string) (runtimeServeConfig, error
 func validateClusterFileConfig(c cluster.Config) error {
 	if c.MaxClockSkewMs < 0 {
 		return fmt.Errorf("cluster max clock skew must be non-negative")
+	}
+	if c.ClockSyncTimeoutMs < 0 {
+		return fmt.Errorf("cluster clock sync timeout must be non-negative")
+	}
+	if c.ClockCredibleRttMs < 0 {
+		return fmt.Errorf("cluster clock credible rtt must be non-negative")
+	}
+	if c.ClockTrustedFreshMs < 0 {
+		return fmt.Errorf("cluster clock trusted fresh window must be non-negative")
+	}
+	if c.ClockObserveGraceMs < 0 {
+		return fmt.Errorf("cluster clock observe grace must be non-negative")
+	}
+	if c.ClockWriteGateGraceMs < 0 {
+		return fmt.Errorf("cluster clock write gate grace must be non-negative")
+	}
+	if c.ClockRejectAfterFailures < 0 {
+		return fmt.Errorf("cluster clock reject-after-failures must be non-negative")
+	}
+	if c.ClockRejectAfterSkewSamples < 0 {
+		return fmt.Errorf("cluster clock reject-after-skew-samples must be non-negative")
+	}
+	if c.ClockRecoverAfterHealthySamples < 0 {
+		return fmt.Errorf("cluster clock recover-after-healthy-samples must be non-negative")
 	}
 	if c.Enabled() {
 		if strings.TrimSpace(c.ClusterSecret) == "" {

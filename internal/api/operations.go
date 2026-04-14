@@ -42,14 +42,17 @@ type nodeLoggedInUsersResponse struct {
 }
 
 type operationsStatus struct {
-	NodeID            int64                `json:"node_id"`
-	MessageWindowSize int                  `json:"message_window_size"`
-	LastEventSequence int64                `json:"last_event_sequence"`
-	WriteGateReady    bool                 `json:"write_gate_ready"`
-	ConflictTotal     int64                `json:"conflict_total"`
-	MessageTrim       messageTrimStatus    `json:"message_trim"`
-	Projection        projectionStatus     `json:"projection"`
-	Peers             []peerStatusResponse `json:"peers"`
+	NodeID               int64                `json:"node_id"`
+	MessageWindowSize    int                  `json:"message_window_size"`
+	LastEventSequence    int64                `json:"last_event_sequence"`
+	WriteGateReady       bool                 `json:"write_gate_ready"`
+	ClockState           string               `json:"clock_state,omitempty"`
+	ClockReason          string               `json:"clock_reason,omitempty"`
+	LastTrustedClockSync string               `json:"last_trusted_clock_sync,omitempty"`
+	ConflictTotal        int64                `json:"conflict_total"`
+	MessageTrim          messageTrimStatus    `json:"message_trim"`
+	Projection           projectionStatus     `json:"projection"`
+	Peers                []peerStatusResponse `json:"peers"`
 }
 
 type messageTrimStatus struct {
@@ -82,7 +85,13 @@ type peerStatusResponse struct {
 	RemoteSnapshotVersion     string                     `json:"remote_snapshot_version,omitempty"`
 	RemoteMessageWindowSize   int                        `json:"remote_message_window_size,omitempty"`
 	ClockOffsetMs             int64                      `json:"clock_offset_ms"`
+	ClockState                string                     `json:"clock_state,omitempty"`
+	ClockUncertaintyMs        int64                      `json:"clock_uncertainty_ms"`
+	ClockFailures             uint64                     `json:"clock_failures"`
+	LastClockError            string                     `json:"last_clock_error,omitempty"`
 	LastClockSync             string                     `json:"last_clock_sync,omitempty"`
+	LastCredibleClockSync     string                     `json:"last_credible_clock_sync,omitempty"`
+	TrustedForOffset          bool                       `json:"trusted_for_offset"`
 	SnapshotDigestsSentTotal  uint64                     `json:"snapshot_digests_sent_total"`
 	SnapshotDigestsRecvTotal  uint64                     `json:"snapshot_digests_received_total"`
 	SnapshotChunksSentTotal   uint64                     `json:"snapshot_chunks_sent_total"`
@@ -113,11 +122,14 @@ func (s *Service) OperationsStatus(ctx context.Context) (operationsStatus, error
 	}
 
 	response := operationsStatus{
-		NodeID:            storeStats.NodeID,
-		MessageWindowSize: storeStats.MessageWindowSize,
-		LastEventSequence: storeStats.LastEventSequence,
-		WriteGateReady:    clusterStatus.WriteGateReady,
-		ConflictTotal:     storeStats.UserConflictsTotal,
+		NodeID:               storeStats.NodeID,
+		MessageWindowSize:    storeStats.MessageWindowSize,
+		LastEventSequence:    storeStats.LastEventSequence,
+		WriteGateReady:       clusterStatus.WriteGateReady,
+		ClockState:           clusterStatus.ClockState,
+		ClockReason:          clusterStatus.ClockReason,
+		LastTrustedClockSync: timeString(clusterStatus.LastTrustedClockSync),
+		ConflictTotal:        storeStats.UserConflictsTotal,
 		MessageTrim: messageTrimStatus{
 			TrimmedTotal:  storeStats.MessageTrim.TrimmedTotal,
 			LastTrimmedAt: timestampString(storeStats.MessageTrim.LastTrimmedAt),
@@ -224,6 +236,8 @@ func (s *Service) Metrics(ctx context.Context) (string, error) {
 	writeGauge(&buf, "notifier_pending_projections", map[string]string{"node_id": nodeIDLabel}, float64(status.Projection.PendingTotal))
 	writeMetricHelp(&buf, "notifier_write_gate_ready", "Whether the node currently allows local writes.", "gauge")
 	writeGauge(&buf, "notifier_write_gate_ready", map[string]string{"node_id": nodeIDLabel}, boolGauge(status.WriteGateReady))
+	writeMetricHelp(&buf, "notifier_clock_state", "Current aggregated cluster clock state for the node.", "gauge")
+	writeGauge(&buf, "notifier_clock_state", map[string]string{"node_id": nodeIDLabel, "state": status.ClockState}, 1)
 
 	writeMetricHelp(&buf, "notifier_peer_connected", "Whether the peer has an active cluster session.", "gauge")
 	writeMetricHelp(&buf, "notifier_peer_origin_acked_event_id", "Highest origin event id acknowledged by the peer.", "gauge")
@@ -232,6 +246,9 @@ func (s *Service) Metrics(ctx context.Context) (string, error) {
 	writeMetricHelp(&buf, "notifier_peer_origin_unconfirmed_events", "Local origin events not yet acknowledged by the peer.", "gauge")
 	writeMetricHelp(&buf, "notifier_peer_pending_snapshot_partitions", "Pending anti-entropy snapshot partitions for the peer.", "gauge")
 	writeMetricHelp(&buf, "notifier_clock_offset_ms", "Last trusted clock offset for the peer in milliseconds.", "gauge")
+	writeMetricHelp(&buf, "notifier_peer_clock_state", "Current per-peer clock state.", "gauge")
+	writeMetricHelp(&buf, "notifier_peer_clock_uncertainty_ms", "Current per-peer clock uncertainty in milliseconds.", "gauge")
+	writeMetricHelp(&buf, "notifier_peer_clock_failures_total", "Total per-peer time sync failures recorded by clock protection.", "counter")
 	for _, peer := range status.Peers {
 		if peer.NodeID <= 0 {
 			continue
@@ -243,6 +260,15 @@ func (s *Service) Metrics(ctx context.Context) (string, error) {
 		writeGauge(&buf, "notifier_peer_connected", peerLabels, boolGauge(peer.Connected))
 		writeGauge(&buf, "notifier_peer_pending_snapshot_partitions", peerLabels, float64(peer.PendingSnapshotPartitions))
 		writeGauge(&buf, "notifier_clock_offset_ms", peerLabels, float64(peer.ClockOffsetMs))
+		if peer.ClockState != "" {
+			writeGauge(&buf, "notifier_peer_clock_state", map[string]string{
+				"node_id":      nodeIDLabel,
+				"peer_node_id": strconv.FormatInt(peer.NodeID, 10),
+				"state":        peer.ClockState,
+			}, 1)
+		}
+		writeGauge(&buf, "notifier_peer_clock_uncertainty_ms", peerLabels, float64(peer.ClockUncertaintyMs))
+		writeGauge(&buf, "notifier_peer_clock_failures_total", peerLabels, float64(peer.ClockFailures))
 		for _, origin := range peer.Origins {
 			labels := map[string]string{
 				"node_id":        nodeIDLabel,
@@ -253,6 +279,21 @@ func (s *Service) Metrics(ctx context.Context) (string, error) {
 			writeGauge(&buf, "notifier_peer_origin_applied_event_id", labels, float64(origin.AppliedEventID))
 			writeGauge(&buf, "notifier_peer_origin_remote_last_event_id", labels, float64(origin.RemoteLastEventID))
 			writeGauge(&buf, "notifier_peer_origin_unconfirmed_events", labels, float64(origin.UnconfirmedEvents))
+		}
+	}
+	writeMetricHelp(&buf, "notifier_clock_state_transitions_total", "Total aggregated node clock state transitions.", "counter")
+	if provider, ok := s.eventSink.(clusterStatusProvider); ok {
+		clusterStatus, err := provider.Status(ctx)
+		if err != nil {
+			return "", err
+		}
+		for _, transition := range clusterStatus.ClockTransitions {
+			writeGauge(&buf, "notifier_clock_state_transitions_total", map[string]string{
+				"node_id": nodeIDLabel,
+				"from":    transition.FromState,
+				"to":      transition.ToState,
+				"reason":  transition.Reason,
+			}, float64(transition.Total))
 		}
 	}
 	return buf.String(), nil
@@ -287,8 +328,14 @@ func mergePeerStatus(storePeers []store.PeerOperationsStats, clusterPeers []app.
 				PendingSnapshotPartitions: peer.PendingSnapshotPartitions,
 				RemoteSnapshotVersion:     peer.RemoteSnapshotVersion,
 				RemoteMessageWindowSize:   peer.RemoteMessageWindowSize,
+				ClockState:                peer.ClockState,
 				ClockOffsetMs:             peer.ClockOffsetMs,
+				ClockUncertaintyMs:        peer.ClockUncertaintyMs,
+				ClockFailures:             peer.ClockFailures,
+				LastClockError:            peer.LastClockError,
 				LastClockSync:             timeString(peer.LastClockSync),
+				LastCredibleClockSync:     timeString(peer.LastCredibleClockSync),
+				TrustedForOffset:          peer.TrustedForOffset,
 				SnapshotDigestsSentTotal:  peer.SnapshotDigestsSentTotal,
 				SnapshotDigestsRecvTotal:  peer.SnapshotDigestsRecvTotal,
 				SnapshotChunksSentTotal:   peer.SnapshotChunksSentTotal,
@@ -307,8 +354,14 @@ func mergePeerStatus(storePeers []store.PeerOperationsStats, clusterPeers []app.
 		item.PendingSnapshotPartitions = peer.PendingSnapshotPartitions
 		item.RemoteSnapshotVersion = peer.RemoteSnapshotVersion
 		item.RemoteMessageWindowSize = peer.RemoteMessageWindowSize
+		item.ClockState = peer.ClockState
 		item.ClockOffsetMs = peer.ClockOffsetMs
+		item.ClockUncertaintyMs = peer.ClockUncertaintyMs
+		item.ClockFailures = peer.ClockFailures
+		item.LastClockError = peer.LastClockError
 		item.LastClockSync = timeString(peer.LastClockSync)
+		item.LastCredibleClockSync = timeString(peer.LastCredibleClockSync)
+		item.TrustedForOffset = peer.TrustedForOffset
 		item.SnapshotDigestsSentTotal = peer.SnapshotDigestsSentTotal
 		item.SnapshotDigestsRecvTotal = peer.SnapshotDigestsRecvTotal
 		item.SnapshotChunksSentTotal = peer.SnapshotChunksSentTotal

@@ -646,8 +646,8 @@ func TestRegressionClockSafety(t *testing.T) {
 
 	t.Run("skewed-peer-rejected", func(t *testing.T) {
 		nodes := newClusterTestNodes(t,
-			clusterTestNodeSpec{Name: "node-a", Slot: 1, PeerNames: []string{"node-b"}},
-			clusterTestNodeSpec{Name: "node-b", Slot: 2, PeerNames: []string{"node-a"}, ClockSkewMs: 5000},
+			clusterTestNodeSpec{Name: "node-a", Slot: 1, PeerNames: []string{"node-b"}, ClockRejectAfterSkewSamples: 1},
+			clusterTestNodeSpec{Name: "node-b", Slot: 2, PeerNames: []string{"node-a"}, ClockSkewMs: 5000, ClockRejectAfterSkewSamples: 1},
 		)
 		nodeA := nodes["node-a"]
 		nodeB := nodes["node-b"]

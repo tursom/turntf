@@ -156,6 +156,10 @@ func (s *Store) ApplySnapshotChunk(ctx context.Context, chunk *clusterproto.Snap
 	if chunk == nil {
 		return fmt.Errorf("%w: snapshot chunk cannot be nil", ErrInvalidInput)
 	}
+	maxTimestamp, err := MaxSnapshotChunkTimestamp(chunk)
+	if err != nil {
+		return err
+	}
 	partition := strings.TrimSpace(chunk.Partition)
 	if partition == "" {
 		return fmt.Errorf("%w: snapshot partition cannot be empty", ErrInvalidInput)
@@ -217,7 +221,111 @@ func (s *Store) ApplySnapshotChunk(ctx context.Context, chunk *clusterproto.Snap
 	if partition == SnapshotUsersPartition {
 		s.invalidateUserCache()
 	}
+	if maxTimestamp != (clock.Timestamp{}) {
+		s.clock.Observe(maxTimestamp)
+	}
 	return nil
+}
+
+func MaxSnapshotChunkTimestamp(chunk *clusterproto.SnapshotChunk) (clock.Timestamp, error) {
+	if chunk == nil {
+		return clock.Timestamp{}, fmt.Errorf("%w: snapshot chunk cannot be nil", ErrInvalidInput)
+	}
+
+	maxTimestamp := clock.Timestamp{}
+	record := func(ts clock.Timestamp) {
+		if maxTimestamp == (clock.Timestamp{}) || ts.Compare(maxTimestamp) > 0 {
+			maxTimestamp = ts
+		}
+	}
+
+	for _, row := range chunk.GetRows() {
+		if row == nil {
+			return clock.Timestamp{}, fmt.Errorf("%w: snapshot row cannot be nil", ErrInvalidInput)
+		}
+		if tombstone := row.GetTombstone(); tombstone != nil {
+			ts, err := parseRequiredTimestamp(tombstone.DeletedAtHlc, "snapshot tombstone deleted_at")
+			if err != nil {
+				return clock.Timestamp{}, err
+			}
+			record(ts)
+			continue
+		}
+		if userRow := row.GetUser(); userRow != nil {
+			for _, field := range []struct {
+				raw  string
+				name string
+			}{
+				{raw: userRow.CreatedAtHlc, name: "snapshot user created_at"},
+				{raw: userRow.UpdatedAtHlc, name: "snapshot user updated_at"},
+				{raw: userRow.VersionUsername, name: "snapshot user version_username"},
+				{raw: userRow.VersionPasswordHash, name: "snapshot user version_password_hash"},
+				{raw: userRow.VersionProfile, name: "snapshot user version_profile"},
+				{raw: userRow.VersionRole, name: "snapshot user version_role"},
+			} {
+				ts, err := parseRequiredTimestamp(field.raw, field.name)
+				if err != nil {
+					return clock.Timestamp{}, err
+				}
+				record(ts)
+			}
+			if strings.TrimSpace(userRow.DeletedAtHlc) != "" {
+				ts, err := parseRequiredTimestamp(userRow.DeletedAtHlc, "snapshot user deleted_at")
+				if err != nil {
+					return clock.Timestamp{}, err
+				}
+				record(ts)
+			}
+			if strings.TrimSpace(userRow.VersionDeleted) != "" {
+				ts, err := parseRequiredTimestamp(userRow.VersionDeleted, "snapshot user version_deleted")
+				if err != nil {
+					return clock.Timestamp{}, err
+				}
+				record(ts)
+			}
+			continue
+		}
+		if messageRow := row.GetMessage(); messageRow != nil {
+			ts, err := parseRequiredTimestamp(messageRow.CreatedAtHlc, "snapshot message created_at")
+			if err != nil {
+				return clock.Timestamp{}, err
+			}
+			record(ts)
+			continue
+		}
+		if subscriptionRow := row.GetSubscription(); subscriptionRow != nil {
+			ts, err := parseRequiredTimestamp(subscriptionRow.SubscribedAtHlc, "snapshot subscription subscribed_at")
+			if err != nil {
+				return clock.Timestamp{}, err
+			}
+			record(ts)
+			if strings.TrimSpace(subscriptionRow.DeletedAtHlc) != "" {
+				ts, err := parseRequiredTimestamp(subscriptionRow.DeletedAtHlc, "snapshot subscription deleted_at")
+				if err != nil {
+					return clock.Timestamp{}, err
+				}
+				record(ts)
+			}
+			continue
+		}
+		if blacklistRow := row.GetBlacklist(); blacklistRow != nil {
+			ts, err := parseRequiredTimestamp(blacklistRow.BlockedAtHlc, "snapshot blacklist blocked_at")
+			if err != nil {
+				return clock.Timestamp{}, err
+			}
+			record(ts)
+			if strings.TrimSpace(blacklistRow.DeletedAtHlc) != "" {
+				ts, err := parseRequiredTimestamp(blacklistRow.DeletedAtHlc, "snapshot blacklist deleted_at")
+				if err != nil {
+					return clock.Timestamp{}, err
+				}
+				record(ts)
+			}
+			continue
+		}
+		return clock.Timestamp{}, fmt.Errorf("%w: snapshot row body cannot be empty", ErrInvalidInput)
+	}
+	return maxTimestamp, nil
 }
 
 func (s *Store) buildUserSnapshotRows(ctx context.Context) ([]*clusterproto.SnapshotRow, error) {

@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/tursom/turntf/internal/clock"
 	internalproto "github.com/tursom/turntf/internal/proto"
 	"github.com/tursom/turntf/internal/store"
 )
@@ -39,6 +40,15 @@ func (m *Manager) sendSnapshotDigest(sess *session) {
 	if sess.remoteSnapshotVersion != internalproto.SnapshotVersion {
 		return
 	}
+	m.mu.Lock()
+	if err := m.allowSnapshotTrafficLocked(sess.peerID); err != nil {
+		m.mu.Unlock()
+		m.logSessionWarn("snapshot_digest_skipped_by_clock", sess, nil).
+			Str("reason", err.Error()).
+			Msg("skipping snapshot digest due to clock protection")
+		return
+	}
+	m.mu.Unlock()
 
 	envelope, err := m.buildSnapshotDigestEnvelope()
 	if err != nil {
@@ -68,6 +78,15 @@ func (m *Manager) handleSnapshotDigest(sess *session, envelope *internalproto.En
 	if m.store == nil {
 		return nil
 	}
+	m.mu.Lock()
+	if err := m.allowSnapshotTrafficLocked(sess.peerID); err != nil {
+		m.mu.Unlock()
+		m.logSessionWarn("snapshot_digest_rejected_by_clock", sess, nil).
+			Str("reason", err.Error()).
+			Msg("snapshot digest rejected by clock protection")
+		return err
+	}
+	m.mu.Unlock()
 	m.markSnapshotDigestReceived(sess.peerID)
 
 	digest := envelope.GetSnapshotDigest()
@@ -115,6 +134,19 @@ func (m *Manager) handleSnapshotDigest(sess *session, envelope *internalproto.En
 		m.requestSnapshotPartition(sess, remoteSubscriptions)
 		return nil
 	}
+	remoteBlacklists, ok := remote[store.SnapshotBlacklistsPartition]
+	if !ok {
+		return fmt.Errorf("snapshot digest missing %s partition", store.SnapshotBlacklistsPartition)
+	}
+	if !snapshotPartitionDigestEqual(local[store.SnapshotBlacklistsPartition], remoteBlacklists) {
+		m.logSessionEvent("snapshot_partition_mismatch", sess).
+			Str("partition", remoteBlacklists.Partition).
+			Stringer("kind", remoteBlacklists.Kind).
+			Uint64("row_count", remoteBlacklists.RowCount).
+			Msg("snapshot partition mismatch detected")
+		m.requestSnapshotPartition(sess, remoteBlacklists)
+		return nil
+	}
 	if sess.remoteMessageWindowSize != m.cfg.MessageWindowSize {
 		return nil
 	}
@@ -125,6 +157,9 @@ func (m *Manager) handleSnapshotDigest(sess *session, envelope *internalproto.En
 			continue
 		}
 		if partition == store.SnapshotSubscriptionsPartition {
+			continue
+		}
+		if partition == store.SnapshotBlacklistsPartition {
 			continue
 		}
 		partitions = append(partitions, partition)
@@ -158,6 +193,15 @@ func (m *Manager) handleSnapshotChunk(sess *session, envelope *internalproto.Env
 	if m.store == nil {
 		return nil
 	}
+	m.mu.Lock()
+	if err := m.allowSnapshotTrafficLocked(sess.peerID); err != nil {
+		m.mu.Unlock()
+		m.logSessionWarn("snapshot_chunk_rejected_by_clock", sess, nil).
+			Str("reason", err.Error()).
+			Msg("snapshot chunk rejected by clock protection")
+		return err
+	}
+	m.mu.Unlock()
 	m.markSnapshotChunkReceived(sess.peerID)
 
 	chunk := envelope.GetSnapshotChunk()
@@ -197,6 +241,16 @@ func (m *Manager) handleSnapshotChunk(sess *session, envelope *internalproto.Env
 	}
 
 	defer sess.completeSnapshotRequest(chunk.Partition)
+	maxTimestamp, err := store.MaxSnapshotChunkTimestamp(chunk)
+	if err != nil {
+		return err
+	}
+	if m.cfg.MaxClockSkewMs > 0 && maxTimestamp != (clock.Timestamp{}) {
+		maxAllowedWallTime := m.clock.WallTimeMs() + m.cfg.MaxClockSkewMs
+		if maxTimestamp.WallTimeMs > maxAllowedWallTime {
+			return fmt.Errorf("snapshot chunk %s max hlc %s exceeds local wall time %d by more than %dms", chunk.Partition, maxTimestamp, m.clock.WallTimeMs(), m.cfg.MaxClockSkewMs)
+		}
+	}
 	if err := m.store.ApplySnapshotChunk(context.Background(), chunk); err != nil {
 		return err
 	}
@@ -216,6 +270,15 @@ func (m *Manager) requestSnapshotPartition(sess *session, partition *internalpro
 	if strings.TrimSpace(partition.Partition) == "" {
 		return
 	}
+	m.mu.Lock()
+	if err := m.allowSnapshotTrafficLocked(sess.peerID); err != nil {
+		m.mu.Unlock()
+		m.logSessionWarn("snapshot_partition_request_skipped_by_clock", sess, nil).
+			Str("reason", err.Error()).
+			Msg("skipping snapshot partition request due to clock protection")
+		return
+	}
+	m.mu.Unlock()
 	if !sess.beginSnapshotRequest(partition.Partition) {
 		return
 	}

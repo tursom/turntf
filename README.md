@@ -62,6 +62,7 @@
 分布式测试框架增强计划见 [docs/distributed-test-framework-enhancement.md](/root/dev/sys/turntf/docs/distributed-test-framework-enhancement.md)。
 分布式测试框架增强执行结果见 [docs/distributed-test-framework-enhancement-results.md](/root/dev/sys/turntf/docs/distributed-test-framework-enhancement-results.md)。
 复制语义规范见 [docs/replication-semantics.md](/root/dev/sys/turntf/docs/replication-semantics.md)。
+时钟保护算法见 [docs/clock-protection.md](/root/dev/sys/turntf/docs/clock-protection.md)。
 
 当前同步实现已经收紧到以下边界：
 

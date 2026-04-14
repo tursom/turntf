@@ -20,6 +20,7 @@ func (m *Manager) Status(context.Context) (app.ClusterStatus, error) {
 
 	m.mu.Lock()
 	peers := make([]peerSnapshot, 0, len(m.configuredPeers)+len(m.peers))
+	transitions := make([]app.ClockStateTransition, 0, len(m.clockStateTransitions))
 	seen := make(map[int64]struct{}, len(m.peers))
 	for _, configured := range m.configuredPeers {
 		item := app.ClusterPeerStatus{
@@ -37,8 +38,14 @@ func (m *Manager) Status(context.Context) (app.ClusterStatus, error) {
 		if peer := m.peers[configured.nodeID]; peer != nil {
 			active = peer.active
 			item.Connected = peer.active != nil
+			item.ClockState = string(peer.clockState)
 			item.ClockOffsetMs = peer.clockOffsetMs
+			item.ClockUncertaintyMs = peer.clockUncertaintyMs
+			item.ClockFailures = peer.clockFailures
+			item.LastClockError = peer.clockLastError
 			item.LastClockSync = timePointer(peer.lastClockSync)
+			item.LastCredibleClockSync = timePointer(peer.lastCredibleClockSync)
+			item.TrustedForOffset = peer.trustedSession != nil
 			item.SnapshotDigestsSentTotal = peer.snapshotDigestsSent
 			item.SnapshotDigestsRecvTotal = peer.snapshotDigestsReceived
 			item.SnapshotChunksSentTotal = peer.snapshotChunksSent
@@ -61,19 +68,41 @@ func (m *Manager) Status(context.Context) (app.ClusterStatus, error) {
 			LastSnapshotDigestAt:     timePointer(peer.lastSnapshotDigestAt),
 			LastSnapshotChunkAt:      timePointer(peer.lastSnapshotChunkAt),
 			Connected:                peer.active != nil,
+			ClockState:               string(peer.clockState),
 			ClockOffsetMs:            peer.clockOffsetMs,
+			ClockUncertaintyMs:       peer.clockUncertaintyMs,
+			ClockFailures:            peer.clockFailures,
+			LastClockError:           peer.clockLastError,
 			LastClockSync:            timePointer(peer.lastClockSync),
+			LastCredibleClockSync:    timePointer(peer.lastCredibleClockSync),
+			TrustedForOffset:         peer.trustedSession != nil,
 		}
 		peers = append(peers, peerSnapshot{status: item, active: peer.active})
 	}
+	m.refreshNodeClockStateLocked()
 	writeGateReady := m.hasWritableClockSyncLocked()
+	clockState := m.clockState
+	clockReason := m.clockReason
+	lastTrustedClockSync := timePointer(m.lastTrustedClockSync)
+	for key, total := range m.clockStateTransitions {
+		transitions = append(transitions, app.ClockStateTransition{
+			FromState: key.FromState,
+			ToState:   key.ToState,
+			Reason:    key.Reason,
+			Total:     total,
+		})
+	}
 	m.mu.Unlock()
 
 	status := app.ClusterStatus{
-		NodeID:            m.cfg.NodeID,
-		MessageWindowSize: m.cfg.MessageWindowSize,
-		WriteGateReady:    writeGateReady,
-		Peers:             make([]app.ClusterPeerStatus, 0, len(peers)),
+		NodeID:               m.cfg.NodeID,
+		MessageWindowSize:    m.cfg.MessageWindowSize,
+		WriteGateReady:       writeGateReady,
+		ClockState:           string(clockState),
+		ClockReason:          clockReason,
+		LastTrustedClockSync: lastTrustedClockSync,
+		ClockTransitions:     transitions,
+		Peers:                make([]app.ClusterPeerStatus, 0, len(peers)),
 	}
 	for _, peer := range peers {
 		item := peer.status

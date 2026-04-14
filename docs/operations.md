@@ -1,6 +1,6 @@
 # 运维与上线手册
 
-本文档记录分布式通知服务的小规模上线建议、备份策略、节点恢复流程和核心监控项。默认每个节点使用本地 SQLite，节点间通过 WebSocket + Protobuf 复制；事件日志和消息投影也可配置为 Pebble 后端。复制语义边界请先参考 [复制语义专题文档](/root/dev/sys/turntf/docs/replication-semantics.md)。
+本文档记录分布式通知服务的小规模上线建议、备份策略、节点恢复流程和核心监控项。默认每个节点使用本地 SQLite，节点间通过 WebSocket + Protobuf 复制；事件日志和消息投影也可配置为 Pebble 后端。复制语义边界请先参考 [复制语义专题文档](/root/dev/sys/turntf/docs/replication-semantics.md)，时钟保护细节请参考 [时钟保护算法](/root/dev/sys/turntf/docs/clock-protection.md)。
 
 ## 小规模部署建议
 

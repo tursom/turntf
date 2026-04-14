@@ -65,26 +65,28 @@ type clusterTestNode struct {
 }
 
 type clusterTestNodeConfig struct {
-	Name              string
-	Slot              uint16
-	Peers             []Peer
-	MessageWindowSize int
-	ClockSkewMs       int64
-	MaxClockSkewMs    int64
-	TimeSyncSamples   []timeSyncSample
-	DisableRouting    bool
+	Name                        string
+	Slot                        uint16
+	Peers                       []Peer
+	MessageWindowSize           int
+	ClockSkewMs                 int64
+	MaxClockSkewMs              int64
+	ClockRejectAfterSkewSamples int
+	TimeSyncSamples             []timeSyncSample
+	DisableRouting              bool
 }
 
 type clusterTestNodeSpec struct {
-	Name              string
-	Slot              uint16
-	PeerNames         []string
-	PeerLinks         []clusterTestPeerLinkSpec
-	MessageWindowSize int
-	ClockSkewMs       int64
-	MaxClockSkewMs    int64
-	TimeSyncSamples   []timeSyncSample
-	DisableRouting    bool
+	Name                        string
+	Slot                        uint16
+	PeerNames                   []string
+	PeerLinks                   []clusterTestPeerLinkSpec
+	MessageWindowSize           int
+	ClockSkewMs                 int64
+	MaxClockSkewMs              int64
+	ClockRejectAfterSkewSamples int
+	TimeSyncSamples             []timeSyncSample
+	DisableRouting              bool
 }
 
 type clusterTestPeerLinkSpec struct {
@@ -179,14 +181,15 @@ func newClusterTestNodes(t *testing.T, specs ...clusterTestNodeSpec) map[string]
 		}
 
 		cfg := clusterTestNodeConfig{
-			Name:              spec.Name,
-			Slot:              spec.Slot,
-			Peers:             peers,
-			MessageWindowSize: spec.MessageWindowSize,
-			ClockSkewMs:       spec.ClockSkewMs,
-			MaxClockSkewMs:    spec.MaxClockSkewMs,
-			TimeSyncSamples:   spec.TimeSyncSamples,
-			DisableRouting:    spec.DisableRouting,
+			Name:                        spec.Name,
+			Slot:                        spec.Slot,
+			Peers:                       peers,
+			MessageWindowSize:           spec.MessageWindowSize,
+			ClockSkewMs:                 spec.ClockSkewMs,
+			MaxClockSkewMs:              spec.MaxClockSkewMs,
+			ClockRejectAfterSkewSamples: spec.ClockRejectAfterSkewSamples,
+			TimeSyncSamples:             spec.TimeSyncSamples,
+			DisableRouting:              spec.DisableRouting,
 		}
 		if cfg.MessageWindowSize == 0 {
 			cfg.MessageWindowSize = store.DefaultMessageWindowSize
@@ -239,12 +242,13 @@ func newClusterTestNodeFixtureWithListener(t *testing.T, cfg clusterTestNodeConf
 	}
 
 	manager, err := NewManager(Config{
-		NodeID:            numericNodeID,
-		AdvertisePath:     websocketPath,
-		ClusterSecret:     "secret",
-		Peers:             cfg.Peers,
-		MessageWindowSize: cfg.MessageWindowSize,
-		MaxClockSkewMs:    cfg.MaxClockSkewMs,
+		NodeID:                      numericNodeID,
+		AdvertisePath:               websocketPath,
+		ClusterSecret:               "secret",
+		Peers:                       cfg.Peers,
+		MessageWindowSize:           cfg.MessageWindowSize,
+		MaxClockSkewMs:              cfg.MaxClockSkewMs,
+		ClockRejectAfterSkewSamples: cfg.ClockRejectAfterSkewSamples,
 	}, st)
 	if err != nil {
 		t.Fatalf("new manager: %v", err)
@@ -812,11 +816,32 @@ func readySnapshotTestSession(mgr *Manager, peerID int64, remoteMessageWindowSiz
 	sess := &session{
 		manager:                 mgr,
 		peerID:                  peerID,
+		connectionID:            1,
 		remoteSnapshotVersion:   internalproto.SnapshotVersion,
 		remoteMessageWindowSize: remoteMessageWindowSize,
 		send:                    make(chan *internalproto.Envelope, 4),
 	}
 	sess.markReplicationReady()
+	mgr.mu.Lock()
+	peer := mgr.peers[peerID]
+	if peer == nil {
+		peer = &peerState{
+			clockState:   clockStateTrusted,
+			sessions:     make(map[uint64]*session),
+			routeAdverts: make(map[int64]routeAdvertisement),
+		}
+		mgr.peers[peerID] = peer
+	}
+	now := time.Now().UTC()
+	peer.active = sess
+	peer.trustedSession = sess
+	peer.clockState = clockStateTrusted
+	peer.lastClockSync = now
+	peer.lastCredibleClockSync = now
+	peer.sessions[sess.connectionID] = sess
+	mgr.lastTrustedClockSync = now
+	mgr.refreshNodeClockStateLocked()
+	mgr.mu.Unlock()
 	return sess
 }
 

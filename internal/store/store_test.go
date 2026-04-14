@@ -2300,6 +2300,40 @@ func TestSnapshotMessagesChunkIsIdempotentAndConvergesToLocalWindow(t *testing.T
 	}
 }
 
+func TestApplySnapshotChunkAdvancesLocalClockPastChunkMaxTimestamp(t *testing.T) {
+	t.Parallel()
+
+	source := openNamedTestStore(t, "node-a", 1)
+	defer source.Close()
+
+	target := openNamedTestStore(t, "node-b", 2)
+	defer target.Close()
+
+	ctx := context.Background()
+	if _, _, err := source.CreateUser(ctx, CreateUserParams{
+		Username:     "snapshot-clock-user",
+		PasswordHash: "hash-1",
+	}); err != nil {
+		t.Fatalf("create source user: %v", err)
+	}
+	chunk, err := source.BuildSnapshotChunk(ctx, SnapshotUsersPartition)
+	if err != nil {
+		t.Fatalf("build users snapshot chunk: %v", err)
+	}
+	maxTimestamp, err := MaxSnapshotChunkTimestamp(chunk)
+	if err != nil {
+		t.Fatalf("max snapshot chunk timestamp: %v", err)
+	}
+	if err := target.ApplySnapshotChunk(ctx, chunk); err != nil {
+		t.Fatalf("apply users snapshot chunk: %v", err)
+	}
+
+	next := target.clock.Now()
+	if next.Compare(maxTimestamp) <= 0 {
+		t.Fatalf("expected target clock to advance past snapshot max timestamp, next=%s max=%s", next, maxTimestamp)
+	}
+}
+
 func TestSnapshotSubscriptionsChunkRepairsSubscriptionVisibilityBoundary(t *testing.T) {
 	t.Parallel()
 

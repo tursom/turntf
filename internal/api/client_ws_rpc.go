@@ -13,6 +13,69 @@ import (
 	"github.com/tursom/turntf/internal/store"
 )
 
+func (s *clientWSSession) handleSendMessage(ctx context.Context, req *internalproto.SendMessageRequest) error {
+	if req == nil {
+		return s.writeError("invalid_request", "send_message cannot be empty", 0)
+	}
+	if req.Target == nil || req.Target.NodeId <= 0 || req.Target.UserId <= 0 {
+		return s.writeError("invalid_request", "target is required", req.RequestId)
+	}
+	target := store.UserKey{NodeID: req.Target.NodeId, UserID: req.Target.UserId}
+	if err := s.http.authorizeCreateMessage(ctx, s.principal, target); err != nil {
+		return s.writeStoreOrRequestError(req.RequestId, err)
+	}
+	sender, err := messageSenderFromPrincipal(s.principal)
+	if err != nil {
+		return s.writeStoreOrRequestError(req.RequestId, err)
+	}
+	deliveryKind, err := clientDeliveryKindFromProto(req.DeliveryKind)
+	if err != nil {
+		return s.writeStoreOrRequestError(req.RequestId, err)
+	}
+	if deliveryKind == deliveryKindTransient {
+		mode, err := store.NormalizeDeliveryMode(clientDeliveryModeString(req.DeliveryMode))
+		if err != nil {
+			return s.writeStoreOrRequestError(req.RequestId, err)
+		}
+		packet, err := s.http.service.DispatchTransientPacket(ctx, target, sender, req.Body, mode)
+		if err != nil {
+			return s.writeStoreOrRequestError(req.RequestId, err)
+		}
+		return s.writeEnvelope(&internalproto.ServerEnvelope{
+			Body: &internalproto.ServerEnvelope_SendMessageResponse{
+				SendMessageResponse: &internalproto.SendMessageResponse{
+					RequestId: req.RequestId,
+					Body: &internalproto.SendMessageResponse_TransientAccepted{
+						TransientAccepted: clientProtoTransientAccepted(packet),
+					},
+				},
+			},
+		})
+	}
+	if req.DeliveryMode != internalproto.ClientDeliveryMode_CLIENT_DELIVERY_MODE_UNSPECIFIED {
+		return s.writeStoreOrRequestError(req.RequestId, fmt.Errorf("%w: delivery_mode is only allowed for transient messages", store.ErrInvalidInput))
+	}
+	message, _, err := s.http.service.CreateMessage(ctx, store.CreateMessageParams{
+		UserKey: target,
+		Sender:  sender,
+		Body:    req.Body,
+	})
+	if err != nil {
+		return s.writeStoreOrRequestError(req.RequestId, err)
+	}
+	s.markSeen(message.NodeID, message.Seq)
+	return s.writeEnvelope(&internalproto.ServerEnvelope{
+		Body: &internalproto.ServerEnvelope_SendMessageResponse{
+			SendMessageResponse: &internalproto.SendMessageResponse{
+				RequestId: req.RequestId,
+				Body: &internalproto.SendMessageResponse_Message{
+					Message: clientProtoMessage(message),
+				},
+			},
+		},
+	})
+}
+
 func (s *clientWSSession) handleCreateUser(ctx context.Context, req *internalproto.CreateUserRequest) error {
 	if req == nil {
 		return s.writeError("invalid_request", "create_user cannot be empty", 0)

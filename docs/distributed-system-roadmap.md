@@ -99,6 +99,7 @@
 ### 3. 分布式测试框架增强
 
 详细实现计划见 [docs/distributed-test-framework-enhancement.md](/root/dev/sys/turntf/docs/distributed-test-framework-enhancement.md)。
+当前执行结果见 [docs/distributed-test-framework-enhancement-results.md](/root/dev/sys/turntf/docs/distributed-test-framework-enhancement-results.md)。
 
 当前状态：
 

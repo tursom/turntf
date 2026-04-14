@@ -2,6 +2,8 @@
 
 本文档面向后续测试基础设施的研发实现者，用于把 roadmap 中“分布式测试框架增强”从方向性目标细化为可执行设计。它不替代 [复制语义专题文档](/root/dev/sys/turntf/docs/replication-semantics.md) 和 [分布式系统未来演进路线图](/root/dev/sys/turntf/docs/distributed-system-roadmap.md)，而是回答“现有测试基础是什么、下一步要抽什么夹具、按什么顺序落地、什么算完成”。
 
+当前仓库基于本计划的实际落地结果，见 [分布式测试框架增强执行结果](/root/dev/sys/turntf/docs/distributed-test-framework-enhancement-results.md)。
+
 ## 背景与目标
 
 当前仓库已经具备以下分布式测试基础：

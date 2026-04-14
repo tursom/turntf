@@ -28,6 +28,7 @@
 ├── cmd/notifier/main.go            # 当前 CLI 入口
 ├── docs/distributed-system-roadmap.md # 分布式系统未来演进路线图
 ├── docs/distributed-test-framework-enhancement.md # 分布式测试框架增强计划
+├── docs/distributed-test-framework-enhancement-results.md # 分布式测试框架增强执行结果
 ├── docs/replication-semantics.md   # 复制语义专题文档
 ├── docs/operations.md              # 运维与上线手册
 ├── internal/api                    # 应用服务层
@@ -59,6 +60,7 @@
 
 未来演进路线图见 [docs/distributed-system-roadmap.md](/root/dev/sys/turntf/docs/distributed-system-roadmap.md)。
 分布式测试框架增强计划见 [docs/distributed-test-framework-enhancement.md](/root/dev/sys/turntf/docs/distributed-test-framework-enhancement.md)。
+分布式测试框架增强执行结果见 [docs/distributed-test-framework-enhancement-results.md](/root/dev/sys/turntf/docs/distributed-test-framework-enhancement-results.md)。
 复制语义规范见 [docs/replication-semantics.md](/root/dev/sys/turntf/docs/replication-semantics.md)。
 
 当前同步实现已经收紧到以下边界：

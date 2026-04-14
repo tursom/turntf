@@ -7,6 +7,7 @@ require (
 	github.com/cockroachdb/pebble v1.1.5
 	github.com/gorilla/websocket v1.5.3
 	github.com/mattn/go-sqlite3 v1.14.17
+	github.com/pebbe/zmq4 v1.4.0
 	github.com/rs/zerolog v1.34.0
 	golang.org/x/crypto v0.43.0
 	google.golang.org/protobuf v1.36.6

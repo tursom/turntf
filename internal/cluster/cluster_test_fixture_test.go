@@ -477,7 +477,9 @@ func (n *clusterTestNode) StartManager(t *testing.T) {
 	}
 	n.managerStarted = true
 	n.startMu.Unlock()
-	n.manager.Start(context.Background())
+	if err := n.manager.Start(context.Background()); err != nil {
+		t.Fatalf("start cluster manager: %v", err)
+	}
 }
 
 func (n *clusterTestNode) StartHTTPServer(t *testing.T) {

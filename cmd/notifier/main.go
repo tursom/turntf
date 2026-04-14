@@ -108,7 +108,9 @@ func runServe(args []string, stdout io.Writer) error {
 			return err
 		}
 		defer manager.Close()
-		manager.Start(context.Background())
+		if err := manager.Start(context.Background()); err != nil {
+			return err
+		}
 	}
 
 	svc := api.New(st, manager)

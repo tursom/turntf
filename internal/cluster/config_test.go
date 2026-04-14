@@ -2,6 +2,7 @@ package cluster
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 )
@@ -223,7 +224,7 @@ func (d *recordingDialer) Dial(ctx context.Context, peerURL string) (TransportCo
 	return nil, ctx.Err()
 }
 
-func TestManagerStartSkipsZeroMQStaticPeers(t *testing.T) {
+func TestManagerStartDialsWebSocketStaticPeers(t *testing.T) {
 	t.Parallel()
 
 	mgr, err := NewManager(Config{
@@ -233,7 +234,6 @@ func TestManagerStartSkipsZeroMQStaticPeers(t *testing.T) {
 		MessageWindowSize: 128,
 		Peers: []Peer{
 			{URL: "ws://127.0.0.1:9081/internal/cluster/ws"},
-			{URL: "zmq+tcp://127.0.0.1:9091"},
 		},
 	}, nil)
 	if err != nil {
@@ -241,8 +241,10 @@ func TestManagerStartSkipsZeroMQStaticPeers(t *testing.T) {
 	}
 
 	dialer := &recordingDialer{urls: make(chan string, 4)}
-	mgr.dialer = dialer
-	mgr.Start(context.Background())
+	mgr.dialers[transportWebSocket] = dialer
+	if err := mgr.Start(context.Background()); err != nil {
+		t.Fatalf("start manager: %v", err)
+	}
 	defer mgr.Close()
 
 	select {
@@ -253,10 +255,53 @@ func TestManagerStartSkipsZeroMQStaticPeers(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("expected websocket static peer to start dialing")
 	}
+}
 
-	select {
-	case rawURL := <-dialer.urls:
-		t.Fatalf("expected zeromq peer to be skipped, got dial for %q", rawURL)
-	case <-time.After(200 * time.Millisecond):
+func TestManagerStartFailsWhenZeroMQSupportIsNotBuilt(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		cfg  Config
+	}{
+		{
+			name: "enabled listener",
+			cfg: Config{
+				NodeID:            testNodeID(1),
+				AdvertisePath:     websocketPath,
+				ClusterSecret:     "secret",
+				MessageWindowSize: 128,
+				ZeroMQ: ZeroMQConfig{
+					Enabled: true,
+					BindURL: "tcp://127.0.0.1:9090",
+				},
+			},
+		},
+		{
+			name: "static peer requires zeromq",
+			cfg: Config{
+				NodeID:            testNodeID(1),
+				AdvertisePath:     websocketPath,
+				ClusterSecret:     "secret",
+				MessageWindowSize: 128,
+				Peers: []Peer{
+					{URL: "zmq+tcp://127.0.0.1:9091"},
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mgr, err := NewManager(tt.cfg, nil)
+			if err != nil {
+				t.Fatalf("new manager: %v", err)
+			}
+			defer mgr.Close()
+
+			if err := mgr.Start(context.Background()); !errors.Is(err, errZeroMQNotBuilt) {
+				t.Fatalf("expected errZeroMQNotBuilt, got %v", err)
+			}
+		})
 	}
 }

@@ -3,6 +3,7 @@ package cluster
 import "context"
 
 const transportWebSocket = "websocket"
+const transportZeroMQ = "zeromq"
 
 type TransportConn interface {
 	Send(ctx context.Context, payload []byte) error
@@ -16,6 +17,11 @@ type TransportConn interface {
 
 type Dialer interface {
 	Dial(ctx context.Context, peerURL string) (TransportConn, error)
+}
+
+type Listener interface {
+	Start(ctx context.Context, accept func(TransportConn)) error
+	Close() error
 }
 
 type closeReasonTransport interface {

@@ -63,9 +63,13 @@ type Manager struct {
 	cancel    context.CancelFunc
 	wg        sync.WaitGroup
 	startOnce sync.Once
+	startErr  error
 	closeOnce sync.Once
-	dialer    Dialer
 	websocket *webSocketTransport
+	dialers   map[string]Dialer
+
+	zeroMQListener        Listener
+	zeroMQListenerFactory func(bindURL string) Listener
 
 	mu              sync.Mutex
 	peers           map[int64]*peerState
@@ -248,6 +252,8 @@ func NewManager(cfg Config, st *store.Store) (*Manager, error) {
 		store:                 st,
 		clock:                 clockRef,
 		websocket:             newWebSocketTransport(),
+		dialers:               make(map[string]Dialer, 2),
+		zeroMQListenerFactory: newZeroMQListener,
 		mux:                   http.NewServeMux(),
 		publishCh:             make(chan store.Event, managerPublishQueue),
 		peers:                 make(map[int64]*peerState, len(cfg.Peers)),
@@ -263,7 +269,8 @@ func NewManager(cfg Config, st *store.Store) (*Manager, error) {
 		pendingLoggedInUsers:  make(map[uint64]chan loggedInUsersQueryResult),
 		clockStateTransitions: make(map[clockStateTransitionKey]uint64),
 	}
-	mgr.dialer = mgr.websocket
+	mgr.dialers[transportWebSocket] = mgr.websocket
+	mgr.dialers[transportZeroMQ] = newZeroMQDialer()
 	if !cfg.DiscoveryDisabled {
 		if err := mgr.loadDiscoveredPeers(context.Background()); err != nil {
 			return nil, err
@@ -281,9 +288,73 @@ func (m *Manager) AdvertisePath() string {
 	return m.cfg.AdvertisePath
 }
 
-func (m *Manager) Start(parent context.Context) {
+func (m *Manager) validateConfiguredTransports() error {
+	if m == nil {
+		return nil
+	}
+	needsZeroMQ := m.cfg.ZeroMQ.Enabled
+	if !needsZeroMQ {
+		for _, peer := range m.configuredPeers {
+			if peer != nil && isZeroMQPeerURL(peer.URL) {
+				needsZeroMQ = true
+				break
+			}
+		}
+	}
+	if needsZeroMQ && !zeroMQEnabled() {
+		return errZeroMQNotBuilt
+	}
+	if m.cfg.ZeroMQ.Enabled && m.zeroMQListenerFactory == nil {
+		return errors.New("zeromq listener factory is not configured")
+	}
+	return nil
+}
+
+func (m *Manager) transportForPeerURL(peerURL string) (string, error) {
+	switch {
+	case isWebSocketPeerURL(peerURL):
+		return transportWebSocket, nil
+	case isZeroMQPeerURL(peerURL):
+		return transportZeroMQ, nil
+	default:
+		return "", fmt.Errorf("unsupported peer transport for %q", peerURL)
+	}
+}
+
+func (m *Manager) dialerForPeerURL(peerURL string) (Dialer, error) {
+	transport, err := m.transportForPeerURL(peerURL)
+	if err != nil {
+		return nil, err
+	}
+	dialer := m.dialers[transport]
+	if dialer == nil {
+		return nil, fmt.Errorf("%s dialer is not configured", transport)
+	}
+	return dialer, nil
+}
+
+func (m *Manager) Start(parent context.Context) error {
 	m.startOnce.Do(func() {
 		m.ctx, m.cancel = context.WithCancel(parent)
+
+		if err := m.validateConfiguredTransports(); err != nil {
+			m.startErr = err
+			m.cancel()
+			return
+		}
+		if m.cfg.ZeroMQ.Enabled {
+			listener := m.zeroMQListenerFactory(m.cfg.ZeroMQ.BindURL)
+			if err := listener.Start(m.ctx, m.handleZeroMQConn); err != nil {
+				m.startErr = err
+				m.cancel()
+				return
+			}
+			m.zeroMQListener = listener
+			m.logInfo("zeromq_listener_started").
+				Str("transport", transportZeroMQ).
+				Str("bind_url", m.cfg.ZeroMQ.BindURL).
+				Msg("started zeromq listener")
+		}
 
 		m.wg.Add(1)
 		go m.publishLoop()
@@ -296,19 +367,43 @@ func (m *Manager) Start(parent context.Context) {
 
 		for _, peer := range m.configuredPeers {
 			peer := peer
-			if !isWebSocketPeerURL(peer.URL) {
-				continue
-			}
 			m.wg.Add(1)
 			go m.dialLoop(peer)
 		}
 	})
+	return m.startErr
+}
+
+func (m *Manager) handleZeroMQConn(conn TransportConn) {
+	if conn == nil {
+		return
+	}
+	if m.ctx == nil || m.ctx.Err() != nil {
+		closeTransport(conn, "shutdown")
+		return
+	}
+	m.logInfo("peer_inbound_accepted").
+		Str("direction", "inbound").
+		Str("transport", conn.Transport()).
+		Str("remote_addr", conn.RemoteAddr()).
+		Str("bind_url", m.cfg.ZeroMQ.BindURL).
+		Msg("accepted inbound peer zeromq connection")
+
+	sess := m.newSession(conn, false, nil)
+	m.wg.Add(1)
+	go func() {
+		defer m.wg.Done()
+		m.runSession(sess)
+	}()
 }
 
 func (m *Manager) Close() error {
 	m.closeOnce.Do(func() {
 		if m.cancel != nil {
 			m.cancel()
+		}
+		if m.zeroMQListener != nil {
+			_ = m.zeroMQListener.Close()
 		}
 
 		m.mu.Lock()
@@ -554,7 +649,24 @@ func (m *Manager) dialLoop(peer *configuredPeer) {
 			Str("direction", "outbound").
 			Str("peer_url", peer.URL).
 			Msg("starting outbound peer dial")
-		conn, err := m.dialer.Dial(m.ctx, peer.URL)
+		dialer, err := m.dialerForPeerURL(peer.URL)
+		if err != nil {
+			m.recordConfiguredPeerDialFailure(peer, err)
+			wait := backoff[minInt(attempt, len(backoff)-1)]
+			m.logWarn("peer_dial_failed", err).
+				Str("direction", "outbound").
+				Str("peer_url", peer.URL).
+				Dur("retry_in", wait).
+				Msg("outbound peer dial failed")
+			attempt++
+			select {
+			case <-m.ctx.Done():
+				return
+			case <-time.After(wait):
+				continue
+			}
+		}
+		conn, err := dialer.Dial(m.ctx, peer.URL)
 		if err != nil {
 			m.recordConfiguredPeerDialFailure(peer, err)
 			wait := backoff[minInt(attempt, len(backoff)-1)]

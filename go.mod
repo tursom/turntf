@@ -9,7 +9,9 @@ require (
 	github.com/mattn/go-sqlite3 v1.14.17
 	github.com/pebbe/zmq4 v1.4.0
 	github.com/rs/zerolog v1.34.0
+	github.com/spf13/cobra v1.10.2
 	golang.org/x/crypto v0.43.0
+	golang.org/x/sys v0.37.0
 	google.golang.org/protobuf v1.36.6
 )
 
@@ -26,6 +28,7 @@ require (
 	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/golang/protobuf v1.5.3 // indirect
 	github.com/golang/snappy v0.0.4 // indirect
+	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/klauspost/compress v1.16.0 // indirect
 	github.com/kr/pretty v0.3.1 // indirect
 	github.com/kr/text v0.2.0 // indirect
@@ -38,7 +41,7 @@ require (
 	github.com/prometheus/common v0.42.0 // indirect
 	github.com/prometheus/procfs v0.9.0 // indirect
 	github.com/rogpeppe/go-internal v1.9.0 // indirect
+	github.com/spf13/pflag v1.0.9 // indirect
 	golang.org/x/exp v0.0.0-20230626212559-97b1e661b5df // indirect
-	golang.org/x/sys v0.37.0 // indirect
 	golang.org/x/text v0.30.0 // indirect
 )

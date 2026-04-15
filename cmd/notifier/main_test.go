@@ -51,15 +51,43 @@ func TestInitStoreCommandRemoved(t *testing.T) {
 	}
 }
 
-func TestServeRejectsLegacyFlags(t *testing.T) {
+func TestServeRejectsLegacyConfigFlag(t *testing.T) {
 	t.Parallel()
 
 	var stdout bytes.Buffer
-	err := run([]string{"serve", "-db", "legacy.db"}, &stdout)
+	err := run([]string{"serve", "-config", "legacy.toml"}, &stdout)
 	if err == nil {
-		t.Fatalf("expected legacy flag to be rejected")
+		t.Fatalf("expected legacy config flag to be rejected")
 	}
-	if !strings.Contains(err.Error(), "flag provided but not defined: -db") {
+	if !strings.Contains(err.Error(), `unknown command "legacy.toml"`) {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestServeLongConfigFlag(t *testing.T) {
+	t.Parallel()
+
+	configPath := filepath.Join(t.TempDir(), "missing.toml")
+	var stdout bytes.Buffer
+	err := run([]string{"serve", "--config", configPath}, &stdout)
+	if err == nil {
+		t.Fatalf("expected missing explicit config to fail")
+	}
+	if !strings.Contains(err.Error(), "read config "+configPath) {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestServeShortConfigFlag(t *testing.T) {
+	t.Parallel()
+
+	configPath := filepath.Join(t.TempDir(), "missing.toml")
+	var stdout bytes.Buffer
+	err := run([]string{"serve", "-c", configPath}, &stdout)
+	if err == nil {
+		t.Fatalf("expected missing explicit config to fail")
+	}
+	if !strings.Contains(err.Error(), "read config "+configPath) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -376,7 +404,10 @@ func TestHashCommandPrintsBCryptHashForPasswordFlag(t *testing.T) {
 	t.Parallel()
 
 	var stdout bytes.Buffer
-	if err := runHash([]string{"-password", "secret"}, &stdout, strings.NewReader("")); err != nil {
+	if err := runWithIO([]string{"hash", "--password", "secret"}, commandIO{
+		Stdout: &stdout,
+		Stdin:  strings.NewReader(""),
+	}); err != nil {
 		t.Fatalf("run hash: %v", err)
 	}
 
@@ -393,7 +424,10 @@ func TestHashCommandPrintsBCryptHashForStdin(t *testing.T) {
 	t.Parallel()
 
 	var stdout bytes.Buffer
-	if err := runHash([]string{"-stdin"}, &stdout, strings.NewReader("secret\n")); err != nil {
+	if err := runWithIO([]string{"hash", "--stdin"}, commandIO{
+		Stdout: &stdout,
+		Stdin:  strings.NewReader("secret\n"),
+	}); err != nil {
 		t.Fatalf("run hash stdin: %v", err)
 	}
 
@@ -410,8 +444,24 @@ func TestHashCommandRejectsEmptyPassword(t *testing.T) {
 	t.Parallel()
 
 	var stdout bytes.Buffer
-	err := runHash([]string{"-stdin"}, &stdout, strings.NewReader("\n"))
+	err := runWithIO([]string{"hash", "--stdin"}, commandIO{
+		Stdout: &stdout,
+		Stdin:  strings.NewReader("\n"),
+	})
 	if err == nil || !strings.Contains(err.Error(), "password cannot be empty") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestHashCommandRejectsPasswordAndStdinTogether(t *testing.T) {
+	t.Parallel()
+
+	var stdout bytes.Buffer
+	err := runWithIO([]string{"hash", "--password", "secret", "--stdin"}, commandIO{
+		Stdout: &stdout,
+		Stdin:  strings.NewReader("secret\n"),
+	})
+	if err == nil || !strings.Contains(err.Error(), "--password and --stdin cannot be used together") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

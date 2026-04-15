@@ -43,4 +43,4 @@ EXPOSE 8080
 VOLUME ["/app/data"]
 
 ENTRYPOINT ["/usr/local/bin/turntf"]
-CMD ["serve", "-config", "/app/config.toml"]
+CMD ["serve", "--config", "/app/config.toml"]

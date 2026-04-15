@@ -101,18 +101,19 @@ go run ./cmd/notifier serve
 也可以显式指定配置文件路径：
 
 ```bash
-go run ./cmd/notifier serve -config ./config.toml
+go run ./cmd/notifier serve --config ./config.toml
+go run ./cmd/notifier serve -c ./config.toml
 ```
 
 当前 `serve` 只接受一个运行时参数：
 
-- `-config`：TOML 配置文件路径；缺省时读取 `./config.toml`
+- `--config` / `-c`：TOML 配置文件路径；缺省时读取 `./config.toml`
 
 也可以直接生成 bcrypt 密码哈希：
 
 ```bash
-go run ./cmd/notifier hash -password 'secret'
-printf 'secret' | go run ./cmd/notifier hash -stdin
+go run ./cmd/notifier hash --password 'secret'
+printf 'secret' | go run ./cmd/notifier hash --stdin
 ```
 
 也可以直接生成 ZeroMQ CURVE 配置片段：
@@ -132,7 +133,7 @@ go run -tags zeromq ./cmd/notifier curve gen
 source <(notifier completion zsh)
 ```
 
-加载后，直接执行 `notifier ...` 会有补全；如果你在仓库根目录用 `go run ./cmd/notifier ...` 调试，同一份脚本也会把这条命令分发到 `notifier` 的补全逻辑。
+加载后，直接执行 `notifier ...` 会有补全。
 
 持久安装可以把补全脚本写入 `fpath` 中的目录，例如：
 
@@ -149,13 +150,22 @@ autoload -Uz compinit
 compinit
 ```
 
-如果你当前是直接从源码运行，可以直接执行：
+如果还没有安装二进制，也可以直接从源码生成补全脚本：
 
 ```bash
 source <(go run ./cmd/notifier completion zsh)
 ```
 
-这样 `go run ./cmd/notifier ...` 也会有同样的 Tab 补全。当前只提供 zsh 补全，不包含 bash 或 fish。
+这份 zsh 脚本同时支持 `notifier ...` 和仓库根目录下的 `go run ./cmd/notifier ...`。如果 `notifier` 二进制尚未安装到 `PATH`，请使用 `go run ./cmd/notifier ...` 触发补全。
+
+当前补全由 Cobra 生成，支持 `bash`、`zsh`、`fish` 和 `powershell`：
+
+```bash
+notifier completion bash
+notifier completion zsh
+notifier completion fish
+notifier completion powershell
+```
 
 ## Docker 部署
 

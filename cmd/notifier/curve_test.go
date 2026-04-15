@@ -7,11 +7,15 @@ import (
 	"testing"
 )
 
-func TestUsageTextMentionsCurveGen(t *testing.T) {
+func TestRootHelpMentionsCurve(t *testing.T) {
 	t.Parallel()
 
-	if !strings.Contains(usageText(), "notifier curve gen") {
-		t.Fatalf("expected usage text to mention curve gen, got %q", usageText())
+	var stdout bytes.Buffer
+	if err := run([]string{"--help"}, &stdout); err != nil {
+		t.Fatalf("run root help: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "curve") {
+		t.Fatalf("expected root help to mention curve, got %q", stdout.String())
 	}
 }
 
@@ -19,10 +23,10 @@ func TestCurveHelpPrintsUsage(t *testing.T) {
 	t.Parallel()
 
 	var stdout bytes.Buffer
-	if err := run([]string{"curve", "help"}, &stdout); err != nil {
+	if err := run([]string{"curve", "--help"}, &stdout); err != nil {
 		t.Fatalf("run curve help: %v", err)
 	}
-	if !strings.Contains(stdout.String(), "notifier curve gen") {
+	if !strings.Contains(stdout.String(), "gen") {
 		t.Fatalf("expected curve help to mention curve gen, got %q", stdout.String())
 	}
 }
@@ -85,7 +89,7 @@ func TestCurveRejectsUnknownSubcommand(t *testing.T) {
 
 	var stdout bytes.Buffer
 	err := run([]string{"curve", "bogus"}, &stdout)
-	if err == nil || !strings.Contains(err.Error(), `unknown curve command "bogus"`) {
+	if err == nil || !strings.Contains(err.Error(), `unknown command "bogus"`) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -95,7 +99,7 @@ func TestCurveGenRejectsPositionalArguments(t *testing.T) {
 
 	var stdout bytes.Buffer
 	err := run([]string{"curve", "gen", "extra"}, &stdout)
-	if err == nil || !strings.Contains(err.Error(), "curve gen does not accept positional arguments") {
+	if err == nil || !strings.Contains(err.Error(), "unknown command") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

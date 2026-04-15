@@ -1,9 +1,10 @@
 package main
 
 import (
-	"flag"
 	"fmt"
 	"io"
+
+	"github.com/spf13/cobra"
 )
 
 type curveConfig struct {
@@ -13,37 +14,27 @@ type curveConfig struct {
 	ClientSecretKey string
 }
 
-func runCurve(args []string, stdout io.Writer) error {
-	if len(args) == 0 {
-		printCurveUsage(stdout)
-		return nil
+func newCurveCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "curve",
+		Short: "Manage ZeroMQ CURVE helpers",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return cmd.Help()
+		},
 	}
-
-	switch args[0] {
-	case "help", "-h", "--help":
-		printCurveUsage(stdout)
-		return nil
-	case "gen":
-		return runCurveGen(args[1:], stdout)
-	default:
-		return fmt.Errorf("unknown curve command %q\n\n%s", args[0], curveUsageText())
-	}
+	cmd.AddCommand(&cobra.Command{
+		Use:   "gen",
+		Short: "Generate a ZeroMQ CURVE config snippet",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return runCurveGen(cmd.OutOrStdout())
+		},
+	})
+	return cmd
 }
 
-func runCurveGen(args []string, stdout io.Writer) error {
-	fs := flag.NewFlagSet("curve gen", flag.ContinueOnError)
-	fs.SetOutput(stdout)
-	fs.Usage = func() {
-		fmt.Fprintln(stdout, curveGenUsageText())
-	}
-
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	if fs.NArg() != 0 {
-		return fmt.Errorf("curve gen does not accept positional arguments")
-	}
-
+func runCurveGen(stdout io.Writer) error {
 	cfg, err := generateCurveConfig()
 	if err != nil {
 		return err
@@ -77,16 +68,4 @@ func generateCurveConfig() (curveConfig, error) {
 		ClientPublicKey: clientPublicKey,
 		ClientSecretKey: clientSecretKey,
 	}, nil
-}
-
-func printCurveUsage(w io.Writer) {
-	fmt.Fprintln(w, curveUsageText())
-}
-
-func curveUsageText() string {
-	return "usage:\n  notifier curve gen\n  notifier curve help"
-}
-
-func curveGenUsageText() string {
-	return "usage:\n  notifier curve gen"
 }

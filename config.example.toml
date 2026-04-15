@@ -1,59 +1,98 @@
+# HTTP API 监听地址；同时承载内部集群 WebSocket 入口 `/internal/cluster/ws`。
 [services.http]
 listen_addr = ":8080"
 
+# ZeroMQ 长连接入口，既可服务业务客户端，也可用于节点间同步。
+# 如只需要 HTTP/WebSocket，可以保持 disabled。
 [services.zeromq]
 enabled = false
+# ROUTER socket 的本地监听地址，仅支持 tcp://host:port。
+# 留空时不启动 ZeroMQ listener，但启用 ZeroMQ 后仍可用于主动拨号。
 bind_url = "tcp://0.0.0.0:9090"
 # ZeroMQ 支持 "none" 或 "curve"。TLS 不由 libzmq 原生提供，如需 TLS 请在外层使用 TCP TLS 隧道。
 security = "none"
 
+# CURVE 模式需要本节点的 server/client key，并维护允许接入的 client public key 白名单。
 [services.zeromq.curve]
 # 使用 `go test -tags zeromq` 中的 zmq4.NewCurveKeypair 示例或其他 ZeroMQ 工具生成 Z85 CURVE key。
 server_public_key = ""
 server_secret_key = ""
 client_public_key = ""
 client_secret_key = ""
+# 当 bind_url 非空且 security = "curve" 时，白名单不能为空。
 allowed_client_public_keys = []
 
+# 事件日志和消息投影存储配置。
 [store]
+# 可选 sqlite 或 pebble；默认 sqlite。
 engine = "sqlite"
+# 每节点每用户本地保留的消息窗口大小；超出窗口的旧消息会在本地裁剪。
 message_window_size = 500
 
+# SQLite 始终用于保存用户、订阅、游标、发现到的 peer 等元数据。
+# 当 engine = "sqlite" 时，也用于事件日志和消息投影。
 [store.sqlite]
 db_path = "./data/turntf.db"
 
+# Pebble 仅在 engine = "pebble" 时用于事件日志和消息投影。
 [store.pebble]
 path = "./data/turntf.pebble"
 
+# 外部登录鉴权配置。
 [auth]
+# 生产环境必须替换为高强度随机密钥；所有节点需保持一致。
+# 不能与 cluster.secret 使用相同值。
 token_secret = "replace-me"
+# 登录 token 有效期，单位分钟；0 使用默认值 1440。
 token_ttl_minutes = 1440
 
+# 保底超级管理员。启动时会确保该用户名存在并拥有管理员权限。
 [auth.bootstrap_admin]
 username = "root"
+# bcrypt 密码哈希；示例值对应明文密码 root。
+# 仅首次创建保底管理员时使用，后续不会强制覆盖已有密码。
 password_hash = "$2a$10$1gGoT/pdOu8vX1W28skBPOB7ICjISmVgt9lMyZf9c6re6cMHU6mAa"
 
+# 日志配置。
 [logging]
+# 支持 debug、info、warn、error；留空时默认 info。
 level = "info"
+# JSON 行日志文件路径；留空时只输出到控制台。
 file_path = "./data/turntf.log"
 
+# 集群配置整段可省略；省略时按单节点模式运行。
+# 配置 cluster.peers 时必须同时提供 cluster.secret。
 [cluster]
+# 集群内部 Envelope HMAC 共享密钥；生产环境必须替换，且不能与 auth.token_secret 相同。
 secret = "secret"
 
+# 集群时钟保护配置，单位为毫秒的字段均以 _ms 结尾。
 [cluster.clock]
+# 允许的最大时钟偏差；0 表示关闭超限拒绝，但首次可信校时前仍会阻止本地写入。
 max_skew_ms = 1000
+# 单轮校时等待 peer 响应的超时时间。
 sync_timeout_ms = 8000
+# 校时样本可被视为可信的最大 RTT。
 credible_rtt_ms = 4000
+# 聚合时钟状态保持 trusted 的新鲜窗口。
 trusted_fresh_ms = 60000
+# trusted 过期后进入 observing 前的宽限窗口。
 observe_grace_ms = 180000
+# 可信校时过期后允许继续应用复制事件的最大窗口。
 write_gate_grace_ms = 300000
+# 连续校时失败达到该次数后拒绝 peer。
 reject_after_failures = 3
+# 连续确认时钟偏差超限达到该次数后拒绝 peer。
 reject_after_skew_samples = 3
+# 从观察状态恢复到可信所需的连续健康样本数。
 recover_after_healthy_samples = 2
 
+# 静态 WebSocket peer；URL path 按这里配置，通常使用 `/internal/cluster/ws`。
 [[cluster.peers]]
 url = "ws://127.0.0.1:9081/internal/cluster/ws"
 
+# 静态 ZeroMQ peer；需要先启用 services.zeromq.enabled。
+# zmq+tcp URL 必须是远端可拨号地址，不要使用 0.0.0.0。
 [[cluster.peers]]
 url = "zmq+tcp://127.0.0.1:9091"
 # ZeroMQ CURVE 模式下，zmq+tcp peer 必须配置远端 server public key。

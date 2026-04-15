@@ -51,6 +51,8 @@ func run(args []string, stdout io.Writer) error {
 		return runHash(args[1:], stdout, os.Stdin)
 	case "curve":
 		return runCurve(args[1:], stdout)
+	case "completion":
+		return runCompletion(args[1:], stdout)
 	default:
 		if !strings.HasPrefix(args[0], "-") {
 			return fmt.Errorf("unknown command %q\n\n%s", args[0], usageText())
@@ -180,7 +182,7 @@ func printUsage(w io.Writer) {
 }
 
 func usageText() string {
-	return "usage:\n  notifier serve [-config ./config.toml]\n  notifier hash [-password xxx | -stdin]\n  notifier curve gen\n  notifier help"
+	return "usage:\n  notifier serve [-config ./config.toml]\n  notifier hash [-password xxx | -stdin]\n  notifier curve gen\n  notifier completion zsh\n  notifier help"
 }
 
 func serveHandler(apiHandler http.Handler, manager *cluster.Manager, clusterPath string) http.Handler {

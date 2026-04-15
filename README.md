@@ -124,6 +124,39 @@ go run -tags zeromq ./cmd/notifier curve gen
 
 默认构建会使用纯 Go 生成与 ZeroMQ CURVE 兼容的 X25519 + Z85 密钥；`-tags zeromq` 构建会直接调用 `libzmq` 的 keypair 生成能力。
 
+## zsh 补全
+
+如果已经安装了 `notifier` 二进制，可以临时启用 zsh 补全：
+
+```bash
+source <(notifier completion zsh)
+```
+
+加载后，直接执行 `notifier ...` 会有补全；如果你在仓库根目录用 `go run ./cmd/notifier ...` 调试，同一份脚本也会把这条命令分发到 `notifier` 的补全逻辑。
+
+持久安装可以把补全脚本写入 `fpath` 中的目录，例如：
+
+```bash
+mkdir -p ~/.zsh/completions
+notifier completion zsh > ~/.zsh/completions/_notifier
+```
+
+然后在 `~/.zshrc` 中确保启用了 `fpath` 和 `compinit`：
+
+```zsh
+fpath=(~/.zsh/completions $fpath)
+autoload -Uz compinit
+compinit
+```
+
+如果你当前是直接从源码运行，可以直接执行：
+
+```bash
+source <(go run ./cmd/notifier completion zsh)
+```
+
+这样 `go run ./cmd/notifier ...` 也会有同样的 Tab 补全。当前只提供 zsh 补全，不包含 bash 或 fish。
+
 ## Docker 部署
 
 项目根目录提供了 [Dockerfile](/root/dev/sys/turntf/Dockerfile) 和 [docker-compose.yml](/root/dev/sys/turntf/docker-compose.yml)。

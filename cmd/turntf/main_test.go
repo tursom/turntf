@@ -119,7 +119,7 @@ func TestServeRejectsMissingDefaultConfig(t *testing.T) {
 func TestLoadServeRuntimeConfigFromExplicitPath(t *testing.T) {
 	t.Parallel()
 
-	configPath := filepath.Join(t.TempDir(), "notifier.toml")
+	configPath := filepath.Join(t.TempDir(), "turntf.toml")
 	writeTestConfig(t, configPath, `
 [services.http]
 listen_addr = ":8080"
@@ -619,7 +619,7 @@ db_path = "./data/node-a.db"
 
 [logging]
 level = "warn"
-file_path = "./logs/notifier.log"
+file_path = "./logs/turntf.log"
 `)
 
 	cfg, err := loadServeRuntimeConfig(configPath)
@@ -629,7 +629,7 @@ file_path = "./logs/notifier.log"
 	if cfg.Logging.Level != "warn" {
 		t.Fatalf("unexpected log level: %q", cfg.Logging.Level)
 	}
-	if cfg.Logging.FilePath != filepath.Clean("./logs/notifier.log") {
+	if cfg.Logging.FilePath != filepath.Clean("./logs/turntf.log") {
 		t.Fatalf("unexpected log file path: %q", cfg.Logging.FilePath)
 	}
 }
@@ -658,7 +658,7 @@ level = "trace"
 func TestLoadServeRuntimeConfigAllowsDisablingMaxClockSkew(t *testing.T) {
 	t.Parallel()
 
-	configPath := filepath.Join(t.TempDir(), "notifier.toml")
+	configPath := filepath.Join(t.TempDir(), "turntf.toml")
 	writeTestConfig(t, configPath, `
 [services.http]
 listen_addr = ":8080"
@@ -688,7 +688,7 @@ url = "ws://127.0.0.1:9081/internal/cluster/ws"
 func TestLoadServeRuntimeConfigRejectsNegativeMaxClockSkew(t *testing.T) {
 	t.Parallel()
 
-	configPath := filepath.Join(t.TempDir(), "notifier.toml")
+	configPath := filepath.Join(t.TempDir(), "turntf.toml")
 	writeTestConfig(t, configPath, `
 [services.http]
 listen_addr = ":8080"

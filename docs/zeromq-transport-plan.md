@@ -221,7 +221,7 @@ Docker 需要新增运行依赖：
 
 ```yaml
 services:
-  notifier:
+  turntf:
     ports:
       - "8080:8080"
       # 仅在启用 ZeroMQ 时打开
@@ -295,9 +295,9 @@ services:
 
 ```bash
 go test ./...
-go test -tags zeromq ./internal/cluster ./internal/api ./cmd/notifier
-go build -tags zeromq ./cmd/notifier
-docker build --build-arg ENABLE_ZEROMQ=true -t turntf-notifier:zeromq-smoke .
+go test -tags zeromq ./internal/cluster ./internal/api ./cmd/turntf
+go build -tags zeromq ./cmd/turntf
+docker build --build-arg ENABLE_ZEROMQ=true -t turntf:zeromq-smoke .
 ```
 
 如果本地未安装 `libzmq`，实现阶段应在文档中明确跳过 ZeroMQ adapter 集成测试的方式，或使用构建标签隔离需要 `libzmq` 的测试。

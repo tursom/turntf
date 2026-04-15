@@ -19,7 +19,7 @@ func TestConfigureLoggerWritesConsoleAndJSONFile(t *testing.T) {
 	})
 
 	var console bytes.Buffer
-	logPath := filepath.Join(t.TempDir(), "logs", "notifier.log")
+	logPath := filepath.Join(t.TempDir(), "logs", "turntf.log")
 	closeLogger, err := configureLogger(runtimeLoggingConfig{
 		Level:    "info",
 		FilePath: logPath,
@@ -29,7 +29,7 @@ func TestConfigureLoggerWritesConsoleAndJSONFile(t *testing.T) {
 	}
 
 	log.Info().
-		Str("component", "notifier").
+		Str("component", "turntf").
 		Str("event", "test_event").
 		Msg("test message")
 	if err := closeLogger(); err != nil {
@@ -40,7 +40,7 @@ func TestConfigureLoggerWritesConsoleAndJSONFile(t *testing.T) {
 	if !strings.Contains(consoleOutput, "test message") {
 		t.Fatalf("expected console message, got %q", consoleOutput)
 	}
-	if !strings.Contains(consoleOutput, "component=notifier") {
+	if !strings.Contains(consoleOutput, "component=turntf") {
 		t.Fatalf("expected console component field, got %q", consoleOutput)
 	}
 
@@ -63,7 +63,7 @@ func TestConfigureLoggerWritesConsoleAndJSONFile(t *testing.T) {
 	if timestamp, ok := event["time"].(string); !ok || timestamp == "" {
 		t.Fatalf("expected time field in json log: %#v", event)
 	}
-	if event["component"] != "notifier" || event["event"] != "test_event" {
+	if event["component"] != "turntf" || event["event"] != "test_event" {
 		t.Fatalf("unexpected structured fields: %#v", event)
 	}
 }

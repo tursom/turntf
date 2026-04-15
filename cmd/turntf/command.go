@@ -33,8 +33,8 @@ func runWithIO(args []string, ioCfg commandIO) error {
 func newRootCommand(ioCfg commandIO) *cobra.Command {
 	ioCfg = normalizeCommandIO(ioCfg)
 	cmd := &cobra.Command{
-		Use:           "notifier",
-		Short:         "Run the TurnTF notifier service and helper commands",
+		Use:           "turntf",
+		Short:         "Run the TurnTF service and helper commands",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		Args:          cobra.NoArgs,

@@ -1,5 +1,6 @@
 /data/
 /notifier
+/turntf
 /config.toml
 *.db
 *.sqlite

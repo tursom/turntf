@@ -39,7 +39,7 @@ func writeZshCompletion(root *cobra.Command, out io.Writer) error {
 	if err := root.GenZshCompletion(&buf); err != nil {
 		return err
 	}
-	script := bytes.Replace(buf.Bytes(), []byte("#compdef notifier\n"), []byte("#compdef notifier ./notifier\n"), 1)
+	script := bytes.Replace(buf.Bytes(), []byte("#compdef turntf\n"), []byte("#compdef turntf ./turntf\n"), 1)
 	buf.Reset()
 	buf.Write(script)
 	buf.WriteString(zshGoRunCompletionDispatch())
@@ -49,26 +49,26 @@ func writeZshCompletion(root *cobra.Command, out io.Writer) error {
 
 func zshGoRunCompletionDispatch() string {
 	return `
-_notifier_go_dispatch() {
+_turntf_go_dispatch() {
   if [[ ${words[2]-} == run ]]; then
     case ${words[3]-} in
-      ./cmd/notifier|cmd/notifier)
-        local -a _notifier_root_commands
-        local -a _notifier_curve_commands
-        local -a _notifier_completion_shells
+      ./cmd/turntf|cmd/turntf)
+        local -a _turntf_root_commands
+        local -a _turntf_curve_commands
+        local -a _turntf_completion_shells
 
-        _notifier_root_commands=(
-          'serve:Start the notifier service'
+        _turntf_root_commands=(
+          'serve:Start the TurnTF service'
           'hash:Generate a bcrypt password hash'
           'curve:Manage ZeroMQ CURVE helpers'
           'completion:Generate shell completion scripts'
           'help:Help about any command'
         )
-        _notifier_curve_commands=(
+        _turntf_curve_commands=(
           'gen:Generate a ZeroMQ CURVE config snippet'
           'help:Help about any command'
         )
-        _notifier_completion_shells=(
+        _turntf_completion_shells=(
           'bash:Generate bash completion'
           'zsh:Generate zsh completion'
           'fish:Generate fish completion'
@@ -76,7 +76,7 @@ _notifier_go_dispatch() {
         )
 
         if (( CURRENT == 4 )); then
-          _describe -t commands 'notifier command' _notifier_root_commands
+          _describe -t commands 'turntf command' _turntf_root_commands
           return
         fi
 
@@ -98,7 +98,7 @@ _notifier_go_dispatch() {
             ;;
           curve)
             if (( CURRENT == 5 )); then
-              _describe -t curve-commands 'curve command' _notifier_curve_commands
+              _describe -t curve-commands 'curve command' _turntf_curve_commands
               return
             fi
             case ${words[5]-} in
@@ -110,7 +110,7 @@ _notifier_go_dispatch() {
             ;;
           completion)
             if (( CURRENT == 5 )); then
-              _describe -t completion-shells 'completion shell' _notifier_completion_shells
+              _describe -t completion-shells 'completion shell' _turntf_completion_shells
               return
             fi
             ;;
@@ -125,9 +125,9 @@ _notifier_go_dispatch() {
 }
 
 if (( $+functions[compdef] )); then
-  compdef _notifier ./notifier
-  compdef -p _notifier '*/notifier'
-  compdef _notifier_go_dispatch go
+  compdef _turntf ./turntf
+  compdef -p _turntf '*/turntf'
+  compdef _turntf_go_dispatch go
 fi
 `
 }

@@ -111,7 +111,7 @@ sqlite3 ./data/turntf.db ".backup './backup/turntf-$(date +%Y%m%d%H%M%S).db'"
 ```toml
 [logging]
 level = "info"
-file_path = "./data/notifier.log"
+file_path = "./data/turntf.log"
 ```
 
 - `logging.level` 默认 `info`，支持 `debug`、`info`、`warn`、`error`。

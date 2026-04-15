@@ -18,7 +18,7 @@ COPY . .
 RUN set -eu; \
     BUILD_TAGS=""; \
     if [ "${ENABLE_ZEROMQ}" = "true" ]; then BUILD_TAGS="-tags zeromq"; fi; \
-    CGO_ENABLED=1 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+    CGO_ENABLED=1 CGO_CFLAGS="-D_LARGEFILE64_SOURCE -D_GNU_SOURCE" GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
     go build ${BUILD_TAGS} -trimpath -ldflags="-s -w" -o /out/turntf ./cmd/turntf
 
 FROM alpine:3.22

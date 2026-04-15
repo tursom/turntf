@@ -20,7 +20,7 @@ func newServeCommand(ioCfg commandIO) *cobra.Command {
 	var configPath string
 	cmd := &cobra.Command{
 		Use:   "serve",
-		Short: "Start the notifier service",
+		Short: "Start the TurnTF service",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return serveRuntime(cmd.Context(), configPath, ioCfg.Stderr)
@@ -103,7 +103,7 @@ func serveRuntime(ctx context.Context, configPath string, logOutput io.Writer) e
 			manager.SetZeroMQListenerRunning(true)
 		}
 		log.Info().
-			Str("component", "notifier").
+			Str("component", "turntf").
 			Str("event", "zeromq_listener_started").
 			Str("bind_url", cfg.Services.ZeroMQ.BindURL).
 			Msg("zeromq listener started")
@@ -115,13 +115,13 @@ func serveRuntime(ctx context.Context, configPath string, logOutput io.Writer) e
 	}
 
 	errCh := make(chan error, 1)
-	log.Info().Str("component", "notifier").Str("event", "config_loaded").Str("path", cfg.ConfigPath).Msg("config loaded")
-	log.Info().Str("component", "notifier").Str("event", "node_identity").Int64("node_id", st.NodeID()).Msg("node identity")
-	log.Info().Str("component", "notifier").Str("event", "http_api_listening").Str("addr", cfg.Services.HTTP.ListenAddr).Msg("http api listening")
-	log.Info().Str("component", "notifier").Str("event", "store_engine").Str("engine", cfg.StoreOptions.Engine).Msg("store engine")
-	log.Info().Str("component", "notifier").Str("event", "sqlite_database").Str("path", cfg.SQLitePath).Msg("sqlite database")
+	log.Info().Str("component", "turntf").Str("event", "config_loaded").Str("path", cfg.ConfigPath).Msg("config loaded")
+	log.Info().Str("component", "turntf").Str("event", "node_identity").Int64("node_id", st.NodeID()).Msg("node identity")
+	log.Info().Str("component", "turntf").Str("event", "http_api_listening").Str("addr", cfg.Services.HTTP.ListenAddr).Msg("http api listening")
+	log.Info().Str("component", "turntf").Str("event", "store_engine").Str("engine", cfg.StoreOptions.Engine).Msg("store engine")
+	log.Info().Str("component", "turntf").Str("event", "sqlite_database").Str("path", cfg.SQLitePath).Msg("sqlite database")
 	if cfg.StoreOptions.Engine == store.EnginePebble {
-		log.Info().Str("component", "notifier").Str("event", "pebble_database").Str("path", cfg.PebblePath).Msg("pebble database")
+		log.Info().Str("component", "turntf").Str("event", "pebble_database").Str("path", cfg.PebblePath).Msg("pebble database")
 	}
 	if manager != nil {
 		log.Info().Str("component", "cluster").Str("event", "websocket_listening").Str("addr", cfg.Services.HTTP.ListenAddr).Str("path", cluster.WebSocketPath).Msg("websocket listening")

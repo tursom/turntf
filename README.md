@@ -25,7 +25,7 @@
 
 ```text
 .
-├── cmd/notifier/main.go            # 当前 CLI 入口
+├── cmd/turntf/main.go            # 当前 CLI 入口
 ├── docs/distributed-system-roadmap.md # 分布式系统未来演进路线图
 ├── docs/distributed-test-framework-enhancement.md # 分布式测试框架增强计划
 ├── docs/distributed-test-framework-enhancement-results.md # 分布式测试框架增强执行结果
@@ -95,14 +95,14 @@ peer 自动发现见 [docs/peer-discovery.md](/root/dev/sys/turntf/docs/peer-dis
 
 ```bash
 cp ./config.example.toml ./config.toml
-go run ./cmd/notifier serve
+go run ./cmd/turntf serve
 ```
 
 也可以显式指定配置文件路径：
 
 ```bash
-go run ./cmd/notifier serve --config ./config.toml
-go run ./cmd/notifier serve -c ./config.toml
+go run ./cmd/turntf serve --config ./config.toml
+go run ./cmd/turntf serve -c ./config.toml
 ```
 
 当前 `serve` 只接受一个运行时参数：
@@ -112,34 +112,34 @@ go run ./cmd/notifier serve -c ./config.toml
 也可以直接生成 bcrypt 密码哈希：
 
 ```bash
-go run ./cmd/notifier hash --password 'secret'
-printf 'secret' | go run ./cmd/notifier hash --stdin
+go run ./cmd/turntf hash --password 'secret'
+printf 'secret' | go run ./cmd/turntf hash --stdin
 ```
 
 也可以直接生成 ZeroMQ CURVE 配置片段：
 
 ```bash
-go run ./cmd/notifier curve gen
-go run -tags zeromq ./cmd/notifier curve gen
+go run ./cmd/turntf curve gen
+go run -tags zeromq ./cmd/turntf curve gen
 ```
 
 默认构建会使用纯 Go 生成与 ZeroMQ CURVE 兼容的 X25519 + Z85 密钥；`-tags zeromq` 构建会直接调用 `libzmq` 的 keypair 生成能力。
 
 ## zsh 补全
 
-如果已经安装了 `notifier` 二进制，可以临时启用 zsh 补全：
+如果已经安装了 `turntf` 二进制，可以临时启用 zsh 补全：
 
 ```bash
-source <(notifier completion zsh)
+source <(turntf completion zsh)
 ```
 
-加载后，直接执行 `notifier ...` 会有补全。
+加载后，直接执行 `turntf ...` 会有补全。
 
 持久安装可以把补全脚本写入 `fpath` 中的目录，例如：
 
 ```bash
 mkdir -p ~/.zsh/completions
-notifier completion zsh > ~/.zsh/completions/_notifier
+turntf completion zsh > ~/.zsh/completions/_turntf
 ```
 
 然后在 `~/.zshrc` 中确保启用了 `fpath` 和 `compinit`：
@@ -153,18 +153,18 @@ compinit
 如果还没有安装二进制，也可以直接从源码生成补全脚本：
 
 ```bash
-source <(go run ./cmd/notifier completion zsh)
+source <(go run ./cmd/turntf completion zsh)
 ```
 
-这份 zsh 脚本同时支持 `notifier ...` 和仓库根目录下的 `go run ./cmd/notifier ...`。如果 `notifier` 二进制尚未安装到 `PATH`，请使用 `go run ./cmd/notifier ...` 触发补全。
+这份 zsh 脚本同时支持 `turntf ...` 和仓库根目录下的 `go run ./cmd/turntf ...`。如果 `turntf` 二进制尚未安装到 `PATH`，请使用 `go run ./cmd/turntf ...` 触发补全。
 
 当前补全由 Cobra 生成，支持 `bash`、`zsh`、`fish` 和 `powershell`：
 
 ```bash
-notifier completion bash
-notifier completion zsh
-notifier completion fish
-notifier completion powershell
+turntf completion bash
+turntf completion zsh
+turntf completion fish
+turntf completion powershell
 ```
 
 ## Docker 部署
@@ -186,11 +186,11 @@ mkdir -p ./data
 直接使用 `docker run`：
 
 ```bash
-docker build -t turntf-notifier .
+docker build -t turntf .
 docker run --rm -p 8080:8080 \
   -v "$PWD/config.toml:/app/config.toml:ro" \
   -v "$PWD/data:/app/data" \
-  turntf-notifier
+  turntf
 ```
 
 或者使用 Compose：
@@ -258,7 +258,7 @@ password_hash = "$2a$10$1gGoT/pdOu8vX1W28skBPOB7ICjISmVgt9lMyZf9c6re6cMHU6mAa"
 
 [logging]
 level = "info"
-file_path = "./data/notifier.log"
+file_path = "./data/turntf.log"
 
 [cluster]
 secret = "secret"

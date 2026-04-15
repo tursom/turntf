@@ -49,10 +49,10 @@ func TestCompletionPrintsScripts(t *testing.T) {
 		shell   string
 		snippet string
 	}{
-		{shell: "bash", snippet: "bash completion for notifier"},
-		{shell: "zsh", snippet: "#compdef notifier"},
-		{shell: "fish", snippet: "fish completion for notifier"},
-		{shell: "powershell", snippet: "powershell completion for notifier"},
+		{shell: "bash", snippet: "bash completion for turntf"},
+		{shell: "zsh", snippet: "#compdef turntf"},
+		{shell: "fish", snippet: "fish completion for turntf"},
+		{shell: "powershell", snippet: "powershell completion for turntf"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.shell, func(t *testing.T) {
@@ -77,13 +77,13 @@ func TestCompletionZshUsesCobraScript(t *testing.T) {
 	}
 	output := stdout.String()
 	for _, snippet := range []string{
-		"#compdef notifier ./notifier",
-		"_notifier()",
+		"#compdef turntf ./turntf",
+		"_turntf()",
 		"__complete",
-		"compdef _notifier ./notifier",
-		"compdef -p _notifier '*/notifier'",
-		"_notifier_go_dispatch()",
-		"./cmd/notifier|cmd/notifier",
+		"compdef _turntf ./turntf",
+		"compdef -p _turntf '*/turntf'",
+		"_turntf_go_dispatch()",
+		"./cmd/turntf|cmd/turntf",
 		"--config",
 		"-c",
 		"--password",

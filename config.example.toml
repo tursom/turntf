@@ -35,7 +35,7 @@ password_hash = "$2a$10$1gGoT/pdOu8vX1W28skBPOB7ICjISmVgt9lMyZf9c6re6cMHU6mAa"
 
 [logging]
 level = "info"
-file_path = "./data/notifier.log"
+file_path = "./data/turntf.log"
 
 [cluster]
 secret = "secret"

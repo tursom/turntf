@@ -136,7 +136,7 @@
 
 当前状态：
 
-- 当前有首次成功校时才能写入、`cluster.max_clock_skew_ms` 限制，以及未来时间戳事件拒绝
+- 当前有首次成功校时才能写入、`cluster.clock.max_skew_ms` 限制，以及未来时间戳事件拒绝
 
 问题：
 

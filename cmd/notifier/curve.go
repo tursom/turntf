@@ -40,10 +40,10 @@ func runCurveGen(stdout io.Writer) error {
 		return err
 	}
 
-	_, err = fmt.Fprintf(stdout, `[cluster.zeromq]
+	_, err = fmt.Fprintf(stdout, `[services.zeromq]
 security = "curve"
 
-[cluster.zeromq.curve]
+[services.zeromq.curve]
 server_public_key = %q
 server_secret_key = %q
 client_public_key = %q

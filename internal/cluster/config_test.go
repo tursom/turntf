@@ -198,7 +198,7 @@ func TestConfigValidateRejectsInvalidZeroMQCombinations(t *testing.T) {
 					{URL: "zmq+tcp://127.0.0.1:9091"},
 				},
 			},
-			wantErr: `zeromq peer url "zmq+tcp://127.0.0.1:9091" requires cluster.zeromq.enabled`,
+			wantErr: `zeromq peer url "zmq+tcp://127.0.0.1:9091" requires services.zeromq.enabled`,
 		},
 		{
 			name: "invalid zeromq security",

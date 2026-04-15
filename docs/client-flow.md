@@ -19,7 +19,7 @@
 - `POST /nodes/{node_id}/users/{user_id}/messages`：HTTP 写消息，`body` 是 base64 字节。
 - `POST /nodes/{node_id}/users/{user_id}/messages`：HTTP 发送消息；当 `delivery_kind = transient` 时走不落库瞬时投递。
 - `GET /ws/client`：客户端 WebSocket 长连接，连接后第一帧必须是 protobuf `LoginRequest`。
-- `zmq+tcp://host:port`：客户端 ZeroMQ 长连接，对应服务端 `cluster.zeromq.bind_url`；第一帧必须是 `ZeroMQMuxHello{role=CLIENT, protocol_version="zeromq-mux-v1"}`，第二帧必须是 protobuf `LoginRequest`。
+- `zmq+tcp://host:port`：客户端 ZeroMQ 长连接，对应服务端 `services.zeromq.bind_url`；第一帧必须是 `ZeroMQMuxHello{role=CLIENT, protocol_version="zeromq-mux-v1"}`，第二帧必须是 protobuf `LoginRequest`。
 - 如果服务端启用 ZeroMQ CURVE，客户端连接前还必须配置服务端 `server_public_key` 和自己的 CURVE client key；客户端 public key 必须在服务端白名单中。TLS 证书体系需要通过外部 TCP TLS 隧道或 WebSocket `wss` 提供。
 
 ## 端到端流程

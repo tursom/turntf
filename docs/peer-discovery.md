@@ -157,7 +157,7 @@ membership update 当前会广播三类地址：
 
 - 至少配置一组可连通的静态种子 peer。自动发现可以减少全量配置，但不能在完全没有入口的情况下凭空发现节点。
 - 推荐让每个节点至少能通过一个静态 peer 或历史发现记录进入集群，再由 membership update 补齐其他节点。
-- `cluster.peers.url` 必须是其他节点可实际拨通的完整 `ws://` 或 `wss://` URL，路径通常等于对端 `cluster.advertise_path`。
+- `cluster.peers.url` 必须是其他节点可实际拨通的完整 `ws://` 或 `wss://` URL，路径按该 URL 原样用于拨号；本节点内部集群入口固定为 `/internal/cluster/ws`。
 - 反向代理必须支持 WebSocket 升级，并保持集群内部 HMAC secret 一致。
 - 如果节点的对外地址发生变化，至少需要有一个已连接 peer 广告新 URL；旧 URL 会保留为失败或过期记录，当前没有自动删除表记录的运维 API。
 - 备份 SQLite 时会同时备份 `schema_meta.node_id` 和 `discovered_peers`。恢复节点身份时不要把同一份 SQLite 同时启动成两个实例。

@@ -1,13 +1,13 @@
 # 客户端长连接接口
 
-本文档描述业务客户端使用的长连接 + Protobuf 接口。客户端可以通过 WebSocket 或 ZeroMQ 连接服务端；节点间集群同步仍使用 `GET /internal/cluster/ws` 或 `cluster.zeromq.bind_url` 对应的集群链路，不要和本文的客户端接口混用。完整接入步骤见 [客户端全流程接入文档](/root/dev/sys/turntf/docs/client-flow.md)。
+本文档描述业务客户端使用的长连接 + Protobuf 接口。客户端可以通过 WebSocket 或 ZeroMQ 连接服务端；节点间集群同步仍使用 `GET /internal/cluster/ws` 或 `services.zeromq.bind_url` 对应的集群链路，不要和本文的客户端接口混用。完整接入步骤见 [客户端全流程接入文档](/root/dev/sys/turntf/docs/client-flow.md)。
 
 当前客户端长连接已覆盖除 `POST /auth/login` 之外的全部 HTTP 客户端能力：既能收发消息，也能执行用户管理、订阅管理、历史查询和运维查询。
 
 ## 连接地址
 
 - WebSocket：`GET /ws/client`
-- ZeroMQ：`zmq+tcp://host:port`，其中 `host:port` 对应服务端 `cluster.zeromq.bind_url`
+- ZeroMQ：`zmq+tcp://host:port`，其中 `host:port` 对应服务端 `services.zeromq.bind_url`
 - WebSocket frame 或 ZeroMQ message 内容：每一帧都是一个完整 protobuf message
 - 客户端发送类型：`notifier.client.v1.ClientEnvelope`
 - 服务端发送类型：`notifier.client.v1.ServerEnvelope`
@@ -19,7 +19,7 @@
 - WebSocket：连接升级成功后，客户端发送的第一帧必须是 `ClientEnvelope.login`
 - ZeroMQ：第一帧必须发送 `ZeroMQMuxHello{role=CLIENT, protocol_version="zeromq-mux-v1"}`，第二帧必须是 `ClientEnvelope.login`
 
-如果服务端启用了 `cluster.zeromq.security = "curve"`，客户端在连接 ZeroMQ 前还必须配置服务端 `server_public_key` 以及自己的 CURVE `client_public_key`/`client_secret_key`。客户端 public key 必须出现在服务端 `cluster.zeromq.curve.allowed_client_public_keys` 中；CURVE 只完成链路加密和传输层公钥白名单，业务身份仍以 `ClientEnvelope.login` 为准。
+如果服务端启用了 `services.zeromq.security = "curve"`，客户端在连接 ZeroMQ 前还必须配置服务端 `server_public_key` 以及自己的 CURVE `client_public_key`/`client_secret_key`。客户端 public key 必须出现在服务端 `services.zeromq.curve.allowed_client_public_keys` 中；CURVE 只完成链路加密和传输层公钥白名单，业务身份仍以 `ClientEnvelope.login` 为准。
 
 ZeroMQ TLS 不在应用内实现，也不新增 `zmq+tls` URL。需要 TLS 证书体系时，应在 ZeroMQ TCP 端口外层使用 TCP TLS 隧道，或选择 WebSocket `wss`。
 

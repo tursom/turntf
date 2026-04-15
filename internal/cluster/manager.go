@@ -16,6 +16,7 @@ import (
 )
 
 const (
+	WebSocketPath                    = websocketPath
 	websocketPath                    = "/internal/cluster/ws"
 	writeWait                        = 10 * time.Second
 	pingInterval                     = 15 * time.Second

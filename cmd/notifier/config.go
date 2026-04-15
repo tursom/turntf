@@ -16,19 +16,23 @@ const defaultSQLitePath = "./data/turntf.db"
 const defaultPebblePath = "./data/turntf.pebble"
 
 type serveConfig struct {
-	API     apiConfig         `toml:"api"`
-	Store   storeConfig       `toml:"store"`
-	Auth    authConfig        `toml:"auth"`
-	Logging loggingConfig     `toml:"logging"`
-	Cluster clusterFileConfig `toml:"cluster"`
+	Services servicesConfig    `toml:"services"`
+	Store    storeConfig       `toml:"store"`
+	Auth     authConfig        `toml:"auth"`
+	Logging  loggingConfig     `toml:"logging"`
+	Cluster  clusterFileConfig `toml:"cluster"`
 }
 
-type apiConfig struct {
+type servicesConfig struct {
+	HTTP   httpServiceConfig `toml:"http"`
+	ZeroMQ zeroMQFileConfig  `toml:"zeromq"`
+}
+
+type httpServiceConfig struct {
 	ListenAddr string `toml:"listen_addr"`
 }
 
 type storeConfig struct {
-	DBPath            string            `toml:"db_path"`
 	MessageWindowSize int               `toml:"message_window_size"`
 	Engine            string            `toml:"engine"`
 	SQLite            sqliteStoreConfig `toml:"sqlite"`
@@ -60,24 +64,30 @@ type loggingConfig struct {
 }
 
 type clusterFileConfig struct {
-	AdvertisePath                   string           `toml:"advertise_path"`
-	Secret                          string           `toml:"secret"`
-	ZeroMQ                          zeroMQFileConfig `toml:"zeromq"`
-	MaxClockSkewMs                  *int64           `toml:"max_clock_skew_ms"`
-	ClockSyncTimeoutMs              *int64           `toml:"clock_sync_timeout_ms"`
-	ClockCredibleRttMs              *int64           `toml:"clock_credible_rtt_ms"`
-	ClockTrustedFreshMs             *int64           `toml:"clock_trusted_fresh_ms"`
-	ClockObserveGraceMs             *int64           `toml:"clock_observe_grace_ms"`
-	ClockWriteGateGraceMs           *int64           `toml:"clock_write_gate_grace_ms"`
-	ClockRejectAfterFailures        *int             `toml:"clock_reject_after_failures"`
-	ClockRejectAfterSkewSamples     *int             `toml:"clock_reject_after_skew_samples"`
-	ClockRecoverAfterHealthySamples *int             `toml:"clock_recover_after_healthy_samples"`
-	Peers                           []peerFileConfig `toml:"peers"`
+	Secret string           `toml:"secret"`
+	Clock  clockFileConfig  `toml:"clock"`
+	Peers  []peerFileConfig `toml:"peers"`
+}
+
+type clockFileConfig struct {
+	MaxSkewMs                  *int64 `toml:"max_skew_ms"`
+	SyncTimeoutMs              *int64 `toml:"sync_timeout_ms"`
+	CredibleRttMs              *int64 `toml:"credible_rtt_ms"`
+	TrustedFreshMs             *int64 `toml:"trusted_fresh_ms"`
+	ObserveGraceMs             *int64 `toml:"observe_grace_ms"`
+	WriteGateGraceMs           *int64 `toml:"write_gate_grace_ms"`
+	RejectAfterFailures        *int   `toml:"reject_after_failures"`
+	RejectAfterSkewSamples     *int   `toml:"reject_after_skew_samples"`
+	RecoverAfterHealthySamples *int   `toml:"recover_after_healthy_samples"`
 }
 
 type peerFileConfig struct {
-	URL                        string `toml:"url"`
-	ZeroMQCurveServerPublicKey string `toml:"zeromq_curve_server_public_key"`
+	URL    string               `toml:"url"`
+	ZeroMQ peerZeroMQFileConfig `toml:"zeromq"`
+}
+
+type peerZeroMQFileConfig struct {
+	CurveServerPublicKey string `toml:"curve_server_public_key"`
 }
 
 type zeroMQFileConfig struct {
@@ -97,13 +107,22 @@ type zeroMQCurveFileConfig struct {
 
 type runtimeServeConfig struct {
 	ConfigPath   string
-	APIAddr      string
+	Services     runtimeServicesConfig
 	SQLitePath   string
 	PebblePath   string
 	StoreOptions store.Options
 	Auth         runtimeAuthConfig
 	Logging      runtimeLoggingConfig
 	Cluster      cluster.Config
+}
+
+type runtimeServicesConfig struct {
+	HTTP   runtimeHTTPServiceConfig
+	ZeroMQ cluster.ZeroMQConfig
+}
+
+type runtimeHTTPServiceConfig struct {
+	ListenAddr string
 }
 
 type runtimeAuthConfig struct {
@@ -152,8 +171,9 @@ func trimStringSlice(values []string) []string {
 }
 
 func (c serveConfig) runtimeConfig(configPath string) (runtimeServeConfig, error) {
-	if strings.TrimSpace(c.API.ListenAddr) == "" {
-		return runtimeServeConfig{}, fmt.Errorf("api.listen_addr cannot be empty")
+	httpListenAddr := strings.TrimSpace(c.Services.HTTP.ListenAddr)
+	if httpListenAddr == "" {
+		return runtimeServeConfig{}, fmt.Errorf("services.http.listen_addr cannot be empty")
 	}
 	if c.Store.MessageWindowSize < 0 {
 		return runtimeServeConfig{}, fmt.Errorf("store.message_window_size must be positive")
@@ -188,9 +208,6 @@ func (c serveConfig) runtimeConfig(configPath string) (runtimeServeConfig, error
 	}
 	sqlitePath := strings.TrimSpace(c.Store.SQLite.DBPath)
 	if sqlitePath == "" {
-		sqlitePath = strings.TrimSpace(c.Store.DBPath)
-	}
-	if sqlitePath == "" {
 		sqlitePath = defaultSQLitePath
 	}
 	pebblePath := strings.TrimSpace(c.Store.Pebble.Path)
@@ -206,61 +223,62 @@ func (c serveConfig) runtimeConfig(configPath string) (runtimeServeConfig, error
 	for _, peer := range c.Cluster.Peers {
 		peers = append(peers, cluster.Peer{
 			URL:                        strings.TrimSpace(peer.URL),
-			ZeroMQCurveServerPublicKey: strings.TrimSpace(peer.ZeroMQCurveServerPublicKey),
+			ZeroMQCurveServerPublicKey: strings.TrimSpace(peer.ZeroMQ.CurveServerPublicKey),
 		})
 	}
 
 	maxClockSkewMs := cluster.DefaultMaxClockSkewMs
-	if c.Cluster.MaxClockSkewMs != nil {
-		maxClockSkewMs = *c.Cluster.MaxClockSkewMs
+	if c.Cluster.Clock.MaxSkewMs != nil {
+		maxClockSkewMs = *c.Cluster.Clock.MaxSkewMs
 	}
 	clockSyncTimeoutMs := cluster.DefaultClockSyncTimeoutMs
-	if c.Cluster.ClockSyncTimeoutMs != nil {
-		clockSyncTimeoutMs = *c.Cluster.ClockSyncTimeoutMs
+	if c.Cluster.Clock.SyncTimeoutMs != nil {
+		clockSyncTimeoutMs = *c.Cluster.Clock.SyncTimeoutMs
 	}
 	clockCredibleRttMs := cluster.DefaultClockCredibleRTTMs
-	if c.Cluster.ClockCredibleRttMs != nil {
-		clockCredibleRttMs = *c.Cluster.ClockCredibleRttMs
+	if c.Cluster.Clock.CredibleRttMs != nil {
+		clockCredibleRttMs = *c.Cluster.Clock.CredibleRttMs
 	}
 	clockTrustedFreshMs := cluster.DefaultClockTrustedFreshMs
-	if c.Cluster.ClockTrustedFreshMs != nil {
-		clockTrustedFreshMs = *c.Cluster.ClockTrustedFreshMs
+	if c.Cluster.Clock.TrustedFreshMs != nil {
+		clockTrustedFreshMs = *c.Cluster.Clock.TrustedFreshMs
 	}
 	clockObserveGraceMs := cluster.DefaultClockObserveGraceMs
-	if c.Cluster.ClockObserveGraceMs != nil {
-		clockObserveGraceMs = *c.Cluster.ClockObserveGraceMs
+	if c.Cluster.Clock.ObserveGraceMs != nil {
+		clockObserveGraceMs = *c.Cluster.Clock.ObserveGraceMs
 	}
 	clockWriteGateGraceMs := cluster.DefaultClockWriteGateGraceMs
-	if c.Cluster.ClockWriteGateGraceMs != nil {
-		clockWriteGateGraceMs = *c.Cluster.ClockWriteGateGraceMs
+	if c.Cluster.Clock.WriteGateGraceMs != nil {
+		clockWriteGateGraceMs = *c.Cluster.Clock.WriteGateGraceMs
 	}
 	clockRejectAfterFailures := cluster.DefaultClockRejectAfterFailures
-	if c.Cluster.ClockRejectAfterFailures != nil {
-		clockRejectAfterFailures = *c.Cluster.ClockRejectAfterFailures
+	if c.Cluster.Clock.RejectAfterFailures != nil {
+		clockRejectAfterFailures = *c.Cluster.Clock.RejectAfterFailures
 	}
 	clockRejectAfterSkewSamples := cluster.DefaultClockRejectAfterSkewSamples
-	if c.Cluster.ClockRejectAfterSkewSamples != nil {
-		clockRejectAfterSkewSamples = *c.Cluster.ClockRejectAfterSkewSamples
+	if c.Cluster.Clock.RejectAfterSkewSamples != nil {
+		clockRejectAfterSkewSamples = *c.Cluster.Clock.RejectAfterSkewSamples
 	}
 	clockRecoverAfterHealthySamples := cluster.DefaultClockRecoverAfterHealthySamples
-	if c.Cluster.ClockRecoverAfterHealthySamples != nil {
-		clockRecoverAfterHealthySamples = *c.Cluster.ClockRecoverAfterHealthySamples
+	if c.Cluster.Clock.RecoverAfterHealthySamples != nil {
+		clockRecoverAfterHealthySamples = *c.Cluster.Clock.RecoverAfterHealthySamples
+	}
+	zeroMQCfg := cluster.ZeroMQConfig{
+		Enabled:  c.Services.ZeroMQ.Enabled,
+		BindURL:  strings.TrimSpace(c.Services.ZeroMQ.BindURL),
+		Security: strings.TrimSpace(c.Services.ZeroMQ.Security),
+		Curve: cluster.ZeroMQCurveConfig{
+			ServerPublicKey:         strings.TrimSpace(c.Services.ZeroMQ.Curve.ServerPublicKey),
+			ServerSecretKey:         strings.TrimSpace(c.Services.ZeroMQ.Curve.ServerSecretKey),
+			ClientPublicKey:         strings.TrimSpace(c.Services.ZeroMQ.Curve.ClientPublicKey),
+			ClientSecretKey:         strings.TrimSpace(c.Services.ZeroMQ.Curve.ClientSecretKey),
+			AllowedClientPublicKeys: trimStringSlice(c.Services.ZeroMQ.Curve.AllowedClientPublicKeys),
+		},
 	}
 	clusterCfg := cluster.Config{
-		AdvertisePath: strings.TrimSpace(c.Cluster.AdvertisePath),
-		ClusterSecret: strings.TrimSpace(c.Cluster.Secret),
-		ZeroMQ: cluster.ZeroMQConfig{
-			Enabled:  c.Cluster.ZeroMQ.Enabled,
-			BindURL:  strings.TrimSpace(c.Cluster.ZeroMQ.BindURL),
-			Security: strings.TrimSpace(c.Cluster.ZeroMQ.Security),
-			Curve: cluster.ZeroMQCurveConfig{
-				ServerPublicKey:         strings.TrimSpace(c.Cluster.ZeroMQ.Curve.ServerPublicKey),
-				ServerSecretKey:         strings.TrimSpace(c.Cluster.ZeroMQ.Curve.ServerSecretKey),
-				ClientPublicKey:         strings.TrimSpace(c.Cluster.ZeroMQ.Curve.ClientPublicKey),
-				ClientSecretKey:         strings.TrimSpace(c.Cluster.ZeroMQ.Curve.ClientSecretKey),
-				AllowedClientPublicKeys: trimStringSlice(c.Cluster.ZeroMQ.Curve.AllowedClientPublicKeys),
-			},
-		},
+		AdvertisePath:                   cluster.WebSocketPath,
+		ClusterSecret:                   strings.TrimSpace(c.Cluster.Secret),
+		ZeroMQ:                          zeroMQCfg,
 		Peers:                           peers,
 		MessageWindowSize:               messageWindowSize,
 		MaxClockSkewMs:                  maxClockSkewMs,
@@ -283,7 +301,12 @@ func (c serveConfig) runtimeConfig(configPath string) (runtimeServeConfig, error
 
 	return runtimeServeConfig{
 		ConfigPath: configPath,
-		APIAddr:    strings.TrimSpace(c.API.ListenAddr),
+		Services: runtimeServicesConfig{
+			HTTP: runtimeHTTPServiceConfig{
+				ListenAddr: httpListenAddr,
+			},
+			ZeroMQ: clusterCfg.ZeroMQ,
+		},
 		SQLitePath: filepath.Clean(sqlitePath),
 		PebblePath: filepath.Clean(pebblePath),
 		StoreOptions: store.Options{

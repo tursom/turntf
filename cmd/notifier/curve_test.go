@@ -41,9 +41,9 @@ func TestCurveGenPrintsTOMLConfig(t *testing.T) {
 
 	output := stdout.String()
 	for _, snippet := range []string{
-		"[cluster.zeromq]",
+		"[services.zeromq]",
 		`security = "curve"`,
-		"[cluster.zeromq.curve]",
+		"[services.zeromq.curve]",
 		"server_public_key",
 		"server_secret_key",
 		"client_public_key",

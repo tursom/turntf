@@ -133,7 +133,7 @@
 
 建议能力：
 
-- 可配置 `node_id`、`message_window_size`、时钟偏移、`max_clock_skew_ms`。
+- 可配置 `node_id`、`message_window_size`、时钟偏移、`cluster.clock.max_skew_ms`。
 - 可显式控制“是否启动 manager / HTTP server / routing 能力”。
 - 默认自带日志采集，便于断言 join、reconnect、catchup、snapshot 和时钟拒绝等事件。
 

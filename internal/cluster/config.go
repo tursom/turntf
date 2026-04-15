@@ -88,7 +88,7 @@ func (c Config) WithDefaults() Config {
 }
 
 func (c Config) Enabled() bool {
-	return c.ZeroMQ.Enabled || strings.TrimSpace(c.AdvertisePath) != "" || strings.TrimSpace(c.ClusterSecret) != "" || len(c.Peers) > 0
+	return strings.TrimSpace(c.ClusterSecret) != "" || len(c.Peers) > 0
 }
 
 func (c *Config) Validate() error {
@@ -167,7 +167,7 @@ func (c *Config) Validate() error {
 			return err
 		}
 		if isZeroMQPeerURL(normalizedURL) && !c.ZeroMQ.Enabled {
-			return fmt.Errorf("zeromq peer url %q requires cluster.zeromq.enabled", normalizedURL)
+			return fmt.Errorf("zeromq peer url %q requires services.zeromq.enabled", normalizedURL)
 		}
 		if !isZeroMQPeerURL(normalizedURL) && c.Peers[idx].ZeroMQCurveServerPublicKey != "" {
 			return fmt.Errorf("zeromq curve server public key requires a zmq+tcp peer url")
@@ -230,7 +230,7 @@ func (c *Config) validateZeroMQSecurity() error {
 		return nil
 	case ZeroMQSecurityCurve:
 		if !c.ZeroMQ.Enabled {
-			return fmt.Errorf("zeromq curve security requires cluster.zeromq.enabled")
+			return fmt.Errorf("zeromq curve security requires services.zeromq.enabled")
 		}
 		if err := validateZeroMQCurveKey("zeromq curve server public key", c.ZeroMQ.Curve.ServerPublicKey); err != nil {
 			return err

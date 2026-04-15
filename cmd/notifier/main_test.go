@@ -121,15 +121,16 @@ func TestLoadServeRuntimeConfigFromExplicitPath(t *testing.T) {
 
 	configPath := filepath.Join(t.TempDir(), "notifier.toml")
 	writeTestConfig(t, configPath, `
-[api]
+[services.http]
 listen_addr = ":8080"
 
 [store]
-db_path = "./data/node-a.db"
 message_window_size = 250
 
+[store.sqlite]
+db_path = "./data/node-a.db"
+
 [cluster]
-advertise_path = "/internal/cluster/ws"
 secret = "secret"
 
 [[cluster.peers]]
@@ -144,8 +145,8 @@ url = "ws://127.0.0.1:9081/internal/cluster/ws"
 	if cfg.ConfigPath != configPath {
 		t.Fatalf("unexpected config path: got=%q want=%q", cfg.ConfigPath, configPath)
 	}
-	if cfg.APIAddr != ":8080" {
-		t.Fatalf("unexpected api addr: %q", cfg.APIAddr)
+	if cfg.Services.HTTP.ListenAddr != ":8080" {
+		t.Fatalf("unexpected http listen addr: %q", cfg.Services.HTTP.ListenAddr)
 	}
 	if cfg.SQLitePath != filepath.Clean("./data/node-a.db") {
 		t.Fatalf("unexpected db path: %q", cfg.SQLitePath)
@@ -166,31 +167,30 @@ func TestLoadServeRuntimeConfigReadsZeroMQCurveConfig(t *testing.T) {
 
 	configPath := filepath.Join(t.TempDir(), "curve.toml")
 	writeTestConfig(t, configPath, `
-[api]
+[services.http]
 listen_addr = ":8080"
 
-[store]
-db_path = "./data/node-a.db"
-
-[cluster]
-advertise_path = "/internal/cluster/ws"
-secret = "secret"
-
-[cluster.zeromq]
+[services.zeromq]
 enabled = true
 bind_url = "tcp://127.0.0.1:9090"
 security = "curve"
 
-[cluster.zeromq.curve]
+[services.zeromq.curve]
 server_public_key = "S111111111111111111111111111111111111111"
 server_secret_key = "s111111111111111111111111111111111111111"
 client_public_key = "C111111111111111111111111111111111111111"
 client_secret_key = "c111111111111111111111111111111111111111"
 allowed_client_public_keys = ["A111111111111111111111111111111111111111"]
 
+[store.sqlite]
+db_path = "./data/node-a.db"
+
+[cluster]
+secret = "secret"
+
 [[cluster.peers]]
 url = "zmq+tcp://127.0.0.1:9091"
-zeromq_curve_server_public_key = "P111111111111111111111111111111111111111"
+zeromq = { curve_server_public_key = "P111111111111111111111111111111111111111" }
 `)
 
 	cfg, err := loadServeRuntimeConfig(configPath)
@@ -205,6 +205,33 @@ zeromq_curve_server_public_key = "P111111111111111111111111111111111111111"
 	}
 	if len(cfg.Cluster.Peers) != 1 || cfg.Cluster.Peers[0].ZeroMQCurveServerPublicKey != "P111111111111111111111111111111111111111" {
 		t.Fatalf("unexpected peer curve key: %+v", cfg.Cluster.Peers)
+	}
+}
+
+func TestLoadServeRuntimeConfigKeepsConfiguredPeerPath(t *testing.T) {
+	t.Parallel()
+
+	configPath := filepath.Join(t.TempDir(), "peer-path.toml")
+	writeTestConfig(t, configPath, `
+[services.http]
+listen_addr = ":8080"
+
+[cluster]
+secret = "secret"
+
+[[cluster.peers]]
+url = "ws://127.0.0.1:9081/custom/cluster/path"
+`)
+
+	cfg, err := loadServeRuntimeConfig(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if cfg.Cluster.AdvertisePath != cluster.WebSocketPath {
+		t.Fatalf("unexpected local cluster websocket path: %q", cfg.Cluster.AdvertisePath)
+	}
+	if len(cfg.Cluster.Peers) != 1 || cfg.Cluster.Peers[0].URL != "ws://127.0.0.1:9081/custom/cluster/path" {
+		t.Fatalf("unexpected peer config: %+v", cfg.Cluster.Peers)
 	}
 }
 
@@ -223,7 +250,7 @@ func TestLoadServeRuntimeConfigUsesDefaultPathAndDefaultMessageWindow(t *testing
 	})
 
 	writeTestConfig(t, filepath.Join(tempDir, "config.toml"), `
-[api]
+[services.http]
 listen_addr = ":8080"
 
 [store]
@@ -256,7 +283,7 @@ func TestLoadServeRuntimeConfigReadsSplitStoreConfig(t *testing.T) {
 
 	configPath := filepath.Join(t.TempDir(), "pebble.toml")
 	writeTestConfig(t, configPath, `
-[api]
+[services.http]
 listen_addr = ":8080"
 
 [store]
@@ -293,7 +320,7 @@ func TestLoadServeRuntimeConfigRejectsUnknownStoreEngine(t *testing.T) {
 
 	configPath := filepath.Join(t.TempDir(), "bad-engine.toml")
 	writeTestConfig(t, configPath, `
-[api]
+[services.http]
 listen_addr = ":8080"
 
 [store]
@@ -312,14 +339,13 @@ func TestLoadServeRuntimeConfigRejectsMissingRequiredFields(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "broken.toml")
 	writeTestConfig(t, configPath, `
 [store]
-db_path = "./data/node-a.db"
 `)
 
 	_, err := loadServeRuntimeConfig(configPath)
 	if err == nil {
 		t.Fatalf("expected missing required field to fail")
 	}
-	if !strings.Contains(err.Error(), "api.listen_addr cannot be empty") {
+	if !strings.Contains(err.Error(), "services.http.listen_addr cannot be empty") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -329,10 +355,10 @@ func TestLoadServeRuntimeConfigRejectsMissingAuthTokenSecret(t *testing.T) {
 
 	configPath := filepath.Join(t.TempDir(), "missing-auth.toml")
 	if err := os.WriteFile(configPath, []byte(strings.TrimSpace(`
-[api]
+[services.http]
 listen_addr = ":8080"
 
-[store]
+[store.sqlite]
 db_path = "./data/node-a.db"
 
 [auth.bootstrap_admin]
@@ -353,10 +379,10 @@ func TestLoadServeRuntimeConfigRejectsMissingBootstrapAdminConfig(t *testing.T) 
 
 	configPath := filepath.Join(t.TempDir(), "missing-bootstrap.toml")
 	if err := os.WriteFile(configPath, []byte(strings.TrimSpace(`
-[api]
+[services.http]
 listen_addr = ":8080"
 
-[store]
+[store.sqlite]
 db_path = "./data/node-a.db"
 
 [auth]
@@ -376,10 +402,10 @@ func TestLoadServeRuntimeConfigRejectsMatchingAuthAndClusterSecrets(t *testing.T
 
 	configPath := filepath.Join(t.TempDir(), "matching-secrets.toml")
 	writeTestConfig(t, configPath, `
-[api]
+[services.http]
 listen_addr = ":8080"
 
-[store]
+[store.sqlite]
 db_path = "./data/node-a.db"
 
 [auth]
@@ -390,7 +416,6 @@ username = "root"
 password_hash = "hash-root"
 
 [cluster]
-advertise_path = "/internal/cluster/ws"
 secret = "shared-secret"
 `)
 
@@ -541,10 +566,10 @@ func TestLoadServeRuntimeConfigUsesDefaultAuthTokenTTL(t *testing.T) {
 
 	configPath := filepath.Join(t.TempDir(), "default-auth-ttl.toml")
 	writeTestConfig(t, configPath, `
-[api]
+[services.http]
 listen_addr = ":8080"
 
-[store]
+[store.sqlite]
 db_path = "./data/node-a.db"
 `)
 
@@ -562,10 +587,10 @@ func TestLoadServeRuntimeConfigUsesDefaultLogging(t *testing.T) {
 
 	configPath := filepath.Join(t.TempDir(), "default-logging.toml")
 	writeTestConfig(t, configPath, `
-[api]
+[services.http]
 listen_addr = ":8080"
 
-[store]
+[store.sqlite]
 db_path = "./data/node-a.db"
 `)
 
@@ -586,10 +611,10 @@ func TestLoadServeRuntimeConfigReadsLogging(t *testing.T) {
 
 	configPath := filepath.Join(t.TempDir(), "logging.toml")
 	writeTestConfig(t, configPath, `
-[api]
+[services.http]
 listen_addr = ":8080"
 
-[store]
+[store.sqlite]
 db_path = "./data/node-a.db"
 
 [logging]
@@ -614,10 +639,10 @@ func TestLoadServeRuntimeConfigRejectsInvalidLoggingLevel(t *testing.T) {
 
 	configPath := filepath.Join(t.TempDir(), "bad-logging.toml")
 	writeTestConfig(t, configPath, `
-[api]
+[services.http]
 listen_addr = ":8080"
 
-[store]
+[store.sqlite]
 db_path = "./data/node-a.db"
 
 [logging]
@@ -635,16 +660,17 @@ func TestLoadServeRuntimeConfigAllowsDisablingMaxClockSkew(t *testing.T) {
 
 	configPath := filepath.Join(t.TempDir(), "notifier.toml")
 	writeTestConfig(t, configPath, `
-[api]
+[services.http]
 listen_addr = ":8080"
 
-[store]
+[store.sqlite]
 db_path = "./data/node-a.db"
 
 [cluster]
-advertise_path = "/internal/cluster/ws"
 secret = "secret"
-max_clock_skew_ms = 0
+
+[cluster.clock]
+max_skew_ms = 0
 
 [[cluster.peers]]
 url = "ws://127.0.0.1:9081/internal/cluster/ws"
@@ -664,16 +690,17 @@ func TestLoadServeRuntimeConfigRejectsNegativeMaxClockSkew(t *testing.T) {
 
 	configPath := filepath.Join(t.TempDir(), "notifier.toml")
 	writeTestConfig(t, configPath, `
-[api]
+[services.http]
 listen_addr = ":8080"
 
-[store]
+[store.sqlite]
 db_path = "./data/node-a.db"
 
 [cluster]
-advertise_path = "/internal/cluster/ws"
 secret = "secret"
-max_clock_skew_ms = -1
+
+[cluster.clock]
+max_skew_ms = -1
 
 [[cluster.peers]]
 url = "ws://127.0.0.1:9081/internal/cluster/ws"
@@ -693,15 +720,14 @@ func TestLoadServeRuntimeConfigRejectsRemovedClusterListenAddr(t *testing.T) {
 
 	configPath := filepath.Join(t.TempDir(), "legacy.toml")
 	writeTestConfig(t, configPath, `
-[api]
+[services.http]
 listen_addr = ":8080"
 
-[store]
+[store.sqlite]
 db_path = "./data/node-a.db"
 
 [cluster]
 listen_addr = ":9080"
-advertise_path = "/internal/cluster/ws"
 secret = "secret"
 `)
 
@@ -719,10 +745,10 @@ func TestLoadServeRuntimeConfigRejectsRemovedClusterAdvertiseAddr(t *testing.T) 
 
 	configPath := filepath.Join(t.TempDir(), "legacy-advertise.toml")
 	writeTestConfig(t, configPath, `
-[api]
+[services.http]
 listen_addr = ":8080"
 
-[store]
+[store.sqlite]
 db_path = "./data/node-a.db"
 
 [cluster]
@@ -739,6 +765,110 @@ secret = "secret"
 	}
 }
 
+func TestLoadServeRuntimeConfigRejectsRemovedConfigFields(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		body    string
+		wantErr string
+	}{
+		{
+			name: "api listen addr moved to services",
+			body: `
+[api]
+listen_addr = ":8080"
+`,
+			wantErr: "api.listen_addr",
+		},
+		{
+			name: "store db path moved to store sqlite",
+			body: `
+[services.http]
+listen_addr = ":8080"
+
+[store]
+db_path = "./data/node-a.db"
+`,
+			wantErr: "unknown fields store.db_path",
+		},
+		{
+			name: "cluster advertise path removed",
+			body: `
+[services.http]
+listen_addr = ":8080"
+
+[cluster]
+advertise_path = "/custom/cluster/ws"
+secret = "secret"
+`,
+			wantErr: "unknown fields cluster.advertise_path",
+		},
+		{
+			name: "cluster zeromq moved to services",
+			body: `
+[services.http]
+listen_addr = ":8080"
+
+[cluster.zeromq]
+enabled = true
+`,
+			wantErr: "cluster.zeromq.enabled",
+		},
+		{
+			name: "cluster max clock skew moved to clock section",
+			body: `
+[services.http]
+listen_addr = ":8080"
+
+[cluster]
+max_clock_skew_ms = 1000
+secret = "secret"
+`,
+			wantErr: "unknown fields cluster.max_clock_skew_ms",
+		},
+		{
+			name: "cluster clock fields renamed",
+			body: `
+[services.http]
+listen_addr = ":8080"
+
+[cluster]
+clock_sync_timeout_ms = 8000
+secret = "secret"
+`,
+			wantErr: "unknown fields cluster.clock_sync_timeout_ms",
+		},
+		{
+			name: "peer zeromq curve key moved to peer zeromq table",
+			body: `
+[services.http]
+listen_addr = ":8080"
+
+[cluster]
+secret = "secret"
+
+[[cluster.peers]]
+url = "zmq+tcp://127.0.0.1:9091"
+zeromq_curve_server_public_key = "P111111111111111111111111111111111111111"
+`,
+			wantErr: "unknown fields cluster.peers.zeromq_curve_server_public_key",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			configPath := filepath.Join(t.TempDir(), "removed.toml")
+			writeTestConfig(t, configPath, tt.body)
+
+			_, err := loadServeRuntimeConfig(configPath)
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
 func TestLoadServeRuntimeConfigRejectsIncompleteClusterConfig(t *testing.T) {
 	t.Parallel()
 
@@ -747,31 +877,6 @@ func TestLoadServeRuntimeConfigRejectsIncompleteClusterConfig(t *testing.T) {
 		clusterBody string
 		wantErr     string
 	}{
-		{
-			name: "missing advertise path",
-			clusterBody: `
-[cluster]
-secret = "secret"
-`,
-			wantErr: "cluster advertise path cannot be empty when cluster mode is enabled",
-		},
-		{
-			name: "missing secret",
-			clusterBody: `
-[cluster]
-advertise_path = "/internal/cluster/ws"
-`,
-			wantErr: "cluster secret cannot be empty",
-		},
-		{
-			name: "invalid advertise path",
-			clusterBody: `
-[cluster]
-advertise_path = "internal/cluster/ws"
-secret = "secret"
-`,
-			wantErr: "cluster advertise path must start with /",
-		},
 		{
 			name: "peers without cluster settings",
 			clusterBody: `
@@ -788,10 +893,10 @@ url = "ws://127.0.0.1:9081/internal/cluster/ws"
 		t.Run(tt.name, func(t *testing.T) {
 			configPath := filepath.Join(t.TempDir(), "broken.toml")
 			writeTestConfig(t, configPath, `
-[api]
+[services.http]
 listen_addr = ":8080"
 
-[store]
+[store.sqlite]
 db_path = "./data/node-a.db"
 `+tt.clusterBody)
 
@@ -811,14 +916,13 @@ func TestLoadServeRuntimeConfigRejectsRemovedPeerNodeID(t *testing.T) {
 
 	configPath := filepath.Join(t.TempDir(), "peer-node-id.toml")
 	writeTestConfig(t, configPath, `
-[api]
+[services.http]
 listen_addr = ":8080"
 
-[store]
+[store.sqlite]
 db_path = "./data/node-a.db"
 
 [cluster]
-advertise_path = "/internal/cluster/ws"
 secret = "secret"
 
 [[cluster.peers]]
@@ -837,19 +941,18 @@ func TestLoadServeRuntimeConfigSupportsZeroMQConfigAndPeerValidation(t *testing.
 
 	configPath := filepath.Join(t.TempDir(), "zeromq.toml")
 	writeTestConfig(t, configPath, `
-[api]
+[services.http]
 listen_addr = ":8080"
 
-[store]
+[services.zeromq]
+enabled = true
+bind_url = "tcp://0.0.0.0:9090"
+
+[store.sqlite]
 db_path = "./data/node-a.db"
 
 [cluster]
-advertise_path = "/internal/cluster/ws"
 secret = "secret"
-
-[cluster.zeromq]
-enabled = true
-bind_url = "tcp://0.0.0.0:9090"
 
 [[cluster.peers]]
 url = "WS://Example.COM/internal/cluster/ws"
@@ -881,14 +984,14 @@ func TestLoadServeRuntimeConfigZeroMQDefaultsDisabled(t *testing.T) {
 
 	configPath := filepath.Join(t.TempDir(), "zeromq-default.toml")
 	writeTestConfig(t, configPath, `
-[api]
+[services.http]
 listen_addr = ":8080"
 
-[store]
-db_path = "./data/node-a.db"
-
-[cluster.zeromq]
+[services.zeromq]
 bind_url = "tcp://0.0.0.0:9090"
+
+[store.sqlite]
+db_path = "./data/node-a.db"
 `)
 
 	cfg, err := loadServeRuntimeConfig(configPath)
@@ -904,6 +1007,40 @@ bind_url = "tcp://0.0.0.0:9090"
 	if cfg.Cluster.ZeroMQ.BindURL != "tcp://0.0.0.0:9090" {
 		t.Fatalf("unexpected preserved zeromq bind url: %q", cfg.Cluster.ZeroMQ.BindURL)
 	}
+	if cfg.Services.ZeroMQ.BindURL != "tcp://0.0.0.0:9090" {
+		t.Fatalf("unexpected preserved service zeromq bind url: %q", cfg.Services.ZeroMQ.BindURL)
+	}
+}
+
+func TestLoadServeRuntimeConfigSupportsStandaloneZeroMQService(t *testing.T) {
+	t.Parallel()
+
+	configPath := filepath.Join(t.TempDir(), "zeromq-standalone.toml")
+	writeTestConfig(t, configPath, `
+[services.http]
+listen_addr = ":8080"
+
+[services.zeromq]
+enabled = true
+bind_url = "tcp://127.0.0.1:9090"
+
+[store.sqlite]
+db_path = "./data/node-a.db"
+`)
+
+	cfg, err := loadServeRuntimeConfig(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if cfg.Cluster.Enabled() {
+		t.Fatalf("expected cluster mode to stay disabled for standalone zeromq service")
+	}
+	if !cfg.Services.ZeroMQ.Enabled || cfg.Services.ZeroMQ.BindURL != "tcp://127.0.0.1:9090" {
+		t.Fatalf("unexpected service zeromq config: %+v", cfg.Services.ZeroMQ)
+	}
+	if !cfg.Cluster.ZeroMQ.Enabled || cfg.Cluster.ZeroMQ.BindURL != "tcp://127.0.0.1:9090" {
+		t.Fatalf("unexpected cluster zeromq config: %+v", cfg.Cluster.ZeroMQ)
+	}
 }
 
 func TestLoadServeRuntimeConfigRejectsInvalidZeroMQConfig(t *testing.T) {
@@ -917,51 +1054,48 @@ func TestLoadServeRuntimeConfigRejectsInvalidZeroMQConfig(t *testing.T) {
 		{
 			name: "invalid bind url scheme",
 			body: `
-[api]
+[services.http]
 listen_addr = ":8080"
 
-[store]
+[services.zeromq]
+enabled = true
+bind_url = "ws://127.0.0.1:9090"
+
+[store.sqlite]
 db_path = "./data/node-a.db"
 
 [cluster]
-advertise_path = "/internal/cluster/ws"
 secret = "secret"
-
-[cluster.zeromq]
-enabled = true
-bind_url = "ws://127.0.0.1:9090"
 `,
 			wantErr: "zeromq bind url scheme must be tcp",
 		},
 		{
 			name: "zeromq peer requires zeromq enabled",
 			body: `
-[api]
+[services.http]
 listen_addr = ":8080"
 
-[store]
+[store.sqlite]
 db_path = "./data/node-a.db"
 
 [cluster]
-advertise_path = "/internal/cluster/ws"
 secret = "secret"
 
 [[cluster.peers]]
 url = "zmq+tcp://127.0.0.1:9091"
 `,
-			wantErr: `zeromq peer url "zmq+tcp://127.0.0.1:9091" requires cluster.zeromq.enabled`,
+			wantErr: `zeromq peer url "zmq+tcp://127.0.0.1:9091" requires services.zeromq.enabled`,
 		},
 		{
 			name: "invalid zeromq peer wildcard",
 			body: `
-[api]
+[services.http]
 listen_addr = ":8080"
 
-[store]
+[store.sqlite]
 db_path = "./data/node-a.db"
 
 [cluster]
-advertise_path = "/internal/cluster/ws"
 secret = "secret"
 
 [[cluster.peers]]
@@ -972,14 +1106,13 @@ url = "zmq+tcp://0.0.0.0:9091"
 		{
 			name: "duplicate normalized peer urls",
 			body: `
-[api]
+[services.http]
 listen_addr = ":8080"
 
-[store]
+[store.sqlite]
 db_path = "./data/node-a.db"
 
 [cluster]
-advertise_path = "/internal/cluster/ws"
 secret = "secret"
 
 [[cluster.peers]]
@@ -1010,18 +1143,17 @@ func TestLoadServeRuntimeConfigSupportsOutboundOnlyZeroMQ(t *testing.T) {
 
 	configPath := filepath.Join(t.TempDir(), "zeromq-outbound.toml")
 	writeTestConfig(t, configPath, `
-[api]
+[services.http]
 listen_addr = ":8080"
 
-[store]
+[services.zeromq]
+enabled = true
+
+[store.sqlite]
 db_path = "./data/node-a.db"
 
 [cluster]
-advertise_path = "/internal/cluster/ws"
 secret = "secret"
-
-[cluster.zeromq]
-enabled = true
 
 [[cluster.peers]]
 url = "zmq+tcp://Example.COM:9091"
@@ -1048,7 +1180,7 @@ func TestServeHandlerLeavesClusterRouteHiddenWhenDisabled(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/internal/cluster/ws", nil)
 	rr := httptest.NewRecorder()
 
-	serveHandler(http.NewServeMux(), nil, "").ServeHTTP(rr, req)
+	serveHandler(http.NewServeMux(), nil).ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusNotFound {
 		t.Fatalf("unexpected status: got=%d want=%d", rr.Code, http.StatusNotFound)
@@ -1072,7 +1204,7 @@ func TestServeHandlerMountsClusterRouteOnAPIListener(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/internal/cluster/ws", nil)
 	rr := httptest.NewRecorder()
 
-	serveHandler(http.NewServeMux(), manager, "/internal/cluster/ws").ServeHTTP(rr, req)
+	serveHandler(http.NewServeMux(), manager).ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusServiceUnavailable {
 		t.Fatalf("unexpected status: got=%d want=%d", rr.Code, http.StatusServiceUnavailable)

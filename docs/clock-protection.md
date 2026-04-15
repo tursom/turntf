@@ -41,7 +41,7 @@ uncertaintyMs = max(bestRTT / 2, jitter / 2) + 50
 jitter = maxRTT - minRTT
 ```
 
-如果样本 RTT 不超过 `cluster.clock_credible_rtt_ms`，它被认为是可信样本；否则只是慢样本，peer 会进入观察状态，不参与 offset 修正。
+如果样本 RTT 不超过 `cluster.clock.credible_rtt_ms`，它被认为是可信样本；否则只是慢样本，peer 会进入观察状态，不参与 offset 修正。
 
 ## Peer 状态机
 
@@ -56,10 +56,10 @@ jitter = maxRTT - minRTT
 
 可信样本进入后会更新 `clockOffsetMs`、`clockUncertaintyMs` 和 `lastCredibleClockSync`。慢样本不会更新可信 offset，只会让 peer 保持或进入 `observing`。
 
-当 `cluster.max_clock_skew_ms > 0` 时，会按 offset 的不确定区间判断偏差：
+当 `cluster.clock.max_skew_ms > 0` 时，会按 offset 的不确定区间判断偏差：
 
-- `abs(offsetMs) - uncertaintyMs > max_clock_skew_ms`：偏差下界已经超过阈值，记为确认超限；连续达到 `clock_reject_after_skew_samples` 次后，peer 进入 `rejected`。
-- `abs(offsetMs) + uncertaintyMs > max_clock_skew_ms`：偏差上界可能超过阈值，但下界尚未确认超限，peer 进入 `observing`。
+- `abs(offsetMs) - uncertaintyMs > max_skew_ms`：偏差下界已经超过阈值，记为确认超限；连续达到 `reject_after_skew_samples` 次后，peer 进入 `rejected`。
+- `abs(offsetMs) + uncertaintyMs > max_skew_ms`：偏差上界可能超过阈值，但下界尚未确认超限，peer 进入 `observing`。
 - 区间未超过阈值：样本健康；如果 peer 正在恢复，需要连续达到 `clock_recover_after_healthy_samples` 次健康样本后才回到 `trusted`。
 
 校时请求失败会累加 `clockFailureStreak`。如果连续失败达到 `clock_reject_after_failures`，peer 进入 `rejected`。
@@ -98,30 +98,30 @@ jitter = maxRTT - minRTT
 事件批次检查：
 
 - `Envelope.sent_at_hlc` 必须存在并能解析。
-- `sent_at_hlc.wall_time_ms` 不能超过本地修正 wall time 加 `max_clock_skew_ms`。
+- `sent_at_hlc.wall_time_ms` 不能超过本地修正 wall time 加 `max_skew_ms`。
 - 每个 replicated event 的 HLC wall time 不能超过同一未来时间边界。
 - `sent_at_hlc` 不能早于批次内最大 event HLC。
 
 快照 chunk 检查：
 
 - 应用快照前会扫描分片内最大 HLC。
-- 如果最大 HLC 超过本地修正 wall time 加 `max_clock_skew_ms`，该 chunk 会被拒绝。
+- 如果最大 HLC 超过本地修正 wall time 加 `max_skew_ms`，该 chunk 会被拒绝。
 
-当 `cluster.max_clock_skew_ms = 0` 时，当前实现关闭超限拒绝和未来 HLC 上界检查；但集群模式下首次可信校时前的本地写闸门仍然存在。
+当 `cluster.clock.max_skew_ms = 0` 时，当前实现关闭超限拒绝和未来 HLC 上界检查；但集群模式下首次可信校时前的本地写闸门仍然存在。
 
 ## 默认参数
 
 | 配置项 | 默认值 | 作用 |
 | --- | ---: | --- |
-| `cluster.max_clock_skew_ms` | `1000` | 允许的最大时钟偏差；`0` 表示关闭超限拒绝。 |
-| `cluster.clock_sync_timeout_ms` | `8000` | 单轮校时等待响应的超时时间。 |
-| `cluster.clock_credible_rtt_ms` | `4000` | 校时样本可被视为可信的最大 RTT。 |
-| `cluster.clock_trusted_fresh_ms` | `60000` | 聚合状态保持 `trusted` 的新鲜窗口。 |
-| `cluster.clock_observe_grace_ms` | `180000` | 从可信过期到 `observing` 的宽限窗口。 |
-| `cluster.clock_write_gate_grace_ms` | `300000` | 可信校时过期后允许继续复制事件应用的最大窗口。 |
-| `cluster.clock_reject_after_failures` | `3` | 连续校时失败多少次后拒绝 peer。 |
-| `cluster.clock_reject_after_skew_samples` | `3` | 连续确认偏差超限多少次后拒绝 peer。 |
-| `cluster.clock_recover_after_healthy_samples` | `2` | 从观察状态恢复到可信所需的连续健康样本数。 |
+| `cluster.clock.max_skew_ms` | `1000` | 允许的最大时钟偏差；`0` 表示关闭超限拒绝。 |
+| `cluster.clock.sync_timeout_ms` | `8000` | 单轮校时等待响应的超时时间。 |
+| `cluster.clock.credible_rtt_ms` | `4000` | 校时样本可被视为可信的最大 RTT。 |
+| `cluster.clock.trusted_fresh_ms` | `60000` | 聚合状态保持 `trusted` 的新鲜窗口。 |
+| `cluster.clock.observe_grace_ms` | `180000` | 从可信过期到 `observing` 的宽限窗口。 |
+| `cluster.clock.write_gate_grace_ms` | `300000` | 可信校时过期后允许继续复制事件应用的最大窗口。 |
+| `cluster.clock.reject_after_failures` | `3` | 连续校时失败多少次后拒绝 peer。 |
+| `cluster.clock.reject_after_skew_samples` | `3` | 连续确认偏差超限多少次后拒绝 peer。 |
+| `cluster.clock.recover_after_healthy_samples` | `2` | 从观察状态恢复到可信所需的连续健康样本数。 |
 
 ## 观测与排查
 
@@ -154,4 +154,4 @@ Prometheus 指标包括：
 - 该机制保护 HLC 和 LWW 语义，但不是强一致时钟协议，也不提供全局线性化提交。
 - offset 修正来自 peer 间校时，不替代生产环境 NTP；所有节点仍应使用可靠系统时间源。
 - `observing` 是一个可写宽限状态，用于避免短暂校时波动直接造成不可用；它不表示时钟完全健康。
-- `max_clock_skew_ms = 0` 只关闭超限拒绝和未来 HLC 上界检查，不关闭首次可信校时前的写闸门。
+- `cluster.clock.max_skew_ms = 0` 只关闭超限拒绝和未来 HLC 上界检查，不关闭首次可信校时前的写闸门。

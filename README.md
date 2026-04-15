@@ -68,7 +68,7 @@ peer 自动发现见 [docs/peer-discovery.md](/root/dev/sys/turntf/docs/peer-dis
 
 当前同步实现已经收紧到以下边界：
 
-- 集群模式必须同时提供 `cluster.advertise_path`、`cluster.secret`
+- 集群模式必须提供 `cluster.secret`；本节点集群 WebSocket 入口固定为 `/internal/cluster/ws`
 - 节点间启用 `Envelope`、`Hello`、`Ack`、`EventBatch`、`PullEvents`，并为瞬时包启用 `RoutingUpdate`、`TransientPacket`
 - `Envelope`：集群协议的统一外层消息，里面再装握手、确认、事件批次或补拉请求
 - `Hello`：连接建立后的第一条握手消息，用于交换节点身份、协议版本、快照版本、广播路径、当前本地按 `origin_node_id` 聚合的 `origin_progress`、`message_window_size`，以及该连接的 routing 与 membership 能力
@@ -223,8 +223,20 @@ cp ./config.example.toml ./config.toml
 `config.example.toml` 结构如下：
 
 ```toml
-[api]
+[services.http]
 listen_addr = ":8080"
+
+[services.zeromq]
+enabled = false
+bind_url = "tcp://0.0.0.0:9090"
+security = "none"
+
+[services.zeromq.curve]
+server_public_key = ""
+server_secret_key = ""
+client_public_key = ""
+client_secret_key = ""
+allowed_client_public_keys = []
 
 [store]
 engine = "sqlite"
@@ -249,18 +261,35 @@ level = "info"
 file_path = "./data/notifier.log"
 
 [cluster]
-advertise_path = "/internal/cluster/ws"
 secret = "secret"
-max_clock_skew_ms = 1000
+
+[cluster.clock]
+max_skew_ms = 1000
+sync_timeout_ms = 8000
+credible_rtt_ms = 4000
+trusted_fresh_ms = 60000
+observe_grace_ms = 180000
+write_gate_grace_ms = 300000
+reject_after_failures = 3
+reject_after_skew_samples = 3
+recover_after_healthy_samples = 2
 
 [[cluster.peers]]
 url = "ws://127.0.0.1:9081/internal/cluster/ws"
+
+[[cluster.peers]]
+url = "zmq+tcp://127.0.0.1:9091"
+zeromq = { curve_server_public_key = "" }
 ```
 
 字段说明：
 
 - 本地 `node_id`：节点首次启动时自动生成的稳定数字身份，保存到 SQLite `schema_meta` 的 `node_id` key；该 ID 会完整进入 HLC 时间戳
-- `api.listen_addr`：外部 HTTP API 监听地址，同时承载内部 `GET /internal/cluster/ws`
+- `services.http.listen_addr`：外部 HTTP API 监听地址，同时承载固定内部集群入口 `GET /internal/cluster/ws`
+- `services.zeromq.enabled`：是否启用 ZeroMQ 监听入口；单节点模式下可只服务业务客户端，集群模式下同时服务业务客户端和节点间同步
+- `services.zeromq.bind_url`：ZeroMQ ROUTER socket 的本地监听地址，只允许 `tcp://host:port`；为空时不启动 listener，但集群模式下仍可 outbound-only 拨号
+- `services.zeromq.security`：ZeroMQ 安全模式，支持 `none` 或 `curve`，默认 `none`
+- `services.zeromq.curve.*`：CURVE 模式下的本节点 server/client key 与允许接入的 client public key 白名单
 - `store.engine`：事件日志和消息投影 repository 引擎，可选 `sqlite` 或 `pebble`，默认 `sqlite`
 - `store.sqlite.db_path`：本地 SQLite 数据库路径，默认 `./data/turntf.db`。即使 `store.engine = "pebble"`，用户、订阅、游标、pending projection 和运维统计等状态仍保存在 SQLite
 - `store.pebble.path`：Pebble 数据目录，默认 `./data/turntf.pebble`。仅在 `store.engine = "pebble"` 时用于事件日志和消息投影
@@ -272,12 +301,13 @@ url = "ws://127.0.0.1:9081/internal/cluster/ws"
 - `logging.level`：服务日志级别，默认 `info`，可选 `debug`、`info`、`warn`、`error`
 - `logging.file_path`：可选的 JSON 行日志文件路径；省略或留空时只输出控制台日志
 - `cluster` 整段可省略；省略时按单节点模式运行
-- 配置了 `cluster` 后，需要同时提供 `cluster.advertise_path`、`cluster.secret`
-- `cluster.advertise_path`：节点对外暴露的集群 WebSocket 路径，必须以 `/` 开头；peer 的 `url` 需要带上这个路径
+- 配置了 `cluster.peers` 后，需要同时提供 `cluster.secret`
+- 本节点集群 WebSocket 入口固定为 `/internal/cluster/ws`；如果需要对外换路径，请在反向代理层映射
 - `cluster.secret`：集群内部 `Envelope` 的共享 HMAC 密钥；节点间握手、广播、补拉和反熵消息都会验签
-- `cluster.max_clock_skew_ms`：允许的最大时钟偏差，默认 `1000` 毫秒；正数启用超限拒绝，`0` 表示关闭“超限拒绝”，但节点仍会在首次成功校时前拒绝本地写入
+- `cluster.clock.max_skew_ms`：允许的最大时钟偏差，默认 `1000` 毫秒；正数启用超限拒绝，`0` 表示关闭“超限拒绝”，但节点仍会在首次成功校时前拒绝本地写入
 - `[[cluster.peers]]`：静态 peer 列表，可重复出现多个条目；当前仅需配置可拨号地址，远端 `node_id` 会在首次握手后自动识别
-- `cluster.peers.url`：当前节点主动拨号到远端时使用的完整 WebSocket URL，例如 `ws://127.0.0.1:9081/internal/cluster/ws`
+- `cluster.peers.url`：当前节点主动拨号到远端时使用的完整 URL；WebSocket peer 的 path 仍以该 URL 为准，例如 `ws://127.0.0.1:9081/internal/cluster/ws`
+- `cluster.peers.zeromq.curve_server_public_key`：CURVE 模式下静态 `zmq+tcp` peer 的远端 server public key
 - peer 自动发现默认随集群模式开启；节点会通过已连接 peer 广播已通过握手验证的可拨号 URL，并把发现结果持久化到本地 SQLite 的 `discovered_peers`
 - 自动发现不新增配置项，也不会从入站连接的 `RemoteAddr` 猜测公网地址；至少需要某个节点通过静态 peer 或历史持久化记录知道目标节点的可拨号 URL；详细机制见 [peer 自动发现专题文档](/root/dev/sys/turntf/docs/peer-discovery.md)
 - 当前协议不支持旧快照版本节点混跑；升级后需整集群使用新协议版本和快照版本
@@ -292,8 +322,8 @@ url = "ws://127.0.0.1:9081/internal/cluster/ws"
 - `POST /nodes/{node_id}/users/{user_id}/messages`
 - `GET /nodes/{node_id}/users/{user_id}/messages?limit=N`
 - `GET /ws/client` 作为客户端 WebSocket Protobuf 长连接端点；连接后第一帧必须发送 `LoginRequest`。登录成功后，客户端可在同一连接上执行原先 HTTP JSON API 的全部已登录能力，包括消息收发、用户管理、订阅管理、历史查询和运维查询；接入流程见 [客户端全流程接入文档](/root/dev/sys/turntf/docs/client-flow.md)，协议见 [客户端 WebSocket 接口](/root/dev/sys/turntf/docs/client-websocket.md)
-- 当 `cluster.zeromq.enabled = true` 且 `cluster.zeromq.bind_url` 非空时，业务客户端也可以通过同一地址对应的 `zmq+tcp://host:port` 建立 ZeroMQ 长连接；首包必须发送 `ZeroMQMuxHello{role=CLIENT, protocol_version="zeromq-mux-v1"}`，第二包开始复用与 `/ws/client` 完全相同的 `ClientEnvelope/ServerEnvelope` 协议
-- ZeroMQ 可选启用原生 CURVE：设置 `cluster.zeromq.security = "curve"`，配置本节点 server/client key，并把允许接入的集群节点或业务客户端 `client_public_key` 放入 `allowed_client_public_keys`。静态 `zmq+tcp` peer 在 CURVE 模式下还必须配置 `zeromq_curve_server_public_key`；集群 membership 会传播已验证的 ZeroMQ server public key，供自动发现的动态 peer 安全拨号
+- 当 `services.zeromq.enabled = true` 且 `services.zeromq.bind_url` 非空时，业务客户端也可以通过同一地址对应的 `zmq+tcp://host:port` 建立 ZeroMQ 长连接；首包必须发送 `ZeroMQMuxHello{role=CLIENT, protocol_version="zeromq-mux-v1"}`，第二包开始复用与 `/ws/client` 完全相同的 `ClientEnvelope/ServerEnvelope` 协议
+- ZeroMQ 可选启用原生 CURVE：设置 `services.zeromq.security = "curve"`，配置本节点 server/client key，并把允许接入的集群节点或业务客户端 `client_public_key` 放入 `allowed_client_public_keys`。静态 `zmq+tcp` peer 在 CURVE 模式下还必须配置 `cluster.peers.zeromq.curve_server_public_key`；集群 membership 会传播已验证的 ZeroMQ server public key，供自动发现的动态 peer 安全拨号
 - `POST /nodes/{node_id}/users/{user_id}/subscriptions`
 - `DELETE /nodes/{node_id}/users/{user_id}/subscriptions/{channel_node_id}/{channel_user_id}`
 - `GET /nodes/{node_id}/users/{user_id}/subscriptions`
@@ -303,7 +333,7 @@ url = "ws://127.0.0.1:9081/internal/cluster/ws"
 - `GET /metrics`
 - `GET /healthz`
 - `GET /internal/cluster/ws` 作为节点间 WebSocket 同步端点，仅在启用集群模式时挂载到 API 监听器
-- ZeroMQ 节点间同步与 ZeroMQ 客户端长连接共用 `cluster.zeromq.bind_url` 对应的 ROUTER socket；ZeroMQ 节点 peer 的首包必须发送 `ZeroMQMuxHello{role=CLUSTER, protocol_version="zeromq-mux-v1"}`
+- ZeroMQ 节点间同步与 ZeroMQ 客户端长连接共用 `services.zeromq.bind_url` 对应的 ROUTER socket；ZeroMQ 节点 peer 的首包必须发送 `ZeroMQMuxHello{role=CLUSTER, protocol_version="zeromq-mux-v1"}`
 - ZeroMQ TLS 不在应用内实现，也不新增 `zmq+tls` URL；如果需要 TLS 证书体系，请在 ZeroMQ TCP 端口外层部署 stunnel、Envoy、Caddy stream 等 TCP TLS 隧道，或使用现有 WebSocket `wss` 传输
 
 当前认证与授权边界：
@@ -341,7 +371,7 @@ url = "ws://127.0.0.1:9081/internal/cluster/ws"
 - 摘要不一致时，节点会请求对应快照分片并增量合并到本地；在快照修复完成前，不同节点可能短暂看到不同数据集合
 - 拉取重放与实时广播重叠时，重复事件会被 `applied_events` 按 `(source_node_id, event_id)` 幂等吸收
 - 当两个节点 `message_window_size` 不一致时，反熵只修复用户分片，避免不同窗口大小导致消息分片反复互拉
-- 启用了 `cluster.max_clock_skew_ms` 时，时钟偏差超限或未来时间戳事件会导致该 peer 被拒绝/断开，直到校时恢复正常
+- 启用了 `cluster.clock.max_skew_ms` 时，时钟偏差超限或未来时间戳事件会导致该 peer 被拒绝/断开，直到校时恢复正常
 
 最终收敛与非承诺边界：
 

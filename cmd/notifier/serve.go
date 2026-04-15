@@ -5,7 +5,6 @@ import (
 	"errors"
 	"io"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -88,9 +87,11 @@ func serveRuntime(ctx context.Context, configPath string, logOutput io.Writer) e
 		manager.SetLoggedInUsersProvider(httpAPI.ListLoggedInUsers)
 	}
 	var zeroMQListener *cluster.ZeroMQMuxListener
-	if manager != nil && cfg.Cluster.ZeroMQ.Enabled && strings.TrimSpace(cfg.Cluster.ZeroMQ.BindURL) != "" {
-		zeroMQListener = cluster.NewZeroMQMuxListenerWithConfig(cfg.Cluster.ZeroMQ.BindURL, cfg.Cluster.ZeroMQ)
-		zeroMQListener.SetClusterAccept(manager.AcceptZeroMQConn)
+	if cfg.Services.ZeroMQ.Enabled && cfg.Services.ZeroMQ.BindURL != "" {
+		zeroMQListener = cluster.NewZeroMQMuxListenerWithConfig(cfg.Services.ZeroMQ.BindURL, cfg.Services.ZeroMQ)
+		if manager != nil {
+			zeroMQListener.SetClusterAccept(manager.AcceptZeroMQConn)
+		}
 		zeroMQListener.SetClientAccept(func(conn cluster.TransportConn) {
 			httpAPI.AcceptZeroMQConn(conn)
 		})
@@ -98,30 +99,32 @@ func serveRuntime(ctx context.Context, configPath string, logOutput io.Writer) e
 			return err
 		}
 		defer zeroMQListener.Close()
-		manager.SetZeroMQListenerRunning(true)
+		if manager != nil {
+			manager.SetZeroMQListenerRunning(true)
+		}
 		log.Info().
 			Str("component", "notifier").
 			Str("event", "zeromq_listener_started").
-			Str("bind_url", cfg.Cluster.ZeroMQ.BindURL).
+			Str("bind_url", cfg.Services.ZeroMQ.BindURL).
 			Msg("zeromq listener started")
 	}
 	apiServer := &http.Server{
-		Addr:              cfg.APIAddr,
-		Handler:           serveHandler(httpAPI.Handler(), manager, cfg.Cluster.AdvertisePath),
+		Addr:              cfg.Services.HTTP.ListenAddr,
+		Handler:           serveHandler(httpAPI.Handler(), manager),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
 	errCh := make(chan error, 1)
 	log.Info().Str("component", "notifier").Str("event", "config_loaded").Str("path", cfg.ConfigPath).Msg("config loaded")
 	log.Info().Str("component", "notifier").Str("event", "node_identity").Int64("node_id", st.NodeID()).Msg("node identity")
-	log.Info().Str("component", "notifier").Str("event", "http_api_listening").Str("addr", cfg.APIAddr).Msg("http api listening")
+	log.Info().Str("component", "notifier").Str("event", "http_api_listening").Str("addr", cfg.Services.HTTP.ListenAddr).Msg("http api listening")
 	log.Info().Str("component", "notifier").Str("event", "store_engine").Str("engine", cfg.StoreOptions.Engine).Msg("store engine")
 	log.Info().Str("component", "notifier").Str("event", "sqlite_database").Str("path", cfg.SQLitePath).Msg("sqlite database")
 	if cfg.StoreOptions.Engine == store.EnginePebble {
 		log.Info().Str("component", "notifier").Str("event", "pebble_database").Str("path", cfg.PebblePath).Msg("pebble database")
 	}
 	if manager != nil {
-		log.Info().Str("component", "cluster").Str("event", "websocket_listening").Str("addr", cfg.APIAddr).Str("path", cfg.Cluster.AdvertisePath).Msg("websocket listening")
+		log.Info().Str("component", "cluster").Str("event", "websocket_listening").Str("addr", cfg.Services.HTTP.ListenAddr).Str("path", cluster.WebSocketPath).Msg("websocket listening")
 	}
 	go func() {
 		errCh <- apiServer.ListenAndServe()
@@ -135,11 +138,11 @@ func serveRuntime(ctx context.Context, configPath string, logOutput io.Writer) e
 	return err
 }
 
-func serveHandler(apiHandler http.Handler, manager *cluster.Manager, clusterPath string) http.Handler {
+func serveHandler(apiHandler http.Handler, manager *cluster.Manager) http.Handler {
 	rootMux := http.NewServeMux()
 	rootMux.Handle("/", apiHandler)
 	if manager != nil {
-		rootMux.Handle(clusterPath, manager.Handler())
+		rootMux.Handle(cluster.WebSocketPath, manager.Handler())
 	}
 	return rootMux
 }

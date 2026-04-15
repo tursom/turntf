@@ -1,17 +1,38 @@
-FROM golang:1.26-alpine AS builder
+FROM golang:1.26-alpine3.22 AS builder
 
 WORKDIR /src
 
 ARG ENABLE_ZEROMQ=true
+ARG TARGETOS
+ARG TARGETARCH
 
-RUN apk add --no-cache build-base pkgconfig && \
-    if [ "${ENABLE_ZEROMQ}" = "true" ]; then apk add --no-cache zeromq-dev; fi
-
-ARG TARGETOS=linux
-ARG TARGETARCH=amd64
+RUN set -eu; \
+    retry() { \
+        n=0; \
+        until "$@"; do \
+            n=$((n + 1)); \
+            if [ "$n" -ge 5 ]; then \
+                return 1; \
+            fi; \
+            sleep $((n * 2)); \
+        done; \
+    }; \
+    retry apk add --no-cache build-base pkgconfig; \
+    if [ "${ENABLE_ZEROMQ}" = "true" ]; then retry apk add --no-cache zeromq-dev; fi
 
 COPY go.mod go.sum ./
-RUN go mod download
+RUN set -eu; \
+    retry() { \
+        n=0; \
+        until "$@"; do \
+            n=$((n + 1)); \
+            if [ "$n" -ge 5 ]; then \
+                return 1; \
+            fi; \
+            sleep $((n * 2)); \
+        done; \
+    }; \
+    retry go mod download
 
 COPY . .
 
@@ -25,9 +46,20 @@ FROM alpine:3.22
 
 ARG ENABLE_ZEROMQ=true
 
-RUN apk add --no-cache ca-certificates tzdata && \
-    if [ "${ENABLE_ZEROMQ}" = "true" ]; then apk add --no-cache zeromq; fi && \
-    addgroup -S -g 10001 turntf && \
+RUN set -eu; \
+    retry() { \
+        n=0; \
+        until "$@"; do \
+            n=$((n + 1)); \
+            if [ "$n" -ge 5 ]; then \
+                return 1; \
+            fi; \
+            sleep $((n * 2)); \
+        done; \
+    }; \
+    retry apk add --no-cache ca-certificates tzdata; \
+    if [ "${ENABLE_ZEROMQ}" = "true" ]; then retry apk add --no-cache zeromq; fi; \
+    addgroup -S -g 10001 turntf; \
     adduser -S -D -H -h /app -u 10001 -G turntf turntf
 
 WORKDIR /app

@@ -67,6 +67,7 @@ type discoveryStatus struct {
 	PeersByState          map[string]int `json:"peers_by_state,omitempty"`
 	PeersByScheme         map[string]int `json:"peers_by_scheme,omitempty"`
 	ZeroMQMode            string         `json:"zeromq_mode,omitempty"`
+	ZeroMQSecurity        string         `json:"zeromq_security,omitempty"`
 	ZeroMQListenerRunning bool           `json:"zeromq_listener_running"`
 }
 
@@ -170,6 +171,7 @@ func (s *Service) OperationsStatus(ctx context.Context) (operationsStatus, error
 			PeersByState:          clusterStatus.Discovery.PeersByState,
 			PeersByScheme:         clusterStatus.Discovery.PeersByScheme,
 			ZeroMQMode:            clusterStatus.Discovery.ZeroMQMode,
+			ZeroMQSecurity:        clusterStatus.Discovery.ZeroMQSecurity,
 			ZeroMQListenerRunning: clusterStatus.Discovery.ZeroMQListenerRunning,
 		},
 		Peers: mergePeerStatus(storeStats.Peers, clusterStatus.Peers),
@@ -286,8 +288,9 @@ func (s *Service) Metrics(ctx context.Context) (string, error) {
 	writeGauge(&buf, "notifier_dynamic_peer_dialers", map[string]string{"node_id": nodeIDLabel}, float64(status.Discovery.DynamicPeers))
 	writeMetricHelp(&buf, "notifier_zeromq_listener_running", "Whether the local ZeroMQ listener is currently running.", "gauge")
 	writeGauge(&buf, "notifier_zeromq_listener_running", map[string]string{
-		"node_id": nodeIDLabel,
-		"mode":    status.Discovery.ZeroMQMode,
+		"node_id":  nodeIDLabel,
+		"mode":     status.Discovery.ZeroMQMode,
+		"security": status.Discovery.ZeroMQSecurity,
 	}, boolGauge(status.Discovery.ZeroMQListenerRunning))
 	writeMetricHelp(&buf, "notifier_membership_updates_sent_total", "Membership updates sent to peers.", "counter")
 	writeGauge(&buf, "notifier_membership_updates_sent_total", map[string]string{"node_id": nodeIDLabel}, float64(status.Discovery.MembershipUpdatesSent))

@@ -46,14 +46,15 @@ func (m *Manager) loadDiscoveredPeers(ctx context.Context) error {
 			continue
 		}
 		m.discoveredPeers[normalized] = &discoveredPeerState{
-			nodeID:           peer.NodeID,
-			url:              normalized,
-			sourcePeerNodeID: peer.SourcePeerNodeID,
-			state:            peer.State,
-			firstSeenAt:      timestampWallTime(peer.FirstSeenAt.WallTimeMs),
-			lastSeenAt:       timestampWallTime(peer.LastSeenAt.WallTimeMs),
-			lastError:        peer.LastError,
-			generation:       peer.Generation,
+			nodeID:                     peer.NodeID,
+			url:                        normalized,
+			zeroMQCurveServerPublicKey: strings.TrimSpace(peer.ZeroMQCurveServerPublicKey),
+			sourcePeerNodeID:           peer.SourcePeerNodeID,
+			state:                      peer.State,
+			firstSeenAt:                timestampWallTime(peer.FirstSeenAt.WallTimeMs),
+			lastSeenAt:                 timestampWallTime(peer.LastSeenAt.WallTimeMs),
+			lastError:                  peer.LastError,
+			generation:                 peer.Generation,
 		}
 		if peer.LastConnectedAt != nil {
 			m.discoveredPeers[normalized].lastConnectedAt = timestampWallTime(peer.LastConnectedAt.WallTimeMs)
@@ -143,10 +144,16 @@ func (m *Manager) observePeerAdvertisement(sourcePeerNodeID int64, item *interna
 		m.mu.Unlock()
 		return nil
 	}
-	return m.recordDiscoveredCandidate(item.NodeId, normalized, sourcePeerNodeID, item.Generation)
+	curveServerPublicKey := strings.TrimSpace(item.ZeromqCurveServerPublicKey)
+	if curveServerPublicKey != "" {
+		if err := validateZeroMQCurveKey("zeromq curve server public key", curveServerPublicKey); err != nil {
+			return err
+		}
+	}
+	return m.recordDiscoveredCandidate(item.NodeId, normalized, curveServerPublicKey, sourcePeerNodeID, item.Generation)
 }
 
-func (m *Manager) recordDiscoveredCandidate(nodeID int64, normalizedURL string, sourcePeerNodeID int64, generation uint64) error {
+func (m *Manager) recordDiscoveredCandidate(nodeID int64, normalizedURL, zeroMQCurveServerPublicKey string, sourcePeerNodeID int64, generation uint64) error {
 	if nodeID <= 0 || nodeID == m.cfg.NodeID {
 		return nil
 	}
@@ -160,10 +167,11 @@ func (m *Manager) recordDiscoveredCandidate(nodeID int64, normalizedURL string, 
 	peer := m.discoveredPeers[normalizedURL]
 	if peer == nil {
 		peer = &discoveredPeerState{
-			nodeID:      nodeID,
-			url:         normalizedURL,
-			state:       discoveryStateCandidate,
-			firstSeenAt: now,
+			nodeID:                     nodeID,
+			url:                        normalizedURL,
+			zeroMQCurveServerPublicKey: strings.TrimSpace(zeroMQCurveServerPublicKey),
+			state:                      discoveryStateCandidate,
+			firstSeenAt:                now,
 		}
 		m.discoveredPeers[normalizedURL] = peer
 	} else if peer.nodeID > 0 && peer.nodeID != nodeID {
@@ -172,6 +180,9 @@ func (m *Manager) recordDiscoveredCandidate(nodeID int64, normalizedURL string, 
 	}
 	peer.nodeID = nodeID
 	peer.sourcePeerNodeID = sourcePeerNodeID
+	if strings.TrimSpace(zeroMQCurveServerPublicKey) != "" {
+		peer.zeroMQCurveServerPublicKey = strings.TrimSpace(zeroMQCurveServerPublicKey)
+	}
 	if peer.state == "" || peer.state == discoveryStateExpired || peer.state == discoveryStateFailed {
 		peer.state = discoveryStateCandidate
 	}
@@ -316,7 +327,10 @@ func (m *Manager) reconcileDiscoveredDialers() {
 		if peer.state == discoveryStateExpired {
 			continue
 		}
-		if !m.canDialPeerURL(peer.url) {
+		if !m.canDialDiscoveredPeer(peer) {
+			if isZeroMQPeerURL(peer.url) && m.cfg.zeroMQCurveEnabled() && strings.TrimSpace(peer.zeroMQCurveServerPublicKey) == "" {
+				peer.lastError = "zeromq curve server public key is required for dynamic dialing"
+			}
 			continue
 		}
 		if active := m.peers[peer.nodeID]; active != nil && active.active != nil {
@@ -350,10 +364,11 @@ func (m *Manager) reconcileDiscoveredDialers() {
 		peer.dialing = true
 		peer.state = discoveryStateDialing
 		configured := &configuredPeer{
-			URL:     peer.url,
-			nodeID:  peer.nodeID,
-			dynamic: true,
-			source:  peerSourceDiscovered,
+			URL:                        peer.url,
+			zeroMQCurveServerPublicKey: peer.zeroMQCurveServerPublicKey,
+			nodeID:                     peer.nodeID,
+			dynamic:                    true,
+			source:                     peerSourceDiscovered,
 		}
 		m.dynamicPeers[peer.url] = configured
 		toStart = append(toStart, configured)
@@ -417,7 +432,7 @@ func (m *Manager) buildMembershipEnvelope() *internalproto.Envelope {
 	generation := m.membershipGeneration
 	items := make([]*internalproto.PeerAdvertisement, 0, len(m.configuredPeers)+len(m.discoveredPeers)+len(m.selfKnownURLs))
 	seen := make(map[string]struct{})
-	add := func(nodeID int64, rawURL string, itemGeneration uint64) {
+	add := func(nodeID int64, rawURL, zeroMQCurveServerPublicKey string, itemGeneration uint64) {
 		if nodeID <= 0 || strings.TrimSpace(rawURL) == "" {
 			return
 		}
@@ -425,32 +440,40 @@ func (m *Manager) buildMembershipEnvelope() *internalproto.Envelope {
 		if err != nil {
 			return
 		}
+		curveServerPublicKey := ""
+		if isZeroMQPeerURL(normalized) {
+			curveServerPublicKey = strings.TrimSpace(zeroMQCurveServerPublicKey)
+			if curveServerPublicKey == "" && nodeID == m.cfg.NodeID {
+				curveServerPublicKey = m.cfg.zeroMQCurveServerPublicKey()
+			}
+		}
 		key := fmt.Sprintf("%d\x00%s", nodeID, normalized)
 		if _, ok := seen[key]; ok {
 			return
 		}
 		seen[key] = struct{}{}
 		items = append(items, &internalproto.PeerAdvertisement{
-			NodeId:           nodeID,
-			Url:              normalized,
-			Generation:       maxUint64(generation, itemGeneration),
-			ObservedAtUnixMs: time.Now().UTC().UnixMilli(),
+			NodeId:                     nodeID,
+			Url:                        normalized,
+			Generation:                 maxUint64(generation, itemGeneration),
+			ObservedAtUnixMs:           time.Now().UTC().UnixMilli(),
+			ZeromqCurveServerPublicKey: curveServerPublicKey,
 		})
 	}
 
 	for _, peer := range m.configuredPeers {
 		if peer.nodeID > 0 {
-			add(peer.nodeID, peer.URL, generation)
+			add(peer.nodeID, peer.URL, peer.zeroMQCurveServerPublicKey, generation)
 		}
 	}
 	for _, peer := range m.discoveredPeers {
 		if peer == nil || peer.nodeID <= 0 || peer.state != discoveryStateConnected {
 			continue
 		}
-		add(peer.nodeID, peer.url, peer.generation)
+		add(peer.nodeID, peer.url, peer.zeroMQCurveServerPublicKey, peer.generation)
 	}
 	for rawURL, itemGeneration := range m.selfKnownURLs {
-		add(m.cfg.NodeID, rawURL, itemGeneration)
+		add(m.cfg.NodeID, rawURL, m.cfg.zeroMQCurveServerPublicKey(), itemGeneration)
 	}
 	sort.Slice(items, func(i, j int) bool {
 		if items[i].NodeId != items[j].NodeId {
@@ -479,13 +502,14 @@ func (m *Manager) persistDiscoveredPeer(peer discoveredPeerState, connected bool
 		lastConnected = &peer.lastConnectedAt
 	}
 	err := m.store.UpsertDiscoveredPeer(context.Background(), store.DiscoveredPeer{
-		NodeID:           peer.nodeID,
-		URL:              peer.url,
-		SourcePeerNodeID: peer.sourcePeerNodeID,
-		State:            peer.state,
-		LastError:        peer.lastError,
-		Generation:       peer.generation,
-		LastConnectedAt:  clockTimestampPointer(m.clock, lastConnected),
+		NodeID:                     peer.nodeID,
+		URL:                        peer.url,
+		ZeroMQCurveServerPublicKey: peer.zeroMQCurveServerPublicKey,
+		SourcePeerNodeID:           peer.sourcePeerNodeID,
+		State:                      peer.state,
+		LastError:                  peer.lastError,
+		Generation:                 peer.generation,
+		LastConnectedAt:            clockTimestampPointer(m.clock, lastConnected),
 	})
 	if err != nil {
 		m.recordDiscoveryPersistFailure()

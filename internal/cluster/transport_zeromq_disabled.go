@@ -27,11 +27,19 @@ func newZeroMQDialer() Dialer {
 	return &zeroMQDialer{}
 }
 
+func newZeroMQDialerWithConfig(ZeroMQConfig, func(string) string) Dialer {
+	return &zeroMQDialer{}
+}
+
 func newZeroMQListener(bindURL string) Listener {
 	return &zeroMQClusterListener{mux: NewZeroMQMuxListener(bindURL)}
 }
 
 func NewZeroMQMuxListener(bindURL string) *ZeroMQMuxListener {
+	return &ZeroMQMuxListener{bindURL: bindURL}
+}
+
+func NewZeroMQMuxListenerWithConfig(bindURL string, _ ZeroMQConfig) *ZeroMQMuxListener {
 	return &ZeroMQMuxListener{bindURL: bindURL}
 }
 

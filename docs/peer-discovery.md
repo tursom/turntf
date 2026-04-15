@@ -7,8 +7,9 @@
 - 自动发现默认随集群模式启用，运行时配置文件暂不提供单独开关；测试中可通过 `cluster.Config.DiscoveryDisabled` 关闭。
 - 自动发现与静态 `cluster.peers` 并存。静态 peer 仍是最可靠的种子入口，发现到的 peer 只作为动态拨号候选。
 - 自动发现不会从入站连接的 `RemoteAddr` 推断公网地址，也不会做 NAT 穿透、DNS-SD、注册中心或外部服务发现。
-- 自动发现只传播已经绑定 `node_id` 的可拨号 WebSocket URL。节点至少需要通过静态 peer 或本地历史持久化记录知道某个可用入口，集群才有传播起点。
+- 自动发现只传播已经绑定 `node_id` 的可拨号 WebSocket URL 或 ZeroMQ URL。节点至少需要通过静态 peer 或本地历史持久化记录知道某个可用入口，集群才有传播起点。
 - 自动发现广告不能绕过身份校验。候选地址真正连上后仍必须通过 `Hello`、协议版本、HMAC、校时和 peer identity 绑定检查。
+- ZeroMQ CURVE 模式下，`zmq+tcp` 广告会携带 `zeromq_curve_server_public_key`。动态拨号只使用已通过现有集群会话验证并持久化的 public key；缺少 server public key 的 discovered `zmq+tcp` 候选会保留记录但不会启动动态拨号。
 - 当前协议不支持与旧快照/旧协议版本节点混跑；节点不会主动向未声明 `supports_membership` 的 session 发送 membership update。
 
 ## 术语
@@ -17,7 +18,7 @@
 - 发现 peer：从 membership advertisement 或本地 `discovered_peers` 表恢复出来的候选地址，状态中 `source = "discovered"`。
 - 入站 peer：对端主动连入，但当前节点没有该 peer 的可拨号 URL，状态中 `source = "inbound"`。
 - membership update：节点间通过 `Envelope.membership_update` 发送的成员广告消息。
-- peer advertisement：membership update 中的一条候选地址，包含 `node_id`、`url`、`generation` 和观测时间。
+- peer advertisement：membership update 中的一条候选地址，包含 `node_id`、`url`、`generation`、观测时间，以及可选的 ZeroMQ CURVE server public key。
 - 动态拨号器：自动发现为候选地址启动的 `dialLoop`，当前每个节点最多保留 8 个。
 
 ## 协议流程
@@ -115,6 +116,7 @@ membership update 当前会广播三类地址：
 - `peers_by_state`：按发现状态聚合的记录数。
 - `peers_by_scheme`：按 URL scheme 聚合的记录数，例如 `ws`、`wss`、`zmq+tcp`。
 - `zeromq_mode`：`disabled`、`outbound_only` 或 `listening`。
+- `zeromq_security`：ZeroMQ 安全模式，当前为 `none` 或 `curve`，不会暴露任何 secret key。
 - `zeromq_listener_running`：本地 ZeroMQ listener 是否实际运行。
 
 `GET /ops/status` 的每个 peer 也会额外暴露：
@@ -135,7 +137,7 @@ membership update 当前会广播三类地址：
 - `notifier_discovered_peers_by_state{node_id,state}`：按状态聚合的发现记录数。
 - `notifier_discovered_peers_by_scheme{node_id,scheme}`：按 URL scheme 聚合的发现记录数。
 - `notifier_dynamic_peer_dialers{node_id}`：动态发现拨号器数量。
-- `notifier_zeromq_listener_running{node_id,mode}`：本地 ZeroMQ listener 运行状态。
+- `notifier_zeromq_listener_running{node_id,mode,security}`：本地 ZeroMQ listener 运行状态。
 - `notifier_membership_updates_sent_total{node_id}`：membership update 发送总数。
 - `notifier_membership_updates_received_total{node_id}`：membership update 接收总数。
 - `notifier_membership_advertisements_rejected_total{node_id}`：被拒绝的广告总数。

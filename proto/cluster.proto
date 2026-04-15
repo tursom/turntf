@@ -319,6 +319,7 @@ message PeerAdvertisement {
   string url = 2;
   uint64 generation = 3;
   int64 observed_at_unix_ms = 4;
+  string zeromq_curve_server_public_key = 5;
 }
 
 message TransientPacket {

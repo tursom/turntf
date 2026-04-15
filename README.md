@@ -115,6 +115,15 @@ go run ./cmd/notifier hash -password 'secret'
 printf 'secret' | go run ./cmd/notifier hash -stdin
 ```
 
+也可以直接生成 ZeroMQ CURVE 配置片段：
+
+```bash
+go run ./cmd/notifier curve gen
+go run -tags zeromq ./cmd/notifier curve gen
+```
+
+默认构建会使用纯 Go 生成与 ZeroMQ CURVE 兼容的 X25519 + Z85 密钥；`-tags zeromq` 构建会直接调用 `libzmq` 的 keypair 生成能力。
+
 ## Docker 部署
 
 项目根目录提供了 [Dockerfile](/root/dev/sys/turntf/Dockerfile) 和 [docker-compose.yml](/root/dev/sys/turntf/docker-compose.yml)。
@@ -241,6 +250,7 @@ url = "ws://127.0.0.1:9081/internal/cluster/ws"
 - `GET /nodes/{node_id}/users/{user_id}/messages?limit=N`
 - `GET /ws/client` 作为客户端 WebSocket Protobuf 长连接端点；连接后第一帧必须发送 `LoginRequest`。登录成功后，客户端可在同一连接上执行原先 HTTP JSON API 的全部已登录能力，包括消息收发、用户管理、订阅管理、历史查询和运维查询；接入流程见 [客户端全流程接入文档](/root/dev/sys/turntf/docs/client-flow.md)，协议见 [客户端 WebSocket 接口](/root/dev/sys/turntf/docs/client-websocket.md)
 - 当 `cluster.zeromq.enabled = true` 且 `cluster.zeromq.bind_url` 非空时，业务客户端也可以通过同一地址对应的 `zmq+tcp://host:port` 建立 ZeroMQ 长连接；首包必须发送 `ZeroMQMuxHello{role=CLIENT, protocol_version="zeromq-mux-v1"}`，第二包开始复用与 `/ws/client` 完全相同的 `ClientEnvelope/ServerEnvelope` 协议
+- ZeroMQ 可选启用原生 CURVE：设置 `cluster.zeromq.security = "curve"`，配置本节点 server/client key，并把允许接入的集群节点或业务客户端 `client_public_key` 放入 `allowed_client_public_keys`。静态 `zmq+tcp` peer 在 CURVE 模式下还必须配置 `zeromq_curve_server_public_key`；集群 membership 会传播已验证的 ZeroMQ server public key，供自动发现的动态 peer 安全拨号
 - `POST /nodes/{node_id}/users/{user_id}/subscriptions`
 - `DELETE /nodes/{node_id}/users/{user_id}/subscriptions/{channel_node_id}/{channel_user_id}`
 - `GET /nodes/{node_id}/users/{user_id}/subscriptions`
@@ -251,6 +261,7 @@ url = "ws://127.0.0.1:9081/internal/cluster/ws"
 - `GET /healthz`
 - `GET /internal/cluster/ws` 作为节点间 WebSocket 同步端点，仅在启用集群模式时挂载到 API 监听器
 - ZeroMQ 节点间同步与 ZeroMQ 客户端长连接共用 `cluster.zeromq.bind_url` 对应的 ROUTER socket；ZeroMQ 节点 peer 的首包必须发送 `ZeroMQMuxHello{role=CLUSTER, protocol_version="zeromq-mux-v1"}`
+- ZeroMQ TLS 不在应用内实现，也不新增 `zmq+tls` URL；如果需要 TLS 证书体系，请在 ZeroMQ TCP 端口外层部署 stunnel、Envoy、Caddy stream 等 TCP TLS 隧道，或使用现有 WebSocket `wss` 传输
 
 当前认证与授权边界：
 

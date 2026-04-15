@@ -19,6 +19,10 @@
 - WebSocket：连接升级成功后，客户端发送的第一帧必须是 `ClientEnvelope.login`
 - ZeroMQ：第一帧必须发送 `ZeroMQMuxHello{role=CLIENT, protocol_version="zeromq-mux-v1"}`，第二帧必须是 `ClientEnvelope.login`
 
+如果服务端启用了 `cluster.zeromq.security = "curve"`，客户端在连接 ZeroMQ 前还必须配置服务端 `server_public_key` 以及自己的 CURVE `client_public_key`/`client_secret_key`。客户端 public key 必须出现在服务端 `cluster.zeromq.curve.allowed_client_public_keys` 中；CURVE 只完成链路加密和传输层公钥白名单，业务身份仍以 `ClientEnvelope.login` 为准。
+
+ZeroMQ TLS 不在应用内实现，也不新增 `zmq+tls` URL。需要 TLS 证书体系时，应在 ZeroMQ TCP 端口外层使用 TCP TLS 隧道，或选择 WebSocket `wss`。
+
 ## 登录流程
 
 客户端第一帧：

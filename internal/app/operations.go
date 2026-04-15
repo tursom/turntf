@@ -24,6 +24,7 @@ type ClusterDiscoveryStatus struct {
 	PeersByState          map[string]int
 	PeersByScheme         map[string]int
 	ZeroMQMode            string
+	ZeroMQSecurity        string
 	ZeroMQListenerRunning bool
 }
 

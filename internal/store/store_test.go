@@ -2510,12 +2510,13 @@ func TestDiscoveredPeersPersistAndReload(t *testing.T) {
 	ctx := context.Background()
 	connectedAt := st.Clock().Now()
 	if err := st.UpsertDiscoveredPeer(ctx, DiscoveredPeer{
-		NodeID:           testNodeID(2),
-		URL:              "ws://127.0.0.1:9081/internal/cluster/ws",
-		SourcePeerNodeID: testNodeID(1),
-		State:            "connected",
-		LastConnectedAt:  &connectedAt,
-		Generation:       7,
+		NodeID:                     testNodeID(2),
+		URL:                        "ws://127.0.0.1:9081/internal/cluster/ws",
+		ZeroMQCurveServerPublicKey: "curve-server-public",
+		SourcePeerNodeID:           testNodeID(1),
+		State:                      "connected",
+		LastConnectedAt:            &connectedAt,
+		Generation:                 7,
 	}); err != nil {
 		t.Fatalf("upsert discovered peer: %v", err)
 	}
@@ -2541,6 +2542,9 @@ func TestDiscoveredPeersPersistAndReload(t *testing.T) {
 	if peer.NodeID != testNodeID(2) || peer.SourcePeerNodeID != testNodeID(3) || peer.State != "failed" || peer.LastError != "dial failed" || peer.Generation != 7 {
 		t.Fatalf("unexpected discovered peer: %+v", peer)
 	}
+	if peer.ZeroMQCurveServerPublicKey != "curve-server-public" {
+		t.Fatalf("expected curve server public key to be preserved, got %+v", peer)
+	}
 	if peer.LastConnectedAt == nil || peer.LastConnectedAt.Compare(connectedAt) != 0 {
 		t.Fatalf("expected last connected timestamp to be preserved, got %+v", peer.LastConnectedAt)
 	}
@@ -2554,6 +2558,9 @@ func TestDiscoveredPeersPersistAndReload(t *testing.T) {
 	}
 	if peers[0].State != "connected" || peers[0].LastConnectedAt == nil {
 		t.Fatalf("unexpected updated discovered peer: %+v", peers[0])
+	}
+	if peers[0].ZeroMQCurveServerPublicKey != "curve-server-public" {
+		t.Fatalf("expected curve server public key to survive state update, got %+v", peers[0])
 	}
 }
 

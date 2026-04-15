@@ -6,12 +6,23 @@ import (
 )
 
 type Peer struct {
-	URL string
+	URL                        string
+	ZeroMQCurveServerPublicKey string
 }
 
 type ZeroMQConfig struct {
-	Enabled bool
-	BindURL string
+	Enabled  bool
+	BindURL  string
+	Security string
+	Curve    ZeroMQCurveConfig
+}
+
+type ZeroMQCurveConfig struct {
+	ServerPublicKey         string
+	ServerSecretKey         string
+	ClientPublicKey         string
+	ClientSecretKey         string
+	AllowedClientPublicKeys []string
 }
 
 type Config struct {
@@ -42,6 +53,11 @@ const DefaultClockWriteGateGraceMs int64 = 300_000
 const DefaultClockRejectAfterFailures = 3
 const DefaultClockRejectAfterSkewSamples = 3
 const DefaultClockRecoverAfterHealthySamples = 2
+
+const (
+	ZeroMQSecurityNone  = "none"
+	ZeroMQSecurityCurve = "curve"
+)
 
 func (c Config) WithDefaults() Config {
 	if c.ClockSyncTimeoutMs == 0 {
@@ -113,6 +129,11 @@ func (c *Config) Validate() error {
 	c.AdvertisePath = strings.TrimSpace(c.AdvertisePath)
 	c.ClusterSecret = strings.TrimSpace(c.ClusterSecret)
 	c.ZeroMQ.BindURL = strings.TrimSpace(c.ZeroMQ.BindURL)
+	c.ZeroMQ.Security = strings.ToLower(strings.TrimSpace(c.ZeroMQ.Security))
+	if c.ZeroMQ.Security == "" {
+		c.ZeroMQ.Security = ZeroMQSecurityNone
+	}
+	c.ZeroMQ.Curve = normalizeZeroMQCurveConfig(c.ZeroMQ.Curve)
 
 	if c.Enabled() {
 		if c.ClusterSecret == "" {
@@ -134,15 +155,27 @@ func (c *Config) Validate() error {
 			c.ZeroMQ.BindURL = normalizedBindURL
 		}
 	}
+	if err := c.validateZeroMQSecurity(); err != nil {
+		return err
+	}
 
 	seenPeers := make(map[string]struct{}, len(c.Peers))
 	for idx := range c.Peers {
+		c.Peers[idx].ZeroMQCurveServerPublicKey = strings.TrimSpace(c.Peers[idx].ZeroMQCurveServerPublicKey)
 		normalizedURL, err := normalizeConfiguredPeerURL(c.Peers[idx].URL)
 		if err != nil {
 			return err
 		}
 		if isZeroMQPeerURL(normalizedURL) && !c.ZeroMQ.Enabled {
 			return fmt.Errorf("zeromq peer url %q requires cluster.zeromq.enabled", normalizedURL)
+		}
+		if !isZeroMQPeerURL(normalizedURL) && c.Peers[idx].ZeroMQCurveServerPublicKey != "" {
+			return fmt.Errorf("zeromq curve server public key requires a zmq+tcp peer url")
+		}
+		if isZeroMQPeerURL(normalizedURL) && c.ZeroMQ.Security == ZeroMQSecurityCurve {
+			if err := validateZeroMQCurveKey("zeromq peer curve server public key", c.Peers[idx].ZeroMQCurveServerPublicKey); err != nil {
+				return err
+			}
 		}
 		if _, ok := seenPeers[normalizedURL]; ok {
 			return fmt.Errorf("duplicate peer url %q", normalizedURL)
@@ -170,4 +203,89 @@ func (c Config) zeroMQMode() string {
 	default:
 		return "listening"
 	}
+}
+
+func (c Config) zeroMQSecurity() string {
+	security := strings.ToLower(strings.TrimSpace(c.ZeroMQ.Security))
+	if security == "" {
+		return ZeroMQSecurityNone
+	}
+	return security
+}
+
+func (c Config) zeroMQCurveEnabled() bool {
+	return c.zeroMQSecurity() == ZeroMQSecurityCurve
+}
+
+func (c Config) zeroMQCurveServerPublicKey() string {
+	if !c.zeroMQCurveEnabled() {
+		return ""
+	}
+	return strings.TrimSpace(c.ZeroMQ.Curve.ServerPublicKey)
+}
+
+func (c *Config) validateZeroMQSecurity() error {
+	switch c.ZeroMQ.Security {
+	case ZeroMQSecurityNone:
+		return nil
+	case ZeroMQSecurityCurve:
+		if !c.ZeroMQ.Enabled {
+			return fmt.Errorf("zeromq curve security requires cluster.zeromq.enabled")
+		}
+		if err := validateZeroMQCurveKey("zeromq curve server public key", c.ZeroMQ.Curve.ServerPublicKey); err != nil {
+			return err
+		}
+		if err := validateZeroMQCurveKey("zeromq curve server secret key", c.ZeroMQ.Curve.ServerSecretKey); err != nil {
+			return err
+		}
+		if err := validateZeroMQCurveKey("zeromq curve client public key", c.ZeroMQ.Curve.ClientPublicKey); err != nil {
+			return err
+		}
+		if err := validateZeroMQCurveKey("zeromq curve client secret key", c.ZeroMQ.Curve.ClientSecretKey); err != nil {
+			return err
+		}
+		if c.zeroMQListenerEnabled() && len(c.ZeroMQ.Curve.AllowedClientPublicKeys) == 0 {
+			return fmt.Errorf("zeromq curve allowed client public keys cannot be empty when bind_url is set")
+		}
+		for _, key := range c.ZeroMQ.Curve.AllowedClientPublicKeys {
+			if err := validateZeroMQCurveKey("zeromq curve allowed client public key", key); err != nil {
+				return err
+			}
+		}
+		return nil
+	default:
+		return fmt.Errorf("zeromq security must be none or curve")
+	}
+}
+
+func normalizeZeroMQCurveConfig(curve ZeroMQCurveConfig) ZeroMQCurveConfig {
+	curve.ServerPublicKey = strings.TrimSpace(curve.ServerPublicKey)
+	curve.ServerSecretKey = strings.TrimSpace(curve.ServerSecretKey)
+	curve.ClientPublicKey = strings.TrimSpace(curve.ClientPublicKey)
+	curve.ClientSecretKey = strings.TrimSpace(curve.ClientSecretKey)
+	seen := make(map[string]struct{}, len(curve.AllowedClientPublicKeys))
+	keys := make([]string, 0, len(curve.AllowedClientPublicKeys))
+	for _, raw := range curve.AllowedClientPublicKeys {
+		key := strings.TrimSpace(raw)
+		if key == "" {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		keys = append(keys, key)
+	}
+	curve.AllowedClientPublicKeys = keys
+	return curve
+}
+
+func validateZeroMQCurveKey(name, key string) error {
+	if strings.TrimSpace(key) == "" {
+		return fmt.Errorf("%s cannot be empty", name)
+	}
+	if len(key) != 40 {
+		return fmt.Errorf("%s must be a 40-character z85 key", name)
+	}
+	return nil
 }

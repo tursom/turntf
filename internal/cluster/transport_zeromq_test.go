@@ -70,6 +70,118 @@ func TestZeroMQTransportSendReceivePayload(t *testing.T) {
 	}
 }
 
+func TestZeroMQCurveTransportSendReceivePayload(t *testing.T) {
+	if !zmq4.HasCurve() {
+		t.Skip("libzmq was built without CURVE support")
+	}
+
+	addr := nextZeroMQTCPAddress(t)
+	cfg := newZeroMQCurveTestConfig(t)
+	listener := NewZeroMQMuxListenerWithConfig(addr, cfg)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	accepted := make(chan TransportConn, 1)
+	listener.SetClusterAccept(func(conn TransportConn) {
+		accepted <- conn
+	})
+	if err := listener.Start(ctx); err != nil {
+		t.Fatalf("start zeromq curve listener: %v", err)
+	}
+	defer listener.Close()
+
+	peerURL := "zmq+" + addr
+	dialer := newZeroMQDialerWithConfig(cfg, func(string) string {
+		return cfg.Curve.ServerPublicKey
+	})
+	clientConn, err := dialer.Dial(ctx, peerURL)
+	if err != nil {
+		t.Fatalf("dial zeromq curve transport: %v", err)
+	}
+	defer clientConn.Close()
+
+	if err := clientConn.Send(ctx, []byte("curve client payload")); err != nil {
+		t.Fatalf("send curve payload: %v", err)
+	}
+	serverConn := waitForAcceptedTransport(t, accepted, nil)
+	defer serverConn.Close()
+	got, err := serverConn.Receive(ctx)
+	if err != nil {
+		t.Fatalf("receive curve payload: %v", err)
+	}
+	if !bytes.Equal(got, []byte("curve client payload")) {
+		t.Fatalf("unexpected curve payload: %q", got)
+	}
+}
+
+func TestZeroMQCurveMuxRejectsUnauthorizedClientKey(t *testing.T) {
+	if !zmq4.HasCurve() {
+		t.Skip("libzmq was built without CURVE support")
+	}
+
+	addr := nextZeroMQTCPAddress(t)
+	cfg := newZeroMQCurveTestConfig(t)
+	listener := NewZeroMQMuxListenerWithConfig(addr, cfg)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	accepted := make(chan TransportConn, 1)
+	listener.SetClusterAccept(func(conn TransportConn) {
+		accepted <- conn
+	})
+	if err := listener.Start(ctx); err != nil {
+		t.Fatalf("start zeromq curve listener: %v", err)
+	}
+	defer listener.Close()
+
+	socket, err := zmq4.NewSocket(zmq4.DEALER)
+	if err != nil {
+		t.Fatalf("new zeromq socket: %v", err)
+	}
+	defer socket.Close()
+	if err := configureZeroMQSocket(socket); err != nil {
+		t.Fatalf("configure zeromq socket: %v", err)
+	}
+	badPublic, badSecret, err := zmq4.NewCurveKeypair()
+	if err != nil {
+		t.Fatalf("new bad curve keypair: %v", err)
+	}
+	if err := socket.SetCurveServerkey(cfg.Curve.ServerPublicKey); err != nil {
+		t.Fatalf("set curve server key: %v", err)
+	}
+	if err := socket.SetCurvePublickey(badPublic); err != nil {
+		t.Fatalf("set bad curve public key: %v", err)
+	}
+	if err := socket.SetCurveSecretkey(badSecret); err != nil {
+		t.Fatalf("set bad curve secret key: %v", err)
+	}
+	identity, err := newZeroMQIdentity()
+	if err != nil {
+		t.Fatalf("new zeromq identity: %v", err)
+	}
+	if err := socket.SetIdentity(identity); err != nil {
+		t.Fatalf("set zeromq identity: %v", err)
+	}
+	if err := socket.Connect(addr); err != nil {
+		t.Fatalf("connect unauthorized zeromq socket: %v", err)
+	}
+	data, err := gproto.Marshal(&internalproto.ZeroMQMuxHello{
+		Role:            internalproto.ZeroMQMuxHello_ZERO_MQ_ROLE_CLUSTER,
+		ProtocolVersion: internalproto.ZeroMQMuxProtocolVersion,
+	})
+	if err != nil {
+		t.Fatalf("marshal zeromq mux hello: %v", err)
+	}
+	_, _ = socket.SendBytes(data, zmq4.DONTWAIT)
+
+	select {
+	case conn := <-accepted:
+		conn.Close()
+		t.Fatal("expected unauthorized curve client key to be rejected")
+	case <-time.After(500 * time.Millisecond):
+	}
+}
+
 func TestZeroMQTransportLargePayload(t *testing.T) {
 	listener, peerURL := newZeroMQTestListener(t)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -527,6 +639,73 @@ func TestMixedWebSocketAndZeroMQDiscoveryRoutes(t *testing.T) {
 	})
 }
 
+func TestZeroMQCurveDiscoveryPropagatesServerPublicKeyAndDialsDynamicPeer(t *testing.T) {
+	if !zmq4.HasCurve() {
+		t.Skip("libzmq was built without CURVE support")
+	}
+
+	nodeAHTTP := mustListen(t)
+	nodeBHTTP := mustListen(t)
+	nodeCHTTP := mustListen(t)
+	nodeCBind := nextZeroMQTCPAddress(t)
+	cfgA := newZeroMQCurveTestConfig(t)
+	cfgB := newZeroMQCurveTestConfig(t)
+	cfgC := newZeroMQCurveTestConfig(t)
+	cfgC.Curve.AllowedClientPublicKeys = []string{
+		cfgA.Curve.ClientPublicKey,
+		cfgB.Curve.ClientPublicKey,
+	}
+
+	nodeA := newClusterTestNodeFixtureWithListener(t, clusterTestNodeConfig{
+		Name:             "node-a",
+		Slot:             1,
+		ZeroMQEnabled:    true,
+		ZeroMQSecurity:   ZeroMQSecurityCurve,
+		ZeroMQCurve:      cfgA.Curve,
+		DiscoveryEnabled: true,
+	}, nodeAHTTP)
+	nodeB := newClusterTestNodeFixtureWithListener(t, clusterTestNodeConfig{
+		Name:           "node-b",
+		Slot:           2,
+		ZeroMQEnabled:  true,
+		ZeroMQSecurity: ZeroMQSecurityCurve,
+		ZeroMQCurve:    cfgB.Curve,
+		Peers: []Peer{
+			{URL: wsURL(nodeAHTTP)},
+			{
+				URL:                        "zmq+" + nodeCBind,
+				ZeroMQCurveServerPublicKey: cfgC.Curve.ServerPublicKey,
+			},
+		},
+		DiscoveryEnabled: true,
+	}, nodeBHTTP)
+	nodeC := newClusterTestNodeFixtureWithListener(t, clusterTestNodeConfig{
+		Name:             "node-c",
+		Slot:             3,
+		ZeroMQEnabled:    true,
+		ZeroMQBindURL:    nodeCBind,
+		ZeroMQSecurity:   ZeroMQSecurityCurve,
+		ZeroMQCurve:      cfgC.Curve,
+		DiscoveryEnabled: true,
+	}, nodeCHTTP)
+
+	startClusterTestNodes(t, nodeA, nodeB, nodeC)
+	waitForPeersActive(t, 10*time.Second,
+		expectClusterPeer(nodeB, nodeA.id),
+		expectClusterPeer(nodeB, nodeC.id),
+	)
+	waitForPeersActive(t, 15*time.Second,
+		expectClusterPeer(nodeA, nodeC.id),
+	)
+
+	nodeA.manager.mu.Lock()
+	discovered := nodeA.manager.discoveredPeers["zmq+"+nodeCBind]
+	nodeA.manager.mu.Unlock()
+	if discovered == nil || discovered.zeroMQCurveServerPublicKey != cfgC.Curve.ServerPublicKey {
+		t.Fatalf("expected node-a to discover node-c curve key, got %+v", discovered)
+	}
+}
+
 type fakeListener struct{}
 
 func (l *fakeListener) Start(context.Context, func(TransportConn)) error {
@@ -542,6 +721,30 @@ func newZeroMQTestListener(t *testing.T) (Listener, string) {
 
 	addr := nextZeroMQTCPAddress(t)
 	return newZeroMQListener(addr), "zmq+" + addr
+}
+
+func newZeroMQCurveTestConfig(t *testing.T) ZeroMQConfig {
+	t.Helper()
+
+	serverPublic, serverSecret, err := zmq4.NewCurveKeypair()
+	if err != nil {
+		t.Fatalf("new server curve keypair: %v", err)
+	}
+	clientPublic, clientSecret, err := zmq4.NewCurveKeypair()
+	if err != nil {
+		t.Fatalf("new client curve keypair: %v", err)
+	}
+	return ZeroMQConfig{
+		Enabled:  true,
+		Security: ZeroMQSecurityCurve,
+		Curve: ZeroMQCurveConfig{
+			ServerPublicKey:         serverPublic,
+			ServerSecretKey:         serverSecret,
+			ClientPublicKey:         clientPublic,
+			ClientSecretKey:         clientSecret,
+			AllowedClientPublicKeys: []string{clientPublic},
+		},
+	}
 }
 
 func newZeroMQTestNodePair(t *testing.T) (*clusterTestNode, *clusterTestNode) {

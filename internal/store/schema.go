@@ -159,6 +159,7 @@ CREATE TABLE IF NOT EXISTS pending_projections (
 CREATE TABLE IF NOT EXISTS discovered_peers (
     node_id INTEGER NOT NULL,
     url TEXT NOT NULL,
+    zeromq_curve_server_public_key TEXT NOT NULL DEFAULT '',
     source_peer_node_id INTEGER NOT NULL DEFAULT 0,
     state TEXT NOT NULL,
     first_seen_at_hlc TEXT NOT NULL,

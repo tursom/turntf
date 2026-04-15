@@ -49,6 +49,8 @@ func run(args []string, stdout io.Writer) error {
 		return runServe(args[1:], stdout)
 	case "hash":
 		return runHash(args[1:], stdout, os.Stdin)
+	case "curve":
+		return runCurve(args[1:], stdout)
 	default:
 		if !strings.HasPrefix(args[0], "-") {
 			return fmt.Errorf("unknown command %q\n\n%s", args[0], usageText())
@@ -127,7 +129,7 @@ func runServe(args []string, stdout io.Writer) error {
 	}
 	var zeroMQListener *cluster.ZeroMQMuxListener
 	if manager != nil && cfg.Cluster.ZeroMQ.Enabled && strings.TrimSpace(cfg.Cluster.ZeroMQ.BindURL) != "" {
-		zeroMQListener = cluster.NewZeroMQMuxListener(cfg.Cluster.ZeroMQ.BindURL)
+		zeroMQListener = cluster.NewZeroMQMuxListenerWithConfig(cfg.Cluster.ZeroMQ.BindURL, cfg.Cluster.ZeroMQ)
 		zeroMQListener.SetClusterAccept(manager.AcceptZeroMQConn)
 		zeroMQListener.SetClientAccept(func(conn cluster.TransportConn) {
 			httpAPI.AcceptZeroMQConn(conn)
@@ -178,7 +180,7 @@ func printUsage(w io.Writer) {
 }
 
 func usageText() string {
-	return "usage:\n  notifier serve [-config ./config.toml]\n  notifier hash [-password xxx | -stdin]\n  notifier help"
+	return "usage:\n  notifier serve [-config ./config.toml]\n  notifier hash [-password xxx | -stdin]\n  notifier curve gen\n  notifier help"
 }
 
 func serveHandler(apiHandler http.Handler, manager *cluster.Manager, clusterPath string) http.Handler {

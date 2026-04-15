@@ -76,12 +76,23 @@ type clusterFileConfig struct {
 }
 
 type peerFileConfig struct {
-	URL string `toml:"url"`
+	URL                        string `toml:"url"`
+	ZeroMQCurveServerPublicKey string `toml:"zeromq_curve_server_public_key"`
 }
 
 type zeroMQFileConfig struct {
-	Enabled bool   `toml:"enabled"`
-	BindURL string `toml:"bind_url"`
+	Enabled  bool                  `toml:"enabled"`
+	BindURL  string                `toml:"bind_url"`
+	Security string                `toml:"security"`
+	Curve    zeroMQCurveFileConfig `toml:"curve"`
+}
+
+type zeroMQCurveFileConfig struct {
+	ServerPublicKey         string   `toml:"server_public_key"`
+	ServerSecretKey         string   `toml:"server_secret_key"`
+	ClientPublicKey         string   `toml:"client_public_key"`
+	ClientSecretKey         string   `toml:"client_secret_key"`
+	AllowedClientPublicKeys []string `toml:"allowed_client_public_keys"`
 }
 
 type runtimeServeConfig struct {
@@ -125,6 +136,17 @@ func resolveConfigPath(path string) string {
 	trimmed := strings.TrimSpace(path)
 	if trimmed == "" {
 		return defaultConfigPath
+	}
+	return trimmed
+}
+
+func trimStringSlice(values []string) []string {
+	trimmed := make([]string, 0, len(values))
+	for _, value := range values {
+		item := strings.TrimSpace(value)
+		if item != "" {
+			trimmed = append(trimmed, item)
+		}
 	}
 	return trimmed
 }
@@ -183,7 +205,8 @@ func (c serveConfig) runtimeConfig(configPath string) (runtimeServeConfig, error
 	peers := make([]cluster.Peer, 0, len(c.Cluster.Peers))
 	for _, peer := range c.Cluster.Peers {
 		peers = append(peers, cluster.Peer{
-			URL: strings.TrimSpace(peer.URL),
+			URL:                        strings.TrimSpace(peer.URL),
+			ZeroMQCurveServerPublicKey: strings.TrimSpace(peer.ZeroMQCurveServerPublicKey),
 		})
 	}
 
@@ -227,8 +250,16 @@ func (c serveConfig) runtimeConfig(configPath string) (runtimeServeConfig, error
 		AdvertisePath: strings.TrimSpace(c.Cluster.AdvertisePath),
 		ClusterSecret: strings.TrimSpace(c.Cluster.Secret),
 		ZeroMQ: cluster.ZeroMQConfig{
-			Enabled: c.Cluster.ZeroMQ.Enabled,
-			BindURL: strings.TrimSpace(c.Cluster.ZeroMQ.BindURL),
+			Enabled:  c.Cluster.ZeroMQ.Enabled,
+			BindURL:  strings.TrimSpace(c.Cluster.ZeroMQ.BindURL),
+			Security: strings.TrimSpace(c.Cluster.ZeroMQ.Security),
+			Curve: cluster.ZeroMQCurveConfig{
+				ServerPublicKey:         strings.TrimSpace(c.Cluster.ZeroMQ.Curve.ServerPublicKey),
+				ServerSecretKey:         strings.TrimSpace(c.Cluster.ZeroMQ.Curve.ServerSecretKey),
+				ClientPublicKey:         strings.TrimSpace(c.Cluster.ZeroMQ.Curve.ClientPublicKey),
+				ClientSecretKey:         strings.TrimSpace(c.Cluster.ZeroMQ.Curve.ClientSecretKey),
+				AllowedClientPublicKeys: trimStringSlice(c.Cluster.ZeroMQ.Curve.AllowedClientPublicKeys),
+			},
 		},
 		Peers:                           peers,
 		MessageWindowSize:               messageWindowSize,

@@ -94,23 +94,25 @@ type Manager struct {
 }
 
 type configuredPeer struct {
-	URL     string
-	nodeID  int64
-	dynamic bool
-	source  string
+	URL                        string
+	zeroMQCurveServerPublicKey string
+	nodeID                     int64
+	dynamic                    bool
+	source                     string
 }
 
 type discoveredPeerState struct {
-	nodeID           int64
-	url              string
-	sourcePeerNodeID int64
-	state            string
-	firstSeenAt      time.Time
-	lastSeenAt       time.Time
-	lastConnectedAt  time.Time
-	lastError        string
-	generation       uint64
-	dialing          bool
+	nodeID                     int64
+	url                        string
+	zeroMQCurveServerPublicKey string
+	sourcePeerNodeID           int64
+	state                      string
+	firstSeenAt                time.Time
+	lastSeenAt                 time.Time
+	lastConnectedAt            time.Time
+	lastError                  string
+	generation                 uint64
+	dialing                    bool
 }
 
 type peerState struct {
@@ -232,7 +234,11 @@ func NewManager(cfg Config, st *store.Store) (*Manager, error) {
 
 	configuredPeers := make([]*configuredPeer, 0, len(cfg.Peers))
 	for _, peer := range cfg.Peers {
-		configuredPeers = append(configuredPeers, &configuredPeer{URL: peer.URL, source: peerSourceStatic})
+		configuredPeers = append(configuredPeers, &configuredPeer{
+			URL:                        peer.URL,
+			zeroMQCurveServerPublicKey: peer.ZeroMQCurveServerPublicKey,
+			source:                     peerSourceStatic,
+		})
 	}
 
 	clockRef := clock.NewClock(cfg.NodeID)
@@ -262,7 +268,7 @@ func NewManager(cfg Config, st *store.Store) (*Manager, error) {
 		clockStateTransitions: make(map[clockStateTransitionKey]uint64),
 	}
 	mgr.dialers[transportWebSocket] = mgr.websocket
-	mgr.dialers[transportZeroMQ] = newZeroMQDialer()
+	mgr.dialers[transportZeroMQ] = newZeroMQDialerWithConfig(cfg.ZeroMQ, mgr.zeroMQCurveServerKeyForPeer)
 	if !cfg.DiscoveryDisabled {
 		if err := mgr.loadDiscoveredPeers(context.Background()); err != nil {
 			return nil, err

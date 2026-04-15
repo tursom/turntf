@@ -20,6 +20,7 @@
 - `POST /nodes/{node_id}/users/{user_id}/messages`：HTTP 发送消息；当 `delivery_kind = transient` 时走不落库瞬时投递。
 - `GET /ws/client`：客户端 WebSocket 长连接，连接后第一帧必须是 protobuf `LoginRequest`。
 - `zmq+tcp://host:port`：客户端 ZeroMQ 长连接，对应服务端 `cluster.zeromq.bind_url`；第一帧必须是 `ZeroMQMuxHello{role=CLIENT, protocol_version="zeromq-mux-v1"}`，第二帧必须是 protobuf `LoginRequest`。
+- 如果服务端启用 ZeroMQ CURVE，客户端连接前还必须配置服务端 `server_public_key` 和自己的 CURVE client key；客户端 public key 必须在服务端白名单中。TLS 证书体系需要通过外部 TCP TLS 隧道或 WebSocket `wss` 提供。
 
 ## 端到端流程
 
@@ -29,7 +30,7 @@
 4. 可选：用户本人或管理员维护黑名单。
 5. 客户端本地初始化消息表和游标表。
 6. 客户端选择 WebSocket 或 ZeroMQ 长连接接入。
-7. 如果使用 ZeroMQ，先发送 `ZeroMQMuxHello{role=CLIENT, protocol_version="zeromq-mux-v1"}`。
+7. 如果使用 ZeroMQ CURVE，先完成 CURVE socket 配置和传输层握手；随后发送 `ZeroMQMuxHello{role=CLIENT, protocol_version="zeromq-mux-v1"}`。
 8. 客户端发送登录帧 `ClientEnvelope.login`，携带 `node_id`、`user_id`、`password` 和本地已持久化游标 `seen_messages`。
 9. 服务端返回 `LoginResponse`，随后补发当前用户可见且未见过的历史消息。
 10. 客户端收到 `MessagePushed` 后先落库，再保存 `(node_id, seq)` 游标，最后可选发送 `AckMessage`。

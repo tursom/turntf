@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -21,7 +22,16 @@ const zeroMQPollInterval = 100 * time.Millisecond
 
 var errZeroMQNotBuilt error
 
-type zeroMQDialer struct{}
+var zeroMQCurveAuthState struct {
+	sync.Mutex
+	refs int
+	next uint64
+}
+
+type zeroMQDialer struct {
+	cfg              ZeroMQConfig
+	serverKeyForPeer func(string) string
+}
 
 type zeroMQClusterListener struct {
 	mux *ZeroMQMuxListener
@@ -29,6 +39,10 @@ type zeroMQClusterListener struct {
 
 type ZeroMQMuxListener struct {
 	bindURL string
+	cfg     ZeroMQConfig
+
+	curveAuthDomain  string
+	curveAuthStarted bool
 
 	clusterAccept func(TransportConn)
 	clientAccept  func(TransportConn)
@@ -75,7 +89,11 @@ func zeroMQEnabled() bool {
 }
 
 func newZeroMQDialer() Dialer {
-	return &zeroMQDialer{}
+	return newZeroMQDialerWithConfig(ZeroMQConfig{}, nil)
+}
+
+func newZeroMQDialerWithConfig(cfg ZeroMQConfig, serverKeyForPeer func(string) string) Dialer {
+	return &zeroMQDialer{cfg: cfg, serverKeyForPeer: serverKeyForPeer}
 }
 
 func newZeroMQListener(bindURL string) Listener {
@@ -83,8 +101,13 @@ func newZeroMQListener(bindURL string) Listener {
 }
 
 func NewZeroMQMuxListener(bindURL string) *ZeroMQMuxListener {
+	return NewZeroMQMuxListenerWithConfig(bindURL, ZeroMQConfig{})
+}
+
+func NewZeroMQMuxListenerWithConfig(bindURL string, cfg ZeroMQConfig) *ZeroMQMuxListener {
 	return &ZeroMQMuxListener{
 		bindURL:      bindURL,
+		cfg:          cfg,
 		sendCh:       make(chan zeroMQRouterOutbound, outboundQueueSize),
 		connClosedCh: make(chan string, outboundQueueSize),
 		done:         make(chan struct{}),
@@ -122,6 +145,10 @@ func (d *zeroMQDialer) Dial(ctx context.Context, peerURL string) (TransportConn,
 	if err := socket.SetIdentity(identity); err != nil {
 		_ = socket.Close()
 		return nil, fmt.Errorf("set zeromq dealer identity: %w", err)
+	}
+	if err := d.configureClientSecurity(socket, peerURL); err != nil {
+		_ = socket.Close()
+		return nil, err
 	}
 	address, err := zeroMQDialAddress(peerURL)
 	if err != nil {
@@ -167,8 +194,13 @@ func (l *ZeroMQMuxListener) Start(ctx context.Context) error {
 		_ = socket.Close()
 		return err
 	}
+	if err := l.configureServerSecurity(socket); err != nil {
+		_ = socket.Close()
+		return err
+	}
 	if err := socket.Bind(l.bindURL); err != nil {
 		_ = socket.Close()
+		l.releaseServerSecurity()
 		return fmt.Errorf("bind zeromq router %s: %w", l.bindURL, err)
 	}
 
@@ -177,6 +209,7 @@ func (l *ZeroMQMuxListener) Start(ctx context.Context) error {
 		defer l.waitGroup.Done()
 		defer func() {
 			_ = socket.Close()
+			l.releaseServerSecurity()
 		}()
 		runZeroMQRouter(ctx, socket, l)
 	}()
@@ -189,6 +222,119 @@ func (l *ZeroMQMuxListener) Close() error {
 	})
 	l.waitGroup.Wait()
 	return nil
+}
+
+func (d *zeroMQDialer) configureClientSecurity(socket *zmq4.Socket, peerURL string) error {
+	if zeroMQConfigSecurity(d.cfg) != ZeroMQSecurityCurve {
+		return nil
+	}
+	if !zmq4.HasCurve() {
+		return fmt.Errorf("zeromq curve security is not available in the linked libzmq")
+	}
+	serverKey := ""
+	if d.serverKeyForPeer != nil {
+		serverKey = strings.TrimSpace(d.serverKeyForPeer(peerURL))
+	}
+	if serverKey == "" {
+		return fmt.Errorf("zeromq curve server public key is required for %s", peerURL)
+	}
+	if err := socket.SetCurveServerkey(serverKey); err != nil {
+		return fmt.Errorf("set zeromq curve server public key: %w", err)
+	}
+	if err := socket.SetCurvePublickey(strings.TrimSpace(d.cfg.Curve.ClientPublicKey)); err != nil {
+		return fmt.Errorf("set zeromq curve client public key: %w", err)
+	}
+	if err := socket.SetCurveSecretkey(strings.TrimSpace(d.cfg.Curve.ClientSecretKey)); err != nil {
+		return fmt.Errorf("set zeromq curve client secret key: %w", err)
+	}
+	return nil
+}
+
+func (l *ZeroMQMuxListener) configureServerSecurity(socket *zmq4.Socket) error {
+	if zeroMQConfigSecurity(l.cfg) != ZeroMQSecurityCurve {
+		return nil
+	}
+	if !zmq4.HasCurve() {
+		return fmt.Errorf("zeromq curve security is not available in the linked libzmq")
+	}
+	domain, err := acquireZeroMQCurveAuth(l.cfg.Curve.AllowedClientPublicKeys)
+	if err != nil {
+		return err
+	}
+	l.curveAuthDomain = domain
+	l.curveAuthStarted = true
+	if err := socket.SetCurveServer(1); err != nil {
+		l.releaseServerSecurity()
+		return fmt.Errorf("set zeromq curve server mode: %w", err)
+	}
+	if err := socket.SetCurveSecretkey(strings.TrimSpace(l.cfg.Curve.ServerSecretKey)); err != nil {
+		l.releaseServerSecurity()
+		return fmt.Errorf("set zeromq curve server secret key: %w", err)
+	}
+	if err := socket.SetZapDomain(domain); err != nil {
+		l.releaseServerSecurity()
+		return fmt.Errorf("set zeromq zap domain: %w", err)
+	}
+	return nil
+}
+
+func (l *ZeroMQMuxListener) releaseServerSecurity() {
+	if !l.curveAuthStarted {
+		return
+	}
+	releaseZeroMQCurveAuth(l.curveAuthDomain)
+	l.curveAuthStarted = false
+	l.curveAuthDomain = ""
+}
+
+func acquireZeroMQCurveAuth(allowedClientPublicKeys []string) (string, error) {
+	keys := make([]string, 0, len(allowedClientPublicKeys))
+	for _, raw := range allowedClientPublicKeys {
+		key := strings.TrimSpace(raw)
+		if key != "" {
+			keys = append(keys, key)
+		}
+	}
+	if len(keys) == 0 {
+		return "", fmt.Errorf("zeromq curve allowed client public keys cannot be empty")
+	}
+
+	zeroMQCurveAuthState.Lock()
+	defer zeroMQCurveAuthState.Unlock()
+	if zeroMQCurveAuthState.refs == 0 {
+		if err := zmq4.AuthStart(); err != nil {
+			return "", fmt.Errorf("start zeromq curve authenticator: %w", err)
+		}
+	}
+	zeroMQCurveAuthState.next++
+	domain := fmt.Sprintf("turntf-zeromq-curve-%d", zeroMQCurveAuthState.next)
+	zmq4.AuthCurveAdd(domain, keys...)
+	zeroMQCurveAuthState.refs++
+	return domain, nil
+}
+
+func releaseZeroMQCurveAuth(domain string) {
+	zeroMQCurveAuthState.Lock()
+	defer zeroMQCurveAuthState.Unlock()
+	if strings.TrimSpace(domain) != "" {
+		zmq4.AuthCurveRemoveAll(domain)
+	}
+	if zeroMQCurveAuthState.refs > 0 {
+		zeroMQCurveAuthState.refs--
+	}
+	if zeroMQCurveAuthState.refs == 0 {
+		zmq4.AuthStop()
+		// pebbe/zmq4 may release the inproc ZAP endpoint just after AuthStop returns.
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+func zeroMQConfigSecurity(cfg ZeroMQConfig) string {
+	security := strings.ToLower(strings.TrimSpace(cfg.Security))
+	if security == "" {
+		return ZeroMQSecurityNone
+	}
+	return security
 }
 
 func configureZeroMQSocket(socket *zmq4.Socket) error {

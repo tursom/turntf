@@ -133,6 +133,53 @@ url = "ws://127.0.0.1:9081/internal/cluster/ws"
 	}
 }
 
+func TestLoadServeRuntimeConfigReadsZeroMQCurveConfig(t *testing.T) {
+	t.Parallel()
+
+	configPath := filepath.Join(t.TempDir(), "curve.toml")
+	writeTestConfig(t, configPath, `
+[api]
+listen_addr = ":8080"
+
+[store]
+db_path = "./data/node-a.db"
+
+[cluster]
+advertise_path = "/internal/cluster/ws"
+secret = "secret"
+
+[cluster.zeromq]
+enabled = true
+bind_url = "tcp://127.0.0.1:9090"
+security = "curve"
+
+[cluster.zeromq.curve]
+server_public_key = "S111111111111111111111111111111111111111"
+server_secret_key = "s111111111111111111111111111111111111111"
+client_public_key = "C111111111111111111111111111111111111111"
+client_secret_key = "c111111111111111111111111111111111111111"
+allowed_client_public_keys = ["A111111111111111111111111111111111111111"]
+
+[[cluster.peers]]
+url = "zmq+tcp://127.0.0.1:9091"
+zeromq_curve_server_public_key = "P111111111111111111111111111111111111111"
+`)
+
+	cfg, err := loadServeRuntimeConfig(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if cfg.Cluster.ZeroMQ.Security != cluster.ZeroMQSecurityCurve {
+		t.Fatalf("unexpected zeromq security: %+v", cfg.Cluster.ZeroMQ)
+	}
+	if cfg.Cluster.ZeroMQ.Curve.ServerPublicKey != "S111111111111111111111111111111111111111" {
+		t.Fatalf("unexpected curve config: %+v", cfg.Cluster.ZeroMQ.Curve)
+	}
+	if len(cfg.Cluster.Peers) != 1 || cfg.Cluster.Peers[0].ZeroMQCurveServerPublicKey != "P111111111111111111111111111111111111111" {
+		t.Fatalf("unexpected peer curve key: %+v", cfg.Cluster.Peers)
+	}
+}
+
 func TestLoadServeRuntimeConfigUsesDefaultPathAndDefaultMessageWindow(t *testing.T) {
 	originalWD, err := os.Getwd()
 	if err != nil {

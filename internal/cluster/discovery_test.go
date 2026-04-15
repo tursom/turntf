@@ -93,15 +93,24 @@ func TestBuildMembershipEnvelopeIncludesZeroMQURLs(t *testing.T) {
 		DiscoveryEnabled: true,
 	})
 	mgr := node.manager
+	mgr.cfg.ZeroMQ = ZeroMQConfig{
+		Enabled:  true,
+		Security: ZeroMQSecurityCurve,
+		Curve: ZeroMQCurveConfig{
+			ServerPublicKey: testZeroMQCurveKey("S"),
+		},
+	}
 	mgr.configuredPeers = append(mgr.configuredPeers, &configuredPeer{
-		URL:    "zmq+tcp://127.0.0.1:9091",
-		nodeID: testNodeID(2),
-		source: peerSourceStatic,
+		URL:                        "zmq+tcp://127.0.0.1:9091",
+		zeroMQCurveServerPublicKey: testZeroMQCurveKey("P"),
+		nodeID:                     testNodeID(2),
+		source:                     peerSourceStatic,
 	})
 	mgr.discoveredPeers["zmq+tcp://127.0.0.1:9092"] = &discoveredPeerState{
-		nodeID: testNodeID(3),
-		url:    "zmq+tcp://127.0.0.1:9092",
-		state:  discoveryStateConnected,
+		nodeID:                     testNodeID(3),
+		url:                        "zmq+tcp://127.0.0.1:9092",
+		zeroMQCurveServerPublicKey: testZeroMQCurveKey("D"),
+		state:                      discoveryStateConnected,
 	}
 	mgr.selfKnownURLs["zmq+tcp://127.0.0.1:9093"] = 7
 
@@ -113,21 +122,60 @@ func TestBuildMembershipEnvelopeIncludesZeroMQURLs(t *testing.T) {
 	if update == nil {
 		t.Fatal("expected membership update body")
 	}
-	seen := make(map[string]bool)
+	seen := make(map[string]string)
 	for _, item := range update.Peers {
 		if item == nil {
 			continue
 		}
-		seen[item.Url] = true
+		seen[item.Url] = item.ZeromqCurveServerPublicKey
 	}
-	for _, want := range []string{
-		"zmq+tcp://127.0.0.1:9091",
-		"zmq+tcp://127.0.0.1:9092",
-		"zmq+tcp://127.0.0.1:9093",
+	for want, wantKey := range map[string]string{
+		"zmq+tcp://127.0.0.1:9091": testZeroMQCurveKey("P"),
+		"zmq+tcp://127.0.0.1:9092": testZeroMQCurveKey("D"),
+		"zmq+tcp://127.0.0.1:9093": testZeroMQCurveKey("S"),
 	} {
-		if !seen[want] {
-			t.Fatalf("expected membership advertisement to include %q, got %+v", want, update.Peers)
+		if seen[want] != wantKey {
+			t.Fatalf("expected membership advertisement %q to carry key %q, got %+v", want, wantKey, update.Peers)
 		}
+	}
+}
+
+func TestMembershipUpdateStoresZeroMQCurveServerPublicKey(t *testing.T) {
+	t.Parallel()
+
+	node := newClusterTestNodeFixture(t, clusterTestNodeConfig{
+		Name:             "node-a",
+		Slot:             1,
+		DiscoveryEnabled: true,
+	})
+	mgr := node.manager
+	mgr.cfg.ZeroMQ.Enabled = true
+	mgr.cfg.ZeroMQ.Security = ZeroMQSecurityCurve
+	sess := &session{manager: mgr, peerID: testNodeID(2), send: make(chan *internalproto.Envelope, 1)}
+
+	err := mgr.handleMembershipUpdate(sess, &internalproto.Envelope{
+		NodeId: testNodeID(2),
+		Body: &internalproto.Envelope_MembershipUpdate{
+			MembershipUpdate: &internalproto.MembershipUpdate{
+				OriginNodeId: testNodeID(2),
+				Peers: []*internalproto.PeerAdvertisement{
+					{
+						NodeId:                     testNodeID(3),
+						Url:                        "zmq+tcp://127.0.0.1:9091",
+						ZeromqCurveServerPublicKey: testZeroMQCurveKey("Z"),
+					},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("handle membership update: %v", err)
+	}
+	mgr.mu.Lock()
+	discovered := mgr.discoveredPeers["zmq+tcp://127.0.0.1:9091"]
+	mgr.mu.Unlock()
+	if discovered == nil || discovered.zeroMQCurveServerPublicKey != testZeroMQCurveKey("Z") {
+		t.Fatalf("expected discovered peer to retain curve server key, got %+v", discovered)
 	}
 }
 

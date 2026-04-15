@@ -10,20 +10,21 @@ import (
 )
 
 type DiscoveredPeer struct {
-	NodeID           int64
-	URL              string
-	SourcePeerNodeID int64
-	State            string
-	FirstSeenAt      clock.Timestamp
-	LastSeenAt       clock.Timestamp
-	LastConnectedAt  *clock.Timestamp
-	LastError        string
-	Generation       uint64
+	NodeID                     int64
+	URL                        string
+	ZeroMQCurveServerPublicKey string
+	SourcePeerNodeID           int64
+	State                      string
+	FirstSeenAt                clock.Timestamp
+	LastSeenAt                 clock.Timestamp
+	LastConnectedAt            *clock.Timestamp
+	LastError                  string
+	Generation                 uint64
 }
 
 func (s *Store) ListDiscoveredPeers(ctx context.Context) ([]DiscoveredPeer, error) {
 	rows, err := s.db.QueryContext(ctx, `
-SELECT node_id, url, source_peer_node_id, state, first_seen_at_hlc, last_seen_at_hlc, last_connected_at_hlc, last_error, generation
+SELECT node_id, url, zeromq_curve_server_public_key, source_peer_node_id, state, first_seen_at_hlc, last_seen_at_hlc, last_connected_at_hlc, last_error, generation
 FROM discovered_peers
 ORDER BY node_id ASC, url ASC
 `)
@@ -75,9 +76,13 @@ func (s *Store) UpsertDiscoveredPeer(ctx context.Context, peer DiscoveredPeer) e
 	}
 
 	if _, err := s.db.ExecContext(ctx, `
-INSERT INTO discovered_peers(node_id, url, source_peer_node_id, state, first_seen_at_hlc, last_seen_at_hlc, last_connected_at_hlc, last_error, generation)
-VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO discovered_peers(node_id, url, zeromq_curve_server_public_key, source_peer_node_id, state, first_seen_at_hlc, last_seen_at_hlc, last_connected_at_hlc, last_error, generation)
+VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(node_id, url) DO UPDATE SET
+    zeromq_curve_server_public_key = CASE
+        WHEN excluded.zeromq_curve_server_public_key != '' THEN excluded.zeromq_curve_server_public_key
+        ELSE discovered_peers.zeromq_curve_server_public_key
+    END,
     source_peer_node_id = excluded.source_peer_node_id,
     state = excluded.state,
     last_seen_at_hlc = excluded.last_seen_at_hlc,
@@ -87,7 +92,7 @@ ON CONFLICT(node_id, url) DO UPDATE SET
         WHEN excluded.generation > discovered_peers.generation THEN excluded.generation
         ELSE discovered_peers.generation
     END
-`, peer.NodeID, strings.TrimSpace(peer.URL), peer.SourcePeerNodeID, strings.TrimSpace(peer.State), firstSeenAt.String(), lastSeenAt.String(), connectedRaw, strings.TrimSpace(peer.LastError), peer.Generation); err != nil {
+`, peer.NodeID, strings.TrimSpace(peer.URL), strings.TrimSpace(peer.ZeroMQCurveServerPublicKey), peer.SourcePeerNodeID, strings.TrimSpace(peer.State), firstSeenAt.String(), lastSeenAt.String(), connectedRaw, strings.TrimSpace(peer.LastError), peer.Generation); err != nil {
 		return fmt.Errorf("upsert discovered peer: %w", err)
 	}
 	return nil
@@ -134,6 +139,7 @@ func scanDiscoveredPeer(scanner interface {
 	if err := scanner.Scan(
 		&peer.NodeID,
 		&peer.URL,
+		&peer.ZeroMQCurveServerPublicKey,
 		&peer.SourcePeerNodeID,
 		&peer.State,
 		&firstSeenRaw,

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	internalproto "github.com/tursom/turntf/internal/proto"
@@ -47,6 +48,43 @@ func (m *Manager) canDialPeerURL(peerURL string) bool {
 	default:
 		return false
 	}
+}
+
+func (m *Manager) canDialDiscoveredPeer(peer *discoveredPeerState) bool {
+	if peer == nil {
+		return false
+	}
+	if !m.canDialPeerURL(peer.url) {
+		return false
+	}
+	if isZeroMQPeerURL(peer.url) && m.cfg.zeroMQCurveEnabled() {
+		return strings.TrimSpace(peer.zeroMQCurveServerPublicKey) != ""
+	}
+	return true
+}
+
+func (m *Manager) zeroMQCurveServerKeyForPeer(peerURL string) string {
+	if m == nil || !m.cfg.zeroMQCurveEnabled() {
+		return ""
+	}
+	normalized, err := normalizePeerURL(peerURL)
+	if err != nil {
+		normalized = peerURL
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, peer := range m.configuredPeers {
+		if peer == nil {
+			continue
+		}
+		if peer.URL == normalized {
+			return strings.TrimSpace(peer.zeroMQCurveServerPublicKey)
+		}
+	}
+	if peer := m.discoveredPeers[normalized]; peer != nil {
+		return strings.TrimSpace(peer.zeroMQCurveServerPublicKey)
+	}
+	return ""
 }
 
 func (m *Manager) dialerForPeerURL(peerURL string) (Dialer, error) {

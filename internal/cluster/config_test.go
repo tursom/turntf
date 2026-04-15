@@ -3,6 +3,7 @@ package cluster
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -199,6 +200,59 @@ func TestConfigValidateRejectsInvalidZeroMQCombinations(t *testing.T) {
 			},
 			wantErr: `zeromq peer url "zmq+tcp://127.0.0.1:9091" requires cluster.zeromq.enabled`,
 		},
+		{
+			name: "invalid zeromq security",
+			cfg: Config{
+				NodeID:        testNodeID(1),
+				AdvertisePath: "/internal/cluster/ws",
+				ClusterSecret: "secret",
+				ZeroMQ: ZeroMQConfig{
+					Enabled:  true,
+					Security: "tls",
+				},
+			},
+			wantErr: "zeromq security must be none or curve",
+		},
+		{
+			name: "curve peer key only valid for zeromq peer",
+			cfg: Config{
+				NodeID:        testNodeID(1),
+				AdvertisePath: "/internal/cluster/ws",
+				ClusterSecret: "secret",
+				ZeroMQ: ZeroMQConfig{
+					Enabled: true,
+				},
+				Peers: []Peer{
+					{
+						URL:                        "ws://127.0.0.1:9081/internal/cluster/ws",
+						ZeroMQCurveServerPublicKey: testZeroMQCurveKey("P"),
+					},
+				},
+			},
+			wantErr: "zeromq curve server public key requires a zmq+tcp peer url",
+		},
+		{
+			name: "curve static peer requires server public key",
+			cfg: Config{
+				NodeID:        testNodeID(1),
+				AdvertisePath: "/internal/cluster/ws",
+				ClusterSecret: "secret",
+				ZeroMQ: ZeroMQConfig{
+					Enabled:  true,
+					Security: ZeroMQSecurityCurve,
+					Curve: ZeroMQCurveConfig{
+						ServerPublicKey: testZeroMQCurveKey("S"),
+						ServerSecretKey: testZeroMQCurveKey("s"),
+						ClientPublicKey: testZeroMQCurveKey("C"),
+						ClientSecretKey: testZeroMQCurveKey("c"),
+					},
+				},
+				Peers: []Peer{
+					{URL: "zmq+tcp://127.0.0.1:9091"},
+				},
+			},
+			wantErr: "zeromq peer curve server public key cannot be empty",
+		},
 	}
 
 	for _, tt := range tests {
@@ -208,6 +262,54 @@ func TestConfigValidateRejectsInvalidZeroMQCombinations(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestConfigValidateNormalizesZeroMQCurveConfig(t *testing.T) {
+	t.Parallel()
+
+	cfg := Config{
+		NodeID:        testNodeID(1),
+		AdvertisePath: "/internal/cluster/ws",
+		ClusterSecret: "secret",
+		ZeroMQ: ZeroMQConfig{
+			Enabled:  true,
+			BindURL:  "tcp://127.0.0.1:9090",
+			Security: " CURVE ",
+			Curve: ZeroMQCurveConfig{
+				ServerPublicKey: testZeroMQCurveKey("S"),
+				ServerSecretKey: testZeroMQCurveKey("s"),
+				ClientPublicKey: testZeroMQCurveKey("C"),
+				ClientSecretKey: testZeroMQCurveKey("c"),
+				AllowedClientPublicKeys: []string{
+					" " + testZeroMQCurveKey("A") + " ",
+					testZeroMQCurveKey("A"),
+				},
+			},
+		},
+		Peers: []Peer{
+			{
+				URL:                        "zmq+tcp://Example.COM:9091",
+				ZeroMQCurveServerPublicKey: " " + testZeroMQCurveKey("P") + " ",
+			},
+		},
+	}
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("validate config: %v", err)
+	}
+	if cfg.ZeroMQ.Security != ZeroMQSecurityCurve {
+		t.Fatalf("unexpected zeromq security: %q", cfg.ZeroMQ.Security)
+	}
+	if len(cfg.ZeroMQ.Curve.AllowedClientPublicKeys) != 1 || cfg.ZeroMQ.Curve.AllowedClientPublicKeys[0] != testZeroMQCurveKey("A") {
+		t.Fatalf("unexpected allowed keys: %+v", cfg.ZeroMQ.Curve.AllowedClientPublicKeys)
+	}
+	if cfg.Peers[0].URL != "zmq+tcp://example.com:9091" || cfg.Peers[0].ZeroMQCurveServerPublicKey != testZeroMQCurveKey("P") {
+		t.Fatalf("unexpected normalized peer: %+v", cfg.Peers[0])
+	}
+}
+
+func testZeroMQCurveKey(prefix string) string {
+	return prefix + strings.Repeat("1", 40-len(prefix))
 }
 
 type recordingDialer struct {

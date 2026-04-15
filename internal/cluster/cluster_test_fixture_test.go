@@ -72,6 +72,8 @@ type clusterTestNodeConfig struct {
 	Peers                       []Peer
 	ZeroMQEnabled               bool
 	ZeroMQBindURL               string
+	ZeroMQSecurity              string
+	ZeroMQCurve                 ZeroMQCurveConfig
 	MessageWindowSize           int
 	ClockSkewMs                 int64
 	MaxClockSkewMs              int64
@@ -253,8 +255,10 @@ func newClusterTestNodeFixtureWithListener(t *testing.T, cfg clusterTestNodeConf
 		AdvertisePath: websocketPath,
 		ClusterSecret: "secret",
 		ZeroMQ: ZeroMQConfig{
-			Enabled: cfg.ZeroMQEnabled,
-			BindURL: cfg.ZeroMQBindURL,
+			Enabled:  cfg.ZeroMQEnabled,
+			BindURL:  cfg.ZeroMQBindURL,
+			Security: cfg.ZeroMQSecurity,
+			Curve:    cfg.ZeroMQCurve,
 		},
 		Peers:                       cfg.Peers,
 		DiscoveryDisabled:           !cfg.DiscoveryEnabled,
@@ -285,7 +289,7 @@ func newClusterTestNodeFixtureWithListener(t *testing.T, cfg clusterTestNodeConf
 
 	var zeroMQListener *ZeroMQMuxListener
 	if cfg.ZeroMQEnabled && strings.TrimSpace(cfg.ZeroMQBindURL) != "" {
-		zeroMQListener = NewZeroMQMuxListener(cfg.ZeroMQBindURL)
+		zeroMQListener = NewZeroMQMuxListenerWithConfig(cfg.ZeroMQBindURL, manager.cfg.ZeroMQ)
 		zeroMQListener.SetClusterAccept(manager.AcceptZeroMQConn)
 		zeroMQListener.SetClientAccept(func(conn TransportConn) {
 			httpAPI.AcceptZeroMQConn(conn)

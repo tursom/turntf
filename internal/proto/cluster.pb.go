@@ -3140,13 +3140,14 @@ func (x *MembershipUpdate) GetPeers() []*PeerAdvertisement {
 }
 
 type PeerAdvertisement struct {
-	state            protoimpl.MessageState `protogen:"open.v1"`
-	NodeId           int64                  `protobuf:"varint,1,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
-	Url              string                 `protobuf:"bytes,2,opt,name=url,proto3" json:"url,omitempty"`
-	Generation       uint64                 `protobuf:"varint,3,opt,name=generation,proto3" json:"generation,omitempty"`
-	ObservedAtUnixMs int64                  `protobuf:"varint,4,opt,name=observed_at_unix_ms,json=observedAtUnixMs,proto3" json:"observed_at_unix_ms,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	state                      protoimpl.MessageState `protogen:"open.v1"`
+	NodeId                     int64                  `protobuf:"varint,1,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
+	Url                        string                 `protobuf:"bytes,2,opt,name=url,proto3" json:"url,omitempty"`
+	Generation                 uint64                 `protobuf:"varint,3,opt,name=generation,proto3" json:"generation,omitempty"`
+	ObservedAtUnixMs           int64                  `protobuf:"varint,4,opt,name=observed_at_unix_ms,json=observedAtUnixMs,proto3" json:"observed_at_unix_ms,omitempty"`
+	ZeromqCurveServerPublicKey string                 `protobuf:"bytes,5,opt,name=zeromq_curve_server_public_key,json=zeromqCurveServerPublicKey,proto3" json:"zeromq_curve_server_public_key,omitempty"`
+	unknownFields              protoimpl.UnknownFields
+	sizeCache                  protoimpl.SizeCache
 }
 
 func (x *PeerAdvertisement) Reset() {
@@ -3205,6 +3206,13 @@ func (x *PeerAdvertisement) GetObservedAtUnixMs() int64 {
 		return x.ObservedAtUnixMs
 	}
 	return 0
+}
+
+func (x *PeerAdvertisement) GetZeromqCurveServerPublicKey() string {
+	if x != nil {
+		return x.ZeromqCurveServerPublicKey
+	}
+	return ""
 }
 
 type TransientPacket struct {
@@ -3573,14 +3581,15 @@ const file_cluster_proto_rawDesc = "" +
 	"\n" +
 	"generation\x18\x02 \x01(\x04R\n" +
 	"generation\x12<\n" +
-	"\x05peers\x18\x03 \x03(\v2&.notifier.cluster.v1.PeerAdvertisementR\x05peers\"\x8d\x01\n" +
+	"\x05peers\x18\x03 \x03(\v2&.notifier.cluster.v1.PeerAdvertisementR\x05peers\"\xd1\x01\n" +
 	"\x11PeerAdvertisement\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\x03R\x06nodeId\x12\x10\n" +
 	"\x03url\x18\x02 \x01(\tR\x03url\x12\x1e\n" +
 	"\n" +
 	"generation\x18\x03 \x01(\x04R\n" +
 	"generation\x12-\n" +
-	"\x13observed_at_unix_ms\x18\x04 \x01(\x03R\x10observedAtUnixMs\"\xf8\x02\n" +
+	"\x13observed_at_unix_ms\x18\x04 \x01(\x03R\x10observedAtUnixMs\x12B\n" +
+	"\x1ezeromq_curve_server_public_key\x18\x05 \x01(\tR\x1azeromqCurveServerPublicKey\"\xf8\x02\n" +
 	"\x0fTransientPacket\x12\x1b\n" +
 	"\tpacket_id\x18\x01 \x01(\x04R\bpacketId\x12$\n" +
 	"\x0esource_node_id\x18\x02 \x01(\x03R\fsourceNodeId\x12$\n" +

@@ -41,7 +41,7 @@ const (
 	BroadcastUserID      = int64(2)
 	NodeIngressUserID    = int64(3)
 	ReservedUserIDMax    = int64(1024)
-	defaultSchemaVersion = "13"
+	defaultSchemaVersion = "14"
 	schemaMetaNodeIDKey  = "node_id"
 )
 

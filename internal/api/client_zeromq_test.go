@@ -116,6 +116,50 @@ func TestClientZeroMQSendMessageRPC(t *testing.T) {
 	}
 }
 
+func TestClientZeroMQCurveLoginAndSendMessageRPC(t *testing.T) {
+	t.Parallel()
+	if !zmq4.HasCurve() {
+		t.Skip("libzmq was built without CURVE support")
+	}
+
+	testAPI := newAuthenticatedTestAPI(t)
+	addr := nextAPIZeroMQTCPAddress(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	curve := newClientZeroMQCurveTestConfig(t)
+
+	listener := cluster.NewZeroMQMuxListenerWithConfig(addr, curve)
+	listener.SetClientAccept(func(conn cluster.TransportConn) {
+		testAPI.http.AcceptZeroMQConn(conn)
+	})
+	if err := listener.Start(ctx); err != nil {
+		t.Fatalf("start zeromq curve mux listener: %v", err)
+	}
+	defer listener.Close()
+
+	adminKey := store.UserKey{NodeID: testNodeID(1), UserID: store.BootstrapAdminUserID}
+	adminToken := loginToken(t, testAPI.handler, adminKey, "root-password")
+	aliceKey := createUserAs(t, testAPI.handler, adminToken, "alice", "alice-password", store.RoleUser)
+
+	socket := dialClientZeroMQWithCurve(t, addr, curve)
+	defer socket.Close()
+	loginClientZeroMQ(t, socket, aliceKey, "alice-password")
+
+	writeClientEnvelopeZMQ(t, socket, &internalproto.ClientEnvelope{
+		Body: &internalproto.ClientEnvelope_SendMessage{
+			SendMessage: &internalproto.SendMessageRequest{
+				RequestId: 43,
+				Target:    &internalproto.UserRef{NodeId: aliceKey.NodeID, UserId: aliceKey.UserID},
+				Body:      []byte("hello over curve zeromq"),
+			},
+		},
+	})
+	resp := readServerEnvelopeZMQ(t, socket).GetSendMessageResponse()
+	if resp == nil || resp.RequestId != 43 || string(resp.GetMessage().GetBody()) != "hello over curve zeromq" {
+		t.Fatalf("unexpected send response: %+v", resp)
+	}
+}
+
 func nextAPIZeroMQTCPAddress(t *testing.T) string {
 	t.Helper()
 
@@ -158,6 +202,81 @@ func dialClientZeroMQ(t *testing.T, bindURL string) *zmq4.Socket {
 		t.Fatalf("send zeromq mux hello: %v", err)
 	}
 	return socket
+}
+
+func dialClientZeroMQWithCurve(t *testing.T, bindURL string, cfg cluster.ZeroMQConfig) *zmq4.Socket {
+	t.Helper()
+
+	socket, err := zmq4.NewSocket(zmq4.DEALER)
+	if err != nil {
+		t.Fatalf("new zeromq socket: %v", err)
+	}
+	if err := socket.SetLinger(0); err != nil {
+		socket.Close()
+		t.Fatalf("set zeromq linger: %v", err)
+	}
+	if err := socket.SetImmediate(true); err != nil {
+		socket.Close()
+		t.Fatalf("set zeromq immediate: %v", err)
+	}
+	if err := socket.SetCurveServerkey(cfg.Curve.ServerPublicKey); err != nil {
+		socket.Close()
+		t.Fatalf("set zeromq curve server key: %v", err)
+	}
+	if err := socket.SetCurvePublickey(cfg.Curve.ClientPublicKey); err != nil {
+		socket.Close()
+		t.Fatalf("set zeromq curve client public key: %v", err)
+	}
+	if err := socket.SetCurveSecretkey(cfg.Curve.ClientSecretKey); err != nil {
+		socket.Close()
+		t.Fatalf("set zeromq curve client secret key: %v", err)
+	}
+	identity := time.Now().UTC().Format("20060102150405.000000000")
+	if err := socket.SetIdentity(identity); err != nil {
+		socket.Close()
+		t.Fatalf("set zeromq identity: %v", err)
+	}
+	if err := socket.Connect(bindURL); err != nil {
+		socket.Close()
+		t.Fatalf("connect zeromq socket: %v", err)
+	}
+	data, err := gproto.Marshal(&internalproto.ZeroMQMuxHello{
+		Role:            internalproto.ZeroMQMuxHello_ZERO_MQ_ROLE_CLIENT,
+		ProtocolVersion: internalproto.ZeroMQMuxProtocolVersion,
+	})
+	if err != nil {
+		socket.Close()
+		t.Fatalf("marshal zeromq mux hello: %v", err)
+	}
+	if _, err := socket.SendBytes(data, 0); err != nil {
+		socket.Close()
+		t.Fatalf("send zeromq mux hello: %v", err)
+	}
+	return socket
+}
+
+func newClientZeroMQCurveTestConfig(t *testing.T) cluster.ZeroMQConfig {
+	t.Helper()
+
+	serverPublic, serverSecret, err := zmq4.NewCurveKeypair()
+	if err != nil {
+		t.Fatalf("new server curve keypair: %v", err)
+	}
+	clientPublic, clientSecret, err := zmq4.NewCurveKeypair()
+	if err != nil {
+		t.Fatalf("new client curve keypair: %v", err)
+	}
+	return cluster.ZeroMQConfig{
+		Enabled:  true,
+		Security: cluster.ZeroMQSecurityCurve,
+		Curve: cluster.ZeroMQCurveConfig{
+			ServerPublicKey:         serverPublic,
+			ServerSecretKey:         serverSecret,
+			ClientPublicKey:         clientPublic,
+			ClientSecretKey:         clientSecret,
+			AllowedClientPublicKeys: []string{clientPublic},
+		},
+	}
 }
 
 func loginClientZeroMQ(t *testing.T, socket *zmq4.Socket, key store.UserKey, password string) {

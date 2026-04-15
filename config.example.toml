@@ -31,6 +31,18 @@ max_clock_skew_ms = 1000
 [cluster.zeromq]
 enabled = false
 bind_url = "tcp://0.0.0.0:9090"
+# ZeroMQ 支持 "none" 或 "curve"。TLS 不由 libzmq 原生提供，如需 TLS 请在外层使用 TCP TLS 隧道。
+security = "none"
+
+[cluster.zeromq.curve]
+# 使用 `go test -tags zeromq` 中的 zmq4.NewCurveKeypair 示例或其他 ZeroMQ 工具生成 Z85 CURVE key。
+server_public_key = ""
+server_secret_key = ""
+client_public_key = ""
+client_secret_key = ""
+allowed_client_public_keys = []
 
 [[cluster.peers]]
 url = "ws://127.0.0.1:9081/internal/cluster/ws"
+# ZeroMQ CURVE 模式下，zmq+tcp peer 必须配置远端 server public key。
+# zeromq_curve_server_public_key = ""

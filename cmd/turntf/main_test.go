@@ -15,6 +15,7 @@ import (
 
 	"github.com/tursom/turntf/internal/auth"
 	"github.com/tursom/turntf/internal/cluster"
+	"github.com/tursom/turntf/internal/mesh"
 	"github.com/tursom/turntf/internal/store"
 )
 
@@ -983,6 +984,177 @@ url = "zmq+tcp://Example.COM:9091"
 	}
 }
 
+func TestLoadServeRuntimeConfigSupportsForwardingConfig(t *testing.T) {
+	t.Parallel()
+
+	configPath := filepath.Join(t.TempDir(), "forwarding.toml")
+	writeTestConfig(t, configPath, `
+[services.http]
+listen_addr = ":8080"
+
+[services.zeromq]
+enabled = true
+bind_url = "tcp://127.0.0.1:9090"
+forwarding_enabled = false
+
+[services.libp2p]
+enabled = true
+native_relay_client_enabled = true
+native_relay_service_enabled = true
+
+[store.sqlite]
+db_path = "./data/node-a.db"
+
+[cluster]
+secret = "secret"
+
+[cluster.forwarding]
+enabled = false
+bridge_enabled = false
+node_fee_weight = 9
+
+[cluster.forwarding.traffic]
+control_query = "DISCOURAGE"
+snapshot_bulk = "DENY"
+`)
+
+	cfg, err := loadServeRuntimeConfig(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	forwarding := cfg.Cluster.EffectiveForwarding()
+	if forwarding.NodeFeeWeight != 9 {
+		t.Fatalf("unexpected node fee weight: got=%d want=9", forwarding.NodeFeeWeight)
+	}
+	if cfg.Cluster.MeshForwardingPolicy().TransitEnabled {
+		t.Fatal("expected explicit forwarding disable to propagate")
+	}
+	if cfg.Cluster.MeshForwardingPolicy().BridgeEnabled {
+		t.Fatal("expected explicit bridge disable to propagate")
+	}
+	if cfg.Cluster.ZeroMQForwardingEnabled() {
+		t.Fatal("expected zeromq forwarding override to stay disabled")
+	}
+	if !cfg.Cluster.LibP2P.NativeRelayClientEnabled || !cfg.Cluster.LibP2P.NativeRelayServiceEnabled {
+		t.Fatalf("unexpected libp2p relay flags: %+v", cfg.Cluster.LibP2P)
+	}
+}
+
+func TestLoadServeRuntimeConfigForwardingDefaults(t *testing.T) {
+	t.Parallel()
+
+	configPath := filepath.Join(t.TempDir(), "forwarding-defaults.toml")
+	writeTestConfig(t, configPath, `
+[services.http]
+listen_addr = ":8080"
+
+[services.zeromq]
+enabled = true
+bind_url = "tcp://127.0.0.1:9090"
+
+[store.sqlite]
+db_path = "./data/node-a.db"
+
+[cluster]
+secret = "secret"
+`)
+
+	cfg, err := loadServeRuntimeConfig(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	forwarding := cfg.Cluster.EffectiveForwarding()
+	if !boolPtrValue(forwarding.Enabled) {
+		t.Fatal("expected forwarding default to be enabled")
+	}
+	if !boolPtrValue(forwarding.BridgeEnabled) {
+		t.Fatal("expected bridge default to be enabled")
+	}
+	if forwarding.NodeFeeWeight != 1 {
+		t.Fatalf("unexpected default node fee weight: got=%d want=1", forwarding.NodeFeeWeight)
+	}
+	if !cfg.Cluster.ZeroMQForwardingEnabled() {
+		t.Fatal("expected zeromq forwarding to follow global forwarding default")
+	}
+}
+
+func TestLoadServeRuntimeConfigHighFeeForwardingDefaults(t *testing.T) {
+	t.Parallel()
+
+	configPath := filepath.Join(t.TempDir(), "forwarding-high-fee.toml")
+	writeTestConfig(t, configPath, `
+[services.http]
+listen_addr = ":8080"
+
+[store.sqlite]
+db_path = "./data/node-a.db"
+
+[cluster]
+secret = "secret"
+
+[cluster.forwarding]
+node_fee_weight = 7
+`)
+
+	cfg, err := loadServeRuntimeConfig(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	policy := cfg.Cluster.MeshForwardingPolicy()
+	if !policy.TransitEnabled || !policy.BridgeEnabled {
+		t.Fatalf("unexpected high-fee defaults: %+v", policy)
+	}
+	if got := mesh.DispositionForTraffic(policy, mesh.TrafficReplicationStream); got != mesh.DispositionDeny {
+		t.Fatalf("unexpected high-fee replication disposition: got=%v want=%v", got, mesh.DispositionDeny)
+	}
+}
+
+func TestLoadServeRuntimeConfigRejectsInvalidForwardingDisposition(t *testing.T) {
+	t.Parallel()
+
+	configPath := filepath.Join(t.TempDir(), "forwarding-invalid.toml")
+	writeTestConfig(t, configPath, `
+[services.http]
+listen_addr = ":8080"
+
+[store.sqlite]
+db_path = "./data/node-a.db"
+
+[cluster]
+secret = "secret"
+
+[cluster.forwarding.traffic]
+control_query = "MAYBE"
+`)
+
+	_, err := loadServeRuntimeConfig(configPath)
+	if err == nil || !strings.Contains(err.Error(), "cluster.forwarding.traffic.control_query: forwarding disposition must be ALLOW, DISCOURAGE, or DENY") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestLoadServeRuntimeConfigRejectsClusterIDField(t *testing.T) {
+	t.Parallel()
+
+	configPath := filepath.Join(t.TempDir(), "cluster-id.toml")
+	writeTestConfig(t, configPath, `
+[services.http]
+listen_addr = ":8080"
+
+[store.sqlite]
+db_path = "./data/node-a.db"
+
+[cluster]
+secret = "secret"
+cluster_id = "wan-a"
+`)
+
+	_, err := loadServeRuntimeConfig(configPath)
+	if err == nil || !strings.Contains(err.Error(), "unknown fields cluster.cluster_id") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestLoadServeRuntimeConfigZeroMQDefaultsDisabled(t *testing.T) {
 	t.Parallel()
 
@@ -1442,4 +1614,8 @@ func testConfigLibP2PPeerAddr(t *testing.T, transportAddr string) string {
 		t.Fatalf("derive libp2p peer id: %v", err)
 	}
 	return transportAddr + "/p2p/" + id.String()
+}
+
+func boolPtrValue(value *bool) bool {
+	return value != nil && *value
 }

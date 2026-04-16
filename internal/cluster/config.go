@@ -11,22 +11,25 @@ type Peer struct {
 }
 
 type LibP2PConfig struct {
-	Enabled            bool
-	PrivateKeyPath     string
-	ListenAddrs        []string
-	BootstrapPeers     []string
-	EnableDHT          bool
-	EnableMDNS         bool
-	RelayPeers         []string
-	EnableHolePunching bool
-	GossipSubEnabled   bool
+	Enabled                   bool
+	PrivateKeyPath            string
+	ListenAddrs               []string
+	BootstrapPeers            []string
+	EnableDHT                 bool
+	EnableMDNS                bool
+	RelayPeers                []string
+	EnableHolePunching        bool
+	GossipSubEnabled          bool
+	NativeRelayClientEnabled  bool
+	NativeRelayServiceEnabled bool
 }
 
 type ZeroMQConfig struct {
-	Enabled  bool
-	BindURL  string
-	Security string
-	Curve    ZeroMQCurveConfig
+	Enabled           bool
+	BindURL           string
+	Security          string
+	ForwardingEnabled *bool
+	Curve             ZeroMQCurveConfig
 }
 
 type ZeroMQCurveConfig struct {
@@ -41,6 +44,7 @@ type Config struct {
 	NodeID                          int64
 	AdvertisePath                   string
 	ClusterSecret                   string
+	Forwarding                      ForwardingConfig
 	ZeroMQ                          ZeroMQConfig
 	LibP2P                          LibP2PConfig
 	Peers                           []Peer
@@ -74,6 +78,10 @@ const (
 )
 
 func (c Config) WithDefaults() Config {
+	c.Forwarding = c.Forwarding.withDefaults()
+	if c.ZeroMQ.ForwardingEnabled == nil {
+		c.ZeroMQ.ForwardingEnabled = boolPtr(boolValue(c.Forwarding.Enabled, true))
+	}
 	if c.LibP2P.Enabled {
 		if strings.TrimSpace(c.LibP2P.PrivateKeyPath) == "" {
 			c.LibP2P.PrivateKeyPath = DefaultLibP2PPrivateKeyPath
@@ -119,6 +127,7 @@ func (c *Config) Validate() error {
 	if c == nil {
 		return fmt.Errorf("cluster config cannot be nil")
 	}
+	*c = c.WithDefaults()
 	if c.NodeID <= 0 {
 		return fmt.Errorf("node id cannot be empty")
 	}
@@ -159,6 +168,10 @@ func (c *Config) Validate() error {
 		c.ZeroMQ.Security = ZeroMQSecurityNone
 	}
 	c.ZeroMQ.Curve = normalizeZeroMQCurveConfig(c.ZeroMQ.Curve)
+	c.Forwarding = c.Forwarding.withDefaults()
+	if err := c.Forwarding.validate(); err != nil {
+		return err
+	}
 
 	if c.Enabled() {
 		if c.ClusterSecret == "" {

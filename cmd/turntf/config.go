@@ -65,9 +65,25 @@ type loggingConfig struct {
 }
 
 type clusterFileConfig struct {
-	Secret string           `toml:"secret"`
-	Clock  clockFileConfig  `toml:"clock"`
-	Peers  []peerFileConfig `toml:"peers"`
+	Secret     string                      `toml:"secret"`
+	Forwarding clusterForwardingFileConfig `toml:"forwarding"`
+	Clock      clockFileConfig             `toml:"clock"`
+	Peers      []peerFileConfig            `toml:"peers"`
+}
+
+type clusterForwardingFileConfig struct {
+	Enabled       *bool                              `toml:"enabled"`
+	BridgeEnabled *bool                              `toml:"bridge_enabled"`
+	NodeFeeWeight *int64                             `toml:"node_fee_weight"`
+	Traffic       clusterForwardingTrafficFileConfig `toml:"traffic"`
+}
+
+type clusterForwardingTrafficFileConfig struct {
+	ControlCritical      string `toml:"control_critical"`
+	ControlQuery         string `toml:"control_query"`
+	TransientInteractive string `toml:"transient_interactive"`
+	ReplicationStream    string `toml:"replication_stream"`
+	SnapshotBulk         string `toml:"snapshot_bulk"`
 }
 
 type clockFileConfig struct {
@@ -92,10 +108,11 @@ type peerZeroMQFileConfig struct {
 }
 
 type zeroMQFileConfig struct {
-	Enabled  bool                  `toml:"enabled"`
-	BindURL  string                `toml:"bind_url"`
-	Security string                `toml:"security"`
-	Curve    zeroMQCurveFileConfig `toml:"curve"`
+	Enabled           bool                  `toml:"enabled"`
+	BindURL           string                `toml:"bind_url"`
+	Security          string                `toml:"security"`
+	ForwardingEnabled *bool                 `toml:"forwarding_enabled"`
+	Curve             zeroMQCurveFileConfig `toml:"curve"`
 }
 
 type zeroMQCurveFileConfig struct {
@@ -107,15 +124,17 @@ type zeroMQCurveFileConfig struct {
 }
 
 type libP2PFileConfig struct {
-	Enabled            bool     `toml:"enabled"`
-	PrivateKeyPath     string   `toml:"private_key_path"`
-	ListenAddrs        []string `toml:"listen_addrs"`
-	BootstrapPeers     []string `toml:"bootstrap_peers"`
-	EnableDHT          *bool    `toml:"enable_dht"`
-	EnableMDNS         bool     `toml:"enable_mdns"`
-	RelayPeers         []string `toml:"relay_peers"`
-	EnableHolePunching *bool    `toml:"enable_hole_punching"`
-	GossipSubEnabled   *bool    `toml:"gossipsub_enabled"`
+	Enabled                   bool     `toml:"enabled"`
+	PrivateKeyPath            string   `toml:"private_key_path"`
+	ListenAddrs               []string `toml:"listen_addrs"`
+	BootstrapPeers            []string `toml:"bootstrap_peers"`
+	EnableDHT                 *bool    `toml:"enable_dht"`
+	EnableMDNS                bool     `toml:"enable_mdns"`
+	RelayPeers                []string `toml:"relay_peers"`
+	EnableHolePunching        *bool    `toml:"enable_hole_punching"`
+	GossipSubEnabled          *bool    `toml:"gossipsub_enabled"`
+	NativeRelayClientEnabled  bool     `toml:"native_relay_client_enabled"`
+	NativeRelayServiceEnabled bool     `toml:"native_relay_service_enabled"`
 }
 
 type runtimeServeConfig struct {
@@ -232,6 +251,10 @@ func (c serveConfig) runtimeConfig(configPath string) (runtimeServeConfig, error
 	if tokenTTLMinutes == 0 {
 		tokenTTLMinutes = 1440
 	}
+	forwardingCfg, err := c.Cluster.Forwarding.runtimeConfig()
+	if err != nil {
+		return runtimeServeConfig{}, err
+	}
 
 	peers := make([]cluster.Peer, 0, len(c.Cluster.Peers))
 	for _, peer := range c.Cluster.Peers {
@@ -278,9 +301,10 @@ func (c serveConfig) runtimeConfig(configPath string) (runtimeServeConfig, error
 		clockRecoverAfterHealthySamples = *c.Cluster.Clock.RecoverAfterHealthySamples
 	}
 	zeroMQCfg := cluster.ZeroMQConfig{
-		Enabled:  c.Services.ZeroMQ.Enabled,
-		BindURL:  strings.TrimSpace(c.Services.ZeroMQ.BindURL),
-		Security: strings.TrimSpace(c.Services.ZeroMQ.Security),
+		Enabled:           c.Services.ZeroMQ.Enabled,
+		BindURL:           strings.TrimSpace(c.Services.ZeroMQ.BindURL),
+		Security:          strings.TrimSpace(c.Services.ZeroMQ.Security),
+		ForwardingEnabled: c.Services.ZeroMQ.ForwardingEnabled,
 		Curve: cluster.ZeroMQCurveConfig{
 			ServerPublicKey:         strings.TrimSpace(c.Services.ZeroMQ.Curve.ServerPublicKey),
 			ServerSecretKey:         strings.TrimSpace(c.Services.ZeroMQ.Curve.ServerSecretKey),
@@ -293,6 +317,7 @@ func (c serveConfig) runtimeConfig(configPath string) (runtimeServeConfig, error
 	clusterCfg := cluster.Config{
 		AdvertisePath:                   cluster.WebSocketPath,
 		ClusterSecret:                   strings.TrimSpace(c.Cluster.Secret),
+		Forwarding:                      forwardingCfg,
 		ZeroMQ:                          zeroMQCfg,
 		LibP2P:                          libP2PCfg,
 		Peers:                           peers,
@@ -358,16 +383,65 @@ func (c libP2PFileConfig) runtimeConfig() cluster.LibP2PConfig {
 		gossipSubEnabled = *c.GossipSubEnabled
 	}
 	return cluster.LibP2PConfig{
-		Enabled:            c.Enabled,
-		PrivateKeyPath:     strings.TrimSpace(c.PrivateKeyPath),
-		ListenAddrs:        trimStringSlice(c.ListenAddrs),
-		BootstrapPeers:     trimStringSlice(c.BootstrapPeers),
-		EnableDHT:          enableDHT,
-		EnableMDNS:         c.EnableMDNS,
-		RelayPeers:         trimStringSlice(c.RelayPeers),
-		EnableHolePunching: enableHolePunching,
-		GossipSubEnabled:   gossipSubEnabled,
+		Enabled:                   c.Enabled,
+		PrivateKeyPath:            strings.TrimSpace(c.PrivateKeyPath),
+		ListenAddrs:               trimStringSlice(c.ListenAddrs),
+		BootstrapPeers:            trimStringSlice(c.BootstrapPeers),
+		EnableDHT:                 enableDHT,
+		EnableMDNS:                c.EnableMDNS,
+		RelayPeers:                trimStringSlice(c.RelayPeers),
+		EnableHolePunching:        enableHolePunching,
+		GossipSubEnabled:          gossipSubEnabled,
+		NativeRelayClientEnabled:  c.NativeRelayClientEnabled,
+		NativeRelayServiceEnabled: c.NativeRelayServiceEnabled,
 	}
+}
+
+func (c clusterForwardingFileConfig) runtimeConfig() (cluster.ForwardingConfig, error) {
+	traffic, err := c.Traffic.runtimeConfig()
+	if err != nil {
+		return cluster.ForwardingConfig{}, err
+	}
+	nodeFeeWeight := int64(0)
+	if c.NodeFeeWeight != nil {
+		nodeFeeWeight = *c.NodeFeeWeight
+	}
+	return cluster.ForwardingConfig{
+		Enabled:       c.Enabled,
+		BridgeEnabled: c.BridgeEnabled,
+		NodeFeeWeight: nodeFeeWeight,
+		Traffic:       traffic,
+	}, nil
+}
+
+func (c clusterForwardingTrafficFileConfig) runtimeConfig() (cluster.ForwardingTrafficConfig, error) {
+	controlCritical, err := cluster.ParseForwardingDisposition(c.ControlCritical)
+	if err != nil {
+		return cluster.ForwardingTrafficConfig{}, fmt.Errorf("cluster.forwarding.traffic.control_critical: %w", err)
+	}
+	controlQuery, err := cluster.ParseForwardingDisposition(c.ControlQuery)
+	if err != nil {
+		return cluster.ForwardingTrafficConfig{}, fmt.Errorf("cluster.forwarding.traffic.control_query: %w", err)
+	}
+	transientInteractive, err := cluster.ParseForwardingDisposition(c.TransientInteractive)
+	if err != nil {
+		return cluster.ForwardingTrafficConfig{}, fmt.Errorf("cluster.forwarding.traffic.transient_interactive: %w", err)
+	}
+	replicationStream, err := cluster.ParseForwardingDisposition(c.ReplicationStream)
+	if err != nil {
+		return cluster.ForwardingTrafficConfig{}, fmt.Errorf("cluster.forwarding.traffic.replication_stream: %w", err)
+	}
+	snapshotBulk, err := cluster.ParseForwardingDisposition(c.SnapshotBulk)
+	if err != nil {
+		return cluster.ForwardingTrafficConfig{}, fmt.Errorf("cluster.forwarding.traffic.snapshot_bulk: %w", err)
+	}
+	return cluster.ForwardingTrafficConfig{
+		ControlCritical:      controlCritical,
+		ControlQuery:         controlQuery,
+		TransientInteractive: transientInteractive,
+		ReplicationStream:    replicationStream,
+		SnapshotBulk:         snapshotBulk,
+	}, nil
 }
 
 func validateClusterFileConfig(c *cluster.Config) error {

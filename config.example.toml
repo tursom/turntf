@@ -9,6 +9,8 @@ enabled = false
 # ROUTER socket 的本地监听地址，仅支持 tcp://host:port。
 # 留空时不启动 ZeroMQ listener，但启用 ZeroMQ 后仍可用于主动拨号。
 bind_url = "tcp://0.0.0.0:9090"
+# 是否允许 ZeroMQ 参与 mesh forwarding；留空时跟随 cluster.forwarding.enabled。
+forwarding_enabled = true
 # ZeroMQ 支持 "none" 或 "curve"。TLS 不由 libzmq 原生提供，如需 TLS 请在外层使用 TCP TLS 隧道。
 security = "none"
 
@@ -36,6 +38,8 @@ enable_mdns = false
 relay_peers = []
 enable_hole_punching = true
 gossipsub_enabled = true
+native_relay_client_enabled = false
+native_relay_service_enabled = false
 
 # 事件日志和消息投影存储配置。
 [store]
@@ -80,6 +84,31 @@ file_path = "./data/turntf.log"
 [cluster]
 # 集群内部 Envelope HMAC 共享密钥；生产环境必须替换，且不能与 auth.token_secret 相同。
 secret = "secret"
+
+# forwarding 是集群默认能力，适合广域网单集群拓扑。
+[cluster.forwarding]
+enabled = true
+bridge_enabled = true
+node_fee_weight = 1
+
+# 可按流量类别覆盖默认策略。允许的值：
+# - "ALLOW"
+# - "DISCOURAGE"
+# - "DENY"
+# 留空时：
+# - 普通节点默认全部 ALLOW
+# - 高费用节点默认 control=ALLOW、transient=DISCOURAGE、replication/snapshot=DENY
+[cluster.forwarding.traffic]
+# 核心控制面消息，如 hello、keepalive、time sync、topology update。
+control_critical = "ALLOW"
+# 查询类小流量控制请求。
+control_query = "ALLOW"
+# 非持久化的即时交互流量。
+transient_interactive = "ALLOW"
+# 实时复制批次与补拉流量。
+replication_stream = "ALLOW"
+# 快照清单与快照分片等大体积同步流量。
+snapshot_bulk = "ALLOW"
 
 # 集群时钟保护配置，单位为毫秒的字段均以 _ms 结尾。
 [cluster.clock]

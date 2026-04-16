@@ -1,0 +1,164 @@
+syntax = "proto3";
+
+package notifier.mesh.v1;
+
+option go_package = "github.com/tursom/turntf/internal/proto;proto";
+
+enum TransportKind {
+  TRANSPORT_KIND_UNSPECIFIED = 0;
+  TRANSPORT_KIND_LIBP2P = 1;
+  TRANSPORT_KIND_ZEROMQ = 2;
+}
+
+enum TrafficClass {
+  TRAFFIC_CLASS_UNSPECIFIED = 0;
+  TRAFFIC_CONTROL_CRITICAL = 1;
+  TRAFFIC_CONTROL_QUERY = 2;
+  TRAFFIC_TRANSIENT_INTERACTIVE = 3;
+  TRAFFIC_REPLICATION_STREAM = 4;
+  TRAFFIC_SNAPSHOT_BULK = 5;
+}
+
+enum ForwardingDisposition {
+  FORWARDING_DISPOSITION_UNSPECIFIED = 0;
+  FORWARDING_DISPOSITION_ALLOW = 1;
+  FORWARDING_DISPOSITION_DISCOURAGE = 2;
+  FORWARDING_DISPOSITION_DENY = 3;
+}
+
+enum PathClass {
+  PATH_CLASS_UNSPECIFIED = 0;
+  PATH_CLASS_DIRECT = 1;
+  PATH_CLASS_SAME_TRANSPORT_FORWARD = 2;
+  PATH_CLASS_CROSS_TRANSPORT_BRIDGE = 3;
+  PATH_CLASS_NATIVE_RELAY = 4;
+}
+
+message ClusterEnvelope {
+  oneof body {
+    MeshNodeHello node_hello = 1;
+    MeshTimeSyncRequest time_sync_request = 2;
+    MeshTimeSyncResponse time_sync_response = 3;
+    MeshTopologyUpdate topology_update = 4;
+    MeshQueryRequest query_request = 5;
+    MeshQueryResponse query_response = 6;
+    MeshForwardedPacket forwarded_packet = 7;
+    MeshReplicationBatch replication_batch = 8;
+    MeshPullRequest pull_request = 9;
+    MeshSnapshotManifest snapshot_manifest = 10;
+    MeshSnapshotChunk snapshot_chunk = 11;
+    MeshRouteDiagnostic route_diagnostic = 12;
+  }
+}
+
+message MeshNodeHello {
+  int64 node_id = 1;
+  string protocol_version = 2;
+  repeated MeshTransportCapability transports = 3;
+  MeshForwardingPolicy forwarding_policy = 4;
+}
+
+message MeshTransportCapability {
+  TransportKind transport = 1;
+  bool inbound_enabled = 2;
+  bool outbound_enabled = 3;
+  bool native_relay_client_enabled = 4;
+  bool native_relay_service_enabled = 5;
+  repeated string advertised_endpoints = 6;
+}
+
+message MeshForwardingPolicy {
+  bool transit_enabled = 1;
+  bool bridge_enabled = 2;
+  int64 node_fee_weight = 3;
+  repeated MeshTrafficRule traffic_rules = 4;
+}
+
+message MeshTrafficRule {
+  TrafficClass traffic_class = 1;
+  ForwardingDisposition disposition = 2;
+}
+
+message MeshTopologyUpdate {
+  int64 origin_node_id = 1;
+  uint64 generation = 2;
+  repeated MeshLinkAdvertisement links = 3;
+  MeshForwardingPolicy forwarding_policy = 4;
+}
+
+message MeshLinkAdvertisement {
+  int64 from_node_id = 1;
+  int64 to_node_id = 2;
+  TransportKind transport = 3;
+  PathClass path_class = 4;
+  uint32 cost_ms = 5;
+  uint32 jitter_ms = 6;
+  bool established = 7;
+}
+
+message MeshForwardedPacket {
+  uint64 packet_id = 1;
+  int64 source_node_id = 2;
+  int64 target_node_id = 3;
+  TrafficClass traffic_class = 4;
+  int64 last_hop_node_id = 5;
+  TransportKind ingress_transport = 6;
+  uint32 ttl_hops = 7;
+  bytes payload = 8;
+  string trace_id = 9;
+}
+
+message MeshReplicationBatch {
+  int64 origin_node_id = 1;
+  uint64 batch_id = 2;
+  bytes payload = 3;
+}
+
+message MeshPullRequest {
+  int64 origin_node_id = 1;
+  uint64 after_sequence = 2;
+  uint32 limit = 3;
+}
+
+message MeshSnapshotManifest {
+  string snapshot_id = 1;
+  repeated string partitions = 2;
+}
+
+message MeshSnapshotChunk {
+  string snapshot_id = 1;
+  string partition = 2;
+  bytes payload = 3;
+}
+
+message MeshTimeSyncRequest {
+  uint64 request_id = 1;
+  int64 client_send_time_ms = 2;
+}
+
+message MeshTimeSyncResponse {
+  uint64 request_id = 1;
+  int64 client_send_time_ms = 2;
+  int64 server_receive_time_ms = 3;
+  int64 server_send_time_ms = 4;
+}
+
+message MeshQueryRequest {
+  uint64 request_id = 1;
+  string kind = 2;
+  bytes payload = 3;
+}
+
+message MeshQueryResponse {
+  uint64 request_id = 1;
+  string error_code = 2;
+  string error_message = 3;
+  bytes payload = 4;
+}
+
+message MeshRouteDiagnostic {
+  int64 destination_node_id = 1;
+  TrafficClass traffic_class = 2;
+  TransportKind ingress_transport = 3;
+  string message = 4;
+}

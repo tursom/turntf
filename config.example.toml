@@ -22,6 +22,21 @@ client_secret_key = ""
 # 当 bind_url 非空且 security = "curve" 时，白名单不能为空。
 allowed_client_public_keys = []
 
+# libp2p 集群传输入口，默认关闭；开启后与 WebSocket/ZeroMQ 并行工作。
+[services.libp2p]
+enabled = false
+# 首次启动会生成 Ed25519 私钥并以 0600 权限保存，后续重启复用以保持 PeerID 稳定。
+private_key_path = "./data/libp2p.key"
+# 本机绑定地址；不要包含 /p2p/<peer_id>，也不会直接进入 membership 广告。
+listen_addrs = ["/ip4/0.0.0.0/tcp/4001"]
+# 私有 DHT/relay 的种子入口；必须是包含 /p2p/<peer_id> 的远端 multiaddr。
+bootstrap_peers = []
+enable_dht = true
+enable_mdns = false
+relay_peers = []
+enable_hole_punching = true
+gossipsub_enabled = true
+
 # 事件日志和消息投影存储配置。
 [store]
 # 可选 sqlite 或 pebble；默认 sqlite。
@@ -97,3 +112,8 @@ url = "ws://127.0.0.1:9081/internal/cluster/ws"
 url = "zmq+tcp://127.0.0.1:9091"
 # ZeroMQ CURVE 模式下，zmq+tcp peer 必须配置远端 server public key。
 zeromq = { curve_server_public_key = "" }
+
+# 静态 libp2p peer；需要先启用 services.libp2p.enabled。
+# multiaddr 必须是远端可拨号地址，并包含 /p2p/<peer_id>。
+# [[cluster.peers]]
+# url = "/ip4/127.0.0.1/tcp/4001/p2p/12D3KooW..."

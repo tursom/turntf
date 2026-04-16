@@ -157,6 +157,18 @@ func (m *Manager) Status(context.Context) (app.ClusterStatus, error) {
 		ZeroMQMode:            m.cfg.zeroMQMode(),
 		ZeroMQSecurity:        m.cfg.zeroMQSecurity(),
 		ZeroMQListenerRunning: m.zeroMQListenerRunning,
+		LibP2PMode:            m.cfg.libP2PMode(),
+	}
+	if m.libp2p != nil {
+		discovery.LibP2PPeerID = m.libp2p.PeerID()
+		discovery.LibP2PListenAddrs = m.libp2p.ListenAddrs()
+		discovery.LibP2PVerifiedAddrs = m.libP2PVerifiedAddrsLocked()
+		discovery.LibP2PDHTEnabled = m.cfg.LibP2P.EnableDHT
+		discovery.LibP2PDHTBootstrapped = m.libp2p.DHTBootstrapped()
+		discovery.LibP2PGossipSubTopic = m.libp2p.Topic()
+		discovery.LibP2PGossipSubPeers = m.libp2p.TopicPeers()
+		discovery.LibP2PRelayEnabled = len(m.cfg.LibP2P.RelayPeers) > 0
+		discovery.LibP2PHolePunching = m.cfg.LibP2P.EnableHolePunching && len(m.cfg.LibP2P.RelayPeers) > 0
 	}
 	for _, peer := range m.discoveredPeers {
 		if peer == nil || peer.state == "" {
@@ -201,6 +213,36 @@ func (m *Manager) Status(context.Context) (app.ClusterStatus, error) {
 		status.Peers = append(status.Peers, item)
 	}
 	return status, nil
+}
+
+func (m *Manager) libP2PVerifiedAddrsLocked() []string {
+	seen := make(map[string]struct{})
+	addrs := make([]string, 0)
+	add := func(raw string) {
+		if !isLibP2PPeerURL(raw) {
+			return
+		}
+		if _, ok := seen[raw]; ok {
+			return
+		}
+		seen[raw] = struct{}{}
+		addrs = append(addrs, raw)
+	}
+	for _, peer := range m.configuredPeers {
+		if peer != nil && peer.nodeID > 0 {
+			add(peer.URL)
+		}
+	}
+	for _, peer := range m.discoveredPeers {
+		if peer != nil && peer.nodeID > 0 && peer.state == discoveryStateConnected {
+			add(peer.url)
+		}
+	}
+	for rawURL := range m.selfKnownURLs {
+		add(rawURL)
+	}
+	sort.Strings(addrs)
+	return addrs
 }
 
 func (m *Manager) ConfiguredPeerNodeIDs() []int64 {

@@ -62,6 +62,7 @@ type Manager struct {
 	closeOnce sync.Once
 	websocket *webSocketTransport
 	dialers   map[string]Dialer
+	libp2p    *libP2PTransport
 
 	zeroMQListenerRunning bool
 
@@ -97,6 +98,7 @@ type Manager struct {
 type configuredPeer struct {
 	URL                        string
 	zeroMQCurveServerPublicKey string
+	libP2PPeerID               string
 	nodeID                     int64
 	dynamic                    bool
 	source                     string
@@ -120,6 +122,7 @@ type peerState struct {
 	active                   *session
 	lastAck                  uint64
 	trustedSession           *session
+	libP2PPeerID             string
 	clockState               clockState
 	clockOffsetMs            int64
 	clockUncertaintyMs       int64
@@ -163,6 +166,7 @@ type session struct {
 	syncLoopStarted         bool
 	remoteSnapshotVersion   string
 	remoteMessageWindowSize int
+	libP2PPeerID             string
 	pendingSnapshotParts    map[string]struct{}
 	nextTimeSyncID          uint64
 	nextPullRequestID       uint64
@@ -238,6 +242,7 @@ func NewManager(cfg Config, st *store.Store) (*Manager, error) {
 		configuredPeers = append(configuredPeers, &configuredPeer{
 			URL:                        peer.URL,
 			zeroMQCurveServerPublicKey: peer.ZeroMQCurveServerPublicKey,
+			libP2PPeerID:               libP2PPeerIDFromAddr(peer.URL),
 			source:                     peerSourceStatic,
 		})
 	}
@@ -270,6 +275,10 @@ func NewManager(cfg Config, st *store.Store) (*Manager, error) {
 	}
 	mgr.dialers[transportWebSocket] = mgr.websocket
 	mgr.dialers[transportZeroMQ] = newZeroMQDialerWithConfig(cfg.ZeroMQ, mgr.zeroMQCurveServerKeyForPeer)
+	if cfg.LibP2P.Enabled {
+		mgr.libp2p = newLibP2PTransport(cfg.LibP2P, cfg.ClusterSecret, mgr)
+		mgr.dialers[transportLibP2P] = mgr.libp2p
+	}
 	if !cfg.DiscoveryDisabled {
 		if err := mgr.loadDiscoveredPeers(context.Background()); err != nil {
 			return nil, err

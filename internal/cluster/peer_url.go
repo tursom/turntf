@@ -5,12 +5,16 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+
+	ma "github.com/multiformats/go-multiaddr"
+	"github.com/libp2p/go-libp2p/core/peer"
 )
 
 const (
 	peerSchemeWebSocket    = "ws"
 	peerSchemeWebSocketTLS = "wss"
 	peerSchemeZeroMQTCP    = "zmq+tcp"
+	peerSchemeLibP2P       = "libp2p"
 	zeroMQBindSchemeTCP    = "tcp"
 )
 
@@ -66,10 +70,21 @@ func isZeroMQPeerURL(raw string) bool {
 	return ok && scheme == peerSchemeZeroMQTCP
 }
 
+func isLibP2PPeerURL(raw string) bool {
+	scheme, ok := peerURLScheme(raw)
+	return ok && scheme == peerSchemeLibP2P
+}
+
 func peerURLScheme(raw string) (string, bool) {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {
 		return "", false
+	}
+	if strings.HasPrefix(trimmed, "/") {
+		if _, err := ma.NewMultiaddr(trimmed); err != nil {
+			return "", false
+		}
+		return peerSchemeLibP2P, true
 	}
 	parsed, err := url.Parse(trimmed)
 	if err != nil {
@@ -86,6 +101,9 @@ func normalizePeerURLScheme(raw string, allowZeroMQ bool) (string, error) {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {
 		return "", errors.New("peer url cannot be empty")
+	}
+	if strings.HasPrefix(trimmed, "/") {
+		return normalizeLibP2PPeerAddr(trimmed)
 	}
 
 	parsed, err := url.Parse(trimmed)
@@ -144,6 +162,8 @@ func transportForPeerURL(raw string) string {
 		return transportWebSocket
 	case isZeroMQPeerURL(raw):
 		return transportZeroMQ
+	case isLibP2PPeerURL(raw):
+		return transportLibP2P
 	default:
 		return ""
 	}
@@ -156,4 +176,50 @@ func normalizedHostPort(host, port string) string {
 		host = strings.ToLower(host)
 	}
 	return host + ":" + port
+}
+
+func normalizeLibP2PListenAddr(raw string) (string, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "", errors.New("libp2p listen addr cannot be empty")
+	}
+	addr, err := ma.NewMultiaddr(trimmed)
+	if err != nil {
+		return "", fmt.Errorf("parse libp2p listen addr: %w", err)
+	}
+	if _, id := peer.SplitAddr(addr); id != "" {
+		return "", errors.New("libp2p listen addr must not include /p2p")
+	}
+	return addr.String(), nil
+}
+
+func normalizeLibP2PPeerAddr(raw string) (string, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "", errors.New("libp2p peer addr cannot be empty")
+	}
+	addr, err := ma.NewMultiaddr(trimmed)
+	if err != nil {
+		return "", fmt.Errorf("parse libp2p peer addr: %w", err)
+	}
+	info, err := peer.AddrInfoFromP2pAddr(addr)
+	if err != nil {
+		return "", errors.New("libp2p peer addr must include /p2p peer id")
+	}
+	if len(info.Addrs) == 0 {
+		return "", errors.New("libp2p peer addr must include a transport address")
+	}
+	return addr.String(), nil
+}
+
+func libP2PPeerIDFromAddr(raw string) string {
+	addr, err := ma.NewMultiaddr(strings.TrimSpace(raw))
+	if err != nil {
+		return ""
+	}
+	id, err := peer.IDFromP2PAddr(addr)
+	if err != nil {
+		return ""
+	}
+	return id.String()
 }

@@ -28,6 +28,7 @@ func (m *Manager) broadcastEvent(event store.Event) {
 	for _, sess := range m.activeSessions() {
 		sess.enqueue(envelope)
 	}
+	m.publishLibP2PEvent(envelope)
 }
 
 func (m *Manager) handleAck(sess *session, envelope *internalproto.Envelope) error {

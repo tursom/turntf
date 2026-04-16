@@ -69,6 +69,16 @@ type discoveryStatus struct {
 	ZeroMQMode            string         `json:"zeromq_mode,omitempty"`
 	ZeroMQSecurity        string         `json:"zeromq_security,omitempty"`
 	ZeroMQListenerRunning bool           `json:"zeromq_listener_running"`
+	LibP2PMode            string         `json:"libp2p_mode,omitempty"`
+	LibP2PPeerID          string         `json:"libp2p_peer_id,omitempty"`
+	LibP2PListenAddrs     []string       `json:"libp2p_listen_addrs,omitempty"`
+	LibP2PVerifiedAddrs   []string       `json:"libp2p_verified_addrs,omitempty"`
+	LibP2PDHTEnabled      bool           `json:"libp2p_dht_enabled"`
+	LibP2PDHTBootstrapped bool           `json:"libp2p_dht_bootstrapped"`
+	LibP2PGossipSubTopic  string         `json:"libp2p_gossipsub_topic,omitempty"`
+	LibP2PGossipSubPeers  int            `json:"libp2p_gossipsub_peers"`
+	LibP2PRelayEnabled    bool           `json:"libp2p_relay_enabled"`
+	LibP2PHolePunching    bool           `json:"libp2p_hole_punching"`
 }
 
 type messageTrimStatus struct {
@@ -173,6 +183,16 @@ func (s *Service) OperationsStatus(ctx context.Context) (operationsStatus, error
 			ZeroMQMode:            clusterStatus.Discovery.ZeroMQMode,
 			ZeroMQSecurity:        clusterStatus.Discovery.ZeroMQSecurity,
 			ZeroMQListenerRunning: clusterStatus.Discovery.ZeroMQListenerRunning,
+			LibP2PMode:            clusterStatus.Discovery.LibP2PMode,
+			LibP2PPeerID:          clusterStatus.Discovery.LibP2PPeerID,
+			LibP2PListenAddrs:     clusterStatus.Discovery.LibP2PListenAddrs,
+			LibP2PVerifiedAddrs:   clusterStatus.Discovery.LibP2PVerifiedAddrs,
+			LibP2PDHTEnabled:      clusterStatus.Discovery.LibP2PDHTEnabled,
+			LibP2PDHTBootstrapped: clusterStatus.Discovery.LibP2PDHTBootstrapped,
+			LibP2PGossipSubTopic:  clusterStatus.Discovery.LibP2PGossipSubTopic,
+			LibP2PGossipSubPeers:  clusterStatus.Discovery.LibP2PGossipSubPeers,
+			LibP2PRelayEnabled:    clusterStatus.Discovery.LibP2PRelayEnabled,
+			LibP2PHolePunching:    clusterStatus.Discovery.LibP2PHolePunching,
 		},
 		Peers: mergePeerStatus(storeStats.Peers, clusterStatus.Peers),
 	}
@@ -292,6 +312,15 @@ func (s *Service) Metrics(ctx context.Context) (string, error) {
 		"mode":     status.Discovery.ZeroMQMode,
 		"security": status.Discovery.ZeroMQSecurity,
 	}, boolGauge(status.Discovery.ZeroMQListenerRunning))
+	writeMetricHelp(&buf, "notifier_libp2p_enabled", "Whether libp2p cluster transport is enabled.", "gauge")
+	writeGauge(&buf, "notifier_libp2p_enabled", map[string]string{
+		"node_id": nodeIDLabel,
+		"mode":    status.Discovery.LibP2PMode,
+	}, boolGauge(status.Discovery.LibP2PMode != "" && status.Discovery.LibP2PMode != "disabled"))
+	writeMetricHelp(&buf, "notifier_libp2p_gossipsub_peers", "Current libp2p Gossipsub topic peer count.", "gauge")
+	writeGauge(&buf, "notifier_libp2p_gossipsub_peers", map[string]string{"node_id": nodeIDLabel}, float64(status.Discovery.LibP2PGossipSubPeers))
+	writeMetricHelp(&buf, "notifier_libp2p_dht_bootstrapped", "Whether libp2p DHT bootstrap has completed.", "gauge")
+	writeGauge(&buf, "notifier_libp2p_dht_bootstrapped", map[string]string{"node_id": nodeIDLabel}, boolGauge(status.Discovery.LibP2PDHTBootstrapped))
 	writeMetricHelp(&buf, "notifier_membership_updates_sent_total", "Membership updates sent to peers.", "counter")
 	writeGauge(&buf, "notifier_membership_updates_sent_total", map[string]string{"node_id": nodeIDLabel}, float64(status.Discovery.MembershipUpdatesSent))
 	writeMetricHelp(&buf, "notifier_membership_updates_received_total", "Membership updates received from peers.", "counter")

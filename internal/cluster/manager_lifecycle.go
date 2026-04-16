@@ -28,6 +28,9 @@ func (m *Manager) validateConfiguredTransports() error {
 	if (needsZeroMQDial || needsZeroMQListener) && !zeroMQEnabled() {
 		return errZeroMQNotBuilt
 	}
+	if m.cfg.LibP2P.Enabled && m.libp2p == nil {
+		return fmt.Errorf("libp2p transport is not configured")
+	}
 	return nil
 }
 
@@ -45,6 +48,8 @@ func (m *Manager) canDialPeerURL(peerURL string) bool {
 		return true
 	case transportZeroMQ:
 		return m != nil && m.cfg.zeroMQDialEnabled()
+	case transportLibP2P:
+		return m != nil && m.cfg.LibP2P.Enabled
 	default:
 		return false
 	}
@@ -108,6 +113,13 @@ func (m *Manager) Start(parent context.Context) error {
 			m.cancel()
 			return
 		}
+		if m.libp2p != nil {
+			if err := m.libp2p.Start(m.ctx); err != nil {
+				m.startErr = err
+				m.cancel()
+				return
+			}
+		}
 
 		m.wg.Add(1)
 		go m.publishLoop()
@@ -125,6 +137,31 @@ func (m *Manager) Start(parent context.Context) error {
 		}
 	})
 	return m.startErr
+}
+
+func (m *Manager) AcceptLibP2PConn(conn TransportConn) {
+	if conn == nil {
+		return
+	}
+	if m.ctx == nil || m.ctx.Err() != nil {
+		closeTransport(conn, "shutdown")
+		return
+	}
+	m.logInfo("peer_inbound_accepted").
+		Str("direction", "inbound").
+		Str("transport", conn.Transport()).
+		Str("remote_addr", conn.RemoteAddr()).
+		Msg("accepted inbound peer libp2p connection")
+
+	sess := m.newSession(conn, false, nil)
+	if peerConn, ok := conn.(libP2PIdentityConn); ok {
+		sess.libP2PPeerID = peerConn.RemotePeerID()
+	}
+	m.wg.Add(1)
+	go func() {
+		defer m.wg.Done()
+		m.runSession(sess)
+	}()
 }
 
 func (m *Manager) AcceptZeroMQConn(conn TransportConn) {
@@ -176,6 +213,9 @@ func (m *Manager) Close() error {
 
 		for _, sess := range sessions {
 			sess.close()
+		}
+		if m.libp2p != nil {
+			_ = m.libp2p.Close()
 		}
 		m.wg.Wait()
 	})
@@ -310,6 +350,9 @@ func (m *Manager) dialLoop(peer *configuredPeer) {
 
 		attempt = 0
 		sess := m.newSession(conn, true, peer)
+		if peerConn, ok := conn.(libP2PIdentityConn); ok {
+			sess.libP2PPeerID = peerConn.RemotePeerID()
+		}
 		m.logSessionEvent("peer_dial_succeeded", sess).
 			Msg("outbound peer dial succeeded")
 		m.runSession(sess)

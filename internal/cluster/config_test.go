@@ -2,10 +2,14 @@ package cluster
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"strings"
 	"testing"
 	"time"
+
+	libp2pcrypto "github.com/libp2p/go-libp2p/core/crypto"
+	libp2ppeer "github.com/libp2p/go-libp2p/core/peer"
 )
 
 func TestNormalizeConfiguredPeerURL(t *testing.T) {
@@ -120,6 +124,33 @@ func TestNormalizeZeroMQBindURL(t *testing.T) {
 				t.Fatalf("unexpected normalized bind url: got=%q want=%q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestNormalizeLibP2PAddrs(t *testing.T) {
+	t.Parallel()
+
+	peerAddr := testLibP2PPeerAddr(t, "/ip4/127.0.0.1/tcp/4001")
+	normalizedPeer, err := normalizeConfiguredPeerURL(" " + peerAddr + " ")
+	if err != nil {
+		t.Fatalf("normalize libp2p peer addr: %v", err)
+	}
+	if normalizedPeer != peerAddr {
+		t.Fatalf("unexpected normalized libp2p peer addr: got=%q want=%q", normalizedPeer, peerAddr)
+	}
+
+	if _, err := normalizeConfiguredPeerURL("/ip4/127.0.0.1/tcp/4001"); err == nil || err.Error() != "libp2p peer addr must include /p2p peer id" {
+		t.Fatalf("unexpected peer addr error: %v", err)
+	}
+	if _, err := normalizeLibP2PListenAddr(peerAddr); err == nil || err.Error() != "libp2p listen addr must not include /p2p" {
+		t.Fatalf("unexpected listen addr error: %v", err)
+	}
+	listenAddr, err := normalizeLibP2PListenAddr("/ip4/0.0.0.0/tcp/4001")
+	if err != nil {
+		t.Fatalf("normalize libp2p listen addr: %v", err)
+	}
+	if listenAddr != "/ip4/0.0.0.0/tcp/4001" {
+		t.Fatalf("unexpected listen addr: %q", listenAddr)
 	}
 }
 
@@ -308,8 +339,155 @@ func TestConfigValidateNormalizesZeroMQCurveConfig(t *testing.T) {
 	}
 }
 
+func TestConfigValidateLibP2P(t *testing.T) {
+	t.Parallel()
+
+	peerAddr := testLibP2PPeerAddr(t, "/ip4/127.0.0.1/tcp/4001")
+	cfg := Config{
+		NodeID:        testNodeID(1),
+		AdvertisePath: "/internal/cluster/ws",
+		ClusterSecret: "secret",
+		LibP2P: LibP2PConfig{
+			Enabled:        true,
+			PrivateKeyPath: " ./data/node-a-libp2p.key ",
+			ListenAddrs:    []string{" /ip4/0.0.0.0/tcp/4001 "},
+			BootstrapPeers: []string{peerAddr},
+		},
+		Peers: []Peer{{URL: peerAddr}},
+	}
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("validate config: %v", err)
+	}
+	if cfg.LibP2P.PrivateKeyPath != "./data/node-a-libp2p.key" {
+		t.Fatalf("unexpected private key path: %q", cfg.LibP2P.PrivateKeyPath)
+	}
+	if len(cfg.LibP2P.ListenAddrs) != 1 || cfg.LibP2P.ListenAddrs[0] != "/ip4/0.0.0.0/tcp/4001" {
+		t.Fatalf("unexpected listen addrs: %+v", cfg.LibP2P.ListenAddrs)
+	}
+	if len(cfg.LibP2P.BootstrapPeers) != 1 || cfg.LibP2P.BootstrapPeers[0] != peerAddr {
+		t.Fatalf("unexpected bootstrap peers: %+v", cfg.LibP2P.BootstrapPeers)
+	}
+	if len(cfg.Peers) != 1 || cfg.Peers[0].URL != peerAddr {
+		t.Fatalf("unexpected peer addr: %+v", cfg.Peers)
+	}
+}
+
+func TestConfigValidateLibP2PDefaultsAndErrors(t *testing.T) {
+	t.Parallel()
+
+	peerAddr := testLibP2PPeerAddr(t, "/ip4/127.0.0.1/tcp/4001")
+	tests := []struct {
+		name    string
+		cfg     Config
+		wantErr string
+		check   func(*testing.T, Config)
+	}{
+		{
+			name: "enabled defaults",
+			cfg: Config{
+				NodeID:        testNodeID(1),
+				AdvertisePath: "/internal/cluster/ws",
+				ClusterSecret: "secret",
+				LibP2P:        LibP2PConfig{Enabled: true},
+			}.WithDefaults(),
+			check: func(t *testing.T, cfg Config) {
+				t.Helper()
+				if cfg.LibP2P.PrivateKeyPath != DefaultLibP2PPrivateKeyPath {
+					t.Fatalf("unexpected private key path: %q", cfg.LibP2P.PrivateKeyPath)
+				}
+				if !cfg.LibP2P.EnableDHT || !cfg.LibP2P.EnableHolePunching || !cfg.LibP2P.GossipSubEnabled {
+					t.Fatalf("unexpected libp2p defaults: %+v", cfg.LibP2P)
+				}
+				if len(cfg.LibP2P.ListenAddrs) != 1 || cfg.LibP2P.ListenAddrs[0] != "/ip4/0.0.0.0/tcp/0" {
+					t.Fatalf("unexpected default listen addrs: %+v", cfg.LibP2P.ListenAddrs)
+				}
+			},
+		},
+		{
+			name: "peer requires enabled",
+			cfg: Config{
+				NodeID:        testNodeID(1),
+				AdvertisePath: "/internal/cluster/ws",
+				ClusterSecret: "secret",
+				Peers:         []Peer{{URL: peerAddr}},
+			},
+			wantErr: `libp2p peer url "` + peerAddr + `" requires services.libp2p.enabled`,
+		},
+		{
+			name: "static peer missing p2p",
+			cfg: Config{
+				NodeID:        testNodeID(1),
+				AdvertisePath: "/internal/cluster/ws",
+				ClusterSecret: "secret",
+				LibP2P:        LibP2PConfig{Enabled: true, PrivateKeyPath: DefaultLibP2PPrivateKeyPath},
+				Peers:         []Peer{{URL: "/ip4/127.0.0.1/tcp/4001"}},
+			},
+			wantErr: "libp2p peer addr must include /p2p peer id",
+		},
+		{
+			name: "listen addr includes p2p",
+			cfg: Config{
+				NodeID:        testNodeID(1),
+				AdvertisePath: "/internal/cluster/ws",
+				ClusterSecret: "secret",
+				LibP2P: LibP2PConfig{
+					Enabled:        true,
+					PrivateKeyPath: DefaultLibP2PPrivateKeyPath,
+					ListenAddrs:    []string{peerAddr},
+				},
+			},
+			wantErr: "libp2p listen addr must not include /p2p",
+		},
+		{
+			name: "disabled service may be preconfigured",
+			cfg: Config{
+				NodeID:        testNodeID(1),
+				AdvertisePath: "/internal/cluster/ws",
+				ClusterSecret: "secret",
+				LibP2P: LibP2PConfig{
+					PrivateKeyPath: DefaultLibP2PPrivateKeyPath,
+					ListenAddrs:    []string{"/ip4/0.0.0.0/tcp/4001"},
+					BootstrapPeers: []string{peerAddr},
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.cfg.Validate()
+			if tt.wantErr != "" {
+				if err == nil || err.Error() != tt.wantErr {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("validate config: %v", err)
+			}
+			if tt.check != nil {
+				tt.check(t, tt.cfg)
+			}
+		})
+	}
+}
+
 func testZeroMQCurveKey(prefix string) string {
 	return prefix + strings.Repeat("1", 40-len(prefix))
+}
+
+func testLibP2PPeerAddr(t *testing.T, transportAddr string) string {
+	t.Helper()
+	_, pub, err := libp2pcrypto.GenerateEd25519Key(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate libp2p key: %v", err)
+	}
+	id, err := libp2ppeer.IDFromPublicKey(pub)
+	if err != nil {
+		t.Fatalf("derive libp2p peer id: %v", err)
+	}
+	return transportAddr + "/p2p/" + id.String()
 }
 
 type recordingDialer struct {

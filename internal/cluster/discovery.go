@@ -366,6 +366,7 @@ func (m *Manager) reconcileDiscoveredDialers() {
 		configured := &configuredPeer{
 			URL:                        peer.url,
 			zeroMQCurveServerPublicKey: peer.zeroMQCurveServerPublicKey,
+			libP2PPeerID:               libP2PPeerIDFromAddr(peer.url),
 			nodeID:                     peer.nodeID,
 			dynamic:                    true,
 			source:                     peerSourceDiscovered,

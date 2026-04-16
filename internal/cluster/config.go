@@ -10,6 +10,18 @@ type Peer struct {
 	ZeroMQCurveServerPublicKey string
 }
 
+type LibP2PConfig struct {
+	Enabled            bool
+	PrivateKeyPath     string
+	ListenAddrs        []string
+	BootstrapPeers     []string
+	EnableDHT          bool
+	EnableMDNS         bool
+	RelayPeers         []string
+	EnableHolePunching bool
+	GossipSubEnabled   bool
+}
+
 type ZeroMQConfig struct {
 	Enabled  bool
 	BindURL  string
@@ -30,6 +42,7 @@ type Config struct {
 	AdvertisePath                   string
 	ClusterSecret                   string
 	ZeroMQ                          ZeroMQConfig
+	LibP2P                          LibP2PConfig
 	Peers                           []Peer
 	DiscoveryDisabled               bool
 	MessageWindowSize               int
@@ -53,6 +66,7 @@ const DefaultClockWriteGateGraceMs int64 = 300_000
 const DefaultClockRejectAfterFailures = 3
 const DefaultClockRejectAfterSkewSamples = 3
 const DefaultClockRecoverAfterHealthySamples = 2
+const DefaultLibP2PPrivateKeyPath = "./data/libp2p.key"
 
 const (
 	ZeroMQSecurityNone  = "none"
@@ -60,6 +74,16 @@ const (
 )
 
 func (c Config) WithDefaults() Config {
+	if c.LibP2P.Enabled {
+		if strings.TrimSpace(c.LibP2P.PrivateKeyPath) == "" {
+			c.LibP2P.PrivateKeyPath = DefaultLibP2PPrivateKeyPath
+		}
+		if !c.LibP2P.EnableDHT && !c.LibP2P.EnableMDNS && !c.LibP2P.EnableHolePunching && !c.LibP2P.GossipSubEnabled {
+			c.LibP2P.EnableDHT = true
+			c.LibP2P.EnableHolePunching = true
+			c.LibP2P.GossipSubEnabled = true
+		}
+	}
 	if c.ClockSyncTimeoutMs == 0 {
 		c.ClockSyncTimeoutMs = DefaultClockSyncTimeoutMs
 	}
@@ -88,7 +112,7 @@ func (c Config) WithDefaults() Config {
 }
 
 func (c Config) Enabled() bool {
-	return strings.TrimSpace(c.ClusterSecret) != "" || len(c.Peers) > 0
+	return strings.TrimSpace(c.ClusterSecret) != "" || len(c.Peers) > 0 || c.LibP2P.Enabled
 }
 
 func (c *Config) Validate() error {
@@ -130,6 +154,7 @@ func (c *Config) Validate() error {
 	c.ClusterSecret = strings.TrimSpace(c.ClusterSecret)
 	c.ZeroMQ.BindURL = strings.TrimSpace(c.ZeroMQ.BindURL)
 	c.ZeroMQ.Security = strings.ToLower(strings.TrimSpace(c.ZeroMQ.Security))
+	c.LibP2P = normalizeLibP2PConfig(c.LibP2P)
 	if c.ZeroMQ.Security == "" {
 		c.ZeroMQ.Security = ZeroMQSecurityNone
 	}
@@ -158,6 +183,9 @@ func (c *Config) Validate() error {
 	if err := c.validateZeroMQSecurity(); err != nil {
 		return err
 	}
+	if err := c.validateLibP2P(); err != nil {
+		return err
+	}
 
 	seenPeers := make(map[string]struct{}, len(c.Peers))
 	for idx := range c.Peers {
@@ -168,6 +196,9 @@ func (c *Config) Validate() error {
 		}
 		if isZeroMQPeerURL(normalizedURL) && !c.ZeroMQ.Enabled {
 			return fmt.Errorf("zeromq peer url %q requires services.zeromq.enabled", normalizedURL)
+		}
+		if isLibP2PPeerURL(normalizedURL) && !c.LibP2P.Enabled {
+			return fmt.Errorf("libp2p peer url %q requires services.libp2p.enabled", normalizedURL)
 		}
 		if !isZeroMQPeerURL(normalizedURL) && c.Peers[idx].ZeroMQCurveServerPublicKey != "" {
 			return fmt.Errorf("zeromq curve server public key requires a zmq+tcp peer url")
@@ -182,6 +213,72 @@ func (c *Config) Validate() error {
 		}
 		seenPeers[normalizedURL] = struct{}{}
 		c.Peers[idx].URL = normalizedURL
+	}
+	return nil
+}
+
+func normalizeLibP2PConfig(cfg LibP2PConfig) LibP2PConfig {
+	cfg.PrivateKeyPath = strings.TrimSpace(cfg.PrivateKeyPath)
+	cfg.ListenAddrs = trimNonEmptyStrings(cfg.ListenAddrs)
+	cfg.BootstrapPeers = trimNonEmptyStrings(cfg.BootstrapPeers)
+	cfg.RelayPeers = trimNonEmptyStrings(cfg.RelayPeers)
+	return cfg
+}
+
+func trimNonEmptyStrings(values []string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
+}
+
+func (c *Config) validateLibP2P() error {
+	if !c.LibP2P.Enabled {
+		return nil
+	}
+	if strings.TrimSpace(c.LibP2P.PrivateKeyPath) == "" {
+		return fmt.Errorf("libp2p private key path cannot be empty")
+	}
+	seenListen := make(map[string]struct{}, len(c.LibP2P.ListenAddrs))
+	for idx, raw := range c.LibP2P.ListenAddrs {
+		normalized, err := normalizeLibP2PListenAddr(raw)
+		if err != nil {
+			return err
+		}
+		if _, ok := seenListen[normalized]; ok {
+			return fmt.Errorf("duplicate libp2p listen addr %q", normalized)
+		}
+		seenListen[normalized] = struct{}{}
+		c.LibP2P.ListenAddrs[idx] = normalized
+	}
+	if len(c.LibP2P.ListenAddrs) == 0 {
+		c.LibP2P.ListenAddrs = []string{"/ip4/0.0.0.0/tcp/0"}
+	}
+	if err := normalizeLibP2PPeerList(c.LibP2P.BootstrapPeers, "libp2p bootstrap peer"); err != nil {
+		return err
+	}
+	if err := normalizeLibP2PPeerList(c.LibP2P.RelayPeers, "libp2p relay peer"); err != nil {
+		return err
+	}
+	return nil
+}
+
+func normalizeLibP2PPeerList(peers []string, label string) error {
+	seen := make(map[string]struct{}, len(peers))
+	for idx, raw := range peers {
+		normalized, err := normalizeLibP2PPeerAddr(raw)
+		if err != nil {
+			return fmt.Errorf("%s %q: %w", label, raw, err)
+		}
+		if _, ok := seen[normalized]; ok {
+			return fmt.Errorf("duplicate %s %q", label, normalized)
+		}
+		seen[normalized] = struct{}{}
+		peers[idx] = normalized
 	}
 	return nil
 }
@@ -222,6 +319,16 @@ func (c Config) zeroMQCurveServerPublicKey() string {
 		return ""
 	}
 	return strings.TrimSpace(c.ZeroMQ.Curve.ServerPublicKey)
+}
+
+func (c Config) libP2PMode() string {
+	if !c.LibP2P.Enabled {
+		return "disabled"
+	}
+	if len(c.LibP2P.ListenAddrs) == 0 {
+		return "outbound_only"
+	}
+	return "listening"
 }
 
 func (c *Config) validateZeroMQSecurity() error {

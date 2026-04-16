@@ -393,12 +393,18 @@ func (m *Manager) bindPeerIdentity(sess *session, peerID int64) error {
 		if sess.configuredPeer.nodeID != 0 && sess.configuredPeer.nodeID != peerID {
 			return fmt.Errorf("peer mismatch: expected %d got %d", sess.configuredPeer.nodeID, peerID)
 		}
+		if sess.configuredPeer.libP2PPeerID != "" && sess.libP2PPeerID != "" && sess.configuredPeer.libP2PPeerID != sess.libP2PPeerID {
+			return fmt.Errorf("libp2p peer mismatch: expected %s got %s", sess.configuredPeer.libP2PPeerID, sess.libP2PPeerID)
+		}
 		for _, configured := range m.configuredPeers {
 			if configured != sess.configuredPeer && configured.nodeID == peerID {
 				return fmt.Errorf("peer %d already bound to configured url %s", peerID, configured.URL)
 			}
 		}
 		sess.configuredPeer.nodeID = peerID
+		if sess.configuredPeer.libP2PPeerID == "" {
+			sess.configuredPeer.libP2PPeerID = sess.libP2PPeerID
+		}
 	}
 
 	sess.peerID = peerID
@@ -408,6 +414,12 @@ func (m *Manager) bindPeerIdentity(sess *session, peerID int64) error {
 			sessions:     make(map[uint64]*session),
 			routeAdverts: make(map[int64]routeAdvertisement),
 		}
+	}
+	if sess.libP2PPeerID != "" {
+		if m.peers[peerID].libP2PPeerID != "" && m.peers[peerID].libP2PPeerID != sess.libP2PPeerID {
+			return fmt.Errorf("peer %d already bound to libp2p peer %s", peerID, m.peers[peerID].libP2PPeerID)
+		}
+		m.peers[peerID].libP2PPeerID = sess.libP2PPeerID
 	}
 	m.peers[peerID].sessions[sess.connectionID] = sess
 	m.refreshNodeClockStateLocked()

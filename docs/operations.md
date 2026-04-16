@@ -98,6 +98,9 @@ sqlite3 ./data/turntf.db ".backup './backup/turntf-$(date +%Y%m%d%H%M%S).db'"
 - `notifier_discovered_peers_by_scheme{node_id,scheme}`：按 URL scheme 聚合的发现记录数，可用来区分 `ws`、`wss`、`zmq+tcp` 候选。
 - `notifier_dynamic_peer_dialers{node_id}`：由自动发现启动的动态 peer 拨号器数量，当前每节点最多 8 个。
 - `notifier_zeromq_listener_running{node_id,mode,security}`：本地 ZeroMQ listener 运行状态；`mode` 为 `disabled`、`outbound_only` 或 `listening`，`security` 为 `none` 或 `curve`。
+- `notifier_libp2p_enabled{node_id,mode}`：libp2p 集群传输是否启用；`mode` 当前为 `disabled` 或 `listening`。
+- `notifier_libp2p_gossipsub_peers{node_id}`：本地 libp2p 事件 topic 当前 peer 数。
+- `notifier_libp2p_dht_bootstrapped{node_id}`：私有 DHT bootstrap 是否完成。
 - `notifier_membership_updates_sent_total{node_id}` / `notifier_membership_updates_received_total{node_id}`：membership update 收发总数。
 - `notifier_membership_advertisements_rejected_total{node_id}`：被发现逻辑拒绝的广告总数，持续增长时优先检查广告 URL、协议版本和来源身份。
 - `notifier_discovered_peer_persist_failures_total{node_id}`：发现记录写入 SQLite 失败总数。
@@ -120,7 +123,7 @@ file_path = "./data/turntf.log"
 
 ## 常见告警排查
 
-- peer 长期未连接：检查 `cluster.peers.url`、发现到的 `discovered_url`、防火墙、反向代理 WebSocket 支持和固定内部集群入口 `/internal/cluster/ws`。
+- peer 长期未连接：检查 `cluster.peers.url`、发现到的 `discovered_url`、防火墙、反向代理 WebSocket 支持、ZeroMQ CURVE key、libp2p multiaddr 是否包含正确 `/p2p/<peer_id>`，以及固定内部集群入口 `/internal/cluster/ws`。
 - `discovery.discovered_peers = 0` 且 membership update 计数不增长：确认至少有一个静态 peer 已连接，双方协议支持 membership，且 `cluster.secret` 一致。
 - 发现候选长期 `failed` 或 `expired`：查看 peer 的 `last_discovery_error`、`notifier_discovered_peers_by_state` 和 `peer_dial_failed` 日志；常见原因是 URL 不可达、反向代理不支持 WebSocket、HMAC 不一致、候选不再被任何在线节点广告。
 - `notifier_write_gate_ready` 为 `0`：检查是否至少有一个 peer 完成校时，或是否时钟偏差超过 `cluster.clock.max_skew_ms`。如果只是刚启动且尚未完成首次校时，属于预期延迟。

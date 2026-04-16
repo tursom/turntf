@@ -238,6 +238,17 @@ client_public_key = ""
 client_secret_key = ""
 allowed_client_public_keys = []
 
+[services.libp2p]
+enabled = false
+private_key_path = "./data/libp2p.key"
+listen_addrs = ["/ip4/0.0.0.0/tcp/4001"]
+bootstrap_peers = []
+enable_dht = true
+enable_mdns = false
+relay_peers = []
+enable_hole_punching = true
+gossipsub_enabled = true
+
 [store]
 engine = "sqlite"
 message_window_size = 500
@@ -280,6 +291,9 @@ url = "ws://127.0.0.1:9081/internal/cluster/ws"
 [[cluster.peers]]
 url = "zmq+tcp://127.0.0.1:9091"
 zeromq = { curve_server_public_key = "" }
+
+# [[cluster.peers]]
+# url = "/ip4/127.0.0.1/tcp/4001/p2p/12D3KooW..."
 ```
 
 字段说明：
@@ -290,6 +304,11 @@ zeromq = { curve_server_public_key = "" }
 - `services.zeromq.bind_url`：ZeroMQ ROUTER socket 的本地监听地址，只允许 `tcp://host:port`；为空时不启动 listener，但集群模式下仍可 outbound-only 拨号
 - `services.zeromq.security`：ZeroMQ 安全模式，支持 `none` 或 `curve`，默认 `none`
 - `services.zeromq.curve.*`：CURVE 模式下的本节点 server/client key 与允许接入的 client public key 白名单
+- `services.libp2p.enabled`：是否启用 libp2p 集群传输；默认 `false`，关闭时不影响单节点、WebSocket 或 ZeroMQ 行为
+- `services.libp2p.private_key_path`：libp2p Ed25519 私钥路径，默认 `./data/libp2p.key`；首次启动生成并以 `0600` 权限保存，后续重启复用以保持 PeerID 稳定
+- `services.libp2p.listen_addrs`：本机 libp2p 监听 multiaddr，例如 `/ip4/0.0.0.0/tcp/4001`；监听地址不能包含 `/p2p/<peer_id>`，也不会直接作为 membership 广告传播
+- `services.libp2p.bootstrap_peers`：私有 DHT/bootstrap 种子，必须是包含 `/p2p/<peer_id>` 的远端可拨 multiaddr
+- `services.libp2p.enable_dht`、`enable_mdns`、`relay_peers`、`enable_hole_punching`、`gossipsub_enabled`：控制私有 DHT、mDNS、relay/hole punching 和实时事件扩散；默认启用 DHT、hole punching 和 Gossipsub，mDNS 默认关闭
 - `store.engine`：事件日志和消息投影 repository 引擎，可选 `sqlite` 或 `pebble`，默认 `sqlite`
 - `store.sqlite.db_path`：本地 SQLite 数据库路径，默认 `./data/turntf.db`。即使 `store.engine = "pebble"`，用户、订阅、游标、pending projection 和运维统计等状态仍保存在 SQLite
 - `store.pebble.path`：Pebble 数据目录，默认 `./data/turntf.pebble`。仅在 `store.engine = "pebble"` 时用于事件日志和消息投影
@@ -308,8 +327,10 @@ zeromq = { curve_server_public_key = "" }
 - `[[cluster.peers]]`：静态 peer 列表，可重复出现多个条目；当前仅需配置可拨号地址，远端 `node_id` 会在首次握手后自动识别
 - `cluster.peers.url`：当前节点主动拨号到远端时使用的完整 URL；WebSocket peer 的 path 仍以该 URL 为准，例如 `ws://127.0.0.1:9081/internal/cluster/ws`
 - `cluster.peers.zeromq.curve_server_public_key`：CURVE 模式下静态 `zmq+tcp` peer 的远端 server public key
+- `cluster.peers.url` 也支持原生 libp2p multiaddr，例如 `/ip4/127.0.0.1/tcp/4001/p2p/12D3...`；静态 libp2p peer 必须包含 `/p2p/<peer_id>`，且需要 `services.libp2p.enabled = true`
 - peer 自动发现默认随集群模式开启；节点会通过已连接 peer 广播已通过握手验证的可拨号 URL，并把发现结果持久化到本地 SQLite 的 `discovered_peers`
 - 自动发现不新增配置项，也不会从入站连接的 `RemoteAddr` 猜测公网地址；至少需要某个节点通过静态 peer 或历史持久化记录知道目标节点的可拨号 URL；详细机制见 [peer 自动发现专题文档](/root/dev/sys/turntf/docs/peer-discovery.md)
+- libp2p 接入的完整设计、回滚和运维边界见 [libp2p 接入计划](/root/dev/sys/turntf/docs/libp2p-plan.md)
 - 当前协议不支持旧快照版本节点混跑；升级后需整集群使用新协议版本和快照版本
 
 当前已提供：
@@ -324,6 +345,7 @@ zeromq = { curve_server_public_key = "" }
 - `GET /ws/client` 作为客户端 WebSocket Protobuf 长连接端点；连接后第一帧必须发送 `LoginRequest`。登录成功后，客户端可在同一连接上执行原先 HTTP JSON API 的全部已登录能力，包括消息收发、用户管理、订阅管理、历史查询和运维查询；接入流程见 [客户端全流程接入文档](/root/dev/sys/turntf/docs/client-flow.md)，协议见 [客户端 WebSocket 接口](/root/dev/sys/turntf/docs/client-websocket.md)
 - 当 `services.zeromq.enabled = true` 且 `services.zeromq.bind_url` 非空时，业务客户端也可以通过同一地址对应的 `zmq+tcp://host:port` 建立 ZeroMQ 长连接；首包必须发送 `ZeroMQMuxHello{role=CLIENT, protocol_version="zeromq-mux-v1"}`，第二包开始复用与 `/ws/client` 完全相同的 `ClientEnvelope/ServerEnvelope` 协议
 - ZeroMQ 可选启用原生 CURVE：设置 `services.zeromq.security = "curve"`，配置本节点 server/client key，并把允许接入的集群节点或业务客户端 `client_public_key` 放入 `allowed_client_public_keys`。静态 `zmq+tcp` peer 在 CURVE 模式下还必须配置 `cluster.peers.zeromq.curve_server_public_key`；集群 membership 会传播已验证的 ZeroMQ server public key，供自动发现的动态 peer 安全拨号
+- libp2p 只服务集群节点间通信，不新增业务客户端入口；stream 继续承载可靠控制面，Gossipsub 只作为实时事件扩散加速，补拉和反熵仍负责最终收敛
 - `POST /nodes/{node_id}/users/{user_id}/subscriptions`
 - `DELETE /nodes/{node_id}/users/{user_id}/subscriptions/{channel_node_id}/{channel_user_id}`
 - `GET /nodes/{node_id}/users/{user_id}/subscriptions`

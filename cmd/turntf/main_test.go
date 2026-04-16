@@ -2,12 +2,16 @@ package main
 
 import (
 	"bytes"
+	"crypto/rand"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	libp2pcrypto "github.com/libp2p/go-libp2p/core/crypto"
+	libp2ppeer "github.com/libp2p/go-libp2p/core/peer"
 
 	"github.com/tursom/turntf/internal/auth"
 	"github.com/tursom/turntf/internal/cluster"
@@ -1174,6 +1178,203 @@ url = "zmq+tcp://Example.COM:9091"
 	}
 }
 
+func TestLoadServeRuntimeConfigSupportsLibP2PConfig(t *testing.T) {
+	t.Parallel()
+
+	peerAddr := testConfigLibP2PPeerAddr(t, "/ip4/127.0.0.1/tcp/4001")
+	configPath := filepath.Join(t.TempDir(), "libp2p.toml")
+	writeTestConfig(t, configPath, `
+[services.http]
+listen_addr = ":8080"
+
+[services.libp2p]
+enabled = true
+private_key_path = "./data/node-a-libp2p.key"
+listen_addrs = ["/ip4/0.0.0.0/tcp/4001"]
+bootstrap_peers = ["`+peerAddr+`"]
+enable_dht = false
+enable_mdns = true
+relay_peers = ["`+peerAddr+`"]
+enable_hole_punching = false
+gossipsub_enabled = false
+
+[store.sqlite]
+db_path = "./data/node-a.db"
+
+[cluster]
+secret = "secret"
+
+[[cluster.peers]]
+url = "`+peerAddr+`"
+`)
+
+	cfg, err := loadServeRuntimeConfig(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	libp2p := cfg.Cluster.LibP2P
+	if !libp2p.Enabled {
+		t.Fatalf("expected libp2p to be enabled")
+	}
+	if libp2p.PrivateKeyPath != "./data/node-a-libp2p.key" {
+		t.Fatalf("unexpected private key path: %q", libp2p.PrivateKeyPath)
+	}
+	if len(libp2p.ListenAddrs) != 1 || libp2p.ListenAddrs[0] != "/ip4/0.0.0.0/tcp/4001" {
+		t.Fatalf("unexpected listen addrs: %+v", libp2p.ListenAddrs)
+	}
+	if len(libp2p.BootstrapPeers) != 1 || libp2p.BootstrapPeers[0] != peerAddr {
+		t.Fatalf("unexpected bootstrap peers: %+v", libp2p.BootstrapPeers)
+	}
+	if libp2p.EnableDHT || !libp2p.EnableMDNS || libp2p.EnableHolePunching || libp2p.GossipSubEnabled {
+		t.Fatalf("unexpected libp2p feature flags: %+v", libp2p)
+	}
+	if len(cfg.Cluster.Peers) != 1 || cfg.Cluster.Peers[0].URL != peerAddr {
+		t.Fatalf("unexpected libp2p peer: %+v", cfg.Cluster.Peers)
+	}
+	if cfg.Services.LibP2P.PrivateKeyPath != "./data/node-a-libp2p.key" {
+		t.Fatalf("unexpected service libp2p config: %+v", cfg.Services.LibP2P)
+	}
+}
+
+func TestLoadServeRuntimeConfigLibP2PDefaultsDisabled(t *testing.T) {
+	t.Parallel()
+
+	configPath := filepath.Join(t.TempDir(), "libp2p-default.toml")
+	writeTestConfig(t, configPath, `
+[services.http]
+listen_addr = ":8080"
+
+[services.libp2p]
+private_key_path = "./data/libp2p.key"
+listen_addrs = ["/ip4/0.0.0.0/tcp/4001"]
+
+[store.sqlite]
+db_path = "./data/node-a.db"
+`)
+
+	cfg, err := loadServeRuntimeConfig(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if cfg.Cluster.Enabled() {
+		t.Fatalf("expected cluster mode to stay disabled when libp2p is only preconfigured")
+	}
+	if cfg.Cluster.LibP2P.Enabled {
+		t.Fatalf("expected libp2p to default to disabled")
+	}
+	if cfg.Services.LibP2P.PrivateKeyPath != "./data/libp2p.key" {
+		t.Fatalf("unexpected service libp2p config: %+v", cfg.Services.LibP2P)
+	}
+}
+
+func TestLoadServeRuntimeConfigRejectsInvalidLibP2PConfig(t *testing.T) {
+	t.Parallel()
+
+	peerAddr := testConfigLibP2PPeerAddr(t, "/ip4/127.0.0.1/tcp/4001")
+	tests := []struct {
+		name    string
+		body    string
+		wantErr string
+	}{
+		{
+			name: "enabled requires cluster secret",
+			body: `
+[services.http]
+listen_addr = ":8080"
+
+[services.libp2p]
+enabled = true
+
+[store.sqlite]
+db_path = "./data/node-a.db"
+`,
+			wantErr: "cluster secret cannot be empty",
+		},
+		{
+			name: "peer requires enabled",
+			body: `
+[services.http]
+listen_addr = ":8080"
+
+[store.sqlite]
+db_path = "./data/node-a.db"
+
+[cluster]
+secret = "secret"
+
+[[cluster.peers]]
+url = "` + peerAddr + `"
+`,
+			wantErr: `libp2p peer url "` + peerAddr + `" requires services.libp2p.enabled`,
+		},
+		{
+			name: "static peer missing p2p",
+			body: `
+[services.http]
+listen_addr = ":8080"
+
+[services.libp2p]
+enabled = true
+
+[store.sqlite]
+db_path = "./data/node-a.db"
+
+[cluster]
+secret = "secret"
+
+[[cluster.peers]]
+url = "/ip4/127.0.0.1/tcp/4001"
+`,
+			wantErr: "libp2p peer addr must include /p2p peer id",
+		},
+		{
+			name: "listen addr includes p2p",
+			body: `
+[services.http]
+listen_addr = ":8080"
+
+[services.libp2p]
+enabled = true
+listen_addrs = ["` + peerAddr + `"]
+
+[store.sqlite]
+db_path = "./data/node-a.db"
+
+[cluster]
+secret = "secret"
+`,
+			wantErr: "libp2p listen addr must not include /p2p",
+		},
+		{
+			name: "unknown libp2p field",
+			body: `
+[services.http]
+listen_addr = ":8080"
+
+[services.libp2p]
+enabled = true
+advertise_addrs = ["/ip4/127.0.0.1/tcp/4001"]
+
+[store.sqlite]
+db_path = "./data/node-a.db"
+`,
+			wantErr: "unknown fields services.libp2p.advertise_addrs",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			configPath := filepath.Join(t.TempDir(), "libp2p-invalid.toml")
+			writeTestConfig(t, configPath, tt.body)
+
+			_, err := loadServeRuntimeConfig(configPath)
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
 func TestServeHandlerLeavesClusterRouteHiddenWhenDisabled(t *testing.T) {
 	t.Parallel()
 
@@ -1228,4 +1429,17 @@ password_hash = "hash-root"
 	if err := os.WriteFile(path, []byte(config+"\n"), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
+}
+
+func testConfigLibP2PPeerAddr(t *testing.T, transportAddr string) string {
+	t.Helper()
+	_, pub, err := libp2pcrypto.GenerateEd25519Key(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate libp2p key: %v", err)
+	}
+	id, err := libp2ppeer.IDFromPublicKey(pub)
+	if err != nil {
+		t.Fatalf("derive libp2p peer id: %v", err)
+	}
+	return transportAddr + "/p2p/" + id.String()
 }

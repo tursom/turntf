@@ -26,6 +26,16 @@ type ClusterDiscoveryStatus struct {
 	ZeroMQMode            string
 	ZeroMQSecurity        string
 	ZeroMQListenerRunning bool
+	LibP2PMode            string
+	LibP2PPeerID          string
+	LibP2PListenAddrs     []string
+	LibP2PVerifiedAddrs   []string
+	LibP2PDHTEnabled      bool
+	LibP2PDHTBootstrapped bool
+	LibP2PGossipSubTopic  string
+	LibP2PGossipSubPeers  int
+	LibP2PRelayEnabled    bool
+	LibP2PHolePunching    bool
 }
 
 type LoggedInUserSummary struct {

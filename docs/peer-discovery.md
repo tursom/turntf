@@ -6,10 +6,11 @@
 
 - 自动发现默认随集群模式启用，运行时配置文件暂不提供单独开关；测试中可通过 `cluster.Config.DiscoveryDisabled` 关闭。
 - 自动发现与静态 `cluster.peers` 并存。静态 peer 仍是最可靠的种子入口，发现到的 peer 只作为动态拨号候选。
-- 自动发现不会从入站连接的 `RemoteAddr` 推断公网地址，也不会做 NAT 穿透、DNS-SD、注册中心或外部服务发现。
-- 自动发现只传播已经绑定 `node_id` 的可拨号 WebSocket URL 或 ZeroMQ URL。节点至少需要通过静态 peer 或本地历史持久化记录知道某个可用入口，集群才有传播起点。
+- 自动发现不会从入站连接的 `RemoteAddr`、本机监听地址、NAT 观测地址或容器内地址推断公网地址。
+- 自动发现只传播已经绑定 `node_id` 的可拨号 WebSocket URL、ZeroMQ URL 或 libp2p multiaddr。节点至少需要通过静态 peer、本地历史持久化记录或 libp2p 私有发现候选知道某个可用入口，集群才有传播起点。
 - 自动发现广告不能绕过身份校验。候选地址真正连上后仍必须通过 `Hello`、协议版本、HMAC、校时和 peer identity 绑定检查。
 - ZeroMQ CURVE 模式下，`zmq+tcp` 广告会携带 `zeromq_curve_server_public_key`。动态拨号只使用已通过现有集群会话验证并持久化的 public key；缺少 server public key 的 discovered `zmq+tcp` 候选会保留记录但不会启动动态拨号。
+- libp2p 候选来自静态 multiaddr、私有 DHT、mDNS 或 relay 连接信息时，先只作为内存候选；只有打开 stream 并完成 `Hello`、HMAC、校时和 `node_id <-> PeerID` 绑定后，才会写入 `discovered_peers` 并参与 membership 传播。
 - 当前协议不支持与旧快照/旧协议版本节点混跑；节点不会主动向未声明 `supports_membership` 的 session 发送 membership update。
 
 ## 术语
@@ -18,19 +19,19 @@
 - 发现 peer：从 membership advertisement 或本地 `discovered_peers` 表恢复出来的候选地址，状态中 `source = "discovered"`。
 - 入站 peer：对端主动连入，但当前节点没有该 peer 的可拨号 URL，状态中 `source = "inbound"`。
 - membership update：节点间通过 `Envelope.membership_update` 发送的成员广告消息。
-- peer advertisement：membership update 中的一条候选地址，包含 `node_id`、`url`、`generation`、观测时间，以及可选的 ZeroMQ CURVE server public key。
+- peer advertisement：membership update 中的一条候选地址，包含 `node_id`、`url`、`generation`、观测时间，以及可选的 ZeroMQ CURVE server public key。libp2p peer 的 `url` 直接承载含 `/p2p/<peer_id>` 的 multiaddr。
 - 动态拨号器：自动发现为候选地址启动的 `dialLoop`，当前每个节点最多保留 8 个。
 
 ## 协议流程
 
 1. 节点启用集群模式后创建 `Manager`，从本地 SQLite `discovered_peers` 表加载历史发现记录。
 2. 节点启动静态 peer 的拨号循环；如果存在历史发现记录，发现循环也会尝试为未标记 `expired` 的候选启动动态拨号循环。
-3. WebSocket 建立后，双方先交换 `Hello`。`Hello.supports_membership = true` 表示该 session 支持自动发现。
+3. WebSocket、ZeroMQ 或 libp2p stream 建立后，双方先交换 `Hello`。`Hello.supports_membership = true` 表示该 session 支持自动发现。
 4. `Hello` 通过后，session 会绑定远端 `node_id`。如果是静态或动态拨号连接，绑定结果会写回对应 `configuredPeer.nodeID`，并防止同一 URL 与不同 `node_id` 混用。
 5. bootstrap 阶段完成校时和同步准备后，节点会把该 peer 记录为 `connected`，并立即向支持 membership 的 session 发送一次 membership update。
 6. 发现循环每 5 秒执行一次：过期候选、补齐动态拨号器、向所有支持 membership 的活跃 session 广播 membership update。
 7. 收到 membership update 后，节点先做 envelope 校验，并要求 `membership_update.origin_node_id` 等于当前 session 的 `peerID`。
-8. 每条 peer advertisement 会被规范化和验证：URL 不能为空，scheme 只能是 `ws` 或 `wss`，host 不能为空，fragment 不允许出现。
+8. 每条 peer advertisement 会被规范化和验证：WebSocket 只允许 `ws`/`wss`，ZeroMQ 只允许 `zmq+tcp`，libp2p 必须是合法 multiaddr 且包含 `/p2p/<peer_id>`。
 9. 如果 advertisement 指向当前节点自己的 `node_id`，节点只把该 URL 放入内存中的 `selfKnownURLs`，用于后续继续传播“别人眼中的我”；不会拨号自己。
 10. 如果 advertisement 指向其他节点，节点会记录或更新发现候选，持久化到 `discovered_peers`，并在下一轮 reconcile 中按规则启动动态拨号。
 
@@ -40,6 +41,8 @@ membership update 当前会广播三类地址：
 - 状态为 `connected` 的发现 peer URL。
 - 其他 peer 曾经广告过、且 `node_id` 等于当前节点的 URL，也就是 `selfKnownURLs`。
 
+libp2p 遵循“别人眼中的我”模型：本节点不会把自己的 `listen_addrs` 改写成公网地址再广播；只有其他节点配置并成功验证过的本节点 multiaddr，或其他节点曾经广告过且绑定到本节点 `node_id` 的地址，才会进入 `selfKnownURLs` 并继续传播。
+
 ## 状态机
 
 发现记录的 `state` 使用字符串保存，便于直接暴露到 `/ops/status`、`/metrics` 和 SQLite：
@@ -47,7 +50,7 @@ membership update 当前会广播三类地址：
 | 状态 | 含义 |
 | --- | --- |
 | `candidate` | 已从 membership update 或持久化记录得到候选地址，尚未开始拨号或等待下一轮 reconcile。 |
-| `dialing` | 已为候选地址启动动态拨号循环，正在尝试建立 WebSocket 连接。 |
+| `dialing` | 已为候选地址启动动态拨号循环，正在尝试建立对应 transport 的连接。 |
 | `connected` | 候选地址已经成功建立 session，并通过 bootstrap。 |
 | `failed` | 动态拨号失败或 session 关闭，`last_error` 会记录最近错误。 |
 | `expired` | 候选地址超过 10 分钟没有再次被观测到，暂不继续拨号。 |
@@ -69,7 +72,7 @@ membership update 当前会广播三类地址：
 - 候选按 `last_connected_at`、`last_seen_at` 和 URL 排序，优先拨最近成功连接过、最近被观测到的地址。
 - 每个节点最多启动 8 个动态发现拨号循环，避免 membership 抖动时无限扩张连接数。
 
-动态拨号连接和静态拨号连接使用同一套 `dialLoop`、`Hello`、HMAC、校时、复制和反熵逻辑。广告中的 `node_id` 会成为动态拨号时的期望身份；如果真正握手返回的 `node_id` 不一致，连接会失败。
+动态拨号连接和静态拨号连接使用同一套 `dialLoop`、`Hello`、HMAC、校时、复制和反熵逻辑。广告中的 `node_id` 会成为动态拨号时的期望身份；如果真正握手返回的 `node_id` 不一致，连接会失败。libp2p 候选还会校验 multiaddr 中的 PeerID 与 stream 远端 PeerID 一致，随后再绑定业务 `node_id`。
 
 ## 持久化
 
@@ -80,7 +83,7 @@ membership update 当前会广播三类地址：
 | 字段 | 含义 |
 | --- | --- |
 | `node_id` | 被发现 peer 的节点身份。 |
-| `url` | 规范化后的 WebSocket URL。 |
+| `url` | 规范化后的 WebSocket URL、ZeroMQ URL 或 libp2p multiaddr。 |
 | `source_peer_node_id` | 最近一次提供该广告的 peer。 |
 | `state` | 当前发现状态。 |
 | `first_seen_at_hlc` | 首次写入该发现记录的 HLC 时间戳。 |
@@ -114,14 +117,21 @@ membership update 当前会广播三类地址：
 - `rejected_total`：被拒绝的 peer advertisement 数量。
 - `persist_failures_total`：发现记录持久化失败次数。
 - `peers_by_state`：按发现状态聚合的记录数。
-- `peers_by_scheme`：按 URL scheme 聚合的记录数，例如 `ws`、`wss`、`zmq+tcp`。
+- `peers_by_scheme`：按 URL scheme 聚合的记录数，例如 `ws`、`wss`、`zmq+tcp`、`libp2p`。
 - `zeromq_mode`：`disabled`、`outbound_only` 或 `listening`。
 - `zeromq_security`：ZeroMQ 安全模式，当前为 `none` 或 `curve`，不会暴露任何 secret key。
 - `zeromq_listener_running`：本地 ZeroMQ listener 是否实际运行。
+- `libp2p_mode`：`disabled` 或 `listening`。
+- `libp2p_peer_id`：本地 libp2p PeerID。
+- `libp2p_listen_addrs`：本地 host 实际监听地址，包含 `/p2p/<peer_id>`，仅用于观测。
+- `libp2p_verified_addrs`：已通过握手验证、可传播的远端 libp2p 地址。
+- `libp2p_dht_enabled`、`libp2p_dht_bootstrapped`：私有 DHT 开关和 bootstrap 状态。
+- `libp2p_gossipsub_topic`、`libp2p_gossipsub_peers`：事件 topic 与当前 topic peer 数。
+- `libp2p_relay_enabled`、`libp2p_hole_punching`：relay 与 hole punching 开关状态；只有配置 `relay_peers` 时才实际启用。
 
 `GET /ops/status` 的每个 peer 也会额外暴露：
 
-- `transport`：当前 peer 使用的传输，可能是 `websocket` 或 `zeromq`。
+- `transport`：当前 peer 使用的传输，可能是 `websocket`、`zeromq` 或 `libp2p`。
 - `source`：peer 来源，可能是 `static`、`discovered` 或 `inbound`。
 - `discovered_url`：发现记录中的 URL。
 - `discovery_state`：发现状态。
@@ -138,6 +148,9 @@ membership update 当前会广播三类地址：
 - `notifier_discovered_peers_by_scheme{node_id,scheme}`：按 URL scheme 聚合的发现记录数。
 - `notifier_dynamic_peer_dialers{node_id}`：动态发现拨号器数量。
 - `notifier_zeromq_listener_running{node_id,mode,security}`：本地 ZeroMQ listener 运行状态。
+- `notifier_libp2p_enabled{node_id,mode}`：libp2p 集群 transport 是否启用。
+- `notifier_libp2p_gossipsub_peers{node_id}`：当前 libp2p Gossipsub topic peer 数。
+- `notifier_libp2p_dht_bootstrapped{node_id}`：私有 DHT bootstrap 是否完成。
 - `notifier_membership_updates_sent_total{node_id}`：membership update 发送总数。
 - `notifier_membership_updates_received_total{node_id}`：membership update 接收总数。
 - `notifier_membership_advertisements_rejected_total{node_id}`：被拒绝的广告总数。

@@ -26,6 +26,7 @@ type serveConfig struct {
 type servicesConfig struct {
 	HTTP   httpServiceConfig `toml:"http"`
 	ZeroMQ zeroMQFileConfig  `toml:"zeromq"`
+	LibP2P libP2PFileConfig  `toml:"libp2p"`
 }
 
 type httpServiceConfig struct {
@@ -105,6 +106,18 @@ type zeroMQCurveFileConfig struct {
 	AllowedClientPublicKeys []string `toml:"allowed_client_public_keys"`
 }
 
+type libP2PFileConfig struct {
+	Enabled            bool     `toml:"enabled"`
+	PrivateKeyPath     string   `toml:"private_key_path"`
+	ListenAddrs        []string `toml:"listen_addrs"`
+	BootstrapPeers     []string `toml:"bootstrap_peers"`
+	EnableDHT          *bool    `toml:"enable_dht"`
+	EnableMDNS         bool     `toml:"enable_mdns"`
+	RelayPeers         []string `toml:"relay_peers"`
+	EnableHolePunching *bool    `toml:"enable_hole_punching"`
+	GossipSubEnabled   *bool    `toml:"gossipsub_enabled"`
+}
+
 type runtimeServeConfig struct {
 	ConfigPath   string
 	Services     runtimeServicesConfig
@@ -119,6 +132,7 @@ type runtimeServeConfig struct {
 type runtimeServicesConfig struct {
 	HTTP   runtimeHTTPServiceConfig
 	ZeroMQ cluster.ZeroMQConfig
+	LibP2P cluster.LibP2PConfig
 }
 
 type runtimeHTTPServiceConfig struct {
@@ -275,10 +289,12 @@ func (c serveConfig) runtimeConfig(configPath string) (runtimeServeConfig, error
 			AllowedClientPublicKeys: trimStringSlice(c.Services.ZeroMQ.Curve.AllowedClientPublicKeys),
 		},
 	}
+	libP2PCfg := c.Services.LibP2P.runtimeConfig()
 	clusterCfg := cluster.Config{
 		AdvertisePath:                   cluster.WebSocketPath,
 		ClusterSecret:                   strings.TrimSpace(c.Cluster.Secret),
 		ZeroMQ:                          zeroMQCfg,
+		LibP2P:                          libP2PCfg,
 		Peers:                           peers,
 		MessageWindowSize:               messageWindowSize,
 		MaxClockSkewMs:                  maxClockSkewMs,
@@ -306,6 +322,7 @@ func (c serveConfig) runtimeConfig(configPath string) (runtimeServeConfig, error
 				ListenAddr: httpListenAddr,
 			},
 			ZeroMQ: clusterCfg.ZeroMQ,
+			LibP2P: clusterCfg.LibP2P,
 		},
 		SQLitePath: filepath.Clean(sqlitePath),
 		PebblePath: filepath.Clean(pebblePath),
@@ -325,6 +342,32 @@ func (c serveConfig) runtimeConfig(configPath string) (runtimeServeConfig, error
 		Logging: loggingCfg,
 		Cluster: clusterCfg,
 	}, nil
+}
+
+func (c libP2PFileConfig) runtimeConfig() cluster.LibP2PConfig {
+	enableDHT := true
+	if c.EnableDHT != nil {
+		enableDHT = *c.EnableDHT
+	}
+	enableHolePunching := true
+	if c.EnableHolePunching != nil {
+		enableHolePunching = *c.EnableHolePunching
+	}
+	gossipSubEnabled := true
+	if c.GossipSubEnabled != nil {
+		gossipSubEnabled = *c.GossipSubEnabled
+	}
+	return cluster.LibP2PConfig{
+		Enabled:            c.Enabled,
+		PrivateKeyPath:     strings.TrimSpace(c.PrivateKeyPath),
+		ListenAddrs:        trimStringSlice(c.ListenAddrs),
+		BootstrapPeers:     trimStringSlice(c.BootstrapPeers),
+		EnableDHT:          enableDHT,
+		EnableMDNS:         c.EnableMDNS,
+		RelayPeers:         trimStringSlice(c.RelayPeers),
+		EnableHolePunching: enableHolePunching,
+		GossipSubEnabled:   gossipSubEnabled,
+	}
 }
 
 func validateClusterFileConfig(c *cluster.Config) error {

@@ -4,6 +4,7 @@ import "context"
 
 const transportWebSocket = "websocket"
 const transportZeroMQ = "zeromq"
+const transportLibP2P = "libp2p"
 
 type TransportConn interface {
 	Send(ctx context.Context, payload []byte) error

@@ -46,6 +46,7 @@ type libP2PTransport struct {
 	cfg           LibP2PConfig
 	clusterSecret string
 	manager       *Manager
+	inboundAccept func(TransportConn)
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -83,6 +84,13 @@ func newLibP2PTransport(cfg LibP2PConfig, clusterSecret string, manager *Manager
 		clusterSecret: clusterSecret,
 		manager:       manager,
 	}
+}
+
+func (t *libP2PTransport) SetAccept(accept func(TransportConn)) {
+	if t == nil {
+		return
+	}
+	t.inboundAccept = accept
 }
 
 func (t *libP2PTransport) Start(ctx context.Context) error {
@@ -292,11 +300,20 @@ func (t *libP2PTransport) TopicPeers() int {
 }
 
 func (t *libP2PTransport) handleStream(stream network.Stream) {
-	if t == nil || t.manager == nil {
+	if t == nil {
 		_ = stream.Reset()
 		return
 	}
-	t.manager.AcceptLibP2PConn(newLibP2PTransportConn(stream, false))
+	conn := newLibP2PTransportConn(stream, false)
+	if t.inboundAccept != nil {
+		t.inboundAccept(conn)
+		return
+	}
+	if t.manager == nil {
+		_ = conn.Close()
+		return
+	}
+	t.manager.AcceptLibP2PConn(conn)
 }
 
 func (t *libP2PTransport) connectConfiguredPeers(values []string) error {

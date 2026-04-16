@@ -156,7 +156,7 @@ func TestConfigTransportCapabilitiesReflectMeshSettings(t *testing.T) {
 	if !zeroMQCapability.InboundEnabled || !zeroMQCapability.OutboundEnabled {
 		t.Fatalf("unexpected zeromq capability: %+v", zeroMQCapability)
 	}
-	if len(zeroMQCapability.AdvertisedEndpoints) != 1 || zeroMQCapability.AdvertisedEndpoints[0] != "tcp://127.0.0.1:9090" {
+	if len(zeroMQCapability.AdvertisedEndpoints) != 1 || zeroMQCapability.AdvertisedEndpoints[0] != "zmq+tcp://127.0.0.1:9090" {
 		t.Fatalf("unexpected zeromq advertised endpoints: %+v", zeroMQCapability.AdvertisedEndpoints)
 	}
 }

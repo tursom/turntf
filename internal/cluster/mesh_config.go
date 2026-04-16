@@ -86,9 +86,20 @@ func (c Config) ZeroMQTransportCapability() *mesh.TransportCapability {
 		OutboundEnabled: c.zeroMQDialEnabled(),
 	}
 	if c.zeroMQListenerEnabled() {
-		capability.AdvertisedEndpoints = []string{c.ZeroMQ.BindURL}
+		capability.AdvertisedEndpoints = []string{zeroMQPeerURLForBindURL(c.ZeroMQ.BindURL)}
 	}
 	return capability
+}
+
+func zeroMQPeerURLForBindURL(bindURL string) string {
+	trimmed := strings.TrimSpace(bindURL)
+	if trimmed == "" {
+		return ""
+	}
+	if strings.HasPrefix(strings.ToLower(trimmed), peerSchemeZeroMQTCP+"://") {
+		return trimmed
+	}
+	return peerSchemeZeroMQTCP + strings.TrimPrefix(trimmed, zeroMQBindSchemeTCP)
 }
 
 func (c ForwardingConfig) withDefaults() ForwardingConfig {

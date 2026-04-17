@@ -209,39 +209,222 @@
 
 ## Phase 4：控制平面运行时
 
-目标：把“静态算法模块”补成真正工作的控制平面。
+目标：把“静态算法模块”补成真正工作的控制平面，并直接替换旧 `RoutingUpdate` 控制面。Phase 4 只交付控制面收敛能力，不迁移复制、查询、瞬时包、快照等业务消息；业务数据面迁移继续留到 Phase 5/6。
+
+为了降低一次性改动风险，Phase 4 拆成 6 个可独立合并的小阶段。推进顺序是：先补协议与 store 能力，再做纯 `internal/mesh` runtime 闭环，然后加入链路测量，最后接入 `cluster.Manager` 切换旧控制面。
+
+### Phase 4.1：协议与拓扑存储补齐
 
 工作项：
 
-- 实现 mesh runtime，负责：
-  - 启动 transport adapter
-  - 接收入站连接
-  - 建立邻接
-  - 交换 `NodeHello`
-  - 周期性发送 `TopologyUpdate`
-  - 处理 flooding 去重
-  - 更新 `TopologyStore`
-- 在本地构建多层图：
-  - 顶点：`(node_id, transport)`
-  - 边：跨节点链路边 + 节点内 bridge 边
-- 增加链路测量：
-  - `cost_ms`
-  - `jitter_ms`
-  - `established`
-- 让 `libp2p` 的直连与 native relay 都能体现在 `path_class` 上。
-- 让 generation 前进规则明确、单调、可观测。
+- 在 `proto/mesh.proto` 增加 `TRANSPORT_KIND_WEBSOCKET`，让 WebSocket 成为正式 mesh transport。
+- 在 `MeshTopologyUpdate` 中加入 origin 节点的 transport capabilities，用于远端计算 bridge、transit 和多 transport 图。
+- 运行 `./scripts/gen-proto.sh`，提交 regenerated `internal/proto/*.pb.go`。
+- 同步 `internal/mesh/types.go` 中的 transport 常量。
+- 扩展 `TopologyStore.ApplyTopologyUpdate`，让远端 update 能更新 origin policy、transport capabilities 和 links。
+- 保持 generation 保护：低 generation 不覆盖高 generation；同 generation 只允许幂等替换当前 origin 状态。
 
 交付物：
 
-- mesh 控制平面 runtime
-- `NodeHello` / `TopologyUpdate` 处理链路
-- flooding 测试
+- 更新后的 `proto/mesh.proto`
+- regenerated `internal/proto/*.pb.go`
+- 支持 capabilities 的 `TopologyStore`
+- topology store 单测
 
 验收标准：
 
-- 多节点之间能稳定建立全局拓扑视图。
-- generation 单调推进。
-- 链路失效后拓扑状态会收敛更新。
+- WebSocket transport 能进入 topology snapshot。
+- `TopologyUpdate` 可以同时更新 policy、capabilities、links。
+- stale generation 不会覆盖新状态。
+
+### Phase 4.2：纯 mesh runtime 骨架
+
+工作项：
+
+- 在 `internal/mesh` 新增 runtime，不先接入 `cluster.Manager`。
+- runtime 通过 `TransportAdapter` 管理 transport 生命周期。
+- 使用 fake adapter/fake conn 做 runtime 单测，避免一开始就依赖真实 libp2p、ZeroMQ、WebSocket。
+- 实现主动拨号 seed、接收入站连接、连接读循环和连接关闭清理。
+- 实现 `NodeHello` 点对点握手。
+- `NodeHello` 校验规则：
+  - `node_id > 0`
+  - `node_id != local_node_id`
+  - `protocol_version == mesh.ProtocolVersion`
+  - hello 中声明的 transport 与连接 transport 一致
+  - forwarding policy 可规范化
+- 每条成功握手的连接登记为 adjacency。
+- adjacency key 使用 remote node id、transport kind、remote hint/endpoint。
+- 同一 peer 多连接时保留可用连接集合，为后续选择最佳链路做准备。
+- 预留 signer/verifier 或 codec 钩子，默认 no-op；本阶段不修改 wire format，不增加 HMAC 字段。
+
+交付物：
+
+- `internal/mesh` runtime 基础结构
+- fake transport 测试工具
+- hello 握手与 adjacency 单测
+- verifier 拒绝路径单测
+
+验收标准：
+
+- runtime 可以不依赖 `cluster.Manager` 建立双向邻接。
+- 非法 hello 会被拒绝并关闭连接。
+- verifier 拒绝时不会注册 adjacency。
+- 连接关闭后 adjacency 状态会被清理或标记失效。
+
+### Phase 4.3：generation 与 topology flooding
+
+工作项：
+
+- runtime 维护本地 generation。
+- generation 初始化为 `max(persisted_generation, unix_millis)`；没有持久化值时使用当前时间毫秒。
+- 本地 capability、邻接建立、链路状态变化、连接关闭时递增 generation。
+- generation 每次递增后 best-effort 持久化。
+- 发布本节点 origin 全量 `TopologyUpdate`，内容包括当前 policy、transport capabilities 和 local link advertisements。
+- 接收远端 `TopologyUpdate` 后按 `(origin_node_id, generation)` 去重。
+- 只接受不落后于已知 generation 的远端状态。
+- flooding 只转发严格更新的 generation。
+- 转发给除入站 adjacency 外的所有已建立 adjacency，避免立即回传。
+
+交付物：
+
+- 本地 generation manager
+- topology publisher
+- flooding 去重与转发逻辑
+- generation/flooding 单测
+
+验收标准：
+
+- 本地 generation 单调递增。
+- stale update 被忽略。
+- 重复 `(origin, generation)` 不重复 flooding。
+- 新 generation 会写入 `TopologyStore` 并转发给其他邻接。
+- update 不会被立即回传给入站邻接。
+
+### Phase 4.4：链路测量与 link advertisement
+
+工作项：
+
+- 使用 mesh `TimeSyncRequest/Response` 作为 runtime 内部 ping/pong。
+- mesh time sync 只用于链路测量，不参与旧 clock write gate。
+- 每条 adjacency 维护 EWMA RTT 和 jitter。
+- 将测量结果写入 `MeshLinkAdvertisement.cost_ms` 和 `jitter_ms`。
+- link advertisement 使用 `established` 表达链路是否可用。
+- 连接关闭时立即发布包含 `established=false` tombstone 的一代更新。
+- tombstone 发布后一代允许移除失效链路。
+- `path_class` 判定规则：
+  - WebSocket 为 `DIRECT`
+  - ZeroMQ 普通直连为 `DIRECT`
+  - libp2p 普通直连为 `DIRECT`
+  - libp2p 地址包含 relay/circuit 特征时为 `NATIVE_RELAY`
+  - 跨 transport bridge 不由链路直接标记，仍由 planner 根据 capabilities 和 policy 计算
+
+交付物：
+
+- runtime 链路测量循环
+- RTT/jitter 统计
+- established/tombstone 发布逻辑
+- link measurement 单测
+
+验收标准：
+
+- `TimeSyncRequest/Response` 会更新 cost/jitter。
+- 链路关闭后 topology 会先出现 `established=false` tombstone。
+- tombstone 生效后 planner 不再使用该链路。
+- native relay 链路能被标记为 `NATIVE_RELAY`。
+
+### Phase 4.5：接入 cluster transport 与 Manager 生命周期
+
+工作项：
+
+- 新增 WebSocket mesh adapter，发送和接收 `mesh.ClusterEnvelope`。
+- 复用已有 libp2p 和 ZeroMQ mesh adapter，并补齐 runtime 所需能力。
+- `Manager.Start()` 启动 mesh runtime。
+- 不再启动旧 `routingLoop()`。
+- 静态 `cluster.peers` 转换为 runtime 主动拨号 seed。
+- 当前可拨号 discovered peers 转换为 runtime 主动拨号 seed。
+- WebSocket、libp2p、ZeroMQ 入站连接全部进入 mesh runtime。
+- 旧 discovery 仍负责 peer 发现、持久化和候选过期；Phase 4 不重写 discovery 存储逻辑。
+- 旧 business session 代码保留编译，但不作为 Phase 4 控制面运行路径。
+- 不再广播或消费旧 `RoutingUpdate` 作为拓扑来源。
+
+交付物：
+
+- WebSocket mesh adapter
+- `Manager` 与 mesh runtime 生命周期接线
+- 静态 peers/discovered peers seed 接入
+- 旧控制面停止运行的回归测试
+
+验收标准：
+
+- `Manager.Start()` 后 mesh runtime 会启动。
+- 三种 transport 的入站连接都进入 runtime。
+- 静态 peers 和可拨号 discovered peers 会触发主动拨号。
+- 旧 `routingLoop()` 不再运行。
+- 旧 `RoutingUpdate` 不再影响 topology。
+
+### Phase 4.6：集成测试与回归收口
+
+工作项：
+
+- 增加三节点拓扑集成测试。
+- 增加链路关闭后的收敛测试。
+- 增加 WebSocket、libp2p、ZeroMQ 混合拓扑测试。
+- 增加 discovered peer seed 拨号测试。
+- 增加旧 `RoutingUpdate` 不再参与控制面拓扑的回归测试。
+
+交付物：
+
+- `internal/mesh` runtime 单测
+- `internal/cluster` Manager 接线测试
+- 三节点和异构拓扑集成测试
+
+验收标准：
+
+- A-B-C 线性拓扑中，A/C 最终都能看到全局拓扑。
+- 关闭 B-C 后，全网最终收敛为无可用路由。
+- WebSocket、libp2p、ZeroMQ 混合邻接能形成多层图。
+- 允许 bridge 的流量可由 planner 规划跨 transport 路径。
+- 禁止 bridge 的流量不会跨 transport。
+- 不可拨号 discovered peer 不会阻塞 runtime。
+
+### Phase 4 公共接口与边界
+
+runtime 对外保留最小接口：
+
+- `Start(ctx)`：启动 adapters、accept loops、dial loops、measurement loops 和 topology publisher。
+- `Close()`：关闭 runtime、adjacency 和 adapters。
+- `Snapshot()`：返回当前 topology snapshot 或 runtime 状态快照。
+
+runtime 通过 options 注入：
+
+- local node id
+- adapters
+- local forwarding policy
+- topology store
+- dial seeds
+- signer/verifier 或 codec
+- generation persistence
+
+本阶段明确不做：
+
+- 不迁移复制、查询、瞬时包、快照业务消息。
+- 不实现 wire-level HMAC。
+- 不重写 discovered peer 持久化和候选过期逻辑。
+- 不保留旧 `RoutingUpdate` 与新 runtime 的兼容分流。
+
+### Phase 4 测试命令
+
+基础回归：
+
+```bash
+go test ./internal/mesh ./internal/cluster -count=1
+```
+
+如果 proto 变更影响更广，再运行：
+
+```bash
+go test ./... -count=1
+```
 
 ## Phase 5：策略路由与逐跳转发接线
 

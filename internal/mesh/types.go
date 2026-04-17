@@ -47,6 +47,7 @@ const (
 	TransportUnspecified = internalproto.TransportKind_TRANSPORT_KIND_UNSPECIFIED
 	TransportLibP2P      = internalproto.TransportKind_TRANSPORT_KIND_LIBP2P
 	TransportZeroMQ      = internalproto.TransportKind_TRANSPORT_KIND_ZEROMQ
+	TransportWebSocket   = internalproto.TransportKind_TRANSPORT_KIND_WEBSOCKET
 )
 
 const (

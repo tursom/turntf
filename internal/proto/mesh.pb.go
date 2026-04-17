@@ -27,6 +27,7 @@ const (
 	TransportKind_TRANSPORT_KIND_UNSPECIFIED TransportKind = 0
 	TransportKind_TRANSPORT_KIND_LIBP2P      TransportKind = 1
 	TransportKind_TRANSPORT_KIND_ZEROMQ      TransportKind = 2
+	TransportKind_TRANSPORT_KIND_WEBSOCKET   TransportKind = 3
 )
 
 // Enum value maps for TransportKind.
@@ -35,11 +36,13 @@ var (
 		0: "TRANSPORT_KIND_UNSPECIFIED",
 		1: "TRANSPORT_KIND_LIBP2P",
 		2: "TRANSPORT_KIND_ZEROMQ",
+		3: "TRANSPORT_KIND_WEBSOCKET",
 	}
 	TransportKind_value = map[string]int32{
 		"TRANSPORT_KIND_UNSPECIFIED": 0,
 		"TRANSPORT_KIND_LIBP2P":      1,
 		"TRANSPORT_KIND_ZEROMQ":      2,
+		"TRANSPORT_KIND_WEBSOCKET":   3,
 	}
 )
 
@@ -750,11 +753,12 @@ func (x *MeshTrafficRule) GetDisposition() ForwardingDisposition {
 }
 
 type MeshTopologyUpdate struct {
-	state            protoimpl.MessageState   `protogen:"open.v1"`
-	OriginNodeId     int64                    `protobuf:"varint,1,opt,name=origin_node_id,json=originNodeId,proto3" json:"origin_node_id,omitempty"`
-	Generation       uint64                   `protobuf:"varint,2,opt,name=generation,proto3" json:"generation,omitempty"`
-	Links            []*MeshLinkAdvertisement `protobuf:"bytes,3,rep,name=links,proto3" json:"links,omitempty"`
-	ForwardingPolicy *MeshForwardingPolicy    `protobuf:"bytes,4,opt,name=forwarding_policy,json=forwardingPolicy,proto3" json:"forwarding_policy,omitempty"`
+	state            protoimpl.MessageState     `protogen:"open.v1"`
+	OriginNodeId     int64                      `protobuf:"varint,1,opt,name=origin_node_id,json=originNodeId,proto3" json:"origin_node_id,omitempty"`
+	Generation       uint64                     `protobuf:"varint,2,opt,name=generation,proto3" json:"generation,omitempty"`
+	Links            []*MeshLinkAdvertisement   `protobuf:"bytes,3,rep,name=links,proto3" json:"links,omitempty"`
+	ForwardingPolicy *MeshForwardingPolicy      `protobuf:"bytes,4,opt,name=forwarding_policy,json=forwardingPolicy,proto3" json:"forwarding_policy,omitempty"`
+	Transports       []*MeshTransportCapability `protobuf:"bytes,5,rep,name=transports,proto3" json:"transports,omitempty"`
 	unknownFields    protoimpl.UnknownFields
 	sizeCache        protoimpl.SizeCache
 }
@@ -813,6 +817,13 @@ func (x *MeshTopologyUpdate) GetLinks() []*MeshLinkAdvertisement {
 func (x *MeshTopologyUpdate) GetForwardingPolicy() *MeshForwardingPolicy {
 	if x != nil {
 		return x.ForwardingPolicy
+	}
+	return nil
+}
+
+func (x *MeshTopologyUpdate) GetTransports() []*MeshTransportCapability {
+	if x != nil {
+		return x.Transports
 	}
 	return nil
 }
@@ -1608,14 +1619,17 @@ const file_mesh_proto_rawDesc = "" +
 	"\rtraffic_rules\x18\x04 \x03(\v2!.notifier.mesh.v1.MeshTrafficRuleR\ftrafficRules\"\xa1\x01\n" +
 	"\x0fMeshTrafficRule\x12C\n" +
 	"\rtraffic_class\x18\x01 \x01(\x0e2\x1e.notifier.mesh.v1.TrafficClassR\ftrafficClass\x12I\n" +
-	"\vdisposition\x18\x02 \x01(\x0e2'.notifier.mesh.v1.ForwardingDispositionR\vdisposition\"\xee\x01\n" +
+	"\vdisposition\x18\x02 \x01(\x0e2'.notifier.mesh.v1.ForwardingDispositionR\vdisposition\"\xb9\x02\n" +
 	"\x12MeshTopologyUpdate\x12$\n" +
 	"\x0eorigin_node_id\x18\x01 \x01(\x03R\foriginNodeId\x12\x1e\n" +
 	"\n" +
 	"generation\x18\x02 \x01(\x04R\n" +
 	"generation\x12=\n" +
 	"\x05links\x18\x03 \x03(\v2'.notifier.mesh.v1.MeshLinkAdvertisementR\x05links\x12S\n" +
-	"\x11forwarding_policy\x18\x04 \x01(\v2&.notifier.mesh.v1.MeshForwardingPolicyR\x10forwardingPolicy\"\xaa\x02\n" +
+	"\x11forwarding_policy\x18\x04 \x01(\v2&.notifier.mesh.v1.MeshForwardingPolicyR\x10forwardingPolicy\x12I\n" +
+	"\n" +
+	"transports\x18\x05 \x03(\v2).notifier.mesh.v1.MeshTransportCapabilityR\n" +
+	"transports\"\xaa\x02\n" +
 	"\x15MeshLinkAdvertisement\x12 \n" +
 	"\ffrom_node_id\x18\x01 \x01(\x03R\n" +
 	"fromNodeId\x12\x1c\n" +
@@ -1682,11 +1696,12 @@ const file_mesh_proto_rawDesc = "" +
 	"\x13destination_node_id\x18\x01 \x01(\x03R\x11destinationNodeId\x12C\n" +
 	"\rtraffic_class\x18\x02 \x01(\x0e2\x1e.notifier.mesh.v1.TrafficClassR\ftrafficClass\x12L\n" +
 	"\x11ingress_transport\x18\x03 \x01(\x0e2\x1f.notifier.mesh.v1.TransportKindR\x10ingressTransport\x12\x18\n" +
-	"\amessage\x18\x04 \x01(\tR\amessage*e\n" +
+	"\amessage\x18\x04 \x01(\tR\amessage*\x83\x01\n" +
 	"\rTransportKind\x12\x1e\n" +
 	"\x1aTRANSPORT_KIND_UNSPECIFIED\x10\x00\x12\x19\n" +
 	"\x15TRANSPORT_KIND_LIBP2P\x10\x01\x12\x19\n" +
-	"\x15TRANSPORT_KIND_ZEROMQ\x10\x02*\xc4\x01\n" +
+	"\x15TRANSPORT_KIND_ZEROMQ\x10\x02\x12\x1c\n" +
+	"\x18TRANSPORT_KIND_WEBSOCKET\x10\x03*\xc4\x01\n" +
 	"\fTrafficClass\x12\x1d\n" +
 	"\x19TRAFFIC_CLASS_UNSPECIFIED\x10\x00\x12\x1c\n" +
 	"\x18TRAFFIC_CONTROL_CRITICAL\x10\x01\x12\x19\n" +
@@ -1764,17 +1779,18 @@ var file_mesh_proto_depIdxs = []int32{
 	2,  // 17: notifier.mesh.v1.MeshTrafficRule.disposition:type_name -> notifier.mesh.v1.ForwardingDisposition
 	10, // 18: notifier.mesh.v1.MeshTopologyUpdate.links:type_name -> notifier.mesh.v1.MeshLinkAdvertisement
 	7,  // 19: notifier.mesh.v1.MeshTopologyUpdate.forwarding_policy:type_name -> notifier.mesh.v1.MeshForwardingPolicy
-	0,  // 20: notifier.mesh.v1.MeshLinkAdvertisement.transport:type_name -> notifier.mesh.v1.TransportKind
-	3,  // 21: notifier.mesh.v1.MeshLinkAdvertisement.path_class:type_name -> notifier.mesh.v1.PathClass
-	1,  // 22: notifier.mesh.v1.MeshForwardedPacket.traffic_class:type_name -> notifier.mesh.v1.TrafficClass
-	0,  // 23: notifier.mesh.v1.MeshForwardedPacket.ingress_transport:type_name -> notifier.mesh.v1.TransportKind
-	1,  // 24: notifier.mesh.v1.MeshRouteDiagnostic.traffic_class:type_name -> notifier.mesh.v1.TrafficClass
-	0,  // 25: notifier.mesh.v1.MeshRouteDiagnostic.ingress_transport:type_name -> notifier.mesh.v1.TransportKind
-	26, // [26:26] is the sub-list for method output_type
-	26, // [26:26] is the sub-list for method input_type
-	26, // [26:26] is the sub-list for extension type_name
-	26, // [26:26] is the sub-list for extension extendee
-	0,  // [0:26] is the sub-list for field type_name
+	6,  // 20: notifier.mesh.v1.MeshTopologyUpdate.transports:type_name -> notifier.mesh.v1.MeshTransportCapability
+	0,  // 21: notifier.mesh.v1.MeshLinkAdvertisement.transport:type_name -> notifier.mesh.v1.TransportKind
+	3,  // 22: notifier.mesh.v1.MeshLinkAdvertisement.path_class:type_name -> notifier.mesh.v1.PathClass
+	1,  // 23: notifier.mesh.v1.MeshForwardedPacket.traffic_class:type_name -> notifier.mesh.v1.TrafficClass
+	0,  // 24: notifier.mesh.v1.MeshForwardedPacket.ingress_transport:type_name -> notifier.mesh.v1.TransportKind
+	1,  // 25: notifier.mesh.v1.MeshRouteDiagnostic.traffic_class:type_name -> notifier.mesh.v1.TrafficClass
+	0,  // 26: notifier.mesh.v1.MeshRouteDiagnostic.ingress_transport:type_name -> notifier.mesh.v1.TransportKind
+	27, // [27:27] is the sub-list for method output_type
+	27, // [27:27] is the sub-list for method input_type
+	27, // [27:27] is the sub-list for extension type_name
+	27, // [27:27] is the sub-list for extension extendee
+	0,  // [0:27] is the sub-list for field type_name
 }
 
 func init() { file_mesh_proto_init() }

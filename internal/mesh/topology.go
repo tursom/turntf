@@ -83,8 +83,13 @@ func (s *MemoryTopologyStore) ApplyTopologyUpdate(update *TopologyUpdate) {
 	}
 	s.generation[update.OriginNodeId] = update.Generation
 	node := s.ensureNodeLocked(update.OriginNodeId)
-	if update.ForwardingPolicy != nil {
-		node.policy = NormalizeForwardingPolicy(ClonePolicy(update.ForwardingPolicy))
+	node.policy = NormalizeForwardingPolicy(ClonePolicy(update.ForwardingPolicy))
+	node.capabilities = make(map[TransportKind]*TransportCapability, len(update.Transports))
+	for _, capability := range update.Transports {
+		if capability == nil || capability.Transport == TransportUnspecified {
+			continue
+		}
+		node.capabilities[capability.Transport] = CloneCapability(capability)
 	}
 	for key := range s.links {
 		if key.origin == update.OriginNodeId {

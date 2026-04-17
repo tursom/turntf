@@ -8,6 +8,7 @@ enum TransportKind {
   TRANSPORT_KIND_UNSPECIFIED = 0;
   TRANSPORT_KIND_LIBP2P = 1;
   TRANSPORT_KIND_ZEROMQ = 2;
+  TRANSPORT_KIND_WEBSOCKET = 3;
 }
 
 enum TrafficClass {
@@ -84,6 +85,7 @@ message MeshTopologyUpdate {
   uint64 generation = 2;
   repeated MeshLinkAdvertisement links = 3;
   MeshForwardingPolicy forwarding_policy = 4;
+  repeated MeshTransportCapability transports = 5;
 }
 
 message MeshLinkAdvertisement {

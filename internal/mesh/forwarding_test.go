@@ -73,6 +73,9 @@ func TestEngineForwardsPacket(t *testing.T) {
 	store.ApplyTopologyUpdate(&TopologyUpdate{
 		OriginNodeId: 1,
 		Generation:   1,
+		Transports: []*TransportCapability{
+			{Transport: TransportLibP2P, OutboundEnabled: true, InboundEnabled: true},
+		},
 		Links: []*LinkAdvertisement{
 			{FromNodeId: 1, ToNodeId: 2, Transport: TransportLibP2P, PathClass: PathClassDirect, CostMs: 5, Established: true},
 		},
@@ -81,6 +84,9 @@ func TestEngineForwardsPacket(t *testing.T) {
 		OriginNodeId:     2,
 		Generation:       1,
 		ForwardingPolicy: DefaultForwardingPolicy(1),
+		Transports: []*TransportCapability{
+			{Transport: TransportLibP2P, OutboundEnabled: true, InboundEnabled: true},
+		},
 		Links: []*LinkAdvertisement{
 			{FromNodeId: 2, ToNodeId: 3, Transport: TransportLibP2P, PathClass: PathClassDirect, CostMs: 5, Established: true},
 		},
@@ -123,6 +129,9 @@ func TestEngineRejectsImmediateLoop(t *testing.T) {
 	store.ApplyTopologyUpdate(&TopologyUpdate{
 		OriginNodeId: 1,
 		Generation:   1,
+		Transports: []*TransportCapability{
+			{Transport: TransportLibP2P, OutboundEnabled: true, InboundEnabled: true},
+		},
 		Links: []*LinkAdvertisement{
 			{FromNodeId: 1, ToNodeId: 2, Transport: TransportLibP2P, PathClass: PathClassDirect, CostMs: 1, Established: true},
 		},
@@ -131,6 +140,9 @@ func TestEngineRejectsImmediateLoop(t *testing.T) {
 		OriginNodeId:     2,
 		Generation:       1,
 		ForwardingPolicy: DefaultForwardingPolicy(1),
+		Transports: []*TransportCapability{
+			{Transport: TransportLibP2P, OutboundEnabled: true, InboundEnabled: true},
+		},
 		Links: []*LinkAdvertisement{
 			{FromNodeId: 2, ToNodeId: 3, Transport: TransportLibP2P, PathClass: PathClassDirect, CostMs: 1, Established: true},
 		},

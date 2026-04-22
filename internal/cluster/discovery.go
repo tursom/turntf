@@ -97,15 +97,25 @@ func (m *Manager) handleMembershipUpdate(sess *session, envelope *internalproto.
 	if update.OriginNodeId != sess.peerID {
 		return fmt.Errorf("membership update origin mismatch: got %d want %d", update.OriginNodeId, sess.peerID)
 	}
+	return m.handleMembershipUpdateBody(sess.peerID, update)
+}
 
+func (m *Manager) handleMembershipUpdateBody(sourcePeerNodeID int64, update *internalproto.MembershipUpdate) error {
+	if m == nil || m.cfg.DiscoveryDisabled {
+		return nil
+	}
+	if update == nil {
+		return errors.New("membership update body cannot be empty")
+	}
 	accepted := 0
 	for _, item := range update.Peers {
 		if item == nil {
 			continue
 		}
-		if err := m.observePeerAdvertisement(sess.peerID, item); err != nil {
+		if err := m.observePeerAdvertisement(sourcePeerNodeID, item); err != nil {
 			m.recordDiscoveryReject()
-			m.logSessionDebug("membership_advertisement_ignored", sess).
+			m.logDebug("membership_advertisement_ignored").
+				Int64("source_peer_node_id", sourcePeerNodeID).
 				Int64("advertised_node_id", item.NodeId).
 				Str("advertised_url", item.Url).
 				Str("reason", err.Error()).
@@ -118,7 +128,8 @@ func (m *Manager) handleMembershipUpdate(sess *session, envelope *internalproto.
 	m.mu.Lock()
 	m.membershipUpdatesRecv++
 	m.mu.Unlock()
-	m.logSessionDebug("membership_update_received", sess).
+	m.logDebug("membership_update_received").
+		Int64("source_peer_node_id", sourcePeerNodeID).
 		Uint64("generation", update.Generation).
 		Int("advertisement_count", len(update.Peers)).
 		Int("accepted_count", accepted).
@@ -378,9 +389,14 @@ func (m *Manager) reconcileDiscoveredDialers() {
 	m.mu.Unlock()
 
 	for _, peer := range toStart {
-		peer := peer
-		m.wg.Add(1)
-		go m.dialLoop(peer)
+		m.recordConfiguredPeerDialing(peer)
+		if err := m.startMeshDialSeed(peer); err != nil {
+			m.recordConfiguredPeerDialFailure(peer, err)
+			m.logWarn("mesh_discovered_peer_seed_failed", err).
+				Str("peer_url", peer.URL).
+				Int64("peer_node_id", peer.nodeID).
+				Msg("failed to add discovered peer mesh dial seed")
+		}
 	}
 }
 
@@ -402,7 +418,18 @@ func (m *Manager) sendMembershipUpdate(sess *session) {
 	if envelope == nil {
 		return
 	}
-	sess.enqueue(envelope)
+	if sess.conn == nil {
+		if m.MeshRuntime() == nil {
+			return
+		}
+		if err := m.routeMeshMembershipUpdate(context.Background(), sess.peerID, envelope.GetMembershipUpdate()); err != nil {
+			m.logSessionWarn("mesh_membership_update_forward_failed", sess, err).
+				Msg("failed to forward membership update over mesh")
+			return
+		}
+	} else {
+		sess.enqueue(envelope)
+	}
 	m.mu.Lock()
 	m.membershipUpdatesSent++
 	m.mu.Unlock()

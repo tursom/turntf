@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tursom/turntf/internal/mesh"
 	internalproto "github.com/tursom/turntf/internal/proto"
 	"github.com/tursom/turntf/internal/store"
 )
@@ -47,7 +48,7 @@ func (m *Manager) canDialPeerURL(peerURL string) bool {
 	case transportWebSocket:
 		return true
 	case transportZeroMQ:
-		return m != nil && m.cfg.zeroMQDialEnabled()
+		return m != nil && m.cfg.zeroMQDialEnabled() && m.cfg.ZeroMQForwardingEnabled()
 	case transportLibP2P:
 		return m != nil && m.cfg.LibP2P.Enabled
 	default:
@@ -121,19 +122,28 @@ func (m *Manager) Start(parent context.Context) error {
 			}
 		}
 
+		// Phase 4.5: start the mesh runtime as the primary control plane.
+		// Inbound libp2p/zeromq/websocket connections now feed the mesh
+		// runtime instead of the legacy session stack.
+		if err := m.StartMeshRuntime(m.ctx); err != nil {
+			m.startErr = err
+			m.logWarn("mesh_runtime_start_failed", err).Msg("mesh runtime failed to start")
+			m.cancel()
+			if m.libp2p != nil {
+				_ = m.libp2p.Close()
+			}
+			return
+		}
+
 		m.wg.Add(1)
 		go m.publishLoop()
 		m.wg.Add(1)
-		go m.routingLoop()
+		go m.transientRetryLoop()
+		m.wg.Add(1)
+		go m.meshReplicationLoop()
 		if !m.cfg.DiscoveryDisabled {
 			m.wg.Add(1)
 			go m.discoveryLoop()
-		}
-
-		for _, peer := range m.configuredPeers {
-			peer := peer
-			m.wg.Add(1)
-			go m.dialLoop(peer)
 		}
 	})
 	return m.startErr
@@ -153,15 +163,10 @@ func (m *Manager) AcceptLibP2PConn(conn TransportConn) {
 		Str("remote_addr", conn.RemoteAddr()).
 		Msg("accepted inbound peer libp2p connection")
 
-	sess := m.newSession(conn, false, nil)
-	if peerConn, ok := conn.(libP2PIdentityConn); ok {
-		sess.libP2PPeerID = peerConn.RemotePeerID()
+	if m.routeInboundToMesh(mesh.TransportLibP2P, conn) {
+		return
 	}
-	m.wg.Add(1)
-	go func() {
-		defer m.wg.Done()
-		m.runSession(sess)
-	}()
+	closeTransport(conn, "mesh runtime unavailable")
 }
 
 func (m *Manager) AcceptZeroMQConn(conn TransportConn) {
@@ -179,12 +184,10 @@ func (m *Manager) AcceptZeroMQConn(conn TransportConn) {
 		Str("bind_url", m.cfg.ZeroMQ.BindURL).
 		Msg("accepted inbound peer zeromq connection")
 
-	sess := m.newSession(conn, false, nil)
-	m.wg.Add(1)
-	go func() {
-		defer m.wg.Done()
-		m.runSession(sess)
-	}()
+	if m.routeInboundToMesh(mesh.TransportZeroMQ, conn) {
+		return
+	}
+	closeTransport(conn, "mesh runtime unavailable")
 }
 
 func (m *Manager) SetZeroMQListenerRunning(running bool) {
@@ -209,10 +212,15 @@ func (m *Manager) Close() error {
 				sessions = append(sessions, peer.active)
 			}
 		}
+		binding := m.meshRuntime
+		m.meshRuntime = nil
 		m.mu.Unlock()
 
 		for _, sess := range sessions {
 			sess.close()
+		}
+		if binding != nil {
+			_ = binding.Close()
 		}
 		if m.libp2p != nil {
 			_ = m.libp2p.Close()
@@ -253,22 +261,49 @@ func (m *Manager) publishLoop() {
 	}
 }
 
-func (m *Manager) routingLoop() {
+func (m *Manager) transientRetryLoop() {
 	defer m.wg.Done()
 
-	updateTicker := time.NewTicker(routingUpdateInterval)
 	retryTicker := time.NewTicker(routeRetryInterval)
-	defer updateTicker.Stop()
 	defer retryTicker.Stop()
 
 	for {
 		select {
 		case <-m.ctx.Done():
 			return
-		case <-updateTicker.C:
-			m.broadcastRoutingUpdate()
 		case <-retryTicker.C:
 			m.retryTransientPackets()
+		}
+	}
+}
+
+func (m *Manager) meshReplicationLoop() {
+	defer m.wg.Done()
+	if m == nil || m.ctx == nil {
+		return
+	}
+	catchupTicker := time.NewTicker(catchupRetryInterval)
+	defer catchupTicker.Stop()
+	antiEntropyTicker := time.NewTicker(antiEntropyInterval)
+	defer antiEntropyTicker.Stop()
+
+	for {
+		select {
+		case <-m.ctx.Done():
+			return
+		case <-catchupTicker.C:
+			m.ensureMeshPeerSessions()
+			for _, sess := range m.meshPeerSessions() {
+				if _, err := m.requestCatchupIfNeeded(sess); err != nil {
+					m.logSessionWarn("mesh_periodic_catchup_failed", sess, err).
+						Msg("mesh periodic catchup failed")
+				}
+			}
+		case <-antiEntropyTicker.C:
+			m.ensureMeshPeerSessions()
+			for _, sess := range m.meshPeerSessions() {
+				m.sendSnapshotDigest(sess)
+			}
 		}
 	}
 }
@@ -284,86 +319,6 @@ func (m *Manager) activeSessions() []*session {
 		}
 	}
 	return sessions
-}
-
-func (m *Manager) dialLoop(peer *configuredPeer) {
-	defer m.wg.Done()
-
-	backoff := []time.Duration{time.Second, 2 * time.Second, 5 * time.Second, 10 * time.Second, 30 * time.Second}
-	attempt := 0
-
-	for {
-		select {
-		case <-m.ctx.Done():
-			return
-		default:
-		}
-
-		if peerID := m.configuredPeerNodeID(peer); peerID > 0 && m.cfg.NodeID > peerID && m.hasActivePeer(peerID) {
-			select {
-			case <-m.ctx.Done():
-				return
-			case <-time.After(2 * time.Second):
-				continue
-			}
-		}
-
-		m.recordConfiguredPeerDialing(peer)
-		m.logInfo("peer_dial_started").
-			Str("direction", "outbound").
-			Str("peer_url", peer.URL).
-			Msg("starting outbound peer dial")
-		dialer, err := m.dialerForPeerURL(peer.URL)
-		if err != nil {
-			m.recordConfiguredPeerDialFailure(peer, err)
-			wait := backoff[minInt(attempt, len(backoff)-1)]
-			m.logWarn("peer_dial_failed", err).
-				Str("direction", "outbound").
-				Str("peer_url", peer.URL).
-				Dur("retry_in", wait).
-				Msg("outbound peer dial failed")
-			attempt++
-			select {
-			case <-m.ctx.Done():
-				return
-			case <-time.After(wait):
-				continue
-			}
-		}
-		conn, err := dialer.Dial(m.ctx, peer.URL)
-		if err != nil {
-			m.recordConfiguredPeerDialFailure(peer, err)
-			wait := backoff[minInt(attempt, len(backoff)-1)]
-			m.logWarn("peer_dial_failed", err).
-				Str("direction", "outbound").
-				Str("peer_url", peer.URL).
-				Dur("retry_in", wait).
-				Msg("outbound peer dial failed")
-			attempt++
-			select {
-			case <-m.ctx.Done():
-				return
-			case <-time.After(wait):
-				continue
-			}
-		}
-
-		attempt = 0
-		sess := m.newSession(conn, true, peer)
-		if peerConn, ok := conn.(libP2PIdentityConn); ok {
-			sess.libP2PPeerID = peerConn.RemotePeerID()
-		}
-		m.logSessionEvent("peer_dial_succeeded", sess).
-			Msg("outbound peer dial succeeded")
-		m.runSession(sess)
-		m.recordConfiguredPeerSessionClosed(peer, sess)
-
-		select {
-		case <-m.ctx.Done():
-			return
-		default:
-		}
-	}
 }
 
 func (m *Manager) handleWebSocket(w http.ResponseWriter, r *http.Request) {
@@ -387,18 +342,16 @@ func (m *Manager) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		Str("path", r.URL.Path).
 		Msg("accepted inbound peer websocket")
 
-	sess := m.newSession(conn, false, nil)
-	m.wg.Add(1)
-	go func() {
-		defer m.wg.Done()
-		m.runSession(sess)
-	}()
+	if m.routeInboundToMesh(mesh.TransportWebSocket, conn) {
+		return
+	}
+	closeTransport(conn, "mesh runtime unavailable")
 }
 
 func (m *Manager) newSession(conn TransportConn, outbound bool, configuredPeer *configuredPeer) *session {
 	m.mu.Lock()
-	m.routingGeneration++
-	connectionID := m.routingGeneration
+	m.nextConnectionID++
+	connectionID := m.nextConnectionID
 	m.mu.Unlock()
 	return &session{
 		manager:              m,
@@ -410,24 +363,6 @@ func (m *Manager) newSession(conn TransportConn, outbound bool, configuredPeer *
 		remoteOriginProgress: make(map[int64]uint64),
 		pendingPulls:         make(map[int64]pendingPullState),
 		pendingTimeSync:      make(map[uint64]chan timeSyncResult),
-		supportsRouting:      true,
 		supportsMembership:   !m.cfg.DiscoveryDisabled,
 	}
-}
-
-func (m *Manager) hasActivePeer(peerID int64) bool {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	peer, ok := m.peers[peerID]
-	return ok && peer.active != nil
-}
-
-func (m *Manager) configuredPeerNodeID(peer *configuredPeer) int64 {
-	if peer == nil {
-		return 0
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return peer.nodeID
 }

@@ -270,7 +270,6 @@ func (m *Manager) clearPeerClockSync(sess *session) {
 		peer.clockState = clockStateObserving
 		cleared = true
 	}
-	m.recomputeRoutesLocked()
 	m.recomputeClockOffsetLocked()
 	m.refreshNodeClockStateLocked()
 	if cleared {

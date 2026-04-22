@@ -10,9 +10,15 @@ type recordingSender struct {
 	packet    *ForwardedPacket
 	nextHop   int64
 	transport TransportKind
+	count     int
+	err       error
 }
 
 func (s *recordingSender) SendPacket(_ context.Context, nextHopNodeID int64, transport TransportKind, packet *ForwardedPacket) error {
+	if s.err != nil {
+		return s.err
+	}
+	s.count++
 	s.nextHop = nextHopNodeID
 	s.transport = transport
 	s.packet = cloneForwardedPacket(packet)
@@ -38,7 +44,7 @@ func TestEngineDeliversLocalPacket(t *testing.T) {
 			t.Fatalf("unexpected target node: %d", packet.TargetNodeId)
 		}
 		return nil
-	})
+	}, nil)
 
 	err := engine.HandleInbound(context.Background(), &ForwardedPacket{
 		PacketId:         1,
@@ -92,7 +98,7 @@ func TestEngineForwardsPacket(t *testing.T) {
 		},
 	})
 	sender := &recordingSender{}
-	engine := NewEngine(1, store.Snapshot, NewPlanner(1), sender, nil)
+	engine := NewEngine(1, store.Snapshot, NewPlanner(1), sender, nil, nil)
 
 	err := engine.Forward(context.Background(), &ForwardedPacket{
 		PacketId:     1,
@@ -148,7 +154,7 @@ func TestEngineRejectsImmediateLoop(t *testing.T) {
 		},
 	})
 
-	engine := NewEngine(1, store.Snapshot, NewPlanner(1), &recordingSender{}, nil)
+	engine := NewEngine(1, store.Snapshot, NewPlanner(1), &recordingSender{}, nil, nil)
 	err := engine.HandleInbound(context.Background(), &ForwardedPacket{
 		PacketId:         1,
 		SourceNodeId:     9,
@@ -177,7 +183,7 @@ func TestEngineRejectsDuplicatePacket(t *testing.T) {
 	})
 	engine := NewEngine(1, store.Snapshot, NewPlanner(1), &recordingSender{}, func(context.Context, *ForwardedPacket) error {
 		return nil
-	})
+	}, nil)
 	packet := &ForwardedPacket{
 		PacketId:         7,
 		SourceNodeId:     2,
@@ -192,5 +198,191 @@ func TestEngineRejectsDuplicatePacket(t *testing.T) {
 	}
 	if err := engine.HandleInbound(context.Background(), packet); !errors.Is(err, ErrDuplicatePacket) {
 		t.Fatalf("unexpected duplicate error: %v", err)
+	}
+}
+
+func TestEngineDeduplicatesInboundTransitPacket(t *testing.T) {
+	t.Parallel()
+
+	store := NewMemoryTopologyStore()
+	for _, nodeID := range []int64{1, 2, 3} {
+		store.ApplyHello(nodeID, &NodeHello{
+			NodeId:           nodeID,
+			ProtocolVersion:  ProtocolVersion,
+			ForwardingPolicy: DefaultForwardingPolicy(1),
+			Transports: []*TransportCapability{
+				{Transport: TransportLibP2P, OutboundEnabled: true, InboundEnabled: true},
+			},
+		})
+	}
+	store.ApplyTopologyUpdate(&TopologyUpdate{
+		OriginNodeId:     2,
+		Generation:       1,
+		ForwardingPolicy: DefaultForwardingPolicy(1),
+		Transports: []*TransportCapability{
+			{Transport: TransportLibP2P, OutboundEnabled: true, InboundEnabled: true},
+		},
+		Links: []*LinkAdvertisement{
+			{FromNodeId: 2, ToNodeId: 3, Transport: TransportLibP2P, PathClass: PathClassDirect, CostMs: 1, Established: true},
+		},
+	})
+	sender := &recordingSender{}
+	engine := NewEngine(2, store.Snapshot, NewPlanner(2), sender, nil, nil)
+	packet := &ForwardedPacket{
+		PacketId:         42,
+		SourceNodeId:     1,
+		TargetNodeId:     3,
+		TrafficClass:     TrafficTransientInteractive,
+		IngressTransport: TransportLibP2P,
+		TtlHops:          3,
+	}
+
+	if err := engine.HandleInbound(context.Background(), packet); err != nil {
+		t.Fatalf("first inbound forward failed: %v", err)
+	}
+	if err := engine.HandleInbound(context.Background(), packet); !errors.Is(err, ErrDuplicatePacket) {
+		t.Fatalf("unexpected duplicate error: %v", err)
+	}
+	if sender.count != 1 {
+		t.Fatalf("expected exactly one forwarded packet, got %d", sender.count)
+	}
+}
+
+func TestEngineOutboundNoRouteDoesNotMarkPacketSeen(t *testing.T) {
+	t.Parallel()
+
+	store := NewMemoryTopologyStore()
+	for _, nodeID := range []int64{1, 2} {
+		store.ApplyHello(nodeID, &NodeHello{
+			NodeId:           nodeID,
+			ProtocolVersion:  ProtocolVersion,
+			ForwardingPolicy: DefaultForwardingPolicy(1),
+			Transports: []*TransportCapability{
+				{Transport: TransportLibP2P, OutboundEnabled: true, InboundEnabled: true},
+			},
+		})
+	}
+	sender := &recordingSender{}
+	engine := NewEngine(1, store.Snapshot, NewPlanner(1), sender, nil, nil)
+	packet := &ForwardedPacket{
+		PacketId:     99,
+		SourceNodeId: 1,
+		TargetNodeId: 2,
+		TrafficClass: TrafficTransientInteractive,
+		TtlHops:      3,
+	}
+
+	if err := engine.Forward(context.Background(), packet); !errors.Is(err, ErrNoRoute) {
+		t.Fatalf("expected no route, got %v", err)
+	}
+	store.ApplyTopologyUpdate(&TopologyUpdate{
+		OriginNodeId:     1,
+		Generation:       1,
+		ForwardingPolicy: DefaultForwardingPolicy(1),
+		Transports: []*TransportCapability{
+			{Transport: TransportLibP2P, OutboundEnabled: true, InboundEnabled: true},
+		},
+		Links: []*LinkAdvertisement{
+			{FromNodeId: 1, ToNodeId: 2, Transport: TransportLibP2P, PathClass: PathClassDirect, CostMs: 1, Established: true},
+		},
+	})
+	if err := engine.Forward(context.Background(), packet); err != nil {
+		t.Fatalf("expected retry after route recovery to succeed, got %v", err)
+	}
+	if sender.count != 1 {
+		t.Fatalf("expected one forwarded retry, got %d", sender.count)
+	}
+}
+
+func TestEngineOutboundDuplicateDoesNotResend(t *testing.T) {
+	t.Parallel()
+
+	store := NewMemoryTopologyStore()
+	for _, nodeID := range []int64{1, 2} {
+		store.ApplyHello(nodeID, &NodeHello{
+			NodeId:           nodeID,
+			ProtocolVersion:  ProtocolVersion,
+			ForwardingPolicy: DefaultForwardingPolicy(1),
+			Transports: []*TransportCapability{
+				{Transport: TransportLibP2P, OutboundEnabled: true, InboundEnabled: true},
+			},
+		})
+	}
+	store.ApplyTopologyUpdate(&TopologyUpdate{
+		OriginNodeId:     1,
+		Generation:       1,
+		ForwardingPolicy: DefaultForwardingPolicy(1),
+		Transports: []*TransportCapability{
+			{Transport: TransportLibP2P, OutboundEnabled: true, InboundEnabled: true},
+		},
+		Links: []*LinkAdvertisement{
+			{FromNodeId: 1, ToNodeId: 2, Transport: TransportLibP2P, PathClass: PathClassDirect, CostMs: 1, Established: true},
+		},
+	})
+	sender := &recordingSender{}
+	engine := NewEngine(1, store.Snapshot, NewPlanner(1), sender, nil, nil)
+	packet := &ForwardedPacket{
+		PacketId:     100,
+		SourceNodeId: 1,
+		TargetNodeId: 2,
+		TrafficClass: TrafficTransientInteractive,
+		TtlHops:      3,
+	}
+
+	if err := engine.Forward(context.Background(), packet); err != nil {
+		t.Fatalf("first forward failed: %v", err)
+	}
+	if err := engine.Forward(context.Background(), packet); !errors.Is(err, ErrDuplicatePacket) {
+		t.Fatalf("expected duplicate packet error, got %v", err)
+	}
+	if sender.count != 1 {
+		t.Fatalf("expected duplicate outbound packet to be suppressed before send, got %d sends", sender.count)
+	}
+}
+
+func TestEngineOutboundSendFailureAllowsRetry(t *testing.T) {
+	t.Parallel()
+
+	store := NewMemoryTopologyStore()
+	for _, nodeID := range []int64{1, 2} {
+		store.ApplyHello(nodeID, &NodeHello{
+			NodeId:           nodeID,
+			ProtocolVersion:  ProtocolVersion,
+			ForwardingPolicy: DefaultForwardingPolicy(1),
+			Transports: []*TransportCapability{
+				{Transport: TransportLibP2P, OutboundEnabled: true, InboundEnabled: true},
+			},
+		})
+	}
+	store.ApplyTopologyUpdate(&TopologyUpdate{
+		OriginNodeId:     1,
+		Generation:       1,
+		ForwardingPolicy: DefaultForwardingPolicy(1),
+		Transports: []*TransportCapability{
+			{Transport: TransportLibP2P, OutboundEnabled: true, InboundEnabled: true},
+		},
+		Links: []*LinkAdvertisement{
+			{FromNodeId: 1, ToNodeId: 2, Transport: TransportLibP2P, PathClass: PathClassDirect, CostMs: 1, Established: true},
+		},
+	})
+	sender := &recordingSender{err: ErrNoRoute}
+	engine := NewEngine(1, store.Snapshot, NewPlanner(1), sender, nil, nil)
+	packet := &ForwardedPacket{
+		PacketId:     101,
+		SourceNodeId: 1,
+		TargetNodeId: 2,
+		TrafficClass: TrafficTransientInteractive,
+		TtlHops:      3,
+	}
+
+	if err := engine.Forward(context.Background(), packet); !errors.Is(err, ErrNoRoute) {
+		t.Fatalf("expected first forward to fail with no route, got %v", err)
+	}
+	sender.err = nil
+	if err := engine.Forward(context.Background(), packet); err != nil {
+		t.Fatalf("expected retry after send failure to succeed, got %v", err)
+	}
+	if sender.count != 1 {
+		t.Fatalf("expected one successful send after retry, got %d", sender.count)
 	}
 }

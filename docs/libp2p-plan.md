@@ -37,7 +37,7 @@ libp2p stream 使用协议 ID `/turntf/cluster/stream/1.0.0`，包装为现有 `
 - `Transport()` 返回 `libp2p`，状态接口和指标按该 transport 聚合。
 - 入站和出站 stream 都会记录远端 PeerID，并在 `Hello` 通过时建立 `node_id <-> PeerID` 绑定。
 
-Gossipsub topic 使用 `/turntf/<cluster_hash>/events/v1`，其中 `cluster_hash = hex(sha256("turntf/libp2p/" + cluster.secret))[:16]`。本地写入成功后，事件会同时发往现有 stream session 和 Gossipsub topic。Gossipsub 收到的消息必须通过 HMAC 校验，并且只接受已有可信 stream 绑定的 `node_id/PeerID`，否则丢弃；Ack、PullEvents、SnapshotDigest、SnapshotChunk、TimeSync、MembershipUpdate、RoutingUpdate、QueryLoggedInUsers 和 TransientPacket 仍只走 stream。
+Gossipsub topic 使用 `/turntf/<cluster_hash>/events/v1`，其中 `cluster_hash = hex(sha256("turntf/libp2p/" + cluster.secret))[:16]`。在当前 mesh 主链路下，控制面、查询、瞬时包、复制流和快照流统一通过 mesh runtime 在 transport stream 上逐跳转发；Gossipsub 不再承担生产复制主路径，只保留为兼容期能力和后续实验入口。Gossipsub 收到的消息仍必须通过 HMAC 校验，并且只接受已有可信 stream 绑定的 `node_id/PeerID`，否则丢弃。
 
 ## 地址传播
 

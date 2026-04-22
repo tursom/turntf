@@ -25,6 +25,17 @@ func (m *Manager) broadcastEvent(event store.Event) {
 		},
 	}
 
+	if m.MeshRuntime() != nil {
+		m.ensureMeshPeerSessions()
+		for _, sess := range m.meshPeerSessions() {
+			if err := m.routeMeshReplicationBatch(m.ctx, sess.peerID, envelope.Sequence, envelope.SentAtHlc, envelope.GetEventBatch()); err != nil {
+				m.logSessionWarn("mesh_event_batch_forward_failed", sess, err).
+					Msg("failed to forward event batch over mesh")
+			}
+		}
+		return
+	}
+
 	for _, sess := range m.activeSessions() {
 		sess.enqueue(envelope)
 	}
@@ -159,16 +170,23 @@ func (m *Manager) handleEventBatch(sess *session, envelope *internalproto.Envelo
 		ackedEventID = uint64(cursor.AppliedEventID)
 	}
 
-	sess.enqueue(&internalproto.Envelope{
-		NodeId: m.cfg.NodeID,
-		Body: &internalproto.Envelope_Ack{
-			Ack: &internalproto.Ack{
-				NodeId:       m.cfg.NodeID,
-				OriginNodeId: originNodeID,
-				AckedEventId: ackedEventID,
+	ack := &internalproto.Ack{
+		NodeId:       m.cfg.NodeID,
+		OriginNodeId: originNodeID,
+		AckedEventId: ackedEventID,
+	}
+	if sess.conn == nil && m.MeshRuntime() != nil {
+		if err := m.routeMeshReplicationAck(context.Background(), sess.peerID, ack); err != nil {
+			return err
+		}
+	} else {
+		sess.enqueue(&internalproto.Envelope{
+			NodeId: m.cfg.NodeID,
+			Body: &internalproto.Envelope_Ack{
+				Ack: ack,
 			},
-		},
-	})
+		})
+	}
 	m.logSessionEvent("event_batch_applied", sess).
 		Int64("origin_node_id", originNodeID).
 		Int("event_count", len(events)).
@@ -224,15 +242,22 @@ func (m *Manager) handlePullEvents(sess *session, envelope *internalproto.Envelo
 			Int("event_count", 0).
 			Uint64("after_event_id", pull.GetAfterEventId()).
 			Msg("served empty pull events response")
-		sess.enqueue(&internalproto.Envelope{
-			NodeId: m.cfg.NodeID,
-			Body: &internalproto.Envelope_EventBatch{
-				EventBatch: &internalproto.EventBatch{
-					PullRequestId: pull.RequestId,
-					OriginNodeId:  pull.OriginNodeId,
+		eventBatch := &internalproto.EventBatch{
+			PullRequestId: pull.RequestId,
+			OriginNodeId:  pull.OriginNodeId,
+		}
+		if sess.conn == nil && m.MeshRuntime() != nil {
+			if err := m.routeMeshReplicationBatch(context.Background(), sess.peerID, 0, "", eventBatch); err != nil {
+				return err
+			}
+		} else {
+			sess.enqueue(&internalproto.Envelope{
+				NodeId: m.cfg.NodeID,
+				Body: &internalproto.Envelope_EventBatch{
+					EventBatch: eventBatch,
 				},
-			},
-		})
+			})
+		}
 		return nil
 	}
 
@@ -249,18 +274,25 @@ func (m *Manager) handlePullEvents(sess *session, envelope *internalproto.Envelo
 		Uint64("after_event_id", pull.GetAfterEventId()).
 		Int64("last_event_id", last.EventID).
 		Msg("served pull events response")
-	sess.enqueue(&internalproto.Envelope{
-		NodeId:    m.cfg.NodeID,
-		Sequence:  uint64(last.Sequence),
-		SentAtHlc: last.HLC.String(),
-		Body: &internalproto.Envelope_EventBatch{
-			EventBatch: &internalproto.EventBatch{
-				Events:        replicated,
-				PullRequestId: pull.RequestId,
-				OriginNodeId:  pull.OriginNodeId,
+	eventBatch := &internalproto.EventBatch{
+		Events:        replicated,
+		PullRequestId: pull.RequestId,
+		OriginNodeId:  pull.OriginNodeId,
+	}
+	if sess.conn == nil && m.MeshRuntime() != nil {
+		if err := m.routeMeshReplicationBatch(context.Background(), sess.peerID, uint64(last.Sequence), last.HLC.String(), eventBatch); err != nil {
+			return err
+		}
+	} else {
+		sess.enqueue(&internalproto.Envelope{
+			NodeId:    m.cfg.NodeID,
+			Sequence:  uint64(last.Sequence),
+			SentAtHlc: last.HLC.String(),
+			Body: &internalproto.Envelope_EventBatch{
+				EventBatch: eventBatch,
 			},
-		},
-	})
+		})
+	}
 	return nil
 }
 
@@ -295,10 +327,11 @@ func (m *Manager) requestCatchupIfNeeded(sess *session) (bool, error) {
 			continue
 		}
 
-		envelope, err := m.buildPullEventsEnvelope(originNodeID, appliedEventID, requestID)
-		if err != nil {
-			sess.cancelPendingPull(originNodeID, requestID)
-			return false, err
+		pull := &internalproto.PullEvents{
+			OriginNodeId: originNodeID,
+			AfterEventId: appliedEventID,
+			Limit:        pullBatchSize,
+			RequestId:    requestID,
 		}
 		m.logSessionEvent("catchup_requested", sess).
 			Int64("origin_node_id", originNodeID).
@@ -306,7 +339,19 @@ func (m *Manager) requestCatchupIfNeeded(sess *session) (bool, error) {
 			Uint64("remote_last_event_id", remoteLastEventID).
 			Uint64("request_id", requestID).
 			Msg("requested catchup from peer")
-		sess.enqueue(envelope)
+		if sess.conn == nil && m.MeshRuntime() != nil {
+			if err := m.routeMeshPullRequest(context.Background(), sess.peerID, pull); err != nil {
+				sess.cancelPendingPull(originNodeID, requestID)
+				return false, err
+			}
+		} else {
+			envelope, err := m.buildPullEventsEnvelope(originNodeID, appliedEventID, requestID)
+			if err != nil {
+				sess.cancelPendingPull(originNodeID, requestID)
+				return false, err
+			}
+			sess.enqueue(envelope)
+		}
 		requested = true
 	}
 	return requested, nil

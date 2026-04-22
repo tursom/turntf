@@ -11,6 +11,8 @@ func (DefaultTrafficClassifier) Classify(envelope *ClusterEnvelope) TrafficClass
 		*ClusterEnvelope_TimeSyncRequest,
 		*ClusterEnvelope_TimeSyncResponse,
 		*ClusterEnvelope_TopologyUpdate,
+		*ClusterEnvelope_ReplicationAck,
+		*ClusterEnvelope_MembershipUpdate,
 		*ClusterEnvelope_RouteDiagnostic:
 		return TrafficControlCritical
 	case *ClusterEnvelope_QueryRequest,

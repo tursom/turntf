@@ -65,6 +65,13 @@ func (m *Manager) sendSnapshotDigest(sess *session) {
 	m.logSessionDebug("snapshot_digest_sent", sess).
 		Int("partition_count", partitionCount).
 		Msg("snapshot digest sent")
+	if sess.conn == nil && m.MeshRuntime() != nil {
+		if err := m.routeMeshSnapshotManifest(context.Background(), sess.peerID, digest); err != nil {
+			m.logSessionWarn("mesh_snapshot_manifest_forward_failed", sess, err).
+				Msg("failed to forward snapshot manifest over mesh")
+		}
+		return
+	}
 	sess.enqueue(envelope)
 }
 
@@ -231,6 +238,9 @@ func (m *Manager) handleSnapshotChunk(sess *session, envelope *internalproto.Env
 			Stringer("kind", response.Kind).
 			Int("row_count", len(response.GetRows())).
 			Msg("snapshot chunk sent")
+		if sess.conn == nil && m.MeshRuntime() != nil {
+			return m.routeMeshSnapshotChunk(context.Background(), sess.peerID, response)
+		}
 		sess.enqueue(&internalproto.Envelope{
 			NodeId: m.cfg.NodeID,
 			Body: &internalproto.Envelope_SnapshotChunk{
@@ -288,15 +298,23 @@ func (m *Manager) requestSnapshotPartition(sess *session, partition *internalpro
 		Stringer("kind", partition.Kind).
 		Uint64("row_count", partition.RowCount).
 		Msg("requested snapshot partition from peer")
+	chunk := &internalproto.SnapshotChunk{
+		Partition:       partition.Partition,
+		SnapshotVersion: internalproto.SnapshotVersion,
+		Kind:            partition.Kind,
+		Request:         true,
+	}
+	if sess.conn == nil && m.MeshRuntime() != nil {
+		if err := m.routeMeshSnapshotChunk(context.Background(), sess.peerID, chunk); err != nil {
+			m.logSessionWarn("mesh_snapshot_chunk_request_forward_failed", sess, err).
+				Msg("failed to forward snapshot chunk request over mesh")
+		}
+		return
+	}
 	sess.enqueue(&internalproto.Envelope{
 		NodeId: m.cfg.NodeID,
 		Body: &internalproto.Envelope_SnapshotChunk{
-			SnapshotChunk: &internalproto.SnapshotChunk{
-				Partition:       partition.Partition,
-				SnapshotVersion: internalproto.SnapshotVersion,
-				Kind:            partition.Kind,
-				Request:         true,
-			},
+			SnapshotChunk: chunk,
 		},
 	})
 }

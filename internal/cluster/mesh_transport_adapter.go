@@ -37,7 +37,10 @@ type meshTransportConn struct {
 }
 
 func NewMeshTransportAdapters(cfg Config, zeroMQCurveServerKeyForPeer func(string) string) []mesh.TransportAdapter {
-	adapters := make([]mesh.TransportAdapter, 0, 2)
+	adapters := make([]mesh.TransportAdapter, 0, 3)
+	if adapter := NewWebSocketMeshTransportAdapter(cfg); adapter != nil {
+		adapters = append(adapters, adapter)
+	}
 	if adapter := NewLibP2PMeshTransportAdapter(cfg); adapter != nil {
 		adapters = append(adapters, adapter)
 	}
@@ -61,7 +64,7 @@ func NewLibP2PMeshTransportAdapter(cfg Config) *LibP2PMeshTransportAdapter {
 
 func NewZeroMQMeshTransportAdapter(cfg Config, zeroMQCurveServerKeyForPeer func(string) string) *ZeroMQMeshTransportAdapter {
 	cfg = cfg.WithDefaults()
-	if !cfg.ZeroMQ.Enabled {
+	if !cfg.ZeroMQ.Enabled || !cfg.ZeroMQForwardingEnabled() {
 		return nil
 	}
 	return &ZeroMQMeshTransportAdapter{

@@ -504,7 +504,7 @@ func (d *recordingDialer) Dial(ctx context.Context, peerURL string) (TransportCo
 	return nil, ctx.Err()
 }
 
-func TestManagerStartDialsWebSocketStaticPeers(t *testing.T) {
+func TestManagerStartDoesNotUseLegacyDialerForWebSocketStaticPeers(t *testing.T) {
 	t.Parallel()
 
 	mgr, err := NewManager(Config{
@@ -529,11 +529,8 @@ func TestManagerStartDialsWebSocketStaticPeers(t *testing.T) {
 
 	select {
 	case rawURL := <-dialer.urls:
-		if rawURL != "ws://127.0.0.1:9081/internal/cluster/ws" {
-			t.Fatalf("unexpected dial url: %q", rawURL)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("expected websocket static peer to start dialing")
+		t.Fatalf("legacy websocket dialer should stay unused, got %q", rawURL)
+	case <-time.After(200 * time.Millisecond):
 	}
 }
 

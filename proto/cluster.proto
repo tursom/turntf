@@ -17,10 +17,6 @@ message Envelope {
     SnapshotChunk snapshot_chunk = 9;
     TimeSyncRequest time_sync_request = 10;
     TimeSyncResponse time_sync_response = 11;
-    RoutingUpdate routing_update = 13;
-    TransientPacket transient_packet = 14;
-    QueryLoggedInUsersRequest query_logged_in_users_request = 15;
-    QueryLoggedInUsersResponse query_logged_in_users_response = 16;
     MembershipUpdate membership_update = 17;
   }
   bytes hmac = 12;
@@ -33,7 +29,6 @@ message Hello {
   repeated OriginProgress origin_progress = 4;
   string snapshot_version = 5;
   uint32 message_window_size = 6;
-  bool supports_routing = 7;
   uint64 connection_id = 8;
   uint32 smoothed_rtt_ms = 9;
   uint32 jitter_penalty_ms = 10;
@@ -292,20 +287,6 @@ message ClusterLoggedInUser {
   int64 node_id = 1;
   int64 user_id = 2;
   string username = 3;
-}
-
-message RoutingUpdate {
-  int64 origin_node_id = 1;
-  uint64 generation = 2;
-  repeated RouteAdvertisement routes = 3;
-}
-
-message RouteAdvertisement {
-  int64 destination_node_id = 1;
-  bool reachable = 2;
-  uint32 total_cost_ms = 3;
-  uint32 residual_cost_ms = 4;
-  uint32 residual_jitter_ms = 5;
 }
 
 message MembershipUpdate {

@@ -40,6 +40,20 @@ func TestDefaultTrafficClassifier(t *testing.T) {
 			want: TrafficReplicationStream,
 		},
 		{
+			name: "replication ack",
+			env: &ClusterEnvelope{Body: &ClusterEnvelope_ReplicationAck{
+				ReplicationAck: &ReplicationAck{},
+			}},
+			want: TrafficControlCritical,
+		},
+		{
+			name: "membership update",
+			env: &ClusterEnvelope{Body: &ClusterEnvelope_MembershipUpdate{
+				MembershipUpdate: &MembershipUpdate{},
+			}},
+			want: TrafficControlCritical,
+		},
+		{
 			name: "snapshot",
 			env: &ClusterEnvelope{Body: &ClusterEnvelope_SnapshotChunk{
 				SnapshotChunk: &SnapshotChunk{},

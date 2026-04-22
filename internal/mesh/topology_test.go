@@ -93,7 +93,34 @@ func TestTopologyStoreApplyTopologyUpdateIgnoresStaleGeneration(t *testing.T) {
 	}
 }
 
-func TestTopologyStoreApplyTopologyUpdateReplacesOriginStateOnSameGeneration(t *testing.T) {
+func TestTopologyStoreRejectsNonOriginLinks(t *testing.T) {
+	t.Parallel()
+
+	store := NewMemoryTopologyStore()
+	store.ApplyTopologyUpdate(&TopologyUpdate{
+		OriginNodeId:     9,
+		Generation:       1,
+		ForwardingPolicy: DefaultForwardingPolicy(1),
+		Transports: []*TransportCapability{
+			{Transport: TransportWebSocket, InboundEnabled: true, OutboundEnabled: true},
+		},
+		Links: []*LinkAdvertisement{
+			{FromNodeId: 9, ToNodeId: 10, Transport: TransportWebSocket, PathClass: PathClassDirect, CostMs: 10, Established: true},
+			{FromNodeId: 42, ToNodeId: 10, Transport: TransportWebSocket, PathClass: PathClassDirect, CostMs: 1, Established: true},
+		},
+	})
+
+	snapshot := store.Snapshot()
+	if len(snapshot.Links) != 1 {
+		t.Fatalf("expected only origin-owned links, got %+v", snapshot.Links)
+	}
+	link := snapshot.Links[0]
+	if link.FromNodeID != 9 || link.ToNodeID != 10 {
+		t.Fatalf("unexpected link accepted: %+v", link)
+	}
+}
+
+func TestTopologyStoreApplyTopologyUpdateRejectsConflictingSameGeneration(t *testing.T) {
 	t.Parallel()
 
 	store := NewMemoryTopologyStore()
@@ -127,21 +154,21 @@ func TestTopologyStoreApplyTopologyUpdateReplacesOriginStateOnSameGeneration(t *
 	if !ok {
 		t.Fatal("expected origin node in snapshot")
 	}
-	if len(node.TransportCaps) != 1 || node.TransportCaps[TransportZeroMQ] == nil {
-		t.Fatalf("expected same-generation update to replace transports, got %+v", node.TransportCaps)
+	if len(node.TransportCaps) != 2 || node.TransportCaps[TransportWebSocket] == nil || node.TransportCaps[TransportLibP2P] == nil {
+		t.Fatalf("expected conflicting same-generation update to be ignored, got %+v", node.TransportCaps)
 	}
-	if got := DispositionForTraffic(node.ForwardingPolicy, TrafficReplicationStream); got != DispositionAllow {
-		t.Fatalf("expected same-generation update to replace policy, got=%v", got)
+	if got := DispositionForTraffic(node.ForwardingPolicy, TrafficReplicationStream); got != DispositionDeny {
+		t.Fatalf("expected conflicting same-generation update to preserve policy, got=%v", got)
 	}
-	if len(snapshot.Links) != 1 {
-		t.Fatalf("expected same-generation update to replace links, got %+v", snapshot.Links)
+	if len(snapshot.Links) != 2 {
+		t.Fatalf("expected conflicting same-generation update to preserve links, got %+v", snapshot.Links)
 	}
-	if link := snapshot.Links[0]; link.ToNodeID != 6 || link.Transport != TransportZeroMQ {
-		t.Fatalf("unexpected replacement link: %+v", link)
+	if !hasTopologyLink(snapshot.Links, 4, TransportWebSocket) || !hasTopologyLink(snapshot.Links, 5, TransportLibP2P) {
+		t.Fatalf("unexpected preserved links after conflicting same-generation update: %+v", snapshot.Links)
 	}
 }
 
-func TestTopologyStoreApplyTopologyUpdateNilPolicyNormalizesDefaults(t *testing.T) {
+func TestTopologyStoreApplyTopologyUpdateNilPolicySameGenerationIsIgnored(t *testing.T) {
 	t.Parallel()
 
 	store := NewMemoryTopologyStore()
@@ -163,14 +190,14 @@ func TestTopologyStoreApplyTopologyUpdateNilPolicyNormalizesDefaults(t *testing.
 	if !ok {
 		t.Fatal("expected origin node in snapshot")
 	}
-	if got := node.ForwardingPolicy.NodeFeeWeight; got != 1 {
-		t.Fatalf("expected nil policy to normalize to default fee weight, got=%d", got)
+	if got := node.ForwardingPolicy.NodeFeeWeight; got != 9 {
+		t.Fatalf("expected same-generation nil policy update to preserve prior fee weight, got=%d", got)
 	}
-	if got := DispositionForTraffic(node.ForwardingPolicy, TrafficReplicationStream); got != DispositionAllow {
-		t.Fatalf("expected nil policy to normalize to default policy, got=%v", got)
+	if got := DispositionForTraffic(node.ForwardingPolicy, TrafficReplicationStream); got != DispositionDeny {
+		t.Fatalf("expected same-generation nil policy update to preserve prior policy, got=%v", got)
 	}
-	if len(node.TransportCaps) != 0 {
-		t.Fatalf("expected nil transports to clear prior transports, got %+v", node.TransportCaps)
+	if len(node.TransportCaps) != 1 || node.TransportCaps[TransportWebSocket] == nil {
+		t.Fatalf("expected same-generation nil transport update to preserve prior transports, got %+v", node.TransportCaps)
 	}
 }
 
@@ -205,4 +232,13 @@ func TestTopologyStoreSnapshotClonesCapabilities(t *testing.T) {
 	if !capability.InboundEnabled {
 		t.Fatalf("expected snapshot clone to protect stored capability, got %+v", capability)
 	}
+}
+
+func hasTopologyLink(links []LinkState, toNodeID int64, transport TransportKind) bool {
+	for _, link := range links {
+		if link.ToNodeID == toNodeID && link.Transport == transport {
+			return true
+		}
+	}
+	return false
 }

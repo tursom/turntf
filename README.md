@@ -69,18 +69,16 @@ peer 自动发现见 [docs/peer-discovery.md](/root/dev/sys/turntf/docs/peer-dis
 当前同步实现已经收紧到以下边界：
 
 - 集群模式必须提供 `cluster.secret`；本节点集群 WebSocket 入口固定为 `/internal/cluster/ws`
-- 节点间启用 `Envelope`、`Hello`、`Ack`、`EventBatch`、`PullEvents`，并为瞬时包启用 `RoutingUpdate`、`TransientPacket`
-- `Envelope`：集群协议的统一外层消息，里面再装握手、确认、事件批次或补拉请求
-- `Hello`：连接建立后的第一条握手消息，用于交换节点身份、协议版本、快照版本、广播路径、当前本地按 `origin_node_id` 聚合的 `origin_progress`、`message_window_size`，以及该连接的 routing 与 membership 能力
-- `TimeSyncRequest` / `TimeSyncResponse`：握手后的校时消息，用来估算节点时钟偏移并决定是否允许该 peer 进入可信复制状态
-- `EventBatch`：事件批次消息，既用于在线广播，也用于按 `origin_node_id` 的增量补发；补拉响应会携带 `pull_request_id`
-- `Ack`：确认消息，表示“我已经应用到了某个 `origin_node_id` 的哪条 `event_id`”；它会写入 `peer_ack_cursors`
-- `RoutingUpdate`：节点间交换目的节点可达性、累计代价和残余代价的动态路由摘要，仅服务瞬时包
+- 节点间统一启用 mesh `ClusterEnvelope`；`NodeHello`、`TopologyUpdate`、`TimeSyncRequest/Response`、查询、瞬时包、复制流和快照流都通过 mesh runtime 逐跳转发
+- mesh `ClusterEnvelope`：节点间唯一的控制面与数据面外层消息；收发两端都使用 `cluster.secret` 做 HMAC 鉴权
+- `NodeHello`：连接建立后的第一条 mesh 握手消息，用于交换节点身份、协议版本、forwarding policy 和 transport capability
+- `TopologyUpdate`：节点间 flooding 的拓扑全量状态，包含 forwarding policy、transport capability 和链路广告
+- mesh `TimeSyncRequest` / `TimeSyncResponse`：runtime 内部链路测量消息，用于更新 RTT/jitter 与拓扑代价
+- `EventBatch` / `PullEvents` / `Ack`：复制批次、补拉请求与确认消息，统一经 mesh 按策略路由转发
 - `MembershipUpdate`：节点间交换已验证 peer URL 的 membership 摘要，用于自动发现更多可拨号 peer
-- `TransientPacket`：发往 `(node_id, 3)` 的非持久化数据包，可经动态路由多跳转发到目标节点在线用户
+- `TransientPacket`：发往 `(node_id, 3)` 的非持久化数据包，会被编码进 mesh payload，经逐跳重算路由多跳转发到目标节点在线用户
 - `peer_ack_cursors` / `origin_cursors`：前者记录“某 peer 已确认到哪个 origin/event_id”，后者记录“本地对某 origin 已应用到哪个 event_id”，供重连后继续追平
-- WebSocket 连接具备握手校验、心跳保活、自动重连和单连接方向裁决
-- 同一 `peer_node_id` 允许存在多条并行连接；瞬时包路由会按连接观测的延迟和抖动择优选出口
+- WebSocket、libp2p、ZeroMQ 都会接入 mesh runtime；同一 `peer_node_id` 允许存在多条并行 adjacency，逐跳转发会按链路观测的延迟和抖动择优选出口
 - peer 自动发现默认随集群模式启用；节点会通过已连接 peer 传播已绑定 `node_id` 的可拨号 URL，并为发现候选启动受限的动态拨号器
 - 集群模式下，节点首次成功校时前会拒绝本地写请求，避免未校准时钟污染字段级 LWW
 - 节点重连后会按持久化游标自动补拉缺失事件，并通过 `applied_events` 做幂等去重
@@ -404,14 +402,14 @@ zeromq = { curve_server_public_key = "" }
 - 消息复制按 `(user_node_id, user_id, node_id, seq)` 幂等去重，并在本地和复制应用时都裁剪到最近 N 条
 - 广播消息发送到任意 `role=broadcast` 地址后只存一份；普通用户读取消息时会动态合并所有广播地址的消息，因此未来新用户也能看到仍在本地窗口内的广播消息
 - 当集群所有节点使用相同的 `message_window_size` 时，同一用户的最近 N 条消息会收敛到相同结果
-- 发往 `(node_id, 3)` 的瞬时包不会写入事件日志，不参与 `Ack`、补拉、快照和消息窗口；它们只在内存中经 `RoutingUpdate` 维护的动态路由表转发
-- 瞬时包动态路由只服务 `(node_id, 3)` 地址，主代价按链路平滑 RTT 加抖动惩罚计算；hop 数仅用于 TTL 防环，不作为主选路指标
+- 发往 `(node_id, 3)` 的瞬时包不会写入事件日志，不参与 `Ack`、补拉、快照和消息窗口；它们只在内存中经 mesh forwarding engine 逐跳转发
+- 瞬时包动态路由只服务 `(node_id, 3)` 地址，主代价按 mesh 链路平滑 RTT、抖动、bridge/native relay 和 node fee weight 计算；hop 数仅用于 TTL 防环，不作为主选路指标
 - 瞬时包支持 `best_effort` 和 `route_retry` 两种模式；`route_retry` 只使用内存 TTL 重试队列，节点重启后即丢失
 - 任意节点签发的登录 token 都可以在其他节点使用，只要它们共享同一 `auth.token_secret`
 - 所有集群 `Envelope` 在收发两端都使用 `cluster.secret` 做 HMAC 鉴权
 - `/cluster/nodes` 提供已登录用户可访问的已连接集群节点列表，包含 `node_id`、`is_local`、`configured_url` 和 peer 来源 `source`
 - `/ops/status` 提供管理员可访问的本节点运维快照，包括 peer 状态、自动发现状态、未确认事件、反熵进度、冲突数和消息裁剪统计
-- `/metrics` 提供无额外依赖的 Prometheus 文本指标，指标名使用 `notifier_*` 前缀
+- `/metrics` 提供无额外依赖的 Prometheus 文本指标，包含 `notifier_*` 业务指标和 mesh 路由/转发指标
 - 服务日志使用 zerolog；控制台输出易读文本，配置 `logging.file_path` 后同时写入 JSON 行日志文件
 
 ## 运维与上线

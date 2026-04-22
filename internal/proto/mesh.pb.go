@@ -254,7 +254,10 @@ type ClusterEnvelope struct {
 	//	*ClusterEnvelope_SnapshotManifest
 	//	*ClusterEnvelope_SnapshotChunk
 	//	*ClusterEnvelope_RouteDiagnostic
+	//	*ClusterEnvelope_ReplicationAck
+	//	*ClusterEnvelope_MembershipUpdate
 	Body          isClusterEnvelope_Body `protobuf_oneof:"body"`
+	Hmac          []byte                 `protobuf:"bytes,14,opt,name=hmac,proto3" json:"hmac,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -404,6 +407,31 @@ func (x *ClusterEnvelope) GetRouteDiagnostic() *MeshRouteDiagnostic {
 	return nil
 }
 
+func (x *ClusterEnvelope) GetReplicationAck() *MeshReplicationAck {
+	if x != nil {
+		if x, ok := x.Body.(*ClusterEnvelope_ReplicationAck); ok {
+			return x.ReplicationAck
+		}
+	}
+	return nil
+}
+
+func (x *ClusterEnvelope) GetMembershipUpdate() *MeshMembershipUpdate {
+	if x != nil {
+		if x, ok := x.Body.(*ClusterEnvelope_MembershipUpdate); ok {
+			return x.MembershipUpdate
+		}
+	}
+	return nil
+}
+
+func (x *ClusterEnvelope) GetHmac() []byte {
+	if x != nil {
+		return x.Hmac
+	}
+	return nil
+}
+
 type isClusterEnvelope_Body interface {
 	isClusterEnvelope_Body()
 }
@@ -456,6 +484,14 @@ type ClusterEnvelope_RouteDiagnostic struct {
 	RouteDiagnostic *MeshRouteDiagnostic `protobuf:"bytes,12,opt,name=route_diagnostic,json=routeDiagnostic,proto3,oneof"`
 }
 
+type ClusterEnvelope_ReplicationAck struct {
+	ReplicationAck *MeshReplicationAck `protobuf:"bytes,13,opt,name=replication_ack,json=replicationAck,proto3,oneof"`
+}
+
+type ClusterEnvelope_MembershipUpdate struct {
+	MembershipUpdate *MeshMembershipUpdate `protobuf:"bytes,15,opt,name=membership_update,json=membershipUpdate,proto3,oneof"`
+}
+
 func (*ClusterEnvelope_NodeHello) isClusterEnvelope_Body() {}
 
 func (*ClusterEnvelope_TimeSyncRequest) isClusterEnvelope_Body() {}
@@ -479,6 +515,10 @@ func (*ClusterEnvelope_SnapshotManifest) isClusterEnvelope_Body() {}
 func (*ClusterEnvelope_SnapshotChunk) isClusterEnvelope_Body() {}
 
 func (*ClusterEnvelope_RouteDiagnostic) isClusterEnvelope_Body() {}
+
+func (*ClusterEnvelope_ReplicationAck) isClusterEnvelope_Body() {}
+
+func (*ClusterEnvelope_MembershipUpdate) isClusterEnvelope_Body() {}
 
 type MeshNodeHello struct {
 	state            protoimpl.MessageState     `protogen:"open.v1"`
@@ -1031,8 +1071,9 @@ func (x *MeshForwardedPacket) GetTraceId() string {
 type MeshReplicationBatch struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	OriginNodeId  int64                  `protobuf:"varint,1,opt,name=origin_node_id,json=originNodeId,proto3" json:"origin_node_id,omitempty"`
-	BatchId       uint64                 `protobuf:"varint,2,opt,name=batch_id,json=batchId,proto3" json:"batch_id,omitempty"`
-	Payload       []byte                 `protobuf:"bytes,3,opt,name=payload,proto3" json:"payload,omitempty"`
+	Sequence      uint64                 `protobuf:"varint,2,opt,name=sequence,proto3" json:"sequence,omitempty"`
+	SentAtHlc     string                 `protobuf:"bytes,3,opt,name=sent_at_hlc,json=sentAtHlc,proto3" json:"sent_at_hlc,omitempty"`
+	EventBatch    *EventBatch            `protobuf:"bytes,4,opt,name=event_batch,json=eventBatch,proto3" json:"event_batch,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1074,16 +1115,23 @@ func (x *MeshReplicationBatch) GetOriginNodeId() int64 {
 	return 0
 }
 
-func (x *MeshReplicationBatch) GetBatchId() uint64 {
+func (x *MeshReplicationBatch) GetSequence() uint64 {
 	if x != nil {
-		return x.BatchId
+		return x.Sequence
 	}
 	return 0
 }
 
-func (x *MeshReplicationBatch) GetPayload() []byte {
+func (x *MeshReplicationBatch) GetSentAtHlc() string {
 	if x != nil {
-		return x.Payload
+		return x.SentAtHlc
+	}
+	return ""
+}
+
+func (x *MeshReplicationBatch) GetEventBatch() *EventBatch {
+	if x != nil {
+		return x.EventBatch
 	}
 	return nil
 }
@@ -1091,8 +1139,7 @@ func (x *MeshReplicationBatch) GetPayload() []byte {
 type MeshPullRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	OriginNodeId  int64                  `protobuf:"varint,1,opt,name=origin_node_id,json=originNodeId,proto3" json:"origin_node_id,omitempty"`
-	AfterSequence uint64                 `protobuf:"varint,2,opt,name=after_sequence,json=afterSequence,proto3" json:"after_sequence,omitempty"`
-	Limit         uint32                 `protobuf:"varint,3,opt,name=limit,proto3" json:"limit,omitempty"`
+	PullEvents    *PullEvents            `protobuf:"bytes,2,opt,name=pull_events,json=pullEvents,proto3" json:"pull_events,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1134,31 +1181,67 @@ func (x *MeshPullRequest) GetOriginNodeId() int64 {
 	return 0
 }
 
-func (x *MeshPullRequest) GetAfterSequence() uint64 {
+func (x *MeshPullRequest) GetPullEvents() *PullEvents {
 	if x != nil {
-		return x.AfterSequence
+		return x.PullEvents
 	}
-	return 0
+	return nil
 }
 
-func (x *MeshPullRequest) GetLimit() uint32 {
-	if x != nil {
-		return x.Limit
-	}
-	return 0
-}
-
-type MeshSnapshotManifest struct {
+type MeshReplicationAck struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	SnapshotId    string                 `protobuf:"bytes,1,opt,name=snapshot_id,json=snapshotId,proto3" json:"snapshot_id,omitempty"`
-	Partitions    []string               `protobuf:"bytes,2,rep,name=partitions,proto3" json:"partitions,omitempty"`
+	Ack           *Ack                   `protobuf:"bytes,1,opt,name=ack,proto3" json:"ack,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
+func (x *MeshReplicationAck) Reset() {
+	*x = MeshReplicationAck{}
+	mi := &file_mesh_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *MeshReplicationAck) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*MeshReplicationAck) ProtoMessage() {}
+
+func (x *MeshReplicationAck) ProtoReflect() protoreflect.Message {
+	mi := &file_mesh_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use MeshReplicationAck.ProtoReflect.Descriptor instead.
+func (*MeshReplicationAck) Descriptor() ([]byte, []int) {
+	return file_mesh_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *MeshReplicationAck) GetAck() *Ack {
+	if x != nil {
+		return x.Ack
+	}
+	return nil
+}
+
+type MeshSnapshotManifest struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	SnapshotDigest *SnapshotDigest        `protobuf:"bytes,1,opt,name=snapshot_digest,json=snapshotDigest,proto3" json:"snapshot_digest,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
 func (x *MeshSnapshotManifest) Reset() {
 	*x = MeshSnapshotManifest{}
-	mi := &file_mesh_proto_msgTypes[10]
+	mi := &file_mesh_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1170,7 +1253,7 @@ func (x *MeshSnapshotManifest) String() string {
 func (*MeshSnapshotManifest) ProtoMessage() {}
 
 func (x *MeshSnapshotManifest) ProtoReflect() protoreflect.Message {
-	mi := &file_mesh_proto_msgTypes[10]
+	mi := &file_mesh_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1183,35 +1266,26 @@ func (x *MeshSnapshotManifest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MeshSnapshotManifest.ProtoReflect.Descriptor instead.
 func (*MeshSnapshotManifest) Descriptor() ([]byte, []int) {
-	return file_mesh_proto_rawDescGZIP(), []int{10}
+	return file_mesh_proto_rawDescGZIP(), []int{11}
 }
 
-func (x *MeshSnapshotManifest) GetSnapshotId() string {
+func (x *MeshSnapshotManifest) GetSnapshotDigest() *SnapshotDigest {
 	if x != nil {
-		return x.SnapshotId
-	}
-	return ""
-}
-
-func (x *MeshSnapshotManifest) GetPartitions() []string {
-	if x != nil {
-		return x.Partitions
+		return x.SnapshotDigest
 	}
 	return nil
 }
 
 type MeshSnapshotChunk struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	SnapshotId    string                 `protobuf:"bytes,1,opt,name=snapshot_id,json=snapshotId,proto3" json:"snapshot_id,omitempty"`
-	Partition     string                 `protobuf:"bytes,2,opt,name=partition,proto3" json:"partition,omitempty"`
-	Payload       []byte                 `protobuf:"bytes,3,opt,name=payload,proto3" json:"payload,omitempty"`
+	SnapshotChunk *SnapshotChunk         `protobuf:"bytes,1,opt,name=snapshot_chunk,json=snapshotChunk,proto3" json:"snapshot_chunk,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *MeshSnapshotChunk) Reset() {
 	*x = MeshSnapshotChunk{}
-	mi := &file_mesh_proto_msgTypes[11]
+	mi := &file_mesh_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1223,7 +1297,7 @@ func (x *MeshSnapshotChunk) String() string {
 func (*MeshSnapshotChunk) ProtoMessage() {}
 
 func (x *MeshSnapshotChunk) ProtoReflect() protoreflect.Message {
-	mi := &file_mesh_proto_msgTypes[11]
+	mi := &file_mesh_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1236,26 +1310,12 @@ func (x *MeshSnapshotChunk) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MeshSnapshotChunk.ProtoReflect.Descriptor instead.
 func (*MeshSnapshotChunk) Descriptor() ([]byte, []int) {
-	return file_mesh_proto_rawDescGZIP(), []int{11}
+	return file_mesh_proto_rawDescGZIP(), []int{12}
 }
 
-func (x *MeshSnapshotChunk) GetSnapshotId() string {
+func (x *MeshSnapshotChunk) GetSnapshotChunk() *SnapshotChunk {
 	if x != nil {
-		return x.SnapshotId
-	}
-	return ""
-}
-
-func (x *MeshSnapshotChunk) GetPartition() string {
-	if x != nil {
-		return x.Partition
-	}
-	return ""
-}
-
-func (x *MeshSnapshotChunk) GetPayload() []byte {
-	if x != nil {
-		return x.Payload
+		return x.SnapshotChunk
 	}
 	return nil
 }
@@ -1270,7 +1330,7 @@ type MeshTimeSyncRequest struct {
 
 func (x *MeshTimeSyncRequest) Reset() {
 	*x = MeshTimeSyncRequest{}
-	mi := &file_mesh_proto_msgTypes[12]
+	mi := &file_mesh_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1282,7 +1342,7 @@ func (x *MeshTimeSyncRequest) String() string {
 func (*MeshTimeSyncRequest) ProtoMessage() {}
 
 func (x *MeshTimeSyncRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_mesh_proto_msgTypes[12]
+	mi := &file_mesh_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1295,7 +1355,7 @@ func (x *MeshTimeSyncRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MeshTimeSyncRequest.ProtoReflect.Descriptor instead.
 func (*MeshTimeSyncRequest) Descriptor() ([]byte, []int) {
-	return file_mesh_proto_rawDescGZIP(), []int{12}
+	return file_mesh_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *MeshTimeSyncRequest) GetRequestId() uint64 {
@@ -1324,7 +1384,7 @@ type MeshTimeSyncResponse struct {
 
 func (x *MeshTimeSyncResponse) Reset() {
 	*x = MeshTimeSyncResponse{}
-	mi := &file_mesh_proto_msgTypes[13]
+	mi := &file_mesh_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1336,7 +1396,7 @@ func (x *MeshTimeSyncResponse) String() string {
 func (*MeshTimeSyncResponse) ProtoMessage() {}
 
 func (x *MeshTimeSyncResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_mesh_proto_msgTypes[13]
+	mi := &file_mesh_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1349,7 +1409,7 @@ func (x *MeshTimeSyncResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MeshTimeSyncResponse.ProtoReflect.Descriptor instead.
 func (*MeshTimeSyncResponse) Descriptor() ([]byte, []int) {
-	return file_mesh_proto_rawDescGZIP(), []int{13}
+	return file_mesh_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *MeshTimeSyncResponse) GetRequestId() uint64 {
@@ -1391,7 +1451,7 @@ type MeshQueryRequest struct {
 
 func (x *MeshQueryRequest) Reset() {
 	*x = MeshQueryRequest{}
-	mi := &file_mesh_proto_msgTypes[14]
+	mi := &file_mesh_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1403,7 +1463,7 @@ func (x *MeshQueryRequest) String() string {
 func (*MeshQueryRequest) ProtoMessage() {}
 
 func (x *MeshQueryRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_mesh_proto_msgTypes[14]
+	mi := &file_mesh_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1416,7 +1476,7 @@ func (x *MeshQueryRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MeshQueryRequest.ProtoReflect.Descriptor instead.
 func (*MeshQueryRequest) Descriptor() ([]byte, []int) {
-	return file_mesh_proto_rawDescGZIP(), []int{14}
+	return file_mesh_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *MeshQueryRequest) GetRequestId() uint64 {
@@ -1452,7 +1512,7 @@ type MeshQueryResponse struct {
 
 func (x *MeshQueryResponse) Reset() {
 	*x = MeshQueryResponse{}
-	mi := &file_mesh_proto_msgTypes[15]
+	mi := &file_mesh_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1464,7 +1524,7 @@ func (x *MeshQueryResponse) String() string {
 func (*MeshQueryResponse) ProtoMessage() {}
 
 func (x *MeshQueryResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_mesh_proto_msgTypes[15]
+	mi := &file_mesh_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1477,7 +1537,7 @@ func (x *MeshQueryResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MeshQueryResponse.ProtoReflect.Descriptor instead.
 func (*MeshQueryResponse) Descriptor() ([]byte, []int) {
-	return file_mesh_proto_rawDescGZIP(), []int{15}
+	return file_mesh_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *MeshQueryResponse) GetRequestId() uint64 {
@@ -1508,6 +1568,50 @@ func (x *MeshQueryResponse) GetPayload() []byte {
 	return nil
 }
 
+type MeshMembershipUpdate struct {
+	state            protoimpl.MessageState `protogen:"open.v1"`
+	MembershipUpdate *MembershipUpdate      `protobuf:"bytes,1,opt,name=membership_update,json=membershipUpdate,proto3" json:"membership_update,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
+}
+
+func (x *MeshMembershipUpdate) Reset() {
+	*x = MeshMembershipUpdate{}
+	mi := &file_mesh_proto_msgTypes[17]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *MeshMembershipUpdate) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*MeshMembershipUpdate) ProtoMessage() {}
+
+func (x *MeshMembershipUpdate) ProtoReflect() protoreflect.Message {
+	mi := &file_mesh_proto_msgTypes[17]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use MeshMembershipUpdate.ProtoReflect.Descriptor instead.
+func (*MeshMembershipUpdate) Descriptor() ([]byte, []int) {
+	return file_mesh_proto_rawDescGZIP(), []int{17}
+}
+
+func (x *MeshMembershipUpdate) GetMembershipUpdate() *MembershipUpdate {
+	if x != nil {
+		return x.MembershipUpdate
+	}
+	return nil
+}
+
 type MeshRouteDiagnostic struct {
 	state             protoimpl.MessageState `protogen:"open.v1"`
 	DestinationNodeId int64                  `protobuf:"varint,1,opt,name=destination_node_id,json=destinationNodeId,proto3" json:"destination_node_id,omitempty"`
@@ -1520,7 +1624,7 @@ type MeshRouteDiagnostic struct {
 
 func (x *MeshRouteDiagnostic) Reset() {
 	*x = MeshRouteDiagnostic{}
-	mi := &file_mesh_proto_msgTypes[16]
+	mi := &file_mesh_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1532,7 +1636,7 @@ func (x *MeshRouteDiagnostic) String() string {
 func (*MeshRouteDiagnostic) ProtoMessage() {}
 
 func (x *MeshRouteDiagnostic) ProtoReflect() protoreflect.Message {
-	mi := &file_mesh_proto_msgTypes[16]
+	mi := &file_mesh_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1545,7 +1649,7 @@ func (x *MeshRouteDiagnostic) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MeshRouteDiagnostic.ProtoReflect.Descriptor instead.
 func (*MeshRouteDiagnostic) Descriptor() ([]byte, []int) {
-	return file_mesh_proto_rawDescGZIP(), []int{16}
+	return file_mesh_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *MeshRouteDiagnostic) GetDestinationNodeId() int64 {
@@ -1581,7 +1685,7 @@ var File_mesh_proto protoreflect.FileDescriptor
 const file_mesh_proto_rawDesc = "" +
 	"\n" +
 	"\n" +
-	"mesh.proto\x12\x10notifier.mesh.v1\"\xde\a\n" +
+	"mesh.proto\x12\x10notifier.mesh.v1\x1a\rcluster.proto\"\x9a\t\n" +
 	"\x0fClusterEnvelope\x12@\n" +
 	"\n" +
 	"node_hello\x18\x01 \x01(\v2\x1f.notifier.mesh.v1.MeshNodeHelloH\x00R\tnodeHello\x12S\n" +
@@ -1596,7 +1700,10 @@ const file_mesh_proto_rawDesc = "" +
 	"\x11snapshot_manifest\x18\n" +
 	" \x01(\v2&.notifier.mesh.v1.MeshSnapshotManifestH\x00R\x10snapshotManifest\x12L\n" +
 	"\x0esnapshot_chunk\x18\v \x01(\v2#.notifier.mesh.v1.MeshSnapshotChunkH\x00R\rsnapshotChunk\x12R\n" +
-	"\x10route_diagnostic\x18\f \x01(\v2%.notifier.mesh.v1.MeshRouteDiagnosticH\x00R\x0frouteDiagnosticB\x06\n" +
+	"\x10route_diagnostic\x18\f \x01(\v2%.notifier.mesh.v1.MeshRouteDiagnosticH\x00R\x0frouteDiagnostic\x12O\n" +
+	"\x0freplication_ack\x18\r \x01(\v2$.notifier.mesh.v1.MeshReplicationAckH\x00R\x0ereplicationAck\x12U\n" +
+	"\x11membership_update\x18\x0f \x01(\v2&.notifier.mesh.v1.MeshMembershipUpdateH\x00R\x10membershipUpdate\x12\x12\n" +
+	"\x04hmac\x18\x0e \x01(\fR\x04hmacB\x06\n" +
 	"\x04body\"\xf3\x01\n" +
 	"\rMeshNodeHello\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\x03R\x06nodeId\x12)\n" +
@@ -1650,26 +1757,23 @@ const file_mesh_proto_rawDesc = "" +
 	"\x11ingress_transport\x18\x06 \x01(\x0e2\x1f.notifier.mesh.v1.TransportKindR\x10ingressTransport\x12\x19\n" +
 	"\bttl_hops\x18\a \x01(\rR\attlHops\x12\x18\n" +
 	"\apayload\x18\b \x01(\fR\apayload\x12\x19\n" +
-	"\btrace_id\x18\t \x01(\tR\atraceId\"q\n" +
+	"\btrace_id\x18\t \x01(\tR\atraceId\"\xba\x01\n" +
 	"\x14MeshReplicationBatch\x12$\n" +
-	"\x0eorigin_node_id\x18\x01 \x01(\x03R\foriginNodeId\x12\x19\n" +
-	"\bbatch_id\x18\x02 \x01(\x04R\abatchId\x12\x18\n" +
-	"\apayload\x18\x03 \x01(\fR\apayload\"t\n" +
+	"\x0eorigin_node_id\x18\x01 \x01(\x03R\foriginNodeId\x12\x1a\n" +
+	"\bsequence\x18\x02 \x01(\x04R\bsequence\x12\x1e\n" +
+	"\vsent_at_hlc\x18\x03 \x01(\tR\tsentAtHlc\x12@\n" +
+	"\vevent_batch\x18\x04 \x01(\v2\x1f.notifier.cluster.v1.EventBatchR\n" +
+	"eventBatch\"y\n" +
 	"\x0fMeshPullRequest\x12$\n" +
-	"\x0eorigin_node_id\x18\x01 \x01(\x03R\foriginNodeId\x12%\n" +
-	"\x0eafter_sequence\x18\x02 \x01(\x04R\rafterSequence\x12\x14\n" +
-	"\x05limit\x18\x03 \x01(\rR\x05limit\"W\n" +
-	"\x14MeshSnapshotManifest\x12\x1f\n" +
-	"\vsnapshot_id\x18\x01 \x01(\tR\n" +
-	"snapshotId\x12\x1e\n" +
-	"\n" +
-	"partitions\x18\x02 \x03(\tR\n" +
-	"partitions\"l\n" +
-	"\x11MeshSnapshotChunk\x12\x1f\n" +
-	"\vsnapshot_id\x18\x01 \x01(\tR\n" +
-	"snapshotId\x12\x1c\n" +
-	"\tpartition\x18\x02 \x01(\tR\tpartition\x12\x18\n" +
-	"\apayload\x18\x03 \x01(\fR\apayload\"c\n" +
+	"\x0eorigin_node_id\x18\x01 \x01(\x03R\foriginNodeId\x12@\n" +
+	"\vpull_events\x18\x02 \x01(\v2\x1f.notifier.cluster.v1.PullEventsR\n" +
+	"pullEvents\"@\n" +
+	"\x12MeshReplicationAck\x12*\n" +
+	"\x03ack\x18\x01 \x01(\v2\x18.notifier.cluster.v1.AckR\x03ack\"d\n" +
+	"\x14MeshSnapshotManifest\x12L\n" +
+	"\x0fsnapshot_digest\x18\x01 \x01(\v2#.notifier.cluster.v1.SnapshotDigestR\x0esnapshotDigest\"^\n" +
+	"\x11MeshSnapshotChunk\x12I\n" +
+	"\x0esnapshot_chunk\x18\x01 \x01(\v2\".notifier.cluster.v1.SnapshotChunkR\rsnapshotChunk\"c\n" +
 	"\x13MeshTimeSyncRequest\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\x04R\trequestId\x12-\n" +
@@ -1691,7 +1795,9 @@ const file_mesh_proto_rawDesc = "" +
 	"\n" +
 	"error_code\x18\x02 \x01(\tR\terrorCode\x12#\n" +
 	"\rerror_message\x18\x03 \x01(\tR\ferrorMessage\x12\x18\n" +
-	"\apayload\x18\x04 \x01(\fR\apayload\"\xf2\x01\n" +
+	"\apayload\x18\x04 \x01(\fR\apayload\"j\n" +
+	"\x14MeshMembershipUpdate\x12R\n" +
+	"\x11membership_update\x18\x01 \x01(\v2%.notifier.cluster.v1.MembershipUpdateR\x10membershipUpdate\"\xf2\x01\n" +
 	"\x13MeshRouteDiagnostic\x12.\n" +
 	"\x13destination_node_id\x18\x01 \x01(\x03R\x11destinationNodeId\x12C\n" +
 	"\rtraffic_class\x18\x02 \x01(\x0e2\x1e.notifier.mesh.v1.TrafficClassR\ftrafficClass\x12L\n" +
@@ -1734,7 +1840,7 @@ func file_mesh_proto_rawDescGZIP() []byte {
 }
 
 var file_mesh_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
-var file_mesh_proto_msgTypes = make([]protoimpl.MessageInfo, 17)
+var file_mesh_proto_msgTypes = make([]protoimpl.MessageInfo, 19)
 var file_mesh_proto_goTypes = []any{
 	(TransportKind)(0),              // 0: notifier.mesh.v1.TransportKind
 	(TrafficClass)(0),               // 1: notifier.mesh.v1.TrafficClass
@@ -1750,47 +1856,63 @@ var file_mesh_proto_goTypes = []any{
 	(*MeshForwardedPacket)(nil),     // 11: notifier.mesh.v1.MeshForwardedPacket
 	(*MeshReplicationBatch)(nil),    // 12: notifier.mesh.v1.MeshReplicationBatch
 	(*MeshPullRequest)(nil),         // 13: notifier.mesh.v1.MeshPullRequest
-	(*MeshSnapshotManifest)(nil),    // 14: notifier.mesh.v1.MeshSnapshotManifest
-	(*MeshSnapshotChunk)(nil),       // 15: notifier.mesh.v1.MeshSnapshotChunk
-	(*MeshTimeSyncRequest)(nil),     // 16: notifier.mesh.v1.MeshTimeSyncRequest
-	(*MeshTimeSyncResponse)(nil),    // 17: notifier.mesh.v1.MeshTimeSyncResponse
-	(*MeshQueryRequest)(nil),        // 18: notifier.mesh.v1.MeshQueryRequest
-	(*MeshQueryResponse)(nil),       // 19: notifier.mesh.v1.MeshQueryResponse
-	(*MeshRouteDiagnostic)(nil),     // 20: notifier.mesh.v1.MeshRouteDiagnostic
+	(*MeshReplicationAck)(nil),      // 14: notifier.mesh.v1.MeshReplicationAck
+	(*MeshSnapshotManifest)(nil),    // 15: notifier.mesh.v1.MeshSnapshotManifest
+	(*MeshSnapshotChunk)(nil),       // 16: notifier.mesh.v1.MeshSnapshotChunk
+	(*MeshTimeSyncRequest)(nil),     // 17: notifier.mesh.v1.MeshTimeSyncRequest
+	(*MeshTimeSyncResponse)(nil),    // 18: notifier.mesh.v1.MeshTimeSyncResponse
+	(*MeshQueryRequest)(nil),        // 19: notifier.mesh.v1.MeshQueryRequest
+	(*MeshQueryResponse)(nil),       // 20: notifier.mesh.v1.MeshQueryResponse
+	(*MeshMembershipUpdate)(nil),    // 21: notifier.mesh.v1.MeshMembershipUpdate
+	(*MeshRouteDiagnostic)(nil),     // 22: notifier.mesh.v1.MeshRouteDiagnostic
+	(*EventBatch)(nil),              // 23: notifier.cluster.v1.EventBatch
+	(*PullEvents)(nil),              // 24: notifier.cluster.v1.PullEvents
+	(*Ack)(nil),                     // 25: notifier.cluster.v1.Ack
+	(*SnapshotDigest)(nil),          // 26: notifier.cluster.v1.SnapshotDigest
+	(*SnapshotChunk)(nil),           // 27: notifier.cluster.v1.SnapshotChunk
+	(*MembershipUpdate)(nil),        // 28: notifier.cluster.v1.MembershipUpdate
 }
 var file_mesh_proto_depIdxs = []int32{
 	5,  // 0: notifier.mesh.v1.ClusterEnvelope.node_hello:type_name -> notifier.mesh.v1.MeshNodeHello
-	16, // 1: notifier.mesh.v1.ClusterEnvelope.time_sync_request:type_name -> notifier.mesh.v1.MeshTimeSyncRequest
-	17, // 2: notifier.mesh.v1.ClusterEnvelope.time_sync_response:type_name -> notifier.mesh.v1.MeshTimeSyncResponse
+	17, // 1: notifier.mesh.v1.ClusterEnvelope.time_sync_request:type_name -> notifier.mesh.v1.MeshTimeSyncRequest
+	18, // 2: notifier.mesh.v1.ClusterEnvelope.time_sync_response:type_name -> notifier.mesh.v1.MeshTimeSyncResponse
 	9,  // 3: notifier.mesh.v1.ClusterEnvelope.topology_update:type_name -> notifier.mesh.v1.MeshTopologyUpdate
-	18, // 4: notifier.mesh.v1.ClusterEnvelope.query_request:type_name -> notifier.mesh.v1.MeshQueryRequest
-	19, // 5: notifier.mesh.v1.ClusterEnvelope.query_response:type_name -> notifier.mesh.v1.MeshQueryResponse
+	19, // 4: notifier.mesh.v1.ClusterEnvelope.query_request:type_name -> notifier.mesh.v1.MeshQueryRequest
+	20, // 5: notifier.mesh.v1.ClusterEnvelope.query_response:type_name -> notifier.mesh.v1.MeshQueryResponse
 	11, // 6: notifier.mesh.v1.ClusterEnvelope.forwarded_packet:type_name -> notifier.mesh.v1.MeshForwardedPacket
 	12, // 7: notifier.mesh.v1.ClusterEnvelope.replication_batch:type_name -> notifier.mesh.v1.MeshReplicationBatch
 	13, // 8: notifier.mesh.v1.ClusterEnvelope.pull_request:type_name -> notifier.mesh.v1.MeshPullRequest
-	14, // 9: notifier.mesh.v1.ClusterEnvelope.snapshot_manifest:type_name -> notifier.mesh.v1.MeshSnapshotManifest
-	15, // 10: notifier.mesh.v1.ClusterEnvelope.snapshot_chunk:type_name -> notifier.mesh.v1.MeshSnapshotChunk
-	20, // 11: notifier.mesh.v1.ClusterEnvelope.route_diagnostic:type_name -> notifier.mesh.v1.MeshRouteDiagnostic
-	6,  // 12: notifier.mesh.v1.MeshNodeHello.transports:type_name -> notifier.mesh.v1.MeshTransportCapability
-	7,  // 13: notifier.mesh.v1.MeshNodeHello.forwarding_policy:type_name -> notifier.mesh.v1.MeshForwardingPolicy
-	0,  // 14: notifier.mesh.v1.MeshTransportCapability.transport:type_name -> notifier.mesh.v1.TransportKind
-	8,  // 15: notifier.mesh.v1.MeshForwardingPolicy.traffic_rules:type_name -> notifier.mesh.v1.MeshTrafficRule
-	1,  // 16: notifier.mesh.v1.MeshTrafficRule.traffic_class:type_name -> notifier.mesh.v1.TrafficClass
-	2,  // 17: notifier.mesh.v1.MeshTrafficRule.disposition:type_name -> notifier.mesh.v1.ForwardingDisposition
-	10, // 18: notifier.mesh.v1.MeshTopologyUpdate.links:type_name -> notifier.mesh.v1.MeshLinkAdvertisement
-	7,  // 19: notifier.mesh.v1.MeshTopologyUpdate.forwarding_policy:type_name -> notifier.mesh.v1.MeshForwardingPolicy
-	6,  // 20: notifier.mesh.v1.MeshTopologyUpdate.transports:type_name -> notifier.mesh.v1.MeshTransportCapability
-	0,  // 21: notifier.mesh.v1.MeshLinkAdvertisement.transport:type_name -> notifier.mesh.v1.TransportKind
-	3,  // 22: notifier.mesh.v1.MeshLinkAdvertisement.path_class:type_name -> notifier.mesh.v1.PathClass
-	1,  // 23: notifier.mesh.v1.MeshForwardedPacket.traffic_class:type_name -> notifier.mesh.v1.TrafficClass
-	0,  // 24: notifier.mesh.v1.MeshForwardedPacket.ingress_transport:type_name -> notifier.mesh.v1.TransportKind
-	1,  // 25: notifier.mesh.v1.MeshRouteDiagnostic.traffic_class:type_name -> notifier.mesh.v1.TrafficClass
-	0,  // 26: notifier.mesh.v1.MeshRouteDiagnostic.ingress_transport:type_name -> notifier.mesh.v1.TransportKind
-	27, // [27:27] is the sub-list for method output_type
-	27, // [27:27] is the sub-list for method input_type
-	27, // [27:27] is the sub-list for extension type_name
-	27, // [27:27] is the sub-list for extension extendee
-	0,  // [0:27] is the sub-list for field type_name
+	15, // 9: notifier.mesh.v1.ClusterEnvelope.snapshot_manifest:type_name -> notifier.mesh.v1.MeshSnapshotManifest
+	16, // 10: notifier.mesh.v1.ClusterEnvelope.snapshot_chunk:type_name -> notifier.mesh.v1.MeshSnapshotChunk
+	22, // 11: notifier.mesh.v1.ClusterEnvelope.route_diagnostic:type_name -> notifier.mesh.v1.MeshRouteDiagnostic
+	14, // 12: notifier.mesh.v1.ClusterEnvelope.replication_ack:type_name -> notifier.mesh.v1.MeshReplicationAck
+	21, // 13: notifier.mesh.v1.ClusterEnvelope.membership_update:type_name -> notifier.mesh.v1.MeshMembershipUpdate
+	6,  // 14: notifier.mesh.v1.MeshNodeHello.transports:type_name -> notifier.mesh.v1.MeshTransportCapability
+	7,  // 15: notifier.mesh.v1.MeshNodeHello.forwarding_policy:type_name -> notifier.mesh.v1.MeshForwardingPolicy
+	0,  // 16: notifier.mesh.v1.MeshTransportCapability.transport:type_name -> notifier.mesh.v1.TransportKind
+	8,  // 17: notifier.mesh.v1.MeshForwardingPolicy.traffic_rules:type_name -> notifier.mesh.v1.MeshTrafficRule
+	1,  // 18: notifier.mesh.v1.MeshTrafficRule.traffic_class:type_name -> notifier.mesh.v1.TrafficClass
+	2,  // 19: notifier.mesh.v1.MeshTrafficRule.disposition:type_name -> notifier.mesh.v1.ForwardingDisposition
+	10, // 20: notifier.mesh.v1.MeshTopologyUpdate.links:type_name -> notifier.mesh.v1.MeshLinkAdvertisement
+	7,  // 21: notifier.mesh.v1.MeshTopologyUpdate.forwarding_policy:type_name -> notifier.mesh.v1.MeshForwardingPolicy
+	6,  // 22: notifier.mesh.v1.MeshTopologyUpdate.transports:type_name -> notifier.mesh.v1.MeshTransportCapability
+	0,  // 23: notifier.mesh.v1.MeshLinkAdvertisement.transport:type_name -> notifier.mesh.v1.TransportKind
+	3,  // 24: notifier.mesh.v1.MeshLinkAdvertisement.path_class:type_name -> notifier.mesh.v1.PathClass
+	1,  // 25: notifier.mesh.v1.MeshForwardedPacket.traffic_class:type_name -> notifier.mesh.v1.TrafficClass
+	0,  // 26: notifier.mesh.v1.MeshForwardedPacket.ingress_transport:type_name -> notifier.mesh.v1.TransportKind
+	23, // 27: notifier.mesh.v1.MeshReplicationBatch.event_batch:type_name -> notifier.cluster.v1.EventBatch
+	24, // 28: notifier.mesh.v1.MeshPullRequest.pull_events:type_name -> notifier.cluster.v1.PullEvents
+	25, // 29: notifier.mesh.v1.MeshReplicationAck.ack:type_name -> notifier.cluster.v1.Ack
+	26, // 30: notifier.mesh.v1.MeshSnapshotManifest.snapshot_digest:type_name -> notifier.cluster.v1.SnapshotDigest
+	27, // 31: notifier.mesh.v1.MeshSnapshotChunk.snapshot_chunk:type_name -> notifier.cluster.v1.SnapshotChunk
+	28, // 32: notifier.mesh.v1.MeshMembershipUpdate.membership_update:type_name -> notifier.cluster.v1.MembershipUpdate
+	1,  // 33: notifier.mesh.v1.MeshRouteDiagnostic.traffic_class:type_name -> notifier.mesh.v1.TrafficClass
+	0,  // 34: notifier.mesh.v1.MeshRouteDiagnostic.ingress_transport:type_name -> notifier.mesh.v1.TransportKind
+	35, // [35:35] is the sub-list for method output_type
+	35, // [35:35] is the sub-list for method input_type
+	35, // [35:35] is the sub-list for extension type_name
+	35, // [35:35] is the sub-list for extension extendee
+	0,  // [0:35] is the sub-list for field type_name
 }
 
 func init() { file_mesh_proto_init() }
@@ -1798,6 +1920,7 @@ func file_mesh_proto_init() {
 	if File_mesh_proto != nil {
 		return
 	}
+	file_cluster_proto_init()
 	file_mesh_proto_msgTypes[0].OneofWrappers = []any{
 		(*ClusterEnvelope_NodeHello)(nil),
 		(*ClusterEnvelope_TimeSyncRequest)(nil),
@@ -1811,6 +1934,8 @@ func file_mesh_proto_init() {
 		(*ClusterEnvelope_SnapshotManifest)(nil),
 		(*ClusterEnvelope_SnapshotChunk)(nil),
 		(*ClusterEnvelope_RouteDiagnostic)(nil),
+		(*ClusterEnvelope_ReplicationAck)(nil),
+		(*ClusterEnvelope_MembershipUpdate)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
@@ -1818,7 +1943,7 @@ func file_mesh_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_mesh_proto_rawDesc), len(file_mesh_proto_rawDesc)),
 			NumEnums:      4,
-			NumMessages:   17,
+			NumMessages:   19,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

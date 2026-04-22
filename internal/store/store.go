@@ -31,18 +31,19 @@ const (
 )
 
 const (
-	RoleSuperAdmin       = "super_admin"
-	RoleAdmin            = "admin"
-	RoleUser             = "user"
-	RoleChannel          = "channel"
-	RoleBroadcast        = "broadcast"
-	RoleNode             = "node"
-	BootstrapAdminUserID = int64(1)
-	BroadcastUserID      = int64(2)
-	NodeIngressUserID    = int64(3)
-	ReservedUserIDMax    = int64(1024)
-	defaultSchemaVersion = "14"
-	schemaMetaNodeIDKey  = "node_id"
+	RoleSuperAdmin                      = "super_admin"
+	RoleAdmin                           = "admin"
+	RoleUser                            = "user"
+	RoleChannel                         = "channel"
+	RoleBroadcast                       = "broadcast"
+	RoleNode                            = "node"
+	BootstrapAdminUserID                = int64(1)
+	BroadcastUserID                     = int64(2)
+	NodeIngressUserID                   = int64(3)
+	ReservedUserIDMax                   = int64(1024)
+	defaultSchemaVersion                = "14"
+	schemaMetaNodeIDKey                 = "node_id"
+	schemaMetaMeshTopologyGenerationKey = "mesh_topology_generation"
 )
 
 const disabledPasswordHash = "!"

@@ -80,12 +80,13 @@ func (c Config) ZeroMQTransportCapability() *mesh.TransportCapability {
 	if !c.ZeroMQ.Enabled {
 		return nil
 	}
+	forwardingEnabled := c.ZeroMQForwardingEnabled()
 	capability := &mesh.TransportCapability{
 		Transport:       mesh.TransportZeroMQ,
-		InboundEnabled:  c.zeroMQListenerEnabled(),
-		OutboundEnabled: c.zeroMQDialEnabled(),
+		InboundEnabled:  c.zeroMQListenerEnabled() && forwardingEnabled,
+		OutboundEnabled: c.zeroMQDialEnabled() && forwardingEnabled,
 	}
-	if c.zeroMQListenerEnabled() {
+	if capability.InboundEnabled {
 		capability.AdvertisedEndpoints = []string{zeroMQPeerURLForBindURL(c.ZeroMQ.BindURL)}
 	}
 	return capability

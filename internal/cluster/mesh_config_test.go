@@ -160,3 +160,48 @@ func TestConfigTransportCapabilitiesReflectMeshSettings(t *testing.T) {
 		t.Fatalf("unexpected zeromq advertised endpoints: %+v", zeroMQCapability.AdvertisedEndpoints)
 	}
 }
+
+func TestConfigZeroMQForwardingDisableRemovesMeshCapability(t *testing.T) {
+	t.Parallel()
+
+	cfg := Config{
+		NodeID:        testNodeID(1),
+		AdvertisePath: "/internal/cluster/ws",
+		ClusterSecret: "secret",
+		ZeroMQ: ZeroMQConfig{
+			Enabled:           true,
+			BindURL:           "tcp://127.0.0.1:9090",
+			ForwardingEnabled: boolPtr(false),
+		},
+	}
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("validate config: %v", err)
+	}
+
+	zeroMQCapability := cfg.ZeroMQTransportCapability()
+	if zeroMQCapability == nil {
+		t.Fatal("expected zeromq capability object even when forwarding is disabled")
+	}
+	if zeroMQCapability.InboundEnabled || zeroMQCapability.OutboundEnabled {
+		t.Fatalf("expected zeromq mesh forwarding capability to be disabled, got %+v", zeroMQCapability)
+	}
+	if len(zeroMQCapability.AdvertisedEndpoints) != 0 {
+		t.Fatalf("expected zeromq advertised endpoints to be hidden when forwarding is disabled, got %+v", zeroMQCapability.AdvertisedEndpoints)
+	}
+	if adapter := NewZeroMQMeshTransportAdapter(cfg, nil); adapter != nil {
+		t.Fatal("expected zeromq mesh adapter to be omitted when forwarding is disabled")
+	}
+
+	mgr, err := NewManager(cfg, nil)
+	if err != nil {
+		t.Fatalf("new manager: %v", err)
+	}
+	binding, err := mgr.BuildMeshRuntime()
+	if err != nil {
+		t.Fatalf("build mesh runtime: %v", err)
+	}
+	if binding.InboundAdapter(mesh.TransportZeroMQ) != nil {
+		t.Fatal("expected mesh runtime to omit zeromq adapter when forwarding is disabled")
+	}
+}

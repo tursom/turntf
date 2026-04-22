@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/tursom/turntf/internal/app"
+	"github.com/tursom/turntf/internal/mesh"
 )
 
 func statusTransport(active *session, configuredURL, discoveredURL string) string {
@@ -198,6 +199,7 @@ func (m *Manager) Status(context.Context) (app.ClusterStatus, error) {
 		LastTrustedClockSync: lastTrustedClockSync,
 		ClockTransitions:     transitions,
 		Discovery:            discovery,
+		Mesh:                 m.meshStatusSnapshot(),
 		Peers:                make([]app.ClusterPeerStatus, 0, len(peers)),
 	}
 	for _, peer := range peers {
@@ -213,6 +215,106 @@ func (m *Manager) Status(context.Context) (app.ClusterStatus, error) {
 		status.Peers = append(status.Peers, item)
 	}
 	return status, nil
+}
+
+func (m *Manager) meshStatusSnapshot() app.ClusterMeshStatus {
+	binding := m.MeshRuntime()
+	if binding == nil {
+		return app.ClusterMeshStatus{}
+	}
+	runtime := binding.Runtime()
+	if runtime == nil {
+		return app.ClusterMeshStatus{}
+	}
+	policy := runtime.LocalPolicy()
+	status := app.ClusterMeshStatus{
+		Enabled:            true,
+		ForwardingEnabled:  policy.GetTransitEnabled(),
+		BridgeEnabled:      policy.GetBridgeEnabled(),
+		NodeFeeWeight:      policy.GetNodeFeeWeight(),
+		TopologyGeneration: binding.TopologyStore().Snapshot().TopologyGeneration,
+	}
+	for _, capability := range runtime.LocalCapabilities() {
+		if capability == nil {
+			continue
+		}
+		status.TransportCapabilities = append(status.TransportCapabilities, app.ClusterMeshTransportCapability{
+			Transport:                 meshTransportLabel(capability.Transport),
+			InboundEnabled:            capability.InboundEnabled,
+			OutboundEnabled:           capability.OutboundEnabled,
+			NativeRelayClientEnabled:  capability.NativeRelayClientEnabled,
+			NativeRelayServiceEnabled: capability.NativeRelayServiceEnabled,
+			AdvertisedEndpoints:       append([]string(nil), capability.AdvertisedEndpoints...),
+		})
+	}
+	sort.Slice(status.TransportCapabilities, func(i, j int) bool {
+		return status.TransportCapabilities[i].Transport < status.TransportCapabilities[j].Transport
+	})
+	for _, rule := range policy.GetTrafficRules() {
+		if rule == nil {
+			continue
+		}
+		status.TrafficRules = append(status.TrafficRules, app.ClusterMeshTrafficRule{
+			TrafficClass: meshTrafficClassLabel(rule.TrafficClass),
+			Disposition:  meshDispositionLabel(rule.Disposition),
+		})
+	}
+	sort.Slice(status.TrafficRules, func(i, j int) bool {
+		return status.TrafficRules[i].TrafficClass < status.TrafficRules[j].TrafficClass
+	})
+	snapshot := binding.TopologyStore().Snapshot()
+	metrics := m.meshMetricsSnapshot()
+	for _, sample := range metrics.ForwardedPackets {
+		status.Metrics.ForwardedPackets = append(status.Metrics.ForwardedPackets, app.ClusterMeshMetricSample(sample))
+	}
+	for _, sample := range metrics.ForwardedBytes {
+		status.Metrics.ForwardedBytes = append(status.Metrics.ForwardedBytes, app.ClusterMeshMetricSample(sample))
+	}
+	for _, sample := range metrics.RoutingNoPath {
+		status.Metrics.RoutingNoPath = append(status.Metrics.RoutingNoPath, app.ClusterMeshMetricSample(sample))
+	}
+	for _, sample := range metrics.DecisionCost {
+		status.Metrics.DecisionCost = append(status.Metrics.DecisionCost, app.ClusterMeshCostSample(sample))
+	}
+	for _, sample := range metrics.BridgeForwards {
+		status.Metrics.BridgeForwards = append(status.Metrics.BridgeForwards, app.ClusterMeshMetricSample(sample))
+	}
+	trafficClasses := []mesh.TrafficClass{
+		mesh.TrafficControlCritical,
+		mesh.TrafficControlQuery,
+		mesh.TrafficTransientInteractive,
+		mesh.TrafficReplicationStream,
+		mesh.TrafficSnapshotBulk,
+	}
+	for destinationNodeID := range snapshot.Nodes {
+		if destinationNodeID <= 0 || destinationNodeID == m.cfg.NodeID {
+			continue
+		}
+		for _, trafficClass := range trafficClasses {
+			route := app.ClusterMeshRoute{
+				DestinationNodeID:  destinationNodeID,
+				TrafficClass:       meshTrafficClassLabel(trafficClass),
+				Reachable:          false,
+				TopologyGeneration: snapshot.TopologyGeneration,
+			}
+			if decision, ok := binding.DescribeRoute(destinationNodeID, trafficClass); ok {
+				route.Reachable = true
+				route.NextHopNodeID = decision.NextHopNodeID
+				route.OutboundTransport = meshTransportLabel(decision.OutboundTransport)
+				route.PathClass = meshPathClassLabel(decision.PathClass)
+				route.EstimatedCost = decision.EstimatedCost
+				route.TopologyGeneration = decision.TopologyGeneration
+			}
+			status.Routes = append(status.Routes, route)
+		}
+	}
+	sort.Slice(status.Routes, func(i, j int) bool {
+		if status.Routes[i].DestinationNodeID != status.Routes[j].DestinationNodeID {
+			return status.Routes[i].DestinationNodeID < status.Routes[j].DestinationNodeID
+		}
+		return status.Routes[i].TrafficClass < status.Routes[j].TrafficClass
+	})
+	return status
 }
 
 func (m *Manager) libP2PVerifiedAddrsLocked() []string {

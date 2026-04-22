@@ -54,7 +54,64 @@ type operationsStatus struct {
 	MessageTrim          messageTrimStatus    `json:"message_trim"`
 	Projection           projectionStatus     `json:"projection"`
 	Discovery            discoveryStatus      `json:"discovery"`
+	Mesh                 meshStatus           `json:"mesh,omitempty"`
 	Peers                []peerStatusResponse `json:"peers"`
+}
+
+type meshStatus struct {
+	Enabled               bool                      `json:"enabled"`
+	ForwardingEnabled     bool                      `json:"forwarding_enabled"`
+	BridgeEnabled         bool                      `json:"bridge_enabled"`
+	NodeFeeWeight         int64                     `json:"node_fee_weight"`
+	TopologyGeneration    uint64                    `json:"topology_generation"`
+	TransportCapabilities []meshTransportCapability `json:"transport_capabilities,omitempty"`
+	TrafficRules          []meshTrafficRule         `json:"traffic_rules,omitempty"`
+	Routes                []meshRoute               `json:"routes,omitempty"`
+	Metrics               meshMetrics               `json:"metrics,omitempty"`
+}
+
+type meshTransportCapability struct {
+	Transport                 string   `json:"transport"`
+	InboundEnabled            bool     `json:"inbound_enabled"`
+	OutboundEnabled           bool     `json:"outbound_enabled"`
+	NativeRelayClientEnabled  bool     `json:"native_relay_client_enabled"`
+	NativeRelayServiceEnabled bool     `json:"native_relay_service_enabled"`
+	AdvertisedEndpoints       []string `json:"advertised_endpoints,omitempty"`
+}
+
+type meshTrafficRule struct {
+	TrafficClass string `json:"traffic_class"`
+	Disposition  string `json:"disposition"`
+}
+
+type meshRoute struct {
+	DestinationNodeID  int64  `json:"destination_node_id"`
+	TrafficClass       string `json:"traffic_class"`
+	Reachable          bool   `json:"reachable"`
+	NextHopNodeID      int64  `json:"next_hop_node_id,omitempty"`
+	OutboundTransport  string `json:"outbound_transport,omitempty"`
+	PathClass          string `json:"path_class,omitempty"`
+	EstimatedCost      int64  `json:"estimated_cost,omitempty"`
+	TopologyGeneration uint64 `json:"topology_generation"`
+}
+
+type meshMetrics struct {
+	ForwardedPackets []meshMetricSample `json:"forwarded_packets,omitempty"`
+	ForwardedBytes   []meshMetricSample `json:"forwarded_bytes,omitempty"`
+	RoutingNoPath    []meshMetricSample `json:"routing_no_path,omitempty"`
+	DecisionCost     []meshCostSample   `json:"decision_cost,omitempty"`
+	BridgeForwards   []meshMetricSample `json:"bridge_forwards,omitempty"`
+}
+
+type meshMetricSample struct {
+	TrafficClass string `json:"traffic_class"`
+	PathClass    string `json:"path_class,omitempty"`
+	Value        uint64 `json:"value"`
+}
+
+type meshCostSample struct {
+	TrafficClass string `json:"traffic_class"`
+	Value        int64  `json:"value"`
 }
 
 type discoveryStatus struct {
@@ -194,6 +251,7 @@ func (s *Service) OperationsStatus(ctx context.Context) (operationsStatus, error
 			LibP2PRelayEnabled:    clusterStatus.Discovery.LibP2PRelayEnabled,
 			LibP2PHolePunching:    clusterStatus.Discovery.LibP2PHolePunching,
 		},
+		Mesh:  meshStatusFromCluster(clusterStatus.Mesh),
 		Peers: mergePeerStatus(storeStats.Peers, clusterStatus.Peers),
 	}
 	if response.NodeID == 0 {
@@ -329,6 +387,47 @@ func (s *Service) Metrics(ctx context.Context) (string, error) {
 	writeGauge(&buf, "notifier_membership_advertisements_rejected_total", map[string]string{"node_id": nodeIDLabel}, float64(status.Discovery.RejectedTotal))
 	writeMetricHelp(&buf, "notifier_discovered_peer_persist_failures_total", "Discovered peer persistence failures.", "counter")
 	writeGauge(&buf, "notifier_discovered_peer_persist_failures_total", map[string]string{"node_id": nodeIDLabel}, float64(status.Discovery.PersistFailuresTotal))
+	writeMetricHelp(&buf, "forwarded_packets_total", "Mesh forwarded packets grouped by traffic and path class.", "counter")
+	for _, sample := range status.Mesh.Metrics.ForwardedPackets {
+		writeGauge(&buf, "forwarded_packets_total", map[string]string{
+			"node_id":       nodeIDLabel,
+			"traffic_class": sample.TrafficClass,
+			"path_class":    sample.PathClass,
+		}, float64(sample.Value))
+	}
+	writeMetricHelp(&buf, "forwarded_bytes_total", "Mesh forwarded bytes grouped by traffic and path class.", "counter")
+	for _, sample := range status.Mesh.Metrics.ForwardedBytes {
+		writeGauge(&buf, "forwarded_bytes_total", map[string]string{
+			"node_id":       nodeIDLabel,
+			"traffic_class": sample.TrafficClass,
+			"path_class":    sample.PathClass,
+		}, float64(sample.Value))
+	}
+	writeMetricHelp(&buf, "routing_decision_cost", "Last observed mesh routing decision cost by traffic class.", "gauge")
+	for _, sample := range status.Mesh.Metrics.DecisionCost {
+		writeGauge(&buf, "routing_decision_cost", map[string]string{
+			"node_id":       nodeIDLabel,
+			"traffic_class": sample.TrafficClass,
+		}, float64(sample.Value))
+	}
+	writeMetricHelp(&buf, "routing_no_path_total", "Mesh routing no-path decisions grouped by traffic class.", "counter")
+	for _, sample := range status.Mesh.Metrics.RoutingNoPath {
+		writeGauge(&buf, "routing_no_path_total", map[string]string{
+			"node_id":       nodeIDLabel,
+			"traffic_class": sample.TrafficClass,
+		}, float64(sample.Value))
+	}
+	writeMetricHelp(&buf, "topology_generation", "Current mesh topology generation.", "gauge")
+	writeGauge(&buf, "topology_generation", map[string]string{"node_id": nodeIDLabel}, float64(status.Mesh.TopologyGeneration))
+	writeMetricHelp(&buf, "node_fee_weight", "Local mesh node fee weight.", "gauge")
+	writeGauge(&buf, "node_fee_weight", map[string]string{"node_id": nodeIDLabel}, float64(status.Mesh.NodeFeeWeight))
+	writeMetricHelp(&buf, "bridge_forward_total", "Mesh cross-transport bridge forwards grouped by traffic class.", "counter")
+	for _, sample := range status.Mesh.Metrics.BridgeForwards {
+		writeGauge(&buf, "bridge_forward_total", map[string]string{
+			"node_id":       nodeIDLabel,
+			"traffic_class": sample.TrafficClass,
+		}, float64(sample.Value))
+	}
 
 	writeMetricHelp(&buf, "notifier_peer_connected", "Whether the peer has an active cluster session.", "gauge")
 	writeMetricHelp(&buf, "notifier_peer_origin_acked_event_id", "Highest origin event id acknowledged by the peer.", "gauge")
@@ -501,6 +600,60 @@ func mergePeerStatus(storePeers []store.PeerOperationsStats, clusterPeers []app.
 		return unknown[i].ConfiguredURL < unknown[j].ConfiguredURL
 	})
 	return append(unknown, peers...)
+}
+
+func meshStatusFromCluster(status app.ClusterMeshStatus) meshStatus {
+	out := meshStatus{
+		Enabled:            status.Enabled,
+		ForwardingEnabled:  status.ForwardingEnabled,
+		BridgeEnabled:      status.BridgeEnabled,
+		NodeFeeWeight:      status.NodeFeeWeight,
+		TopologyGeneration: status.TopologyGeneration,
+	}
+	for _, capability := range status.TransportCapabilities {
+		out.TransportCapabilities = append(out.TransportCapabilities, meshTransportCapability{
+			Transport:                 capability.Transport,
+			InboundEnabled:            capability.InboundEnabled,
+			OutboundEnabled:           capability.OutboundEnabled,
+			NativeRelayClientEnabled:  capability.NativeRelayClientEnabled,
+			NativeRelayServiceEnabled: capability.NativeRelayServiceEnabled,
+			AdvertisedEndpoints:       append([]string(nil), capability.AdvertisedEndpoints...),
+		})
+	}
+	for _, rule := range status.TrafficRules {
+		out.TrafficRules = append(out.TrafficRules, meshTrafficRule{
+			TrafficClass: rule.TrafficClass,
+			Disposition:  rule.Disposition,
+		})
+	}
+	for _, route := range status.Routes {
+		out.Routes = append(out.Routes, meshRoute{
+			DestinationNodeID:  route.DestinationNodeID,
+			TrafficClass:       route.TrafficClass,
+			Reachable:          route.Reachable,
+			NextHopNodeID:      route.NextHopNodeID,
+			OutboundTransport:  route.OutboundTransport,
+			PathClass:          route.PathClass,
+			EstimatedCost:      route.EstimatedCost,
+			TopologyGeneration: route.TopologyGeneration,
+		})
+	}
+	for _, sample := range status.Metrics.ForwardedPackets {
+		out.Metrics.ForwardedPackets = append(out.Metrics.ForwardedPackets, meshMetricSample(sample))
+	}
+	for _, sample := range status.Metrics.ForwardedBytes {
+		out.Metrics.ForwardedBytes = append(out.Metrics.ForwardedBytes, meshMetricSample(sample))
+	}
+	for _, sample := range status.Metrics.RoutingNoPath {
+		out.Metrics.RoutingNoPath = append(out.Metrics.RoutingNoPath, meshMetricSample(sample))
+	}
+	for _, sample := range status.Metrics.DecisionCost {
+		out.Metrics.DecisionCost = append(out.Metrics.DecisionCost, meshCostSample(sample))
+	}
+	for _, sample := range status.Metrics.BridgeForwards {
+		out.Metrics.BridgeForwards = append(out.Metrics.BridgeForwards, meshMetricSample(sample))
+	}
+	return out
 }
 
 func mergePeerOrigins(storeOrigins []peerOriginStatusResponse, clusterOrigins []app.ClusterPeerOriginStatus) []peerOriginStatusResponse {

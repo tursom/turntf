@@ -2,6 +2,8 @@ syntax = "proto3";
 
 package notifier.mesh.v1;
 
+import "cluster.proto";
+
 option go_package = "github.com/tursom/turntf/internal/proto;proto";
 
 enum TransportKind {
@@ -49,7 +51,10 @@ message ClusterEnvelope {
     MeshSnapshotManifest snapshot_manifest = 10;
     MeshSnapshotChunk snapshot_chunk = 11;
     MeshRouteDiagnostic route_diagnostic = 12;
+    MeshReplicationAck replication_ack = 13;
+    MeshMembershipUpdate membership_update = 15;
   }
+  bytes hmac = 14;
 }
 
 message MeshNodeHello {
@@ -112,25 +117,26 @@ message MeshForwardedPacket {
 
 message MeshReplicationBatch {
   int64 origin_node_id = 1;
-  uint64 batch_id = 2;
-  bytes payload = 3;
+  uint64 sequence = 2;
+  string sent_at_hlc = 3;
+  notifier.cluster.v1.EventBatch event_batch = 4;
 }
 
 message MeshPullRequest {
   int64 origin_node_id = 1;
-  uint64 after_sequence = 2;
-  uint32 limit = 3;
+  notifier.cluster.v1.PullEvents pull_events = 2;
+}
+
+message MeshReplicationAck {
+  notifier.cluster.v1.Ack ack = 1;
 }
 
 message MeshSnapshotManifest {
-  string snapshot_id = 1;
-  repeated string partitions = 2;
+  notifier.cluster.v1.SnapshotDigest snapshot_digest = 1;
 }
 
 message MeshSnapshotChunk {
-  string snapshot_id = 1;
-  string partition = 2;
-  bytes payload = 3;
+  notifier.cluster.v1.SnapshotChunk snapshot_chunk = 1;
 }
 
 message MeshTimeSyncRequest {
@@ -156,6 +162,10 @@ message MeshQueryResponse {
   string error_code = 2;
   string error_message = 3;
   bytes payload = 4;
+}
+
+message MeshMembershipUpdate {
+  notifier.cluster.v1.MembershipUpdate membership_update = 1;
 }
 
 message MeshRouteDiagnostic {

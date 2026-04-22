@@ -30,16 +30,13 @@ const (
 	queryLoggedInUsersTimeout        = 3 * time.Second
 	catchupRetryInterval             = time.Second
 	antiEntropyInterval              = 60 * time.Second
-	routingUpdateInterval            = 5 * time.Second
 	membershipUpdateInterval         = 5 * time.Second
 	discoveryCandidateTTL            = 10 * time.Minute
 	maxDynamicDiscoveredPeers        = 8
 	routeRetryInterval               = 200 * time.Millisecond
-	packetSeenTTL                    = 30 * time.Second
 	routeRetryTTL                    = 3 * time.Second
 	defaultPacketTTLHops             = 8
 	defaultLoggedInUsersQueryMaxHops = 8
-	routingSwitchThresholdMs         = 15
 )
 
 var marshalOptions = proto.MarshalOptions{Deterministic: true}
@@ -66,6 +63,8 @@ type Manager struct {
 
 	zeroMQListenerRunning bool
 
+	meshRuntime *MeshRuntimeBinding
+
 	mu              sync.Mutex
 	peers           map[int64]*peerState
 	configuredPeers []*configuredPeer
@@ -80,19 +79,22 @@ type Manager struct {
 	timeSyncer               func(*session) (timeSyncSample, error)
 	transientHandler         func(store.TransientPacket) bool
 	loggedInUsersProvider    func(context.Context) ([]app.LoggedInUserSummary, error)
-	supportsRouting          bool
 	supportsMembership       bool
 	membershipGeneration     uint64
 	membershipUpdatesSent    uint64
 	membershipUpdatesRecv    uint64
 	discoveryRejects         uint64
 	discoveryPersistFailures uint64
-	routingGeneration        uint64
-	routingTable             map[int64]routeEntry
-	seenPackets              map[string]time.Time
 	retryQueue               map[string]queuedPacket
+	nextConnectionID         uint64
 	nextLoggedInUsersQueryID uint64
 	pendingLoggedInUsers     map[uint64]chan loggedInUsersQueryResult
+	nextMeshPacketID         uint64
+	meshForwardedPackets     map[string]uint64
+	meshForwardedBytes       map[string]uint64
+	meshRoutingNoPath        map[string]uint64
+	meshRoutingDecisionCost  map[string]int64
+	meshBridgeForwards       map[string]uint64
 }
 
 type configuredPeer struct {
@@ -135,7 +137,6 @@ type peerState struct {
 	clockSkewViolationStreak int
 	clockHealthyStreak       int
 	sessions                 map[uint64]*session
-	routeAdverts             map[int64]routeAdvertisement
 	joinedLogged             bool
 
 	snapshotDigestsSent     uint64
@@ -166,37 +167,16 @@ type session struct {
 	syncLoopStarted         bool
 	remoteSnapshotVersion   string
 	remoteMessageWindowSize int
-	libP2PPeerID             string
+	libP2PPeerID            string
 	pendingSnapshotParts    map[string]struct{}
 	nextTimeSyncID          uint64
 	nextPullRequestID       uint64
 	pendingTimeSync         map[uint64]chan timeSyncResult
 	clockOffsetMs           int64
-	supportsRouting         bool
 	supportsMembership      bool
 	smoothedRTTMs           int64
 	jitterPenaltyMs         int64
 	lastRTTUpdate           time.Time
-}
-
-type routeAdvertisement struct {
-	destinationNodeID int64
-	reachable         bool
-	totalCostMs       int64
-	residualCostMs    int64
-	residualJitterMs  int64
-}
-
-type routeEntry struct {
-	destinationNodeID    int64
-	nextHopPeer          int64
-	selectedConnectionID uint64
-	totalCostMs          int64
-	residualCostMs       int64
-	residualJitterMs     int64
-	learnedFromPeer      int64
-	generation           uint64
-	updatedAt            time.Time
 }
 
 type queuedPacket struct {
@@ -253,25 +233,27 @@ func NewManager(cfg Config, st *store.Store) (*Manager, error) {
 	}
 
 	mgr := &Manager{
-		cfg:                   cfg,
-		store:                 st,
-		clock:                 clockRef,
-		websocket:             newWebSocketTransport(),
-		dialers:               make(map[string]Dialer, 2),
-		mux:                   http.NewServeMux(),
-		publishCh:             make(chan store.Event, managerPublishQueue),
-		peers:                 make(map[int64]*peerState, len(cfg.Peers)),
-		configuredPeers:       configuredPeers,
-		discoveredPeers:       make(map[string]*discoveredPeerState),
-		dynamicPeers:          make(map[string]*configuredPeer),
-		selfKnownURLs:         make(map[string]uint64),
-		supportsRouting:       true,
-		supportsMembership:    !cfg.DiscoveryDisabled,
-		routingTable:          make(map[int64]routeEntry),
-		seenPackets:           make(map[string]time.Time),
-		retryQueue:            make(map[string]queuedPacket),
-		pendingLoggedInUsers:  make(map[uint64]chan loggedInUsersQueryResult),
-		clockStateTransitions: make(map[clockStateTransitionKey]uint64),
+		cfg:                     cfg,
+		store:                   st,
+		clock:                   clockRef,
+		websocket:               newWebSocketTransport(),
+		dialers:                 make(map[string]Dialer, 2),
+		mux:                     http.NewServeMux(),
+		publishCh:               make(chan store.Event, managerPublishQueue),
+		peers:                   make(map[int64]*peerState, len(cfg.Peers)),
+		configuredPeers:         configuredPeers,
+		discoveredPeers:         make(map[string]*discoveredPeerState),
+		dynamicPeers:            make(map[string]*configuredPeer),
+		selfKnownURLs:           make(map[string]uint64),
+		supportsMembership:      !cfg.DiscoveryDisabled,
+		retryQueue:              make(map[string]queuedPacket),
+		pendingLoggedInUsers:    make(map[uint64]chan loggedInUsersQueryResult),
+		clockStateTransitions:   make(map[clockStateTransitionKey]uint64),
+		meshForwardedPackets:    make(map[string]uint64),
+		meshForwardedBytes:      make(map[string]uint64),
+		meshRoutingNoPath:       make(map[string]uint64),
+		meshRoutingDecisionCost: make(map[string]int64),
+		meshBridgeForwards:      make(map[string]uint64),
 	}
 	mgr.dialers[transportWebSocket] = mgr.websocket
 	mgr.dialers[transportZeroMQ] = newZeroMQDialerWithConfig(cfg.ZeroMQ, mgr.zeroMQCurveServerKeyForPeer)
@@ -314,24 +296,6 @@ func (m *Manager) SetLoggedInUsersProvider(provider func(context.Context) ([]app
 	m.loggedInUsersProvider = provider
 }
 
-func (m *Manager) setSupportsRouting(supports bool) {
-	if m == nil {
-		return
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.supportsRouting = supports
-}
-
-func (m *Manager) routingSupported() bool {
-	if m == nil {
-		return false
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.supportsRouting
-}
-
 func (m *Manager) membershipSupported() bool {
 	if m == nil {
 		return false
@@ -341,14 +305,14 @@ func (m *Manager) membershipSupported() bool {
 	return m.supportsMembership
 }
 
-func (m *Manager) RouteTransientPacket(_ context.Context, packet store.TransientPacket) error {
+func (m *Manager) RouteTransientPacket(ctx context.Context, packet store.TransientPacket) error {
 	if m == nil {
 		return nil
 	}
 	if packet.TTLHops <= 0 {
 		packet.TTLHops = defaultPacketTTLHops
 	}
-	m.routeOrQueueTransient(packet)
+	m.routeOrQueueTransientPacket(ctx, packet)
 	return nil
 }
 

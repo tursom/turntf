@@ -694,6 +694,11 @@ func (m *Manager) startLibP2PCandidate(rawURL string) {
 	m.dynamicPeers[normalized] = peer
 	m.mu.Unlock()
 
-	m.wg.Add(1)
-	go m.dialLoop(peer)
+	m.recordConfiguredPeerDialing(peer)
+	if err := m.startMeshDialSeed(peer); err != nil {
+		m.recordConfiguredPeerDialFailure(peer, err)
+		m.logWarn("mesh_libp2p_candidate_seed_failed", err).
+			Str("peer_url", normalized).
+			Msg("failed to add libp2p candidate mesh dial seed")
+	}
 }

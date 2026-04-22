@@ -4,13 +4,13 @@
 
 当前基线能力如下：
 
-- 节点间通过 WebSocket + Protobuf 长连接复制，`peer` 关系来自静态 `cluster.peers`
+- 节点间通过 mesh runtime 在 WebSocket、libp2p 或 ZeroMQ transport 上复制，`peer` 关系来自静态 `cluster.peers` 和自动发现
 - 写入先本地提交，再通过 `EventBatch` 异步广播，对端应用后返回 `Ack`
 - 断线后按 `origin_progress` 与 `origin_cursors` 自动补拉缺失事件
 - 运行期通过快照摘要比对和分片快照修复做反熵
 - 用户数据按字段级 `LWW`、删除墓碑和幂等事件最终收敛
 - 消息按每节点 `message_window_size` 窗口收敛
-- 瞬时包通过 `RoutingUpdate` 维护的动态路由表尽力转发
+- 瞬时包通过 mesh 策略路由与逐跳转发尽力送达，旧 `RoutingUpdate` 不再承担生产路由语义
 - 集群内部消息当前使用共享 `cluster.secret` 做 HMAC 鉴权，并通过首次校时和最大时钟偏差阈值保护 `HLC`
 
 ## 演进原则

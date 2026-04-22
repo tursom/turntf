@@ -92,10 +92,6 @@ func (m *Manager) deactivateSession(sess *session) {
 			wasTrusted = true
 		}
 	}
-	if ok && len(peer.sessions) == 0 {
-		peer.routeAdverts = nil
-	}
-	m.recomputeRoutesLocked()
 	m.recomputeClockOffsetLocked()
 	m.refreshNodeClockStateLocked()
 	m.mu.Unlock()

@@ -44,6 +44,7 @@ type MemoryTopologyStore struct {
 	nodes      map[int64]*storeNode
 	links      map[linkKey]LinkState
 	generation map[int64]uint64
+	updates    map[int64]*TopologyUpdate
 }
 
 func NewMemoryTopologyStore() *MemoryTopologyStore {
@@ -51,6 +52,7 @@ func NewMemoryTopologyStore() *MemoryTopologyStore {
 		nodes:      make(map[int64]*storeNode),
 		links:      make(map[linkKey]LinkState),
 		generation: make(map[int64]uint64),
+		updates:    make(map[int64]*TopologyUpdate),
 	}
 }
 
@@ -73,41 +75,44 @@ func (s *MemoryTopologyStore) ApplyHello(nodeID int64, hello *NodeHello) {
 }
 
 func (s *MemoryTopologyStore) ApplyTopologyUpdate(update *TopologyUpdate) {
-	if s == nil || update == nil || update.OriginNodeId <= 0 {
+	normalized := NormalizeTopologyUpdate(update)
+	if s == nil || normalized == nil {
 		return
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if update.Generation < s.generation[update.OriginNodeId] {
+	currentGeneration := s.generation[normalized.OriginNodeId]
+	if normalized.Generation < currentGeneration {
 		return
 	}
-	s.generation[update.OriginNodeId] = update.Generation
-	node := s.ensureNodeLocked(update.OriginNodeId)
-	node.policy = NormalizeForwardingPolicy(ClonePolicy(update.ForwardingPolicy))
-	node.capabilities = make(map[TransportKind]*TransportCapability, len(update.Transports))
-	for _, capability := range update.Transports {
-		if capability == nil || capability.Transport == TransportUnspecified {
-			continue
+	if normalized.Generation == currentGeneration && currentGeneration != 0 {
+		if TopologyUpdatesEqual(normalized, s.updates[normalized.OriginNodeId]) {
+			return
 		}
+		return
+	}
+	s.generation[normalized.OriginNodeId] = normalized.Generation
+	s.updates[normalized.OriginNodeId] = NormalizeTopologyUpdate(normalized)
+	node := s.ensureNodeLocked(normalized.OriginNodeId)
+	node.policy = NormalizeForwardingPolicy(ClonePolicy(normalized.ForwardingPolicy))
+	node.capabilities = make(map[TransportKind]*TransportCapability, len(normalized.Transports))
+	for _, capability := range normalized.Transports {
 		node.capabilities[capability.Transport] = CloneCapability(capability)
 	}
 	for key := range s.links {
-		if key.origin == update.OriginNodeId {
+		if key.origin == normalized.OriginNodeId {
 			delete(s.links, key)
 		}
 	}
-	for _, link := range update.Links {
-		if link == nil || link.FromNodeId <= 0 || link.ToNodeId <= 0 || link.Transport == TransportUnspecified {
-			continue
-		}
+	for _, link := range normalized.Links {
 		key := linkKey{
-			origin:    update.OriginNodeId,
+			origin:    normalized.OriginNodeId,
 			from:      link.FromNodeId,
 			to:        link.ToNodeId,
 			transport: link.Transport,
 		}
 		s.links[key] = LinkState{
-			OriginNodeID: update.OriginNodeId,
+			OriginNodeID: normalized.OriginNodeId,
 			FromNodeID:   link.FromNodeId,
 			ToNodeID:     link.ToNodeId,
 			Transport:    link.Transport,

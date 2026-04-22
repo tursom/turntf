@@ -12,6 +12,7 @@ type ClusterStatus struct {
 	ClockTransitions     []ClockStateTransition
 	Peers                []ClusterPeerStatus
 	Discovery            ClusterDiscoveryStatus
+	Mesh                 ClusterMeshStatus
 }
 
 type ClusterDiscoveryStatus struct {
@@ -36,6 +37,62 @@ type ClusterDiscoveryStatus struct {
 	LibP2PGossipSubPeers  int
 	LibP2PRelayEnabled    bool
 	LibP2PHolePunching    bool
+}
+
+type ClusterMeshStatus struct {
+	Enabled               bool
+	ForwardingEnabled     bool
+	BridgeEnabled         bool
+	NodeFeeWeight         int64
+	TopologyGeneration    uint64
+	TransportCapabilities []ClusterMeshTransportCapability
+	TrafficRules          []ClusterMeshTrafficRule
+	Routes                []ClusterMeshRoute
+	Metrics               ClusterMeshMetrics
+}
+
+type ClusterMeshTransportCapability struct {
+	Transport                 string
+	InboundEnabled            bool
+	OutboundEnabled           bool
+	NativeRelayClientEnabled  bool
+	NativeRelayServiceEnabled bool
+	AdvertisedEndpoints       []string
+}
+
+type ClusterMeshTrafficRule struct {
+	TrafficClass string
+	Disposition  string
+}
+
+type ClusterMeshRoute struct {
+	DestinationNodeID  int64
+	TrafficClass       string
+	Reachable          bool
+	NextHopNodeID      int64
+	OutboundTransport  string
+	PathClass          string
+	EstimatedCost      int64
+	TopologyGeneration uint64
+}
+
+type ClusterMeshMetrics struct {
+	ForwardedPackets []ClusterMeshMetricSample
+	ForwardedBytes   []ClusterMeshMetricSample
+	RoutingNoPath    []ClusterMeshMetricSample
+	DecisionCost     []ClusterMeshCostSample
+	BridgeForwards   []ClusterMeshMetricSample
+}
+
+type ClusterMeshMetricSample struct {
+	TrafficClass string
+	PathClass    string
+	Value        uint64
+}
+
+type ClusterMeshCostSample struct {
+	TrafficClass string
+	Value        int64
 }
 
 type LoggedInUserSummary struct {

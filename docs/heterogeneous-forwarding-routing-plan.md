@@ -36,17 +36,16 @@
 
 这说明新架构不是从零开始，已经有了 proto、策略和算法层面的初始骨架。
 
-### 当前主链路仍是旧实现
+### 当前主链路已切到 mesh
 
-当前真正驱动集群运行的仍是旧 `cluster` 协议栈：
+当前真正承担多跳控制面与数据面转发语义的是 mesh runtime：
 
-- `internal/cluster/manager_protocol.go` 仍以旧 `Envelope` 为主协议入口。
-- `internal/cluster/routing.go` 仍基于 `RoutingUpdate + routeAdvertisement` 维护旧动态路由。
-- `internal/cluster/config.go` 还没有新架构所需的 `forwarding`、`bridge_enabled`、`node_fee_weight` 和分流策略配置。
-- `internal/api/operations.go` 与 `internal/cluster/status.go` 还没有新架构的运维观测字段。
-- `internal/cluster/transport.go` 目前提供的是旧 transport 抽象，还没有切换到 `internal/mesh` 定义的新 adapter 接口。
+- 节点间 hello、topology flooding、查询、瞬时包、复制流与快照流都统一走 `internal/mesh` runtime。
+- 旧 `RoutingUpdate`、旧 transient/query wire 入口和旧节点间 `Envelope` 会话主循环已经从生产路径移除。
+- `internal/api/operations.go` 与 `internal/cluster/status.go` 已暴露 mesh 观测字段，作为生产排障主入口。
+- `internal/cluster/transport.go` 仍承载底层连接建立，但多 transport 入站连接已优先注入 `internal/mesh` runtime。
 
-因此，当前最合适的推进方式不是继续在旧路由上打补丁，而是保留旧实现作为开发期参考和回归基线，在新 mesh 栈闭环后整体切主。
+因此，后续工作重点不再是“新旧并存过渡”，而是继续补齐规模验证与运维收口。
 
 ## 关键差距
 
@@ -450,7 +449,7 @@ go test ./... -count=1
 注意事项：
 
 - 不继续扩展旧 `RoutingUpdate` distance-vector 逻辑。
-- 在新转发链路完成前，旧路由仍作为临时回归基线存在。
+- 新转发链路已切主，旧路由不再作为任何生产流量的兜底或回归基线。
 
 交付物：
 
@@ -617,6 +616,4 @@ go test ./... -count=1
 
 ## 结论
 
-当前仓库已经具备新 mesh 架构的 proto、策略和算法基础，但主运行时仍停留在旧 `cluster` 路由模型。最合理的实施路径是：先冻结协议与默认值，再完成配置模型、transport adapter 和控制平面 runtime，随后分批把瞬时包、查询、复制和快照迁移到新的策略路由与逐跳转发链路，最终整体切主并移除旧 `RoutingUpdate` 模型。
-
-这条路径能最大程度复用现有 `internal/mesh` 成果，同时避免在旧实现上继续投入会被后续推翻的增量复杂度。
+当前仓库已经完成 mesh 主链路切换：节点间控制面与数据面统一由 mesh runtime 承载，旧 `RoutingUpdate` 模型不再承担生产语义，`/ops/status` 与 `/metrics` 也已转向 mesh 观测。后续若继续演进，重点应放在规模压测、链路安全加固和更细粒度的运维解释能力，而不是恢复旧路由模型。

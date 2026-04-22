@@ -112,7 +112,14 @@ func (m *Manager) peerClockStateLocked(peerID int64) (clockState, string) {
 	switch peer.clockState {
 	case clockStateTrusted:
 		if peer.trustedSession != nil {
-			return clockStateTrusted, "trusted_sample_available"
+			lastTrusted := peer.lastCredibleClockSync
+			if lastTrusted.IsZero() {
+				lastTrusted = peer.lastClockSync
+			}
+			if !lastTrusted.IsZero() && time.Now().UTC().Sub(lastTrusted) <= m.clockTrustedFreshWindow() {
+				return clockStateTrusted, "trusted_sample_available"
+			}
+			return clockStateObserving, "trusted_sample_stale"
 		}
 		return clockStateObserving, "trusted_session_missing"
 	case clockStateObserving:
@@ -148,7 +155,6 @@ func (m *Manager) setPeerClockStateLocked(sess *session, peer *peerState, nextSt
 	} else if peer.trustedSession == sess {
 		peer.trustedSession = nil
 	}
-	m.recomputeRoutesLocked()
 	m.recomputeClockOffsetLocked()
 	m.refreshNodeClockStateLocked()
 }

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -270,6 +271,7 @@ func doJSONRequestWithHeaders(baseURL, method, path string, body any, wantStatus
 func readySnapshotTestSession(mgr *Manager, peerID int64, remoteMessageWindowSize int) *session {
 	sess := &session{
 		manager:                 mgr,
+		conn:                    testLegacyTransportConn{},
 		peerID:                  peerID,
 		connectionID:            1,
 		remoteSnapshotVersion:   internalproto.SnapshotVersion,
@@ -298,3 +300,19 @@ func readySnapshotTestSession(mgr *Manager, peerID int64, remoteMessageWindowSiz
 	mgr.mu.Unlock()
 	return sess
 }
+
+type testLegacyTransportConn struct{}
+
+func (testLegacyTransportConn) Send(context.Context, []byte) error { return nil }
+
+func (testLegacyTransportConn) Receive(context.Context) ([]byte, error) { return nil, io.EOF }
+
+func (testLegacyTransportConn) Close() error { return nil }
+
+func (testLegacyTransportConn) LocalAddr() string { return "local" }
+
+func (testLegacyTransportConn) RemoteAddr() string { return "remote" }
+
+func (testLegacyTransportConn) Direction() string { return "outbound" }
+
+func (testLegacyTransportConn) Transport() string { return transportWebSocket }

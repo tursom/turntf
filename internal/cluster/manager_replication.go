@@ -127,7 +127,7 @@ func (m *Manager) handleEventBatch(sess *session, envelope *internalproto.Envelo
 		return errors.New("event batch sent_at_hlc cannot be empty")
 	}
 	m.mu.Lock()
-	if err := m.allowEventApplyLocked(sess.peerID); err != nil {
+	if err := m.allowEventApplyForSessionLocked(sess); err != nil {
 		m.mu.Unlock()
 		m.logSessionWarn("event_batch_rejected_by_clock", sess, nil).
 			Str("reason", err.Error()).

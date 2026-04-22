@@ -2,6 +2,7 @@ package cluster
 
 import (
 	"context"
+	"io"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -141,6 +142,32 @@ func TestMeshTransportAdapterCapabilitiesAreCloned(t *testing.T) {
 	}
 }
 
+func TestMeshTransportConnUsesRelayAddrForLibP2PRelayHint(t *testing.T) {
+	t.Parallel()
+
+	raw := &stubLibP2PIdentityConn{
+		remoteAddr:   "/ip4/127.0.0.1/tcp/4001/p2p/QmRelay/p2p-circuit/p2p/QmPeer",
+		remotePeerID: "QmPeer",
+	}
+	conn := wrapMeshTransportConn(mesh.TransportLibP2P, raw)
+	if got := conn.RemoteNodeHint(); got != raw.remoteAddr {
+		t.Fatalf("expected relay remote addr hint, got=%q want=%q", got, raw.remoteAddr)
+	}
+}
+
+func TestMeshTransportConnKeepsPeerIDForDirectLibP2P(t *testing.T) {
+	t.Parallel()
+
+	raw := &stubLibP2PIdentityConn{
+		remoteAddr:   "/ip4/127.0.0.1/tcp/4001/p2p/QmPeer",
+		remotePeerID: "QmPeer",
+	}
+	conn := wrapMeshTransportConn(mesh.TransportLibP2P, raw)
+	if got := conn.RemoteNodeHint(); got != raw.remotePeerID {
+		t.Fatalf("expected direct libp2p peer id hint, got=%q want=%q", got, raw.remotePeerID)
+	}
+}
+
 func sendMeshNodeHello(ctx context.Context, conn mesh.TransportConn, nodeID int64) error {
 	data, err := proto.Marshal(&mesh.ClusterEnvelope{
 		Body: &mesh.ClusterEnvelope_NodeHello{
@@ -179,3 +206,24 @@ func waitForAcceptedMeshTransport(t *testing.T, accepted <-chan mesh.TransportCo
 		return nil
 	}
 }
+
+type stubLibP2PIdentityConn struct {
+	remoteAddr   string
+	remotePeerID string
+}
+
+func (c *stubLibP2PIdentityConn) Send(context.Context, []byte) error { return io.EOF }
+
+func (c *stubLibP2PIdentityConn) Receive(context.Context) ([]byte, error) { return nil, io.EOF }
+
+func (c *stubLibP2PIdentityConn) Close() error { return nil }
+
+func (c *stubLibP2PIdentityConn) LocalAddr() string { return "" }
+
+func (c *stubLibP2PIdentityConn) RemoteAddr() string { return c.remoteAddr }
+
+func (c *stubLibP2PIdentityConn) Direction() string { return "outbound" }
+
+func (c *stubLibP2PIdentityConn) Transport() string { return transportLibP2P }
+
+func (c *stubLibP2PIdentityConn) RemotePeerID() string { return c.remotePeerID }

@@ -290,6 +290,18 @@ func (m *Manager) allowEventApplyLocked(peerID int64) error {
 	return nil
 }
 
+func (m *Manager) allowEventApplyForSessionLocked(sess *session) error {
+	if sess == nil {
+		return nil
+	}
+	// Synthetic mesh sessions have no legacy clock-sync channel, so the old
+	// write gate only applies to transport-backed sessions.
+	if sess.conn == nil {
+		return nil
+	}
+	return m.allowEventApplyLocked(sess.peerID)
+}
+
 func (m *Manager) allowSnapshotTrafficLocked(peerID int64) error {
 	if m.isSingleNodeClockModeLocked() {
 		return nil
@@ -303,4 +315,14 @@ func (m *Manager) allowSnapshotTrafficLocked(peerID int64) error {
 		return fmt.Errorf("%w: snapshot traffic disabled for peer=%d state=%s reason=%s", errClockProtectionRejected, peerID, peerState, peerReason)
 	}
 	return nil
+}
+
+func (m *Manager) allowSnapshotTrafficForSessionLocked(sess *session) error {
+	if sess == nil {
+		return nil
+	}
+	if sess.conn == nil {
+		return nil
+	}
+	return m.allowSnapshotTrafficLocked(sess.peerID)
 }

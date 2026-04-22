@@ -41,7 +41,7 @@ func (m *Manager) sendSnapshotDigest(sess *session) {
 		return
 	}
 	m.mu.Lock()
-	if err := m.allowSnapshotTrafficLocked(sess.peerID); err != nil {
+	if err := m.allowSnapshotTrafficForSessionLocked(sess); err != nil {
 		m.mu.Unlock()
 		m.logSessionWarn("snapshot_digest_skipped_by_clock", sess, nil).
 			Str("reason", err.Error()).
@@ -86,7 +86,7 @@ func (m *Manager) handleSnapshotDigest(sess *session, envelope *internalproto.En
 		return nil
 	}
 	m.mu.Lock()
-	if err := m.allowSnapshotTrafficLocked(sess.peerID); err != nil {
+	if err := m.allowSnapshotTrafficForSessionLocked(sess); err != nil {
 		m.mu.Unlock()
 		m.logSessionWarn("snapshot_digest_rejected_by_clock", sess, nil).
 			Str("reason", err.Error()).
@@ -201,7 +201,7 @@ func (m *Manager) handleSnapshotChunk(sess *session, envelope *internalproto.Env
 		return nil
 	}
 	m.mu.Lock()
-	if err := m.allowSnapshotTrafficLocked(sess.peerID); err != nil {
+	if err := m.allowSnapshotTrafficForSessionLocked(sess); err != nil {
 		m.mu.Unlock()
 		m.logSessionWarn("snapshot_chunk_rejected_by_clock", sess, nil).
 			Str("reason", err.Error()).
@@ -281,7 +281,7 @@ func (m *Manager) requestSnapshotPartition(sess *session, partition *internalpro
 		return
 	}
 	m.mu.Lock()
-	if err := m.allowSnapshotTrafficLocked(sess.peerID); err != nil {
+	if err := m.allowSnapshotTrafficForSessionLocked(sess); err != nil {
 		m.mu.Unlock()
 		m.logSessionWarn("snapshot_partition_request_skipped_by_clock", sess, nil).
 			Str("reason", err.Error()).

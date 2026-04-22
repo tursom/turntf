@@ -1052,7 +1052,9 @@ func (r *Runtime) dispatchEnvelope(ctx context.Context, adj *Adjacency, envelope
 		if body.ForwardedPacket == nil || r.engine == nil {
 			return
 		}
-		_ = r.engine.HandleInbound(ctx, cloneForwardedPacket(body.ForwardedPacket))
+		packet := cloneForwardedPacket(body.ForwardedPacket)
+		packet.IngressTransport = adj.Transport
+		_ = r.engine.HandleInbound(ctx, packet)
 	default:
 		// Other envelope types are handled by later phases.
 	}

@@ -64,10 +64,10 @@ func TestManagerMeshMembershipBroadcastDoesNotUseSyntheticSessionQueue(t *testin
 	}
 }
 
-func TestMeshPeerSessionRequiresTimeSyncBeforeTrust(t *testing.T) {
+func TestMeshTimeSyncDoesNotTrustPeerClock(t *testing.T) {
 	mgr := newMeshClockTestManager(t)
 	peerID := testNodeID(2)
-	mgr.meshPeerSession(peerID)
+	sess := mgr.meshPeerSession(peerID)
 
 	state, reason := mgr.peerClockState(peerID)
 	if state == string(clockStateTrusted) {
@@ -78,7 +78,7 @@ func TestMeshPeerSessionRequiresTimeSyncBeforeTrust(t *testing.T) {
 		t.Fatalf("status: %v", err)
 	}
 	if status.WriteGateReady {
-		t.Fatalf("expected write gate to stay closed before mesh time-sync sample")
+		t.Fatalf("expected write gate to stay closed before mesh time-sync observation")
 	}
 
 	mgr.observeMeshTimeSync(mesh.TimeSyncObservation{
@@ -91,39 +91,87 @@ func TestMeshPeerSessionRequiresTimeSyncBeforeTrust(t *testing.T) {
 		RTTMs:               2,
 	})
 	state, reason = mgr.peerClockState(peerID)
-	if state != string(clockStateTrusted) {
-		t.Fatalf("expected mesh time-sync sample to trust peer clock, got state=%s reason=%s", state, reason)
+	if state == string(clockStateTrusted) {
+		t.Fatalf("mesh time-sync observation should not trust peer clock: reason=%s", reason)
 	}
 	status, err = mgr.Status(context.Background())
 	if err != nil {
-		t.Fatalf("status after sample: %v", err)
+		t.Fatalf("status after observation: %v", err)
 	}
-	if !status.WriteGateReady {
-		t.Fatalf("expected write gate to open after credible mesh time-sync sample")
+	if status.WriteGateReady {
+		t.Fatalf("expected write gate to stay closed after mesh time-sync observation")
 	}
-
-	mgr.mu.Lock()
-	stale := time.Now().UTC().Add(-2 * mgr.clockTrustedFreshWindow())
-	peer := mgr.peers[peerID]
-	peer.lastClockSync = stale
-	peer.lastCredibleClockSync = stale
-	mgr.mu.Unlock()
-	state, reason = mgr.peerClockState(peerID)
-	if state == string(clockStateTrusted) {
-		t.Fatalf("expected stale mesh time-sync sample to leave trusted state: reason=%s", reason)
+	sess.mu.Lock()
+	smoothedRTTMs := sess.smoothedRTTMs
+	sess.mu.Unlock()
+	if smoothedRTTMs <= 0 {
+		t.Fatalf("expected mesh time-sync observation to update RTT, got %d", smoothedRTTMs)
 	}
 }
 
-func TestManagerMeshRuntimeTimeSyncMarksPeerTrusted(t *testing.T) {
+func TestManagerMeshRuntimeTimeSyncDoesNotTrustPeerClock(t *testing.T) {
 	mgrA, mgrB := startMeshManagerPair(t, true)
 	waitForMeshRoute(t, mgrA, testNodeID(2), mesh.TrafficControlCritical)
 	waitForMeshRoute(t, mgrB, testNodeID(1), mesh.TrafficControlCritical)
 
-	waitFor(t, 5*time.Second, func() bool {
-		stateA, _ := mgrA.peerClockState(testNodeID(2))
-		stateB, _ := mgrB.peerClockState(testNodeID(1))
-		return stateA == string(clockStateTrusted) && stateB == string(clockStateTrusted)
+	mgrA.observeMeshTimeSync(mesh.TimeSyncObservation{
+		RemoteNodeID: testNodeID(2),
+		Transport:    mesh.TransportWebSocket,
+		RTTMs:        2,
 	})
+	mgrB.observeMeshTimeSync(mesh.TimeSyncObservation{
+		RemoteNodeID: testNodeID(1),
+		Transport:    mesh.TransportWebSocket,
+		RTTMs:        2,
+	})
+	if meshSessionRTT(mgrA, testNodeID(2)) <= 0 || meshSessionRTT(mgrB, testNodeID(1)) <= 0 {
+		t.Fatal("expected mesh time-sync observation to update synthetic session RTT")
+	}
+
+	stateA, reasonA := mgrA.peerClockState(testNodeID(2))
+	stateB, reasonB := mgrB.peerClockState(testNodeID(1))
+	if stateA == string(clockStateTrusted) || stateB == string(clockStateTrusted) {
+		t.Fatalf("mesh runtime time-sync should not trust peer clocks: stateA=%s reasonA=%s stateB=%s reasonB=%s", stateA, reasonA, stateB, reasonB)
+	}
+	statusA, err := mgrA.Status(context.Background())
+	if err != nil {
+		t.Fatalf("manager A status: %v", err)
+	}
+	statusB, err := mgrB.Status(context.Background())
+	if err != nil {
+		t.Fatalf("manager B status: %v", err)
+	}
+	if statusA.WriteGateReady || statusB.WriteGateReady {
+		t.Fatalf("mesh runtime time-sync should not open write gates: A=%v B=%v", statusA.WriteGateReady, statusB.WriteGateReady)
+	}
+}
+
+func TestMeshSyntheticSessionBypassesLegacyClockGate(t *testing.T) {
+	mgr := newMeshClockTestManager(t)
+	peerID := testNodeID(2)
+	sess := mgr.meshPeerSession(peerID)
+
+	mgr.mu.Lock()
+	mgr.lastTrustedClockSync = time.Now().UTC().Add(-2 * mgr.clockWriteGateGraceWindow())
+	mgr.refreshNodeClockStateLocked()
+	legacyEventErr := mgr.allowEventApplyLocked(peerID)
+	legacySnapshotErr := mgr.allowSnapshotTrafficLocked(peerID)
+	eventErr := mgr.allowEventApplyForSessionLocked(sess)
+	snapshotErr := mgr.allowSnapshotTrafficForSessionLocked(sess)
+	mgr.mu.Unlock()
+
+	if legacyEventErr == nil {
+		t.Fatal("expected legacy event clock gate to reject unwritable node state")
+	}
+	if legacySnapshotErr == nil {
+		t.Fatal("expected legacy snapshot clock gate to reject unwritable node state")
+	}
+	if eventErr != nil {
+		t.Fatalf("expected mesh synthetic event apply to bypass legacy clock gate: %v", eventErr)
+	}
+	if snapshotErr != nil {
+		t.Fatalf("expected mesh synthetic snapshot traffic to bypass legacy clock gate: %v", snapshotErr)
+	}
 }
 
 func startMeshManagerPair(t *testing.T, discoveryDisabled bool) (*Manager, *Manager) {
@@ -186,4 +234,20 @@ func newMeshClockTestManager(t *testing.T) *Manager {
 		t.Fatalf("new manager: %v", err)
 	}
 	return mgr
+}
+
+func meshSessionRTT(mgr *Manager, peerID int64) int64 {
+	mgr.mu.Lock()
+	peer := mgr.peers[peerID]
+	var sess *session
+	if peer != nil {
+		sess = peer.active
+	}
+	mgr.mu.Unlock()
+	if sess == nil {
+		return 0
+	}
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	return sess.smoothedRTTMs
 }

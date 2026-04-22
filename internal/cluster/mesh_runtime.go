@@ -255,32 +255,9 @@ func (m *Manager) observeMeshTimeSync(observation mesh.TimeSyncObservation) {
 		return
 	}
 	rttMs := maxInt64(observation.RTTMs, 0)
-	jitterMs := maxInt64(observation.JitterMs, 0)
-	clientReceiveMs := observation.ClientReceiveTimeMs
-	if clientReceiveMs == 0 {
-		clientReceiveMs = time.Now().UTC().UnixMilli()
-	}
-	offsetMs := ((observation.ServerReceiveTimeMs - observation.ClientSendTimeMs) + (observation.ServerSendTimeMs - clientReceiveMs)) / 2
-	sampledAt := time.Now().UTC()
-	if clientReceiveMs > 0 {
-		sampledAt = time.UnixMilli(clientReceiveMs).UTC()
-	}
-	sess.setClockOffset(offsetMs)
+	// Mesh time sync is runtime link measurement only; keep it out of the
+	// legacy clock write gate and retain just the RTT status signal here.
 	sess.observeRTT(rttMs)
-	state, reason := m.recordTimeSyncSample(sess, timeSyncSample{
-		offsetMs:      offsetMs,
-		rttMs:         rttMs,
-		uncertaintyMs: maxInt64(rttMs/2, jitterMs/2) + 50,
-		sampledAt:     sampledAt,
-		credible:      rttMs <= m.cfg.ClockCredibleRttMs,
-	})
-	if state == clockStateRejected {
-		m.logSessionWarn("mesh_time_sync_rejected", sess, nil).
-			Str("clock_reason", reason).
-			Int64("offset_ms", offsetMs).
-			Int64("rtt_ms", rttMs).
-			Msg("mesh time sync sample rejected peer clock")
-	}
 }
 
 func (m *Manager) observeMeshAdjacency(observation mesh.AdjacencyObservation) {

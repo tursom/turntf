@@ -310,6 +310,106 @@ func TestRuntimeObserverRecordsBridgeOnlyAtTransitNode(t *testing.T) {
 	}
 }
 
+func TestRuntimeUsesActualIngressTransportForForwardedPackets(t *testing.T) {
+	t.Parallel()
+	adapterALibp2p := newFakeAdapter(TransportLibP2P)
+	adapterBLibp2p := newFakeAdapter(TransportLibP2P)
+	adapterBZmq := newFakeAdapter(TransportZeroMQ)
+	adapterCZmq := newFakeAdapter(TransportZeroMQ)
+
+	noPathObserved := make(chan ForwardingObservation, 4)
+	delivered := make(chan *ClusterEnvelope, 1)
+
+	mkRuntime := func(id int64, policy *ForwardingPolicy, adapters []TransportAdapter, observer ForwardingObserver, queryHandler LocalEnvelopeHandler) *Runtime {
+		options := RuntimeOptions{
+			LocalNodeID:        id,
+			Adapters:           adapters,
+			LocalPolicy:        policy,
+			TopologyStore:      NewMemoryTopologyStore(),
+			HelloTimeout:       500 * time.Millisecond,
+			ForwardingObserver: observer,
+			QueryHandler:       queryHandler,
+		}
+		runtime, err := NewRuntime(options)
+		if err != nil {
+			t.Fatalf("NewRuntime(%d): %v", id, err)
+		}
+		return runtime
+	}
+
+	runtimeA := mkRuntime(1, DefaultForwardingPolicy(1), []TransportAdapter{adapterALibp2p}, nil, nil)
+	policyB := DefaultForwardingPolicy(1)
+	policyB.BridgeEnabled = false
+	runtimeB := mkRuntime(2, policyB, []TransportAdapter{adapterBLibp2p, adapterBZmq}, func(observation ForwardingObservation) {
+		if observation.NoPath {
+			noPathObserved <- observation
+		}
+	}, nil)
+	runtimeC := mkRuntime(3, DefaultForwardingPolicy(1), []TransportAdapter{adapterCZmq}, nil, func(_ context.Context, _ *ForwardedPacket, envelope *ClusterEnvelope) error {
+		delivered <- envelope
+		return nil
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	for _, runtime := range []*Runtime{runtimeA, runtimeB, runtimeC} {
+		if err := runtime.Start(ctx); err != nil {
+			t.Fatalf("start: %v", err)
+		}
+		defer runtime.Close()
+	}
+
+	connAB, connBA := newFakeConnPair(TransportLibP2P, "A", "B")
+	connBC, connCB := newFakeConnPair(TransportZeroMQ, "B", "C")
+	adapterALibp2p.accept <- connAB
+	adapterBLibp2p.accept <- connBA
+	adapterBZmq.accept <- connBC
+	adapterCZmq.accept <- connCB
+
+	waitForNodes(t, runtimeA, []int64{1, 2, 3}, 3*time.Second)
+
+	payload, err := runtimeA.codec.Encode(&ClusterEnvelope{
+		Body: &ClusterEnvelope_QueryRequest{QueryRequest: &QueryRequest{
+			RequestId: 404,
+			Kind:      "forged.ingress",
+			Payload:   []byte("bridge-check"),
+		}},
+	})
+	if err != nil {
+		t.Fatalf("encode forged forwarded packet payload: %v", err)
+	}
+
+	adj := runtimeA.bestAdjacency(2, TransportLibP2P)
+	if adj == nil {
+		t.Fatal("expected adjacency from A to B")
+	}
+	err = runtimeA.sendEnvelopeCtx(ctx, adj.Conn, &ClusterEnvelope{
+		Body: &ClusterEnvelope_ForwardedPacket{ForwardedPacket: &ForwardedPacket{
+			PacketId:         9001,
+			SourceNodeId:     1,
+			TargetNodeId:     3,
+			TrafficClass:     TrafficControlQuery,
+			LastHopNodeId:    1,
+			IngressTransport: TransportZeroMQ,
+			TtlHops:          4,
+			Payload:          payload,
+		}},
+	}, time.Second)
+	if err != nil {
+		t.Fatalf("send forged forwarded packet: %v", err)
+	}
+
+	observation := waitForNoPathObservation(t, noPathObserved, time.Second)
+	if observation.TrafficClass != TrafficControlQuery {
+		t.Fatalf("unexpected no-path observation: %+v", observation)
+	}
+	select {
+	case envelope := <-delivered:
+		t.Fatalf("forged ingress transport should not deliver across disabled bridge: %+v", envelope)
+	case <-time.After(200 * time.Millisecond):
+	}
+}
+
 func TestRuntimeForwardingPolicyRejectsInvalidTransitPaths(t *testing.T) {
 	t.Parallel()
 
@@ -407,6 +507,21 @@ func waitForObservation(t *testing.T, ch <-chan ForwardingObservation, timeout t
 			}
 		case <-deadline:
 			t.Fatal("timed out waiting for forwarding observation")
+		}
+	}
+}
+
+func waitForNoPathObservation(t *testing.T, ch <-chan ForwardingObservation, timeout time.Duration) ForwardingObservation {
+	t.Helper()
+	deadline := time.After(timeout)
+	for {
+		select {
+		case observation := <-ch:
+			if observation.NoPath {
+				return observation
+			}
+		case <-deadline:
+			t.Fatal("timed out waiting for no-path observation")
 		}
 	}
 }

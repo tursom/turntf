@@ -298,6 +298,14 @@ func meshTransportKind(conn TransportConn) mesh.TransportKind {
 	}
 }
 
+func libp2pRemoteAddrSuggestsRelay(addr string) bool {
+	if addr == "" {
+		return false
+	}
+	lower := strings.ToLower(addr)
+	return strings.Contains(lower, "/p2p-circuit") || strings.Contains(lower, "relay")
+}
+
 func (c *meshTransportConn) Send(ctx context.Context, envelope []byte) error {
 	return c.conn.Send(ctx, envelope)
 }
@@ -317,12 +325,16 @@ func (c *meshTransportConn) RemoteNodeHint() string {
 	if c.remoteHint != "" {
 		return c.remoteHint
 	}
+	remoteAddr := strings.TrimSpace(c.conn.RemoteAddr())
+	if c.kind == mesh.TransportLibP2P && libp2pRemoteAddrSuggestsRelay(remoteAddr) {
+		return remoteAddr
+	}
 	if identityConn, ok := c.conn.(libP2PIdentityConn); ok {
 		if hint := strings.TrimSpace(identityConn.RemotePeerID()); hint != "" {
 			return hint
 		}
 	}
-	return strings.TrimSpace(c.conn.RemoteAddr())
+	return remoteAddr
 }
 
 func (c *meshTransportConn) Transport() mesh.TransportKind {

@@ -70,6 +70,42 @@ func TestManagerRoutesTransientPacketViaMeshMultiHop(t *testing.T) {
 	}
 }
 
+func TestManagerRoutesTransientPacketPreservesMeshTTL(t *testing.T) {
+	t.Parallel()
+
+	mgrA, _, mgrC := startLinearMeshManagers(t)
+	delivered := make(chan store.TransientPacket, 1)
+	mgrC.SetTransientHandler(func(packet store.TransientPacket) bool {
+		delivered <- packet
+		return true
+	})
+
+	waitForMeshRoute(t, mgrA, testNodeID(3), mesh.TrafficTransientInteractive)
+
+	packet := store.TransientPacket{
+		PacketID:     188,
+		SourceNodeID: testNodeID(1),
+		TargetNodeID: testNodeID(3),
+		Recipient:    store.UserKey{NodeID: testNodeID(3), UserID: 99},
+		Sender:       store.UserKey{NodeID: testNodeID(1), UserID: 100},
+		Body:         []byte("mesh-ttl"),
+		DeliveryMode: store.DeliveryModeBestEffort,
+		TTLHops:      3,
+	}
+	if err := mgrA.RouteTransientPacket(context.Background(), packet); err != nil {
+		t.Fatalf("route transient packet via mesh: %v", err)
+	}
+
+	select {
+	case got := <-delivered:
+		if got.TTLHops != 1 {
+			t.Fatalf("expected delivered transient packet to preserve decremented mesh ttl, got %d", got.TTLHops)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("timed out waiting for transient delivery")
+	}
+}
+
 func TestManagerRetryQueueClearsAfterSuccessfulMeshForward(t *testing.T) {
 	t.Parallel()
 

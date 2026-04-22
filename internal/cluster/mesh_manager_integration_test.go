@@ -231,6 +231,44 @@ func TestManagerMeshAdjacencyBackfillsConfiguredPeerNodeID(t *testing.T) {
 	}
 }
 
+func TestManagerMeshAdjacencyBackfillsConfiguredPeerNodeIDFromWebSocketPathCapability(t *testing.T) {
+	t.Parallel()
+
+	peerURL := "ws://127.0.0.1:9915" + websocketPath
+	mgr, err := NewManager(Config{
+		NodeID:            testNodeID(1),
+		AdvertisePath:     websocketPath,
+		ClusterSecret:     "secret",
+		MessageWindowSize: store.DefaultMessageWindowSize,
+		MaxClockSkewMs:    DefaultMaxClockSkewMs,
+		DiscoveryDisabled: true,
+		Peers:             []Peer{{URL: peerURL}},
+	}, nil)
+	if err != nil {
+		t.Fatalf("new manager: %v", err)
+	}
+
+	mgr.observeMeshAdjacency(mesh.AdjacencyObservation{
+		RemoteNodeID: testNodeID(2),
+		Transport:    mesh.TransportWebSocket,
+		Established:  true,
+		Hello: &mesh.NodeHello{
+			NodeId: testNodeID(2),
+			Transports: []*mesh.TransportCapability{{
+				Transport:           mesh.TransportWebSocket,
+				InboundEnabled:      true,
+				AdvertisedEndpoints: []string{websocketPath},
+			}},
+		},
+	})
+
+	mgr.mu.Lock()
+	defer mgr.mu.Unlock()
+	if len(mgr.configuredPeers) != 1 || mgr.configuredPeers[0].nodeID != testNodeID(2) {
+		t.Fatalf("expected configured peer node id backfill from websocket path capability, got %+v", mgr.configuredPeers)
+	}
+}
+
 func TestManagerObserveMeshAdjacencyUpdatesDiscoveredPeerState(t *testing.T) {
 	t.Parallel()
 
@@ -293,6 +331,55 @@ func TestManagerObserveMeshAdjacencyUpdatesDiscoveredPeerState(t *testing.T) {
 	mgr.mu.Unlock()
 	if discovered == nil || discovered.state != discoveryStateFailed || discovered.lastError != "mesh adjacency lost" {
 		t.Fatalf("expected discovered peer to become failed after adjacency loss, got %+v", discovered)
+	}
+}
+
+func TestManagerObserveMeshAdjacencyMatchesDiscoveredWebSocketPathCapability(t *testing.T) {
+	t.Parallel()
+
+	mgr, err := NewManager(Config{
+		NodeID:            testNodeID(1),
+		AdvertisePath:     websocketPath,
+		ClusterSecret:     "secret",
+		MessageWindowSize: store.DefaultMessageWindowSize,
+		MaxClockSkewMs:    DefaultMaxClockSkewMs,
+	}, nil)
+	if err != nil {
+		t.Fatalf("new manager: %v", err)
+	}
+
+	peerURL := "ws://127.0.0.1:9916" + websocketPath
+	mgr.mu.Lock()
+	mgr.discoveredPeers[peerURL] = &discoveredPeerState{
+		url:        peerURL,
+		state:      discoveryStateDialing,
+		lastSeenAt: time.Now().UTC(),
+		dialing:    true,
+	}
+	mgr.mu.Unlock()
+
+	mgr.observeMeshAdjacency(mesh.AdjacencyObservation{
+		RemoteNodeID: testNodeID(2),
+		Transport:    mesh.TransportWebSocket,
+		Established:  true,
+		Hello: &mesh.NodeHello{
+			NodeId: testNodeID(2),
+			Transports: []*mesh.TransportCapability{{
+				Transport:           mesh.TransportWebSocket,
+				InboundEnabled:      true,
+				AdvertisedEndpoints: []string{websocketPath},
+			}},
+		},
+	})
+
+	mgr.mu.Lock()
+	discovered := mgr.discoveredPeers[peerURL]
+	mgr.mu.Unlock()
+	if discovered == nil {
+		t.Fatalf("expected discovered peer to remain tracked")
+	}
+	if discovered.nodeID != testNodeID(2) || discovered.state != discoveryStateConnected || discovered.dialing {
+		t.Fatalf("expected discovered peer to match websocket path capability, got %+v", discovered)
 	}
 }
 

@@ -3,6 +3,7 @@ package cluster
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -472,13 +473,34 @@ func meshObservationAdvertisesURL(observation mesh.AdjacencyObservation, peerURL
 			continue
 		}
 		for _, endpoint := range capability.AdvertisedEndpoints {
-			normalized, ok := normalizedMeshObservationHint(endpoint)
-			if ok && normalized == peerURL {
+			if meshObservationEndpointMatchesPeerURL(observation.Transport, endpoint, peerURL) {
 				return true
 			}
 		}
 	}
 	return false
+}
+
+func meshObservationEndpointMatchesPeerURL(transport mesh.TransportKind, endpoint, peerURL string) bool {
+	if normalized, ok := normalizedMeshObservationHint(endpoint); ok && normalized == peerURL {
+		return true
+	}
+	if transport != mesh.TransportWebSocket {
+		return false
+	}
+	endpoint = strings.TrimSpace(endpoint)
+	if !strings.HasPrefix(endpoint, "/") {
+		return false
+	}
+	normalizedPeer, err := normalizePeerURL(peerURL)
+	if err != nil || transportKindForPeerURL(normalizedPeer) != mesh.TransportWebSocket {
+		return false
+	}
+	parsed, err := url.Parse(normalizedPeer)
+	if err != nil {
+		return false
+	}
+	return parsed.Path == endpoint
 }
 
 func normalizedMeshObservationHint(raw string) (string, bool) {

@@ -21,6 +21,58 @@ func TestPlannerAvoidsNonTransitNode(t *testing.T) {
 	}
 }
 
+func TestPlannerEnforcesLocalTransitPolicyForInbound(t *testing.T) {
+	t.Parallel()
+
+	snapshot := testSnapshotWithNodes(
+		testNode(1, false, 1, false, TransportLibP2P),
+		testNode(3, false, 1, true, TransportLibP2P),
+	)
+	snapshot.Links = []LinkState{
+		{FromNodeID: 1, ToNodeID: 3, Transport: TransportLibP2P, PathClass: PathClassDirect, CostMs: 5, Established: true},
+	}
+
+	planner := NewPlanner(1)
+	if _, ok := planner.Compute(snapshot, 3, TrafficControlQuery, TransportLibP2P); ok {
+		t.Fatal("expected inbound transit to honor local forwarding-disabled policy")
+	}
+	if _, ok := planner.Compute(snapshot, 3, TrafficControlQuery, TransportUnspecified); !ok {
+		t.Fatal("expected local-origin traffic to ignore transit-disabled policy")
+	}
+}
+
+func TestPlannerEnforcesLocalTrafficDenyForInbound(t *testing.T) {
+	t.Parallel()
+
+	policy := DefaultForwardingPolicy(1)
+	for _, rule := range policy.TrafficRules {
+		if rule.TrafficClass == TrafficReplicationStream {
+			rule.Disposition = DispositionDeny
+		}
+	}
+	snapshot := testSnapshotWithNodes(
+		NodeState{
+			NodeID:           1,
+			ForwardingPolicy: policy,
+			TransportCaps: map[TransportKind]*TransportCapability{
+				TransportLibP2P: {Transport: TransportLibP2P, OutboundEnabled: true, InboundEnabled: true},
+			},
+		},
+		testNode(3, false, 1, true, TransportLibP2P),
+	)
+	snapshot.Links = []LinkState{
+		{FromNodeID: 1, ToNodeID: 3, Transport: TransportLibP2P, PathClass: PathClassDirect, CostMs: 5, Established: true},
+	}
+
+	planner := NewPlanner(1)
+	if _, ok := planner.Compute(snapshot, 3, TrafficReplicationStream, TransportLibP2P); ok {
+		t.Fatal("expected inbound transit to honor local traffic deny policy")
+	}
+	if _, ok := planner.Compute(snapshot, 3, TrafficReplicationStream, TransportUnspecified); !ok {
+		t.Fatal("expected local-origin traffic to ignore local transit deny policy")
+	}
+}
+
 func TestPlannerCrossTransportBridgeForControlTraffic(t *testing.T) {
 	t.Parallel()
 
@@ -44,6 +96,30 @@ func TestPlannerCrossTransportBridgeForControlTraffic(t *testing.T) {
 	}
 	if decision.PathClass != PathClassCrossTransportBridge {
 		t.Fatalf("unexpected path class: got=%v want=%v", decision.PathClass, PathClassCrossTransportBridge)
+	}
+}
+
+func TestPlannerBridgeChargesTransitFeeOnce(t *testing.T) {
+	t.Parallel()
+
+	snapshot := testSnapshotWithNodes(
+		testNode(1, false, 1, true, TransportLibP2P),
+		testNode(2, true, 10, true, TransportLibP2P, TransportZeroMQ),
+		testNode(3, false, 1, true, TransportZeroMQ),
+	)
+	snapshot.Links = []LinkState{
+		{FromNodeID: 1, ToNodeID: 2, Transport: TransportLibP2P, PathClass: PathClassDirect, CostMs: 5, Established: true},
+		{FromNodeID: 2, ToNodeID: 3, Transport: TransportZeroMQ, PathClass: PathClassDirect, CostMs: 7, Established: true},
+	}
+
+	planner := NewPlanner(1)
+	decision, ok := planner.Compute(snapshot, 3, TrafficControlCritical, TransportUnspecified)
+	if !ok {
+		t.Fatal("expected control traffic route across bridge")
+	}
+	wantCost := int64(5+BridgePenaltyMs+7) + 10*TrafficClassFactor(TrafficControlCritical)
+	if decision.EstimatedCost != wantCost {
+		t.Fatalf("unexpected bridge route cost: got=%d want=%d", decision.EstimatedCost, wantCost)
 	}
 }
 

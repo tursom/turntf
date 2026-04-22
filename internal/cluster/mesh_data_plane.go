@@ -459,7 +459,7 @@ func (m *Manager) routeOrQueueMeshTransient(ctx context.Context, packet store.Tr
 			Msg("dropping transient packet")
 		return
 	}
-	err = m.forwardMeshPayloadWithPacketID(ctx, packet.TargetNodeID, mesh.TrafficTransientInteractive, packet.PacketID, payload)
+	err = m.forwardMeshPayloadWithPacketIDAndTTL(ctx, packet.TargetNodeID, mesh.TrafficTransientInteractive, packet.PacketID, uint32(packet.TTLHops), payload)
 	if err == nil {
 		m.removeQueuedTransientPacket(packet)
 		addPacketLogFields(m.logInfo("transient_packet_forwarded"), packet).

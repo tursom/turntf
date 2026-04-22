@@ -77,7 +77,7 @@ func (p *Planner) Compute(snapshot TopologySnapshot, destinationNodeID int64, tr
 		if item.state.nodeID == destinationNodeID && item.state.nodeID != p.localNodeID {
 			return buildRouteDecision(destinationNodeID, snapshot.TopologyGeneration, item.meta), true
 		}
-		for _, next := range p.expand(snapshot, destinationNodeID, trafficClass, item.state, item.meta) {
+		for _, next := range p.expand(snapshot, destinationNodeID, trafficClass, ingressTransport, item.state, item.meta) {
 			current, ok := best[next.state]
 			if !ok || betterMeta(next.meta, current) {
 				best[next.state] = next.meta
@@ -93,9 +93,9 @@ type transition struct {
 	meta  plannerMeta
 }
 
-func (p *Planner) expand(snapshot TopologySnapshot, destinationNodeID int64, trafficClass TrafficClass, current plannerState, meta plannerMeta) []transition {
+func (p *Planner) expand(snapshot TopologySnapshot, destinationNodeID int64, trafficClass TrafficClass, ingressTransport TransportKind, current plannerState, meta plannerMeta) []transition {
 	transitions := make([]transition, 0)
-	if !p.canTransit(snapshot, destinationNodeID, trafficClass, current.nodeID) {
+	if !p.canTransit(snapshot, destinationNodeID, trafficClass, ingressTransport, current.nodeID) {
 		return transitions
 	}
 	for _, link := range snapshot.Links {
@@ -139,21 +139,28 @@ func (p *Planner) expand(snapshot TopologySnapshot, destinationNodeID int64, tra
 		nextMeta := meta
 		nextMeta.cost += BridgePenaltyMs
 		nextMeta.usedBridge = true
-		if current.nodeID != p.localNodeID && current.nodeID != destinationNodeID {
-			nextMeta.cost += transitPenalty(node.ForwardingPolicy, trafficClass)
-		}
 		nextMeta.path = appendPath(meta.path, nextState)
 		transitions = append(transitions, transition{state: nextState, meta: nextMeta})
 	}
 	return transitions
 }
 
-func (p *Planner) canTransit(snapshot TopologySnapshot, destinationNodeID int64, trafficClass TrafficClass, nodeID int64) bool {
+func (p *Planner) canTransit(snapshot TopologySnapshot, destinationNodeID int64, trafficClass TrafficClass, ingressTransport TransportKind, nodeID int64) bool {
 	if nodeID == destinationNodeID {
 		return false
 	}
 	if nodeID == p.localNodeID {
-		return true
+		if ingressTransport == TransportUnspecified {
+			return true
+		}
+		node, ok := snapshot.Node(nodeID)
+		if !ok || node.ForwardingPolicy == nil {
+			return false
+		}
+		if !node.ForwardingPolicy.TransitEnabled {
+			return false
+		}
+		return DispositionForTraffic(node.ForwardingPolicy, trafficClass) != DispositionDeny
 	}
 	node, ok := snapshot.Node(nodeID)
 	if !ok || node.ForwardingPolicy == nil {

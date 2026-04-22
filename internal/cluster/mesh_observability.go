@@ -111,6 +111,10 @@ func (m *Manager) routeMeshEnvelope(ctx context.Context, targetNodeID int64, tra
 }
 
 func (m *Manager) forwardMeshPayloadWithPacketID(ctx context.Context, targetNodeID int64, trafficClass mesh.TrafficClass, packetID uint64, payload []byte) error {
+	return m.forwardMeshPayloadWithPacketIDAndTTL(ctx, targetNodeID, trafficClass, packetID, 0, payload)
+}
+
+func (m *Manager) forwardMeshPayloadWithPacketIDAndTTL(ctx context.Context, targetNodeID int64, trafficClass mesh.TrafficClass, packetID uint64, ttlHops uint32, payload []byte) error {
 	binding := m.MeshRuntime()
 	if binding == nil {
 		return fmt.Errorf("mesh runtime is not attached")
@@ -118,12 +122,15 @@ func (m *Manager) forwardMeshPayloadWithPacketID(ctx context.Context, targetNode
 	if packetID == 0 {
 		packetID = m.nextMeshForwardPacketID()
 	}
+	if ttlHops == 0 {
+		ttlHops = mesh.DefaultTTLHops
+	}
 	packet := &mesh.ForwardedPacket{
 		PacketId:     packetID,
 		SourceNodeId: m.cfg.NodeID,
 		TargetNodeId: targetNodeID,
 		TrafficClass: trafficClass,
-		TtlHops:      mesh.DefaultTTLHops,
+		TtlHops:      ttlHops,
 		Payload:      append([]byte(nil), payload...),
 	}
 	return binding.ForwardPacket(ctx, packet)

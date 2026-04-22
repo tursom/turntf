@@ -684,6 +684,57 @@ func TestRuntimeAddDialSeedAfterStartBuildsAdjacency(t *testing.T) {
 	waitForAdjacency(t, runtimeB, 1, time.Second)
 }
 
+func TestRuntimeAddDialSeedDeduplicatesAndRemoveStopsRetryLoop(t *testing.T) {
+	t.Parallel()
+	adapter := newFakeAdapter(TransportZeroMQ)
+	runtime := newTestRuntime(t, 1, adapter, func(opts *RuntimeOptions) {
+		opts.DialRetryInterval = 25 * time.Millisecond
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := runtime.Start(ctx); err != nil {
+		t.Fatalf("runtime start: %v", err)
+	}
+	defer runtime.Close()
+
+	seed := DialSeed{Transport: TransportZeroMQ, Endpoint: "tcp://b:dedupe"}
+	if err := runtime.AddDialSeed(seed); err != nil {
+		t.Fatalf("add dial seed: %v", err)
+	}
+	if err := runtime.AddDialSeed(seed); err != nil {
+		t.Fatalf("add duplicate dial seed: %v", err)
+	}
+
+	var req dialRequest
+	select {
+	case req = <-adapter.dials:
+		if req.endpoint != seed.Endpoint {
+			t.Fatalf("unexpected dial endpoint: got=%q want=%q", req.endpoint, seed.Endpoint)
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("expected dial request")
+	}
+	select {
+	case extra := <-adapter.dials:
+		t.Fatalf("expected one dial loop for duplicated seed, got extra request for %q", extra.endpoint)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	if err := runtime.RemoveDialSeed(seed); err != nil {
+		t.Fatalf("remove dial seed: %v", err)
+	}
+	select {
+	case req.result <- dialResult{err: context.Canceled}:
+	default:
+	}
+	select {
+	case extra := <-adapter.dials:
+		t.Fatalf("expected removed dial seed to stop retrying, got %q", extra.endpoint)
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
 func TestRuntimeSeenFloodKeepsOnlyLatestGenerationPerOrigin(t *testing.T) {
 	t.Parallel()
 	adapter := newFakeAdapter(TransportLibP2P)

@@ -53,7 +53,10 @@ func (a *meshInboundAdapter) Dial(ctx context.Context, endpoint string) (mesh.Tr
 	if err != nil {
 		return nil, err
 	}
-	return wrapMeshTransportConn(a.kind, conn), nil
+	if a.kind == mesh.TransportLibP2P {
+		return wrapMeshTransportConn(a.kind, conn), nil
+	}
+	return wrapMeshTransportConn(a.kind, conn, endpoint), nil
 }
 
 func (a *meshInboundAdapter) Accept() <-chan mesh.TransportConn {

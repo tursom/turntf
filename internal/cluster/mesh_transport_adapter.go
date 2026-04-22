@@ -32,8 +32,9 @@ type ZeroMQMeshTransportAdapter struct {
 }
 
 type meshTransportConn struct {
-	conn TransportConn
-	kind mesh.TransportKind
+	conn       TransportConn
+	kind       mesh.TransportKind
+	remoteHint string
 }
 
 func NewMeshTransportAdapters(cfg Config, zeroMQCurveServerKeyForPeer func(string) string) []mesh.TransportAdapter {
@@ -218,7 +219,7 @@ func (a *ZeroMQMeshTransportAdapter) Dial(ctx context.Context, endpoint string) 
 	if err != nil {
 		return nil, err
 	}
-	return wrapMeshTransportConn(mesh.TransportZeroMQ, conn), nil
+	return wrapMeshTransportConn(mesh.TransportZeroMQ, conn, endpoint), nil
 }
 
 func (a *ZeroMQMeshTransportAdapter) Accept() <-chan mesh.TransportConn {
@@ -268,13 +269,18 @@ func enqueueMeshTransportConn(ctx context.Context, acceptCh chan mesh.TransportC
 	}
 }
 
-func wrapMeshTransportConn(kind mesh.TransportKind, conn TransportConn) mesh.TransportConn {
+func wrapMeshTransportConn(kind mesh.TransportKind, conn TransportConn, remoteHint ...string) mesh.TransportConn {
 	if kind == mesh.TransportUnspecified {
 		kind = meshTransportKind(conn)
 	}
+	hint := ""
+	if len(remoteHint) > 0 {
+		hint = strings.TrimSpace(remoteHint[0])
+	}
 	return &meshTransportConn{
-		conn: conn,
-		kind: kind,
+		conn:       conn,
+		kind:       kind,
+		remoteHint: hint,
 	}
 }
 
@@ -307,6 +313,9 @@ func (c *meshTransportConn) Close() error {
 func (c *meshTransportConn) RemoteNodeHint() string {
 	if c == nil || c.conn == nil {
 		return ""
+	}
+	if c.remoteHint != "" {
+		return c.remoteHint
 	}
 	if identityConn, ok := c.conn.(libP2PIdentityConn); ok {
 		if hint := strings.TrimSpace(identityConn.RemotePeerID()); hint != "" {

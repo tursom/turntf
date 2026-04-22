@@ -93,6 +93,7 @@ func (m *Manager) BuildMeshRuntime() (*MeshRuntimeBinding, error) {
 		ForwardedPacketHandler: m.handleMeshForwardedPacket,
 		ForwardingObserver:     m.observeMeshForwarding,
 		TimeSyncObserver:       m.observeMeshTimeSync,
+		AdjacencyObserver:      m.observeMeshAdjacency,
 	})
 	if err != nil {
 		return nil, err
@@ -222,6 +223,14 @@ func (b *MeshRuntimeBinding) AddDialSeed(seed mesh.DialSeed) error {
 	return b.runtime.AddDialSeed(seed)
 }
 
+// RemoveDialSeed stops a previously registered mesh-runtime dial seed.
+func (b *MeshRuntimeBinding) RemoveDialSeed(seed mesh.DialSeed) error {
+	if b == nil || b.runtime == nil {
+		return fmt.Errorf("mesh: runtime is not attached")
+	}
+	return b.runtime.RemoveDialSeed(seed)
+}
+
 func (b *MeshRuntimeBinding) RouteEnvelope(ctx context.Context, targetNodeID int64, envelope *mesh.ClusterEnvelope) error {
 	if b == nil || b.runtime == nil {
 		return fmt.Errorf("mesh: runtime is not attached")
@@ -273,6 +282,75 @@ func (m *Manager) observeMeshTimeSync(observation mesh.TimeSyncObservation) {
 	}
 }
 
+func (m *Manager) observeMeshAdjacency(observation mesh.AdjacencyObservation) {
+	if m == nil || observation.RemoteNodeID <= 0 || observation.RemoteNodeID == m.cfg.NodeID {
+		return
+	}
+	now := time.Now().UTC()
+	connectedSnapshots := make([]discoveredPeerState, 0)
+	failedSnapshots := make([]discoveredPeerState, 0)
+	m.mu.Lock()
+	for _, peer := range m.configuredPeers {
+		if configuredPeerMatchesMeshObservation(peer, observation) {
+			peer.nodeID = observation.RemoteNodeID
+		}
+	}
+	for url, peer := range m.dynamicPeers {
+		if peer == nil || !configuredPeerMatchesMeshObservation(peer, observation) {
+			continue
+		}
+		peer.nodeID = observation.RemoteNodeID
+		discovered := m.discoveredPeers[url]
+		if discovered == nil {
+			continue
+		}
+		discovered.nodeID = observation.RemoteNodeID
+		discovered.lastSeenAt = now
+		discovered.dialing = false
+		if observation.Established {
+			discovered.state = discoveryStateConnected
+			discovered.lastConnectedAt = now
+			discovered.lastError = ""
+			connectedSnapshots = append(connectedSnapshots, *discovered)
+		} else if discovered.state != discoveryStateExpired {
+			discovered.state = discoveryStateFailed
+			discovered.lastError = "mesh adjacency lost"
+			failedSnapshots = append(failedSnapshots, *discovered)
+		}
+	}
+	for _, discovered := range m.discoveredPeers {
+		if discovered == nil || !discoveredPeerMatchesMeshObservation(discovered, observation) {
+			continue
+		}
+		discovered.nodeID = observation.RemoteNodeID
+		discovered.lastSeenAt = now
+		discovered.dialing = false
+		if observation.Established {
+			discovered.state = discoveryStateConnected
+			discovered.lastConnectedAt = now
+			discovered.lastError = ""
+			connectedSnapshots = append(connectedSnapshots, *discovered)
+			continue
+		}
+		if discovered.state == discoveryStateExpired {
+			continue
+		}
+		discovered.state = discoveryStateFailed
+		discovered.lastError = "mesh adjacency lost"
+		failedSnapshots = append(failedSnapshots, *discovered)
+	}
+	m.mu.Unlock()
+	if observation.Established {
+		m.meshPeerSession(observation.RemoteNodeID)
+	}
+	for _, snapshot := range connectedSnapshots {
+		m.persistDiscoveredPeer(snapshot, true)
+	}
+	for _, snapshot := range failedSnapshots {
+		m.persistDiscoveredPeer(snapshot, false)
+	}
+}
+
 func (b *MeshRuntimeBinding) DescribeRoute(destinationNodeID int64, trafficClass mesh.TrafficClass) (mesh.RouteDecision, bool) {
 	if b == nil || b.runtime == nil {
 		return mesh.RouteDecision{}, false
@@ -295,6 +373,23 @@ func (m *Manager) startMeshDialSeed(peer *configuredPeer) error {
 		return fmt.Errorf("mesh: runtime is not attached")
 	}
 	return binding.AddDialSeed(seed)
+}
+
+func (m *Manager) stopMeshDialSeed(peer *configuredPeer) error {
+	if peer == nil {
+		return nil
+	}
+	seed, ok := dialSeedForURL(peer.URL)
+	if !ok {
+		return nil
+	}
+	m.mu.Lock()
+	binding := m.meshRuntime
+	m.mu.Unlock()
+	if binding == nil {
+		return nil
+	}
+	return binding.RemoveDialSeed(seed)
 }
 
 func (m *Manager) collectDialSeeds() []mesh.DialSeed {
@@ -330,6 +425,81 @@ func (m *Manager) collectDialSeeds() []mesh.DialSeed {
 		}
 	}
 	return seeds
+}
+
+func configuredPeerMatchesMeshObservation(peer *configuredPeer, observation mesh.AdjacencyObservation) bool {
+	if peer == nil {
+		return false
+	}
+	if peer.nodeID > 0 && peer.nodeID == observation.RemoteNodeID {
+		return true
+	}
+	if transportKindForPeerURL(peer.URL) != observation.Transport {
+		return false
+	}
+	if normalized, ok := normalizedMeshObservationHint(observation.RemoteHint); ok && peer.URL == normalized {
+		return true
+	}
+	if peer.libP2PPeerID != "" && peer.libP2PPeerID == strings.TrimSpace(observation.RemoteHint) {
+		return true
+	}
+	return meshObservationAdvertisesURL(observation, peer.URL)
+}
+
+func discoveredPeerMatchesMeshObservation(peer *discoveredPeerState, observation mesh.AdjacencyObservation) bool {
+	if peer == nil {
+		return false
+	}
+	if peer.nodeID > 0 && peer.nodeID == observation.RemoteNodeID {
+		return true
+	}
+	if transportKindForPeerURL(peer.url) != observation.Transport {
+		return false
+	}
+	if normalized, ok := normalizedMeshObservationHint(observation.RemoteHint); ok && peer.url == normalized {
+		return true
+	}
+	return meshObservationAdvertisesURL(observation, peer.url)
+}
+
+func meshObservationAdvertisesURL(observation mesh.AdjacencyObservation, peerURL string) bool {
+	hello := observation.Hello
+	if hello == nil {
+		return false
+	}
+	for _, capability := range hello.Transports {
+		if capability == nil || capability.Transport != observation.Transport {
+			continue
+		}
+		for _, endpoint := range capability.AdvertisedEndpoints {
+			normalized, ok := normalizedMeshObservationHint(endpoint)
+			if ok && normalized == peerURL {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func normalizedMeshObservationHint(raw string) (string, bool) {
+	normalized, err := normalizePeerURL(strings.TrimSpace(raw))
+	if err != nil {
+		return "", false
+	}
+	return normalized, true
+}
+
+func transportKindForPeerURL(peerURL string) mesh.TransportKind {
+	switch transportForPeerURL(strings.TrimSpace(peerURL)) {
+	case transportWebSocket:
+		return mesh.TransportWebSocket
+	case transportZeroMQ:
+		return mesh.TransportZeroMQ
+	case transportLibP2P:
+		return mesh.TransportLibP2P
+	default:
+		return mesh.TransportUnspecified
+	}
 }
 
 func dialSeedForURL(peerURL string) (mesh.DialSeed, bool) {

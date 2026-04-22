@@ -57,7 +57,7 @@ func (a *WebSocketMeshTransportAdapter) Dial(ctx context.Context, endpoint strin
 	if err != nil {
 		return nil, err
 	}
-	return wrapMeshTransportConn(mesh.TransportWebSocket, conn), nil
+	return wrapMeshTransportConn(mesh.TransportWebSocket, conn, endpoint), nil
 }
 
 func (a *WebSocketMeshTransportAdapter) Accept() <-chan mesh.TransportConn {

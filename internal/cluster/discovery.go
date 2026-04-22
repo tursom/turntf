@@ -295,18 +295,27 @@ func (m *Manager) recordDiscoveredState(nodeID int64, rawURL, state, lastError s
 func (m *Manager) expireDiscoveredCandidates() {
 	now := time.Now().UTC()
 	expired := make([]discoveredPeerState, 0)
+	toStop := make([]*configuredPeer, 0)
 	m.mu.Lock()
-	for _, peer := range m.discoveredPeers {
+	for url, peer := range m.discoveredPeers {
 		if peer == nil || peer.state == discoveryStateConnected || peer.state == discoveryStateExpired {
 			continue
 		}
 		if !peer.lastSeenAt.IsZero() && now.Sub(peer.lastSeenAt) > discoveryCandidateTTL {
 			peer.state = discoveryStateExpired
 			peer.lastError = "candidate expired"
+			peer.dialing = false
+			if configured := m.dynamicPeers[url]; configured != nil {
+				toStop = append(toStop, configured)
+				delete(m.dynamicPeers, url)
+			}
 			expired = append(expired, *peer)
 		}
 	}
 	m.mu.Unlock()
+	for _, peer := range toStop {
+		_ = m.stopMeshDialSeed(peer)
+	}
 	for _, peer := range expired {
 		m.persistDiscoveredPeer(peer, false)
 	}
@@ -314,11 +323,16 @@ func (m *Manager) expireDiscoveredCandidates() {
 
 func (m *Manager) reconcileDiscoveredDialers() {
 	type candidate struct {
-		peer discoveredPeerState
+		peer           discoveredPeerState
+		alreadyDynamic bool
 	}
 	candidates := make([]candidate, 0)
+	desired := make(map[string]struct{})
+	toStart := make([]*configuredPeer, 0)
+	toStop := make([]*configuredPeer, 0)
+	toPersist := make([]discoveredPeerState, 0)
 	m.mu.Lock()
-	dynamicCount := len(m.dynamicPeers)
+	dynamicCount := 0
 	staticURLs := make(map[string]struct{}, len(m.configuredPeers))
 	for _, peer := range m.configuredPeers {
 		if normalized, err := normalizePeerURL(peer.URL); err == nil {
@@ -332,9 +346,6 @@ func (m *Manager) reconcileDiscoveredDialers() {
 		if _, ok := staticURLs[url]; ok {
 			continue
 		}
-		if _, ok := m.dynamicPeers[url]; ok || peer.dialing {
-			continue
-		}
 		if peer.state == discoveryStateExpired {
 			continue
 		}
@@ -345,13 +356,22 @@ func (m *Manager) reconcileDiscoveredDialers() {
 			continue
 		}
 		if active := m.peers[peer.nodeID]; active != nil && active.active != nil {
+			if _, ok := m.dynamicPeers[url]; ok {
+				desired[url] = struct{}{}
+				dynamicCount++
+				peer.dialing = false
+			}
 			continue
 		}
-		candidates = append(candidates, candidate{peer: *peer})
+		_, alreadyDynamic := m.dynamicPeers[url]
+		candidates = append(candidates, candidate{peer: *peer, alreadyDynamic: alreadyDynamic})
 	}
 	sort.Slice(candidates, func(i, j int) bool {
 		left := candidates[i].peer
 		right := candidates[j].peer
+		if candidates[i].alreadyDynamic != candidates[j].alreadyDynamic {
+			return candidates[i].alreadyDynamic
+		}
 		if left.lastConnectedAt.IsZero() != right.lastConnectedAt.IsZero() {
 			return !left.lastConnectedAt.IsZero()
 		}
@@ -363,7 +383,6 @@ func (m *Manager) reconcileDiscoveredDialers() {
 		}
 		return left.url < right.url
 	})
-	toStart := make([]*configuredPeer, 0)
 	for _, item := range candidates {
 		if dynamicCount >= maxDynamicDiscoveredPeers {
 			break
@@ -372,8 +391,11 @@ func (m *Manager) reconcileDiscoveredDialers() {
 		if peer == nil {
 			continue
 		}
-		peer.dialing = true
-		peer.state = discoveryStateDialing
+		desired[peer.url] = struct{}{}
+		dynamicCount++
+		if _, ok := m.dynamicPeers[peer.url]; ok {
+			continue
+		}
 		configured := &configuredPeer{
 			URL:                        peer.url,
 			zeroMQCurveServerPublicKey: peer.zeroMQCurveServerPublicKey,
@@ -382,15 +404,45 @@ func (m *Manager) reconcileDiscoveredDialers() {
 			dynamic:                    true,
 			source:                     peerSourceDiscovered,
 		}
+		peer.dialing = true
+		peer.state = discoveryStateDialing
 		m.dynamicPeers[peer.url] = configured
 		toStart = append(toStart, configured)
-		dynamicCount++
+	}
+	for url, peer := range m.dynamicPeers {
+		if _, ok := desired[url]; ok {
+			continue
+		}
+		toStop = append(toStop, peer)
+		delete(m.dynamicPeers, url)
+		if discovered := m.discoveredPeers[url]; discovered != nil {
+			discovered.dialing = false
+			if discovered.state == discoveryStateDialing {
+				discovered.state = discoveryStateCandidate
+				discovered.lastError = ""
+				toPersist = append(toPersist, *discovered)
+			}
+		}
 	}
 	m.mu.Unlock()
 
+	for _, peer := range toStop {
+		_ = m.stopMeshDialSeed(peer)
+	}
+	for _, peer := range toPersist {
+		m.persistDiscoveredPeer(peer, false)
+	}
 	for _, peer := range toStart {
 		m.recordConfiguredPeerDialing(peer)
 		if err := m.startMeshDialSeed(peer); err != nil {
+			m.mu.Lock()
+			if current := m.dynamicPeers[peer.URL]; current == peer {
+				delete(m.dynamicPeers, peer.URL)
+			}
+			if discovered := m.discoveredPeers[peer.URL]; discovered != nil {
+				discovered.dialing = false
+			}
+			m.mu.Unlock()
 			m.recordConfiguredPeerDialFailure(peer, err)
 			m.logWarn("mesh_discovered_peer_seed_failed", err).
 				Str("peer_url", peer.URL).

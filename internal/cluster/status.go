@@ -354,8 +354,8 @@ func (m *Manager) ConfiguredPeerNodeIDs() []int64 {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	seen := make(map[int64]struct{}, len(m.configuredPeers)+len(m.discoveredPeers))
-	ids := make([]int64, 0, len(m.configuredPeers)+len(m.discoveredPeers))
+	seen := make(map[int64]struct{}, len(m.configuredPeers)+len(m.discoveredPeers)+len(m.peers))
+	ids := make([]int64, 0, len(m.configuredPeers)+len(m.discoveredPeers)+len(m.peers))
 	for _, peer := range m.configuredPeers {
 		if peer.nodeID <= 0 {
 			continue
@@ -375,6 +375,16 @@ func (m *Manager) ConfiguredPeerNodeIDs() []int64 {
 		}
 		seen[peer.nodeID] = struct{}{}
 		ids = append(ids, peer.nodeID)
+	}
+	for nodeID := range m.peers {
+		if nodeID <= 0 {
+			continue
+		}
+		if _, ok := seen[nodeID]; ok {
+			continue
+		}
+		seen[nodeID] = struct{}{}
+		ids = append(ids, nodeID)
 	}
 	return ids
 }

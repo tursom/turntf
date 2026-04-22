@@ -64,6 +64,17 @@ type TimeSyncObservation struct {
 
 type TimeSyncObserver func(observation TimeSyncObservation)
 
+type AdjacencyObservation struct {
+	RemoteNodeID int64
+	Transport    TransportKind
+	RemoteHint   string
+	Inbound      bool
+	Established  bool
+	Hello        *NodeHello
+}
+
+type AdjacencyObserver func(observation AdjacencyObservation)
+
 // DialSeed describes a transport endpoint the runtime should proactively
 // dial after startup.
 type DialSeed struct {
@@ -113,6 +124,7 @@ type RuntimeOptions struct {
 	ForwardedPacketHandler LocalForwardedPacketHandler
 	ForwardingObserver     ForwardingObserver
 	TimeSyncObserver       TimeSyncObserver
+	AdjacencyObserver      AdjacencyObserver
 	HelloTimeout           time.Duration
 	DialRetryInterval      time.Duration
 	PingInterval           time.Duration
@@ -137,6 +149,7 @@ type Runtime struct {
 	forwardedPacketHandler LocalForwardedPacketHandler
 	forwardingObserver     ForwardingObserver
 	timeSyncObserver       TimeSyncObserver
+	adjacencyObserver      AdjacencyObserver
 
 	helloTimeout          time.Duration
 	dialRetryInterval     time.Duration
@@ -145,7 +158,6 @@ type Runtime struct {
 	now                   func() time.Time
 
 	adapters     []TransportAdapter
-	seeds        []DialSeed
 	adapterByKnd map[TransportKind]TransportAdapter
 
 	mu        sync.Mutex
@@ -162,6 +174,7 @@ type Runtime struct {
 	seenFlood         map[floodKey]struct{}
 	lastUpdate        map[int64]*TopologyUpdate
 	pendingTombstones []*LinkAdvertisement
+	dialSeeds         map[dialSeedKey]*dialSeedEntry
 
 	pingID   atomic.Uint64
 	packetID atomic.Uint64
@@ -176,6 +189,16 @@ type adjacencyKey struct {
 type floodKey struct {
 	origin     int64
 	generation uint64
+}
+
+type dialSeedKey struct {
+	transport TransportKind
+	endpoint  string
+}
+
+type dialSeedEntry struct {
+	seed   DialSeed
+	cancel context.CancelFunc
 }
 
 // Adjacency represents a single accepted or dialed connection to a remote
@@ -278,6 +301,19 @@ func NewRuntime(opts RuntimeOptions) (*Runtime, error) {
 		initialGeneration = ms
 	}
 
+	dialSeeds := make(map[dialSeedKey]*dialSeedEntry, len(opts.DialSeeds))
+	for _, seed := range opts.DialSeeds {
+		normalized, ok := normalizeDialSeed(seed)
+		if !ok {
+			continue
+		}
+		if adapterByKnd[normalized.Transport] == nil {
+			continue
+		}
+		key := keyForDialSeed(normalized)
+		dialSeeds[key] = &dialSeedEntry{seed: normalized}
+	}
+
 	runtime := &Runtime{
 		localNodeID:            opts.LocalNodeID,
 		policy:                 policy,
@@ -292,6 +328,7 @@ func NewRuntime(opts RuntimeOptions) (*Runtime, error) {
 		forwardedPacketHandler: opts.ForwardedPacketHandler,
 		forwardingObserver:     opts.ForwardingObserver,
 		timeSyncObserver:       opts.TimeSyncObserver,
+		adjacencyObserver:      opts.AdjacencyObserver,
 		helloTimeout:           helloTimeout,
 		dialRetryInterval:      dialRetryInterval,
 		pingInterval:           pingInterval,
@@ -299,12 +336,12 @@ func NewRuntime(opts RuntimeOptions) (*Runtime, error) {
 		now:                    now,
 		adapters:               opts.Adapters,
 		adapterByKnd:           adapterByKnd,
-		seeds:                  append([]DialSeed(nil), opts.DialSeeds...),
 		adjByConn:              make(map[TransportConn]*Adjacency),
 		adjByKey:               make(map[adjacencyKey]map[TransportConn]*Adjacency),
 		knownGeneration:        make(map[int64]uint64),
 		seenFlood:              make(map[floodKey]struct{}),
 		lastUpdate:             make(map[int64]*TopologyUpdate),
+		dialSeeds:              dialSeeds,
 		generation:             initialGeneration,
 	}
 	runtime.planner = NewPlanner(opts.LocalNodeID)
@@ -330,9 +367,11 @@ func (r *Runtime) CurrentGeneration() uint64 {
 // AddDialSeed schedules a proactive dial. Before Start it records the seed
 // for startup; after Start it launches a best-effort dial immediately.
 func (r *Runtime) AddDialSeed(seed DialSeed) error {
-	if strings.TrimSpace(seed.Endpoint) == "" {
+	seed, ok := normalizeDialSeed(seed)
+	if !ok {
 		return nil
 	}
+	key := keyForDialSeed(seed)
 	r.mu.Lock()
 	if r.closed {
 		r.mu.Unlock()
@@ -342,16 +381,76 @@ func (r *Runtime) AddDialSeed(seed DialSeed) error {
 		r.mu.Unlock()
 		return fmt.Errorf("mesh: no adapter for transport %v", seed.Transport)
 	}
-	r.seeds = append(r.seeds, seed)
+	if entry := r.dialSeeds[key]; entry != nil {
+		if !r.started || entry.cancel != nil {
+			r.mu.Unlock()
+			return nil
+		}
+		ctx := r.ctx
+		if ctx == nil {
+			r.mu.Unlock()
+			return nil
+		}
+		runCtx, cancel := context.WithCancel(ctx)
+		entry.cancel = cancel
+		r.wg.Add(1)
+		r.mu.Unlock()
+		go r.dialSeedLoop(runCtx, seed)
+		return nil
+	}
+	entry := &dialSeedEntry{seed: seed}
+	r.dialSeeds[key] = entry
 	if !r.started {
 		r.mu.Unlock()
 		return nil
 	}
 	ctx := r.ctx
+	if ctx == nil {
+		r.mu.Unlock()
+		return nil
+	}
+	runCtx, cancel := context.WithCancel(ctx)
+	entry.cancel = cancel
 	r.wg.Add(1)
 	r.mu.Unlock()
-	go r.dialSeedLoop(ctx, seed)
+	go r.dialSeedLoop(runCtx, seed)
 	return nil
+}
+
+// RemoveDialSeed stops future proactive dials for a previously-added seed.
+// Existing established adjacencies are not closed; this only stops the retry
+// loop that would create new outbound connections.
+func (r *Runtime) RemoveDialSeed(seed DialSeed) error {
+	seed, ok := normalizeDialSeed(seed)
+	if !ok {
+		return nil
+	}
+	key := keyForDialSeed(seed)
+	r.mu.Lock()
+	entry := r.dialSeeds[key]
+	if entry == nil {
+		r.mu.Unlock()
+		return nil
+	}
+	delete(r.dialSeeds, key)
+	cancel := entry.cancel
+	r.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	return nil
+}
+
+func normalizeDialSeed(seed DialSeed) (DialSeed, bool) {
+	seed.Endpoint = strings.TrimSpace(seed.Endpoint)
+	if seed.Endpoint == "" || seed.Transport == TransportUnspecified {
+		return DialSeed{}, false
+	}
+	return seed, true
+}
+
+func keyForDialSeed(seed DialSeed) dialSeedKey {
+	return dialSeedKey{transport: seed.Transport, endpoint: seed.Endpoint}
 }
 
 // RouteEnvelope wraps an inner mesh envelope in a ForwardedPacket and
@@ -520,7 +619,22 @@ func (r *Runtime) Start(ctx context.Context) error {
 	r.cancel = cancel
 	r.started = true
 	adapters := append([]TransportAdapter(nil), r.adapters...)
-	seeds := append([]DialSeed(nil), r.seeds...)
+	seedStarts := make([]struct {
+		ctx  context.Context
+		seed DialSeed
+	}, 0, len(r.dialSeeds))
+	for _, entry := range r.dialSeeds {
+		if entry == nil || entry.cancel != nil {
+			continue
+		}
+		seedCtx, seedCancel := context.WithCancel(runCtx)
+		entry.cancel = seedCancel
+		seedStarts = append(seedStarts, struct {
+			ctx  context.Context
+			seed DialSeed
+		}{ctx: seedCtx, seed: entry.seed})
+		r.wg.Add(1)
+	}
 	r.mu.Unlock()
 
 	for _, adapter := range adapters {
@@ -545,10 +659,9 @@ func (r *Runtime) Start(ctx context.Context) error {
 		r.wg.Add(1)
 		go r.acceptLoop(runCtx, adapter)
 	}
-	for _, seed := range seeds {
-		seed := seed
-		r.wg.Add(1)
-		go r.dialSeedLoop(runCtx, seed)
+	for _, start := range seedStarts {
+		start := start
+		go r.dialSeedLoop(start.ctx, start.seed)
 	}
 	r.wg.Add(1)
 	go r.topologyPublishLoop(runCtx)
@@ -699,6 +812,7 @@ func (r *Runtime) runConn(ctx context.Context, kind TransportKind, conn Transpor
 	defer r.onAdjacencyLost(adj)
 
 	r.store.ApplyHello(adj.RemoteNodeID, adj.Hello)
+	r.emitAdjacencyObservation(adj, true)
 	r.bumpGenerationAndPublish(ctx)
 	r.replayCachedTopology(ctx, adj)
 
@@ -868,10 +982,36 @@ func (r *Runtime) onAdjacencyLost(adj *Adjacency) {
 	if ctx == nil {
 		return
 	}
+	r.emitAdjacencyObservation(adj, false)
 	// First publish carries the tombstone; a follow-up publish drops the
 	// link entirely.
 	r.bumpGenerationAndPublish(ctx)
 	r.bumpGenerationAndPublish(ctx)
+}
+
+func (r *Runtime) emitAdjacencyObservation(adj *Adjacency, established bool) {
+	if r == nil || r.adjacencyObserver == nil || adj == nil {
+		return
+	}
+	r.adjacencyObserver(AdjacencyObservation{
+		RemoteNodeID: adj.RemoteNodeID,
+		Transport:    adj.Transport,
+		RemoteHint:   adj.RemoteHint,
+		Inbound:      adj.Inbound,
+		Established:  established,
+		Hello:        cloneNodeHello(adj.Hello),
+	})
+}
+
+func cloneNodeHello(hello *NodeHello) *NodeHello {
+	if hello == nil {
+		return nil
+	}
+	cloned, ok := proto.Clone(hello).(*NodeHello)
+	if !ok {
+		return nil
+	}
+	return cloned
 }
 
 func (r *Runtime) readLoop(ctx context.Context, adj *Adjacency) {

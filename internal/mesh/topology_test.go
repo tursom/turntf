@@ -234,6 +234,78 @@ func TestTopologyStoreSnapshotClonesCapabilities(t *testing.T) {
 	}
 }
 
+func TestTopologyStoreSnapshotIndexesOutgoingLinks(t *testing.T) {
+	t.Parallel()
+
+	store := NewMemoryTopologyStore()
+	store.ApplyTopologyUpdate(&TopologyUpdate{
+		OriginNodeId:     1,
+		Generation:       1,
+		ForwardingPolicy: DefaultForwardingPolicy(1),
+		Transports: []*TransportCapability{
+			{Transport: TransportLibP2P, OutboundEnabled: true},
+			{Transport: TransportZeroMQ, OutboundEnabled: true},
+		},
+		Links: []*LinkAdvertisement{
+			{FromNodeId: 1, ToNodeId: 2, Transport: TransportLibP2P, PathClass: PathClassDirect, CostMs: 10, Established: true},
+			{FromNodeId: 1, ToNodeId: 3, Transport: TransportZeroMQ, PathClass: PathClassDirect, CostMs: 20, Established: true},
+		},
+	})
+	store.ApplyTopologyUpdate(&TopologyUpdate{
+		OriginNodeId:     2,
+		Generation:       1,
+		ForwardingPolicy: DefaultForwardingPolicy(1),
+		Transports: []*TransportCapability{
+			{Transport: TransportLibP2P, OutboundEnabled: true},
+		},
+		Links: []*LinkAdvertisement{
+			{FromNodeId: 2, ToNodeId: 4, Transport: TransportLibP2P, PathClass: PathClassDirect, CostMs: 30, Established: true},
+		},
+	})
+
+	snapshot := store.Snapshot()
+	if len(snapshot.Links) != 3 {
+		t.Fatalf("unexpected link count: got=%d want=3", len(snapshot.Links))
+	}
+	assertOutgoingLinks(t, snapshot, 1, TransportLibP2P, 2)
+	assertOutgoingLinks(t, snapshot, 1, TransportZeroMQ, 3)
+	assertOutgoingLinks(t, snapshot, 2, TransportLibP2P, 4)
+	if links := snapshot.outgoing(2, TransportZeroMQ); len(links) != 0 {
+		t.Fatalf("expected no zeromq outgoing links for node 2, got %+v", links)
+	}
+}
+
+func TestTopologySnapshotEnsureOutgoingLinksIndexesManualSnapshot(t *testing.T) {
+	t.Parallel()
+
+	snapshot := TopologySnapshot{
+		Links: []LinkState{
+			{FromNodeID: 1, ToNodeID: 2, Transport: TransportLibP2P, Established: true},
+			{FromNodeID: 1, ToNodeID: 3, Transport: TransportLibP2P, Established: false},
+			{FromNodeID: 1, ToNodeID: 4, Transport: TransportWebSocket, Established: true},
+			{FromNodeID: 2, ToNodeID: 5, Transport: TransportLibP2P, Established: true},
+		},
+	}
+
+	snapshot.ensureOutgoingLinks()
+	assertOutgoingLinks(t, snapshot, 1, TransportLibP2P, 2, 3)
+	assertOutgoingLinks(t, snapshot, 1, TransportWebSocket, 4)
+	assertOutgoingLinks(t, snapshot, 2, TransportLibP2P, 5)
+}
+
+func assertOutgoingLinks(t *testing.T, snapshot TopologySnapshot, nodeID int64, transport TransportKind, toNodeIDs ...int64) {
+	t.Helper()
+	links := snapshot.outgoing(nodeID, transport)
+	if len(links) != len(toNodeIDs) {
+		t.Fatalf("unexpected outgoing link count for node=%d transport=%v: got=%d want=%d links=%+v", nodeID, transport, len(links), len(toNodeIDs), links)
+	}
+	for _, toNodeID := range toNodeIDs {
+		if !hasTopologyLink(links, toNodeID, transport) {
+			t.Fatalf("expected outgoing link node=%d transport=%v to=%d, got %+v", nodeID, transport, toNodeID, links)
+		}
+	}
+}
+
 func hasTopologyLink(links []LinkState, toNodeID int64, transport TransportKind) bool {
 	for _, link := range links {
 		if link.ToNodeID == toNodeID && link.Transport == transport {

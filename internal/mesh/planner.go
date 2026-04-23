@@ -39,6 +39,7 @@ func (p *Planner) Compute(snapshot TopologySnapshot, destinationNodeID int64, tr
 	if p == nil || p.localNodeID <= 0 || destinationNodeID <= 0 {
 		return RouteDecision{}, false
 	}
+	snapshot.ensureOutgoingLinks()
 	localNode, ok := snapshot.Node(p.localNodeID)
 	if !ok {
 		return RouteDecision{}, false
@@ -98,8 +99,8 @@ func (p *Planner) expand(snapshot TopologySnapshot, destinationNodeID int64, tra
 	if !p.canTransit(snapshot, destinationNodeID, trafficClass, ingressTransport, current.nodeID) {
 		return transitions
 	}
-	for _, link := range snapshot.Links {
-		if !link.Established || link.FromNodeID != current.nodeID || link.Transport != current.transport {
+	for _, link := range snapshot.outgoing(current.nodeID, current.transport) {
+		if !link.Established {
 			continue
 		}
 		nextState := plannerState{nodeID: link.ToNodeID, transport: link.Transport}

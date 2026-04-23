@@ -24,12 +24,18 @@ type TopologySnapshot struct {
 	Nodes              map[int64]NodeState
 	Links              []LinkState
 	TopologyGeneration uint64
+	outgoingLinks      map[topologyAdjacencyKey][]LinkState
 }
 
 type linkKey struct {
 	origin    int64
 	from      int64
 	to        int64
+	transport TransportKind
+}
+
+type topologyAdjacencyKey struct {
+	from      int64
 	transport TransportKind
 }
 
@@ -131,8 +137,9 @@ func (s *MemoryTopologyStore) Snapshot() TopologySnapshot {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	snapshot := TopologySnapshot{
-		Nodes: make(map[int64]NodeState, len(s.nodes)),
-		Links: make([]LinkState, 0, len(s.links)),
+		Nodes:         make(map[int64]NodeState, len(s.nodes)),
+		Links:         make([]LinkState, 0, len(s.links)),
+		outgoingLinks: make(map[topologyAdjacencyKey][]LinkState, len(s.links)),
 	}
 	for nodeID, node := range s.nodes {
 		caps := make(map[TransportKind]*TransportCapability, len(node.capabilities))
@@ -148,6 +155,7 @@ func (s *MemoryTopologyStore) Snapshot() TopologySnapshot {
 	}
 	for _, link := range s.links {
 		snapshot.Links = append(snapshot.Links, link)
+		snapshot.addOutgoingLink(link)
 		if gen := s.generation[link.OriginNodeID]; gen > snapshot.TopologyGeneration {
 			snapshot.TopologyGeneration = gen
 		}
@@ -188,6 +196,37 @@ func (s *MemoryTopologyStore) ensureNodeLocked(nodeID int64) *storeNode {
 func (s TopologySnapshot) Node(nodeID int64) (NodeState, bool) {
 	node, ok := s.Nodes[nodeID]
 	return node, ok
+}
+
+func (s *TopologySnapshot) ensureOutgoingLinks() {
+	if s == nil || s.outgoingLinks != nil {
+		return
+	}
+	s.outgoingLinks = make(map[topologyAdjacencyKey][]LinkState, len(s.Links))
+	for _, link := range s.Links {
+		s.addOutgoingLink(link)
+	}
+}
+
+func (s *TopologySnapshot) addOutgoingLink(link LinkState) {
+	if s == nil {
+		return
+	}
+	if s.outgoingLinks == nil {
+		s.outgoingLinks = make(map[topologyAdjacencyKey][]LinkState)
+	}
+	key := topologyAdjacencyKey{
+		from:      link.FromNodeID,
+		transport: link.Transport,
+	}
+	s.outgoingLinks[key] = append(s.outgoingLinks[key], link)
+}
+
+func (s TopologySnapshot) outgoing(nodeID int64, transport TransportKind) []LinkState {
+	return s.outgoingLinks[topologyAdjacencyKey{
+		from:      nodeID,
+		transport: transport,
+	}]
 }
 
 func (n NodeState) OutboundEnabled(kind TransportKind) bool {

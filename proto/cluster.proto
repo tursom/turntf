@@ -50,6 +50,7 @@ message EventBatch {
   repeated ReplicatedEvent events = 1;
   uint64 pull_request_id = 2;
   int64 origin_node_id = 3;
+  uint64 truncated_before_event_id = 4;
 }
 
 message ReplicatedEvent {

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	libp2pcrypto "github.com/libp2p/go-libp2p/core/crypto"
 	libp2ppeer "github.com/libp2p/go-libp2p/core/peer"
@@ -280,6 +281,47 @@ listen_addr = ":8080"
 	}
 	if cfg.PebblePath != filepath.Clean(defaultPebblePath) {
 		t.Fatalf("unexpected default pebble path: %q", cfg.PebblePath)
+	}
+	if !cfg.EventLogPruneEnabled {
+		t.Fatalf("expected event log prune to be enabled by default")
+	}
+	if cfg.EventLogPruneInterval != 60*time.Second {
+		t.Fatalf("unexpected default event log prune interval: %s", cfg.EventLogPruneInterval)
+	}
+	if cfg.StoreOptions.EventLogMaxEventsPerOrigin != store.DefaultEventLogMaxEventsPerOrigin {
+		t.Fatalf("unexpected default event log retention: %d", cfg.StoreOptions.EventLogMaxEventsPerOrigin)
+	}
+}
+
+func TestLoadServeRuntimeConfigReadsEventLogPruneConfig(t *testing.T) {
+	t.Parallel()
+
+	configPath := filepath.Join(t.TempDir(), "event-log-prune.toml")
+	writeTestConfig(t, configPath, `
+[services.http]
+listen_addr = ":8080"
+
+[store]
+message_window_size = 250
+
+[store.event_log]
+enabled = false
+max_events_per_origin = 1234
+prune_interval_seconds = 7
+`)
+
+	cfg, err := loadServeRuntimeConfig(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if cfg.EventLogPruneEnabled {
+		t.Fatalf("expected event log prune to be disabled")
+	}
+	if cfg.EventLogPruneInterval != 7*time.Second {
+		t.Fatalf("unexpected prune interval: %s", cfg.EventLogPruneInterval)
+	}
+	if cfg.StoreOptions.EventLogMaxEventsPerOrigin != 1234 {
+		t.Fatalf("unexpected event log retention: %d", cfg.StoreOptions.EventLogMaxEventsPerOrigin)
 	}
 }
 

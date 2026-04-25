@@ -52,6 +52,7 @@ type operationsStatus struct {
 	LastTrustedClockSync string               `json:"last_trusted_clock_sync,omitempty"`
 	ConflictTotal        int64                `json:"conflict_total"`
 	MessageTrim          messageTrimStatus    `json:"message_trim"`
+	EventLogTrim         eventLogTrimStatus   `json:"event_log_trim"`
 	Projection           projectionStatus     `json:"projection"`
 	Discovery            discoveryStatus      `json:"discovery"`
 	Mesh                 meshStatus           `json:"mesh,omitempty"`
@@ -143,6 +144,11 @@ type messageTrimStatus struct {
 	LastTrimmedAt string `json:"last_trimmed_at,omitempty"`
 }
 
+type eventLogTrimStatus struct {
+	TrimmedTotal  int64  `json:"trimmed_total"`
+	LastTrimmedAt string `json:"last_trimmed_at,omitempty"`
+}
+
 type projectionStatus struct {
 	PendingTotal int64  `json:"pending_total"`
 	LastFailedAt string `json:"last_failed_at,omitempty"`
@@ -223,6 +229,10 @@ func (s *Service) OperationsStatus(ctx context.Context) (operationsStatus, error
 		MessageTrim: messageTrimStatus{
 			TrimmedTotal:  storeStats.MessageTrim.TrimmedTotal,
 			LastTrimmedAt: timestampString(storeStats.MessageTrim.LastTrimmedAt),
+		},
+		EventLogTrim: eventLogTrimStatus{
+			TrimmedTotal:  storeStats.EventLogTrim.TrimmedTotal,
+			LastTrimmedAt: timestampString(storeStats.EventLogTrim.LastTrimmedAt),
 		},
 		Projection: projectionStatus{
 			PendingTotal: storeStats.Projection.PendingTotal,
@@ -344,6 +354,8 @@ func (s *Service) Metrics(ctx context.Context) (string, error) {
 	writeGauge(&buf, "notifier_user_conflicts_total", map[string]string{"node_id": nodeIDLabel}, float64(status.ConflictTotal))
 	writeMetricHelp(&buf, "notifier_message_trimmed_total", "Total messages trimmed by the local window.", "counter")
 	writeGauge(&buf, "notifier_message_trimmed_total", map[string]string{"node_id": nodeIDLabel}, float64(status.MessageTrim.TrimmedTotal))
+	writeMetricHelp(&buf, "notifier_event_log_trimmed_total", "Total event log rows trimmed by retention.", "counter")
+	writeGauge(&buf, "notifier_event_log_trimmed_total", map[string]string{"node_id": nodeIDLabel}, float64(status.EventLogTrim.TrimmedTotal))
 	writeMetricHelp(&buf, "notifier_blacklist_rejected_total", "Total message or packet deliveries rejected by blacklist rules.", "counter")
 	writeGauge(&buf, "notifier_blacklist_rejected_total", map[string]string{"node_id": nodeIDLabel}, float64(s.BlacklistHitsTotal()))
 	writeMetricHelp(&buf, "notifier_pending_projections", "Pending event projections waiting to be replayed.", "gauge")

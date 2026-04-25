@@ -4207,6 +4207,7 @@ type OperationsStatus struct {
 	MessageTrim       *MessageTrimStatus     `protobuf:"bytes,6,opt,name=message_trim,json=messageTrim,proto3" json:"message_trim,omitempty"`
 	Projection        *ProjectionStatus      `protobuf:"bytes,7,opt,name=projection,proto3" json:"projection,omitempty"`
 	Peers             []*PeerStatus          `protobuf:"bytes,8,rep,name=peers,proto3" json:"peers,omitempty"`
+	EventLogTrim      *EventLogTrimStatus    `protobuf:"bytes,9,opt,name=event_log_trim,json=eventLogTrim,proto3" json:"event_log_trim,omitempty"`
 	unknownFields     protoimpl.UnknownFields
 	sizeCache         protoimpl.SizeCache
 }
@@ -4297,6 +4298,13 @@ func (x *OperationsStatus) GetPeers() []*PeerStatus {
 	return nil
 }
 
+func (x *OperationsStatus) GetEventLogTrim() *EventLogTrimStatus {
+	if x != nil {
+		return x.EventLogTrim
+	}
+	return nil
+}
+
 type MessageTrimStatus struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	TrimmedTotal  int64                  `protobuf:"varint,1,opt,name=trimmed_total,json=trimmedTotal,proto3" json:"trimmed_total,omitempty"`
@@ -4349,6 +4357,58 @@ func (x *MessageTrimStatus) GetLastTrimmedAt() string {
 	return ""
 }
 
+type EventLogTrimStatus struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	TrimmedTotal  int64                  `protobuf:"varint,1,opt,name=trimmed_total,json=trimmedTotal,proto3" json:"trimmed_total,omitempty"`
+	LastTrimmedAt string                 `protobuf:"bytes,2,opt,name=last_trimmed_at,json=lastTrimmedAt,proto3" json:"last_trimmed_at,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *EventLogTrimStatus) Reset() {
+	*x = EventLogTrimStatus{}
+	mi := &file_client_proto_msgTypes[59]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *EventLogTrimStatus) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*EventLogTrimStatus) ProtoMessage() {}
+
+func (x *EventLogTrimStatus) ProtoReflect() protoreflect.Message {
+	mi := &file_client_proto_msgTypes[59]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use EventLogTrimStatus.ProtoReflect.Descriptor instead.
+func (*EventLogTrimStatus) Descriptor() ([]byte, []int) {
+	return file_client_proto_rawDescGZIP(), []int{59}
+}
+
+func (x *EventLogTrimStatus) GetTrimmedTotal() int64 {
+	if x != nil {
+		return x.TrimmedTotal
+	}
+	return 0
+}
+
+func (x *EventLogTrimStatus) GetLastTrimmedAt() string {
+	if x != nil {
+		return x.LastTrimmedAt
+	}
+	return ""
+}
+
 type ProjectionStatus struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	PendingTotal  int64                  `protobuf:"varint,1,opt,name=pending_total,json=pendingTotal,proto3" json:"pending_total,omitempty"`
@@ -4359,7 +4419,7 @@ type ProjectionStatus struct {
 
 func (x *ProjectionStatus) Reset() {
 	*x = ProjectionStatus{}
-	mi := &file_client_proto_msgTypes[59]
+	mi := &file_client_proto_msgTypes[60]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4371,7 +4431,7 @@ func (x *ProjectionStatus) String() string {
 func (*ProjectionStatus) ProtoMessage() {}
 
 func (x *ProjectionStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_client_proto_msgTypes[59]
+	mi := &file_client_proto_msgTypes[60]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4384,7 +4444,7 @@ func (x *ProjectionStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ProjectionStatus.ProtoReflect.Descriptor instead.
 func (*ProjectionStatus) Descriptor() ([]byte, []int) {
-	return file_client_proto_rawDescGZIP(), []int{59}
+	return file_client_proto_rawDescGZIP(), []int{60}
 }
 
 func (x *ProjectionStatus) GetPendingTotal() int64 {
@@ -4416,7 +4476,7 @@ type PeerOriginStatus struct {
 
 func (x *PeerOriginStatus) Reset() {
 	*x = PeerOriginStatus{}
-	mi := &file_client_proto_msgTypes[60]
+	mi := &file_client_proto_msgTypes[61]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4428,7 +4488,7 @@ func (x *PeerOriginStatus) String() string {
 func (*PeerOriginStatus) ProtoMessage() {}
 
 func (x *PeerOriginStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_client_proto_msgTypes[60]
+	mi := &file_client_proto_msgTypes[61]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4441,7 +4501,7 @@ func (x *PeerOriginStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PeerOriginStatus.ProtoReflect.Descriptor instead.
 func (*PeerOriginStatus) Descriptor() ([]byte, []int) {
-	return file_client_proto_rawDescGZIP(), []int{60}
+	return file_client_proto_rawDescGZIP(), []int{61}
 }
 
 func (x *PeerOriginStatus) GetOriginNodeId() int64 {
@@ -4523,7 +4583,7 @@ type PeerStatus struct {
 
 func (x *PeerStatus) Reset() {
 	*x = PeerStatus{}
-	mi := &file_client_proto_msgTypes[61]
+	mi := &file_client_proto_msgTypes[62]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4535,7 +4595,7 @@ func (x *PeerStatus) String() string {
 func (*PeerStatus) ProtoMessage() {}
 
 func (x *PeerStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_client_proto_msgTypes[61]
+	mi := &file_client_proto_msgTypes[62]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4548,7 +4608,7 @@ func (x *PeerStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PeerStatus.ProtoReflect.Descriptor instead.
 func (*PeerStatus) Descriptor() ([]byte, []int) {
-	return file_client_proto_rawDescGZIP(), []int{61}
+	return file_client_proto_rawDescGZIP(), []int{62}
 }
 
 func (x *PeerStatus) GetNodeId() int64 {
@@ -5035,7 +5095,7 @@ const file_client_proto_rawDesc = "" +
 	"\x03hlc\x18\a \x01(\tR\x03hlc\x12$\n" +
 	"\x0eorigin_node_id\x18\b \x01(\x03R\foriginNodeId\x12\x1d\n" +
 	"\n" +
-	"event_json\x18\t \x01(\fR\teventJson\"\xa2\x03\n" +
+	"event_json\x18\t \x01(\fR\teventJson\"\xf0\x03\n" +
 	"\x10OperationsStatus\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\x03R\x06nodeId\x12.\n" +
 	"\x13message_window_size\x18\x02 \x01(\x05R\x11messageWindowSize\x12.\n" +
@@ -5046,8 +5106,12 @@ const file_client_proto_rawDesc = "" +
 	"\n" +
 	"projection\x18\a \x01(\v2$.notifier.client.v1.ProjectionStatusR\n" +
 	"projection\x124\n" +
-	"\x05peers\x18\b \x03(\v2\x1e.notifier.client.v1.PeerStatusR\x05peers\"`\n" +
+	"\x05peers\x18\b \x03(\v2\x1e.notifier.client.v1.PeerStatusR\x05peers\x12L\n" +
+	"\x0eevent_log_trim\x18\t \x01(\v2&.notifier.client.v1.EventLogTrimStatusR\feventLogTrim\"`\n" +
 	"\x11MessageTrimStatus\x12#\n" +
+	"\rtrimmed_total\x18\x01 \x01(\x03R\ftrimmedTotal\x12&\n" +
+	"\x0flast_trimmed_at\x18\x02 \x01(\tR\rlastTrimmedAt\"a\n" +
+	"\x12EventLogTrimStatus\x12#\n" +
 	"\rtrimmed_total\x18\x01 \x01(\x03R\ftrimmedTotal\x12&\n" +
 	"\x0flast_trimmed_at\x18\x02 \x01(\tR\rlastTrimmedAt\"]\n" +
 	"\x10ProjectionStatus\x12#\n" +
@@ -5108,7 +5172,7 @@ func file_client_proto_rawDescGZIP() []byte {
 }
 
 var file_client_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_client_proto_msgTypes = make([]protoimpl.MessageInfo, 62)
+var file_client_proto_msgTypes = make([]protoimpl.MessageInfo, 63)
 var file_client_proto_goTypes = []any{
 	(ClientDeliveryKind)(0),               // 0: notifier.client.v1.ClientDeliveryKind
 	(ClientDeliveryMode)(0),               // 1: notifier.client.v1.ClientDeliveryMode
@@ -5171,9 +5235,10 @@ var file_client_proto_goTypes = []any{
 	(*Event)(nil),                         // 58: notifier.client.v1.Event
 	(*OperationsStatus)(nil),              // 59: notifier.client.v1.OperationsStatus
 	(*MessageTrimStatus)(nil),             // 60: notifier.client.v1.MessageTrimStatus
-	(*ProjectionStatus)(nil),              // 61: notifier.client.v1.ProjectionStatus
-	(*PeerOriginStatus)(nil),              // 62: notifier.client.v1.PeerOriginStatus
-	(*PeerStatus)(nil),                    // 63: notifier.client.v1.PeerStatus
+	(*EventLogTrimStatus)(nil),            // 61: notifier.client.v1.EventLogTrimStatus
+	(*ProjectionStatus)(nil),              // 62: notifier.client.v1.ProjectionStatus
+	(*PeerOriginStatus)(nil),              // 63: notifier.client.v1.PeerOriginStatus
+	(*PeerStatus)(nil),                    // 64: notifier.client.v1.PeerStatus
 }
 var file_client_proto_depIdxs = []int32{
 	4,   // 0: notifier.client.v1.ClientEnvelope.login:type_name -> notifier.client.v1.LoginRequest
@@ -5274,14 +5339,15 @@ var file_client_proto_depIdxs = []int32{
 	52,  // 95: notifier.client.v1.BlacklistEntry.owner:type_name -> notifier.client.v1.UserRef
 	52,  // 96: notifier.client.v1.BlacklistEntry.blocked:type_name -> notifier.client.v1.UserRef
 	60,  // 97: notifier.client.v1.OperationsStatus.message_trim:type_name -> notifier.client.v1.MessageTrimStatus
-	61,  // 98: notifier.client.v1.OperationsStatus.projection:type_name -> notifier.client.v1.ProjectionStatus
-	63,  // 99: notifier.client.v1.OperationsStatus.peers:type_name -> notifier.client.v1.PeerStatus
-	62,  // 100: notifier.client.v1.PeerStatus.origins:type_name -> notifier.client.v1.PeerOriginStatus
-	101, // [101:101] is the sub-list for method output_type
-	101, // [101:101] is the sub-list for method input_type
-	101, // [101:101] is the sub-list for extension type_name
-	101, // [101:101] is the sub-list for extension extendee
-	0,   // [0:101] is the sub-list for field type_name
+	62,  // 98: notifier.client.v1.OperationsStatus.projection:type_name -> notifier.client.v1.ProjectionStatus
+	64,  // 99: notifier.client.v1.OperationsStatus.peers:type_name -> notifier.client.v1.PeerStatus
+	61,  // 100: notifier.client.v1.OperationsStatus.event_log_trim:type_name -> notifier.client.v1.EventLogTrimStatus
+	63,  // 101: notifier.client.v1.PeerStatus.origins:type_name -> notifier.client.v1.PeerOriginStatus
+	102, // [102:102] is the sub-list for method output_type
+	102, // [102:102] is the sub-list for method input_type
+	102, // [102:102] is the sub-list for extension type_name
+	102, // [102:102] is the sub-list for extension extendee
+	0,   // [0:102] is the sub-list for field type_name
 }
 
 func init() { file_client_proto_init() }
@@ -5345,7 +5411,7 @@ func file_client_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_client_proto_rawDesc), len(file_client_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   62,
+			NumMessages:   63,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

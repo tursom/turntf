@@ -141,6 +141,9 @@ func TestUserAndMessageHTTPAPI(t *testing.T) {
 		MessageTrim       struct {
 			TrimmedTotal int64 `json:"trimmed_total"`
 		} `json:"message_trim"`
+		EventLogTrim struct {
+			TrimmedTotal int64 `json:"trimmed_total"`
+		} `json:"event_log_trim"`
 	}
 	mustJSON(t, doJSONWithHeaders(t, handler, http.MethodGet, "/ops/status", nil, map[string]string{
 		"Authorization": "Bearer " + adminToken,
@@ -154,6 +157,9 @@ func TestUserAndMessageHTTPAPI(t *testing.T) {
 	}, http.StatusOK)
 	if !strings.Contains(metrics, `notifier_event_log_last_sequence{node_id="4096"} `) {
 		t.Fatalf("metrics missing last sequence: %s", metrics)
+	}
+	if !strings.Contains(metrics, `notifier_event_log_trimmed_total{node_id="4096"} `) {
+		t.Fatalf("metrics missing event log trim total: %s", metrics)
 	}
 
 	body := doJSONWithHeaders(t, handler, http.MethodDelete, userPath(createdUser.NodeID, createdUser.UserID), nil, map[string]string{

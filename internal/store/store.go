@@ -24,6 +24,7 @@ var (
 )
 
 const DefaultMessageWindowSize = 500
+const DefaultEventLogMaxEventsPerOrigin = 100000
 
 const (
 	EngineSQLite = "sqlite"
@@ -54,29 +55,31 @@ func isSystemReservedUserID(userID int64) bool {
 
 type Options struct {
 	// NodeID seeds schema_meta.node_id for deterministic tests; production leaves it empty.
-	NodeID            int64
-	Engine            string
-	PebblePath        string
-	MessageWindowSize int
-	Clock             *clock.Clock
+	NodeID                     int64
+	Engine                     string
+	PebblePath                 string
+	MessageWindowSize          int
+	EventLogMaxEventsPerOrigin int
+	Clock                      *clock.Clock
 }
 
 type Store struct {
-	db                *sql.DB
-	pebbleDB          *pebble.DB
-	engine            string
-	nodeID            int64
-	clock             *clock.Clock
-	ids               *clock.IDGenerator
-	initialNodeID     int64
-	messageWindowSize int
-	bootstrapAdmin    BootstrapAdminConfig
-	eventLog          EventLogRepository
-	userRepository    UserRepository
-	subscriptions     SubscriptionRepository
-	blacklists        BlacklistRepository
-	messageTrim       MessageTrimRepository
-	messageProjection MessageProjectionRepository
+	db                         *sql.DB
+	pebbleDB                   *pebble.DB
+	engine                     string
+	nodeID                     int64
+	clock                      *clock.Clock
+	ids                        *clock.IDGenerator
+	initialNodeID              int64
+	messageWindowSize          int
+	eventLogMaxEventsPerOrigin int
+	bootstrapAdmin             BootstrapAdminConfig
+	eventLog                   EventLogRepository
+	userRepository             UserRepository
+	subscriptions              SubscriptionRepository
+	blacklists                 BlacklistRepository
+	messageTrim                MessageTrimRepository
+	messageProjection          MessageProjectionRepository
 }
 
 type UserKey struct {
@@ -283,15 +286,16 @@ func Open(dbPath string, opts Options) (*Store, error) {
 	}
 
 	st := &Store{
-		db:                db,
-		pebbleDB:          pebbleDB,
-		engine:            engine,
-		initialNodeID:     opts.NodeID,
-		messageWindowSize: normalizeMessageWindowSize(opts.MessageWindowSize),
-		clock:             opts.Clock,
-		userRepository:    newCachedUserRepository(&sqliteUserRepository{db: db}),
-		subscriptions:     &sqliteSubscriptionRepository{db: db},
-		blacklists:        &sqliteBlacklistRepository{db: db},
+		db:                         db,
+		pebbleDB:                   pebbleDB,
+		engine:                     engine,
+		initialNodeID:              opts.NodeID,
+		messageWindowSize:          normalizeMessageWindowSize(opts.MessageWindowSize),
+		eventLogMaxEventsPerOrigin: normalizeEventLogMaxEventsPerOrigin(opts.EventLogMaxEventsPerOrigin),
+		clock:                      opts.Clock,
+		userRepository:             newCachedUserRepository(&sqliteUserRepository{db: db}),
+		subscriptions:              &sqliteSubscriptionRepository{db: db},
+		blacklists:                 &sqliteBlacklistRepository{db: db},
 	}
 	return st, nil
 }
@@ -306,6 +310,10 @@ func (s *Store) NodeID() int64 {
 
 func (s *Store) MessageWindowSize() int {
 	return normalizeMessageWindowSize(s.messageWindowSize)
+}
+
+func (s *Store) EventLogMaxEventsPerOrigin() int {
+	return normalizeEventLogMaxEventsPerOrigin(s.eventLogMaxEventsPerOrigin)
 }
 
 func (s *Store) Close() error {
@@ -333,6 +341,13 @@ func normalizeEngine(engine string) string {
 func normalizeMessageWindowSize(size int) int {
 	if size <= 0 {
 		return DefaultMessageWindowSize
+	}
+	return size
+}
+
+func normalizeEventLogMaxEventsPerOrigin(size int) int {
+	if size <= 0 {
+		return DefaultEventLogMaxEventsPerOrigin
 	}
 	return size
 }

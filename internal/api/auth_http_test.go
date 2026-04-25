@@ -905,6 +905,9 @@ func TestClientWebSocketAdminRPCProvidesFullHTTPCapabilities(t *testing.T) {
 	if opsResp == nil || opsResp.RequestId != 16 || opsResp.Status.GetNodeId() != testNodeID(1) {
 		t.Fatalf("unexpected operations status response: %+v", opsResp)
 	}
+	if opsResp.Status.GetEventLogTrim() == nil {
+		t.Fatalf("expected event log trim status in operations response: %+v", opsResp)
+	}
 
 	writeClientEnvelope(t, conn, &internalproto.ClientEnvelope{
 		Body: &internalproto.ClientEnvelope_Metrics{

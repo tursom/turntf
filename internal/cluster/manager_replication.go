@@ -95,6 +95,31 @@ func (m *Manager) handleEventBatch(sess *session, envelope *internalproto.Envelo
 	if originNodeID <= 0 && len(events) > 0 && events[0] != nil {
 		originNodeID = events[0].GetOriginNodeId()
 	}
+	truncatedBeforeEventID := int64(batch.GetTruncatedBeforeEventId())
+	if truncatedBeforeEventID > 0 {
+		if batch.GetPullRequestId() == 0 {
+			return errors.New("truncated pull response request id cannot be empty")
+		}
+		if originNodeID <= 0 {
+			return errors.New("truncated pull response origin node id cannot be empty")
+		}
+		if len(events) > 0 {
+			return errors.New("truncated pull response cannot include events")
+		}
+		sess.completePendingPull(originNodeID, batch.GetPullRequestId())
+		if m.store != nil {
+			if err := m.store.RecordOriginApplied(context.Background(), originNodeID, truncatedBeforeEventID); err != nil {
+				return err
+			}
+		}
+		m.logSessionEvent("catchup_truncated_by_retention", sess).
+			Int64("origin_node_id", originNodeID).
+			Uint64("pull_request_id", batch.GetPullRequestId()).
+			Int64("truncated_before_event_id", truncatedBeforeEventID).
+			Msg("catchup fell behind retained event log window")
+		m.requestSnapshotRepairForOrigin(sess, originNodeID)
+		return nil
+	}
 	if len(events) == 0 {
 		if batch.GetPullRequestId() == 0 {
 			return errors.New("event batch cannot be empty")
@@ -229,6 +254,37 @@ func (m *Manager) handlePullEvents(sess *session, envelope *internalproto.Envelo
 	limit := int(pull.GetLimit())
 	if limit <= 0 || limit > pullBatchSize {
 		limit = pullBatchSize
+	}
+
+	truncatedBeforeEventID, err := m.store.EventLogTruncatedBefore(context.Background(), pull.OriginNodeId)
+	if err != nil {
+		return err
+	}
+	if int64(pull.GetAfterEventId()) < truncatedBeforeEventID {
+		m.logSessionEvent("pull_events_truncated", sess).
+			Int64("origin_node_id", pull.OriginNodeId).
+			Uint64("request_id", pull.RequestId).
+			Uint64("after_event_id", pull.GetAfterEventId()).
+			Int64("truncated_before_event_id", truncatedBeforeEventID).
+			Msg("served truncated pull events response")
+		eventBatch := &internalproto.EventBatch{
+			PullRequestId:          pull.RequestId,
+			OriginNodeId:           pull.OriginNodeId,
+			TruncatedBeforeEventId: uint64(truncatedBeforeEventID),
+		}
+		if sess.conn == nil && m.MeshRuntime() != nil {
+			if err := m.routeMeshReplicationBatch(context.Background(), sess.peerID, 0, "", eventBatch); err != nil {
+				return err
+			}
+		} else {
+			sess.enqueue(&internalproto.Envelope{
+				NodeId: m.cfg.NodeID,
+				Body: &internalproto.Envelope_EventBatch{
+					EventBatch: eventBatch,
+				},
+			})
+		}
+		return nil
 	}
 
 	events, err := m.store.ListEventsByOrigin(context.Background(), pull.OriginNodeId, int64(pull.GetAfterEventId()), limit)

@@ -81,6 +81,27 @@ func newReplicationTestStore(t *testing.T, nodeID string, slot uint16) *store.St
 	return newReplicationTestStoreWithWindow(t, nodeID, slot, store.DefaultMessageWindowSize)
 }
 
+func newReplicationTestStoreWithRetention(t *testing.T, nodeID string, slot uint16, messageWindowSize int, maxEventsPerOrigin int) *store.Store {
+	t.Helper()
+	_ = nodeID
+	dbPath := t.TempDir() + "/cluster.db"
+	st, err := store.Open(dbPath, store.Options{
+		NodeID:                     testNodeID(slot),
+		MessageWindowSize:          messageWindowSize,
+		EventLogMaxEventsPerOrigin: maxEventsPerOrigin,
+	})
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	if err := st.Init(context.Background()); err != nil {
+		t.Fatalf("init store: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = st.Close()
+	})
+	return st
+}
+
 func newReplicationTestStoreWithWindow(t *testing.T, nodeID string, slot uint16, messageWindowSize int) *store.Store {
 	t.Helper()
 	_ = nodeID

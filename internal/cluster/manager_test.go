@@ -149,6 +149,235 @@ func TestRequestCatchupIfNeededLogsRequestedPull(t *testing.T) {
 	}
 }
 
+func TestHandlePullEventsReturnsTruncatedResponseWhenLagExceedsRetention(t *testing.T) {
+	t.Parallel()
+
+	sourceStore := newReplicationTestStoreWithRetention(t, "node-a", 1, store.DefaultMessageWindowSize, 2)
+	mgr := newReplicationTestManager(t, sourceStore)
+
+	ctx := context.Background()
+	user, _, err := sourceStore.CreateUser(ctx, store.CreateUserParams{
+		Username:     "truncated-source",
+		PasswordHash: "hash-1",
+	})
+	if err != nil {
+		t.Fatalf("create source user: %v", err)
+	}
+	_, firstMessageEvent, err := sourceStore.CreateMessage(ctx, store.CreateMessageParams{
+		UserKey: user.Key(),
+		Sender:  clusterSenderKey(9, 1),
+		Body:    []byte("first"),
+	})
+	if err != nil {
+		t.Fatalf("create first message: %v", err)
+	}
+	if _, _, err := sourceStore.CreateMessage(ctx, store.CreateMessageParams{
+		UserKey: user.Key(),
+		Sender:  clusterSenderKey(9, 1),
+		Body:    []byte("second"),
+	}); err != nil {
+		t.Fatalf("create second message: %v", err)
+	}
+	if _, _, err := sourceStore.CreateMessage(ctx, store.CreateMessageParams{
+		UserKey: user.Key(),
+		Sender:  clusterSenderKey(9, 1),
+		Body:    []byte("third"),
+	}); err != nil {
+		t.Fatalf("create third message: %v", err)
+	}
+	if _, err := sourceStore.PruneEventLogOnce(ctx); err != nil {
+		t.Fatalf("prune source event log: %v", err)
+	}
+
+	sess := &session{
+		manager: mgr,
+		peerID:  testNodeID(3),
+		send:    make(chan *internalproto.Envelope, 1),
+	}
+	sess.markReplicationReady()
+	envelope := &internalproto.Envelope{
+		NodeId: testNodeID(3),
+		Body: &internalproto.Envelope_PullEvents{
+			PullEvents: &internalproto.PullEvents{
+				OriginNodeId: testNodeID(1),
+				AfterEventId: uint64(firstMessageEvent.EventID - 1),
+				Limit:        pullBatchSize,
+				RequestId:    7,
+			},
+		},
+	}
+
+	if err := mgr.handlePullEvents(sess, envelope); err != nil {
+		t.Fatalf("handle pull events: %v", err)
+	}
+
+	select {
+	case response := <-sess.send:
+		batch := response.GetEventBatch()
+		if batch == nil {
+			t.Fatalf("expected event batch response, got %+v", response)
+		}
+		if len(batch.GetEvents()) != 0 {
+			t.Fatalf("expected truncated response without events, got %+v", batch)
+		}
+		if batch.GetPullRequestId() != 7 || batch.GetOriginNodeId() != testNodeID(1) {
+			t.Fatalf("unexpected truncated response header: %+v", batch)
+		}
+		if batch.GetTruncatedBeforeEventId() != uint64(firstMessageEvent.EventID) {
+			t.Fatalf("unexpected truncated boundary: got=%d want=%d", batch.GetTruncatedBeforeEventId(), firstMessageEvent.EventID)
+		}
+	default:
+		t.Fatalf("expected truncated pull response")
+	}
+}
+
+func TestHandleEventBatchTruncatedResponseRequestsSnapshotRepairAndAdvancesCursor(t *testing.T) {
+	t.Parallel()
+
+	sourceStore := newReplicationTestStoreWithRetention(t, "node-a", 1, store.DefaultMessageWindowSize, 2)
+	targetStore := newReplicationTestStore(t, "node-b", 2)
+	mgr := newReplicationTestManager(t, targetStore)
+
+	ctx := context.Background()
+	user, _, err := sourceStore.CreateUser(ctx, store.CreateUserParams{
+		Username:     "truncated-repair",
+		PasswordHash: "hash-1",
+	})
+	if err != nil {
+		t.Fatalf("create source user: %v", err)
+	}
+	_, firstMessageEvent, err := sourceStore.CreateMessage(ctx, store.CreateMessageParams{
+		UserKey: user.Key(),
+		Sender:  clusterSenderKey(9, 1),
+		Body:    []byte("first"),
+	})
+	if err != nil {
+		t.Fatalf("create first message: %v", err)
+	}
+	_, secondMessageEvent, err := sourceStore.CreateMessage(ctx, store.CreateMessageParams{
+		UserKey: user.Key(),
+		Sender:  clusterSenderKey(9, 1),
+		Body:    []byte("second"),
+	})
+	if err != nil {
+		t.Fatalf("create second message: %v", err)
+	}
+	_, thirdMessageEvent, err := sourceStore.CreateMessage(ctx, store.CreateMessageParams{
+		UserKey: user.Key(),
+		Sender:  clusterSenderKey(9, 1),
+		Body:    []byte("third"),
+	})
+	if err != nil {
+		t.Fatalf("create third message: %v", err)
+	}
+	if _, err := sourceStore.PruneEventLogOnce(ctx); err != nil {
+		t.Fatalf("prune source event log: %v", err)
+	}
+
+	sess := readySnapshotTestSession(mgr, testNodeID(1), store.DefaultMessageWindowSize)
+	sess.noteRemoteOriginEvent(testNodeID(1), uint64(thirdMessageEvent.EventID))
+	requestID, ok := sess.beginPendingPull(testNodeID(1), 0)
+	if !ok {
+		t.Fatalf("expected pending pull to start")
+	}
+	envelope := &internalproto.Envelope{
+		NodeId: testNodeID(1),
+		Body: &internalproto.Envelope_EventBatch{
+			EventBatch: &internalproto.EventBatch{
+				PullRequestId:          requestID,
+				OriginNodeId:           testNodeID(1),
+				TruncatedBeforeEventId: uint64(firstMessageEvent.EventID),
+			},
+		},
+	}
+
+	if err := mgr.handleEventBatch(sess, envelope); err != nil {
+		t.Fatalf("handle truncated event batch: %v", err)
+	}
+	if sess.hasPendingPull(testNodeID(1)) {
+		t.Fatalf("expected pending pull to be cleared after truncated response")
+	}
+
+	cursor, err := targetStore.GetOriginCursor(ctx, testNodeID(1))
+	if err != nil {
+		t.Fatalf("get origin cursor: %v", err)
+	}
+	if cursor.AppliedEventID != firstMessageEvent.EventID {
+		t.Fatalf("unexpected truncated cursor advance: got=%d want=%d", cursor.AppliedEventID, firstMessageEvent.EventID)
+	}
+
+	assertSnapshotRequest(t, sess, store.SnapshotUsersPartition)
+	assertSnapshotRequest(t, sess, store.SnapshotSubscriptionsPartition)
+	assertSnapshotRequest(t, sess, store.SnapshotBlacklistsPartition)
+	assertSnapshotRequest(t, sess, store.MessageSnapshotPartition(testNodeID(1)))
+	select {
+	case envelope := <-sess.send:
+		t.Fatalf("unexpected extra envelope after truncated response: %+v", envelope)
+	default:
+	}
+
+	requested, err := mgr.requestCatchupIfNeeded(sess)
+	if err != nil {
+		t.Fatalf("request follow-up catchup: %v", err)
+	}
+	if !requested {
+		t.Fatalf("expected follow-up catchup request")
+	}
+	select {
+	case followup := <-sess.send:
+		pull := followup.GetPullEvents()
+		if pull == nil {
+			t.Fatalf("expected follow-up pull request, got %+v", followup)
+		}
+		if pull.GetAfterEventId() != uint64(firstMessageEvent.EventID) {
+			t.Fatalf("unexpected follow-up after event id: got=%d want=%d", pull.GetAfterEventId(), firstMessageEvent.EventID)
+		}
+		if pull.GetOriginNodeId() != testNodeID(1) {
+			t.Fatalf("unexpected follow-up origin node id: %+v", pull)
+		}
+	default:
+		t.Fatalf("expected follow-up pull request after truncated response")
+	}
+	if secondMessageEvent.EventID == 0 {
+		t.Fatalf("expected non-zero second message event id")
+	}
+}
+
+func TestHandleEventBatchTruncatedResponseSkipsMessageSnapshotForWindowMismatch(t *testing.T) {
+	t.Parallel()
+
+	targetStore := newReplicationTestStore(t, "node-b", 2)
+	mgr := newReplicationTestManager(t, targetStore)
+	sess := readySnapshotTestSession(mgr, testNodeID(1), store.DefaultMessageWindowSize+1)
+	requestID, ok := sess.beginPendingPull(testNodeID(1), 0)
+	if !ok {
+		t.Fatalf("expected pending pull to start")
+	}
+
+	envelope := &internalproto.Envelope{
+		NodeId: testNodeID(1),
+		Body: &internalproto.Envelope_EventBatch{
+			EventBatch: &internalproto.EventBatch{
+				PullRequestId:          requestID,
+				OriginNodeId:           testNodeID(1),
+				TruncatedBeforeEventId: 99,
+			},
+		},
+	}
+	if err := mgr.handleEventBatch(sess, envelope); err != nil {
+		t.Fatalf("handle truncated event batch: %v", err)
+	}
+
+	assertSnapshotRequest(t, sess, store.SnapshotUsersPartition)
+	assertSnapshotRequest(t, sess, store.SnapshotSubscriptionsPartition)
+	assertSnapshotRequest(t, sess, store.SnapshotBlacklistsPartition)
+	select {
+	case envelope := <-sess.send:
+		t.Fatalf("unexpected message snapshot request for mismatched windows: %+v", envelope)
+	default:
+	}
+}
+
 func TestHandleSnapshotDigestLogsPartitionMismatch(t *testing.T) {
 	t.Parallel()
 

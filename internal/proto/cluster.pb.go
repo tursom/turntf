@@ -580,12 +580,13 @@ func (x *Ack) GetAckedEventId() uint64 {
 }
 
 type EventBatch struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Events        []*ReplicatedEvent     `protobuf:"bytes,1,rep,name=events,proto3" json:"events,omitempty"`
-	PullRequestId uint64                 `protobuf:"varint,2,opt,name=pull_request_id,json=pullRequestId,proto3" json:"pull_request_id,omitempty"`
-	OriginNodeId  int64                  `protobuf:"varint,3,opt,name=origin_node_id,json=originNodeId,proto3" json:"origin_node_id,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state                  protoimpl.MessageState `protogen:"open.v1"`
+	Events                 []*ReplicatedEvent     `protobuf:"bytes,1,rep,name=events,proto3" json:"events,omitempty"`
+	PullRequestId          uint64                 `protobuf:"varint,2,opt,name=pull_request_id,json=pullRequestId,proto3" json:"pull_request_id,omitempty"`
+	OriginNodeId           int64                  `protobuf:"varint,3,opt,name=origin_node_id,json=originNodeId,proto3" json:"origin_node_id,omitempty"`
+	TruncatedBeforeEventId uint64                 `protobuf:"varint,4,opt,name=truncated_before_event_id,json=truncatedBeforeEventId,proto3" json:"truncated_before_event_id,omitempty"`
+	unknownFields          protoimpl.UnknownFields
+	sizeCache              protoimpl.SizeCache
 }
 
 func (x *EventBatch) Reset() {
@@ -635,6 +636,13 @@ func (x *EventBatch) GetPullRequestId() uint64 {
 func (x *EventBatch) GetOriginNodeId() int64 {
 	if x != nil {
 		return x.OriginNodeId
+	}
+	return 0
+}
+
+func (x *EventBatch) GetTruncatedBeforeEventId() uint64 {
+	if x != nil {
+		return x.TruncatedBeforeEventId
 	}
 	return 0
 }
@@ -3148,12 +3156,13 @@ const file_cluster_proto_rawDesc = "" +
 	"\x03Ack\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\x03R\x06nodeId\x12$\n" +
 	"\x0eorigin_node_id\x18\x02 \x01(\x03R\foriginNodeId\x12$\n" +
-	"\x0eacked_event_id\x18\x03 \x01(\x04R\fackedEventId\"\x98\x01\n" +
+	"\x0eacked_event_id\x18\x03 \x01(\x04R\fackedEventId\"\xd3\x01\n" +
 	"\n" +
 	"EventBatch\x12<\n" +
 	"\x06events\x18\x01 \x03(\v2$.notifier.cluster.v1.ReplicatedEventR\x06events\x12&\n" +
 	"\x0fpull_request_id\x18\x02 \x01(\x04R\rpullRequestId\x12$\n" +
-	"\x0eorigin_node_id\x18\x03 \x01(\x03R\foriginNodeId\"\xfb\x06\n" +
+	"\x0eorigin_node_id\x18\x03 \x01(\x03R\foriginNodeId\x129\n" +
+	"\x19truncated_before_event_id\x18\x04 \x01(\x04R\x16truncatedBeforeEventId\"\xfb\x06\n" +
 	"\x0fReplicatedEvent\x12\x19\n" +
 	"\bevent_id\x18\x01 \x01(\x03R\aeventId\x12%\n" +
 	"\x0eaggregate_type\x18\x02 \x01(\tR\raggregateType\x12*\n" +

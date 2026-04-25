@@ -106,6 +106,12 @@ CREATE TABLE IF NOT EXISTS applied_events (
     PRIMARY KEY(source_node_id, event_id)
 );
 
+CREATE TABLE IF NOT EXISTS event_log_truncation_meta (
+    origin_node_id INTEGER PRIMARY KEY,
+    truncated_before_event_id INTEGER NOT NULL DEFAULT 0,
+    updated_at_hlc TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS user_conflicts (
     conflict_id INTEGER PRIMARY KEY AUTOINCREMENT,
     loser_node_id INTEGER NOT NULL,
@@ -129,6 +135,12 @@ CREATE TABLE IF NOT EXISTS tombstones (
 );
 
 CREATE TABLE IF NOT EXISTS message_trim_stats (
+    scope TEXT PRIMARY KEY,
+    trimmed_total INTEGER NOT NULL DEFAULT 0,
+    last_trimmed_at_hlc TEXT
+);
+
+CREATE TABLE IF NOT EXISTS event_log_trim_stats (
     scope TEXT PRIMARY KEY,
     trimmed_total INTEGER NOT NULL DEFAULT 0,
     last_trimmed_at_hlc TEXT

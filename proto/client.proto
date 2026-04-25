@@ -406,9 +406,15 @@ message OperationsStatus {
   MessageTrimStatus message_trim = 6;
   ProjectionStatus projection = 7;
   repeated PeerStatus peers = 8;
+  EventLogTrimStatus event_log_trim = 9;
 }
 
 message MessageTrimStatus {
+  int64 trimmed_total = 1;
+  string last_trimmed_at = 2;
+}
+
+message EventLogTrimStatus {
   int64 trimmed_total = 1;
   string last_trimmed_at = 2;
 }

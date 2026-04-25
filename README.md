@@ -311,6 +311,9 @@ zeromq = { curve_server_public_key = "" }
 - `store.sqlite.db_path`：本地 SQLite 数据库路径，默认 `./data/turntf.db`。即使 `store.engine = "pebble"`，用户、订阅、游标、pending projection 和运维统计等状态仍保存在 SQLite
 - `store.pebble.path`：Pebble 数据目录，默认 `./data/turntf.pebble`。仅在 `store.engine = "pebble"` 时用于事件日志和消息投影
 - `store.message_window_size`：每节点每用户本地保留的消息窗口，默认 `500`。超过窗口的旧消息会在本地写入或复制应用时被裁剪
+- `store.event_log.enabled`：是否启用事件日志定期裁剪，默认 `true`
+- `store.event_log.max_events_per_origin`：每个 `origin_node_id` 至少保留的最近事件数，默认 `100000`
+- `store.event_log.prune_interval_seconds`：后台事件日志裁剪周期，默认 `60`
 - `auth.token_secret`：外部登录 token 的共享签名密钥；所有节点必须一致，任意节点签发的 token 才能被其他节点校验
 - `auth.token_ttl_minutes`：登录 token 的有效期，默认 `1440`
 - `auth.bootstrap_admin.username`：固定保底超级管理员用户名；启动时会修复到该值
@@ -387,6 +390,7 @@ zeromq = { curve_server_public_key = "" }
 允许的暂态：
 
 - 节点短时离线后重连，会按 `origin_cursors` 对比远端 `origin_progress`，逐个 `origin_node_id` 自动补拉未追平的事件
+- 当某个 origin 的历史事件已经被本地裁剪时，补拉会显式返回“日志已截断”；落后节点会先请求相关 snapshot 分片，再从新的 cursor 继续补拉保留下来的后缀事件
 - 节点会在握手完成后和运行过程中进行反熵摘要比对；用户快照使用全量单分片 `users/full`，消息快照按生产节点 `messages/{node_id}` 分片
 - 摘要不一致时，节点会请求对应快照分片并增量合并到本地；在快照修复完成前，不同节点可能短暂看到不同数据集合
 - 拉取重放与实时广播重叠时，重复事件会被 `applied_events` 按 `(source_node_id, event_id)` 幂等吸收

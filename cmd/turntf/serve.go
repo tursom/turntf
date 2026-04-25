@@ -58,6 +58,14 @@ func serveRuntime(ctx context.Context, configPath string, logOutput io.Writer) e
 	if err := st.EnsureBootstrapAdmin(ctx, cfg.Auth.BootstrapAdmin); err != nil {
 		return err
 	}
+	if cfg.EventLogPruneEnabled {
+		result, err := st.PruneEventLogOnce(runCtx)
+		if err != nil {
+			return err
+		}
+		logEventLogPruneResult(result)
+		startEventLogPruneLoop(runCtx, st, cfg.EventLogPruneInterval)
+	}
 
 	signer, err := auth.NewSigner(cfg.Auth.TokenSecret)
 	if err != nil {
@@ -136,6 +144,50 @@ func serveRuntime(ctx context.Context, configPath string, logOutput io.Writer) e
 		return nil
 	}
 	return err
+}
+
+func startEventLogPruneLoop(ctx context.Context, st *store.Store, interval time.Duration) {
+	if st == nil || interval <= 0 {
+		return
+	}
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				result, err := st.PruneEventLogOnce(ctx)
+				if err != nil {
+					log.Warn().
+						Str("component", "turntf").
+						Str("event", "event_log_prune_failed").
+						Err(err).
+						Msg("event log prune failed")
+					continue
+				}
+				logEventLogPruneResult(result)
+			}
+		}
+	}()
+}
+
+func logEventLogPruneResult(result store.EventLogPruneResult) {
+	event := log.Debug()
+	message := "event log prune finished without changes"
+	if result.TrimmedEvents > 0 {
+		event = log.Info()
+		message = "event log prune completed"
+	}
+	event.
+		Str("component", "turntf").
+		Str("event", "event_log_pruned").
+		Int("max_events_per_origin", result.MaxEventsPerOrigin).
+		Int("origins_affected", result.OriginsAffected).
+		Int64("trimmed_events", result.TrimmedEvents).
+		Msg(message)
 }
 
 func serveHandler(apiHandler http.Handler, manager *cluster.Manager) http.Handler {

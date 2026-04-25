@@ -118,15 +118,91 @@ func TestPebbleMessageSnapshotRoundTrip(t *testing.T) {
 	}
 }
 
+func TestPebblePruneEventLogKeepsLatestEventsPerOrigin(t *testing.T) {
+	ctx := context.Background()
+	st := openPebbleTestStoreWithRetention(t, "node-a", 1, 10, 2)
+
+	user, _, err := st.CreateUser(ctx, CreateUserParams{
+		Username:     "pebble-prune",
+		PasswordHash: "hash-pebble",
+		Role:         RoleUser,
+	})
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	_, firstMessageEvent, err := st.CreateMessage(ctx, CreateMessageParams{
+		UserKey: user.Key(),
+		Sender:  testSenderKey(9, 1),
+		Body:    []byte("first"),
+	})
+	if err != nil {
+		t.Fatalf("create first message: %v", err)
+	}
+	_, secondMessageEvent, err := st.CreateMessage(ctx, CreateMessageParams{
+		UserKey: user.Key(),
+		Sender:  testSenderKey(9, 1),
+		Body:    []byte("second"),
+	})
+	if err != nil {
+		t.Fatalf("create second message: %v", err)
+	}
+	_, thirdMessageEvent, err := st.CreateMessage(ctx, CreateMessageParams{
+		UserKey: user.Key(),
+		Sender:  testSenderKey(9, 1),
+		Body:    []byte("third"),
+	})
+	if err != nil {
+		t.Fatalf("create third message: %v", err)
+	}
+
+	result, err := st.PruneEventLogOnce(ctx)
+	if err != nil {
+		t.Fatalf("prune event log: %v", err)
+	}
+	if result.TrimmedEvents != 2 || result.OriginsAffected != 1 {
+		t.Fatalf("unexpected prune result: %+v", result)
+	}
+
+	retained, err := st.ListEventsByOrigin(ctx, st.NodeID(), 0, 10)
+	if err != nil {
+		t.Fatalf("list retained events: %v", err)
+	}
+	if len(retained) != 2 || retained[0].EventID != secondMessageEvent.EventID || retained[1].EventID != thirdMessageEvent.EventID {
+		t.Fatalf("unexpected retained events: %+v", retained)
+	}
+
+	truncatedBefore, err := st.EventLogTruncatedBefore(ctx, st.NodeID())
+	if err != nil {
+		t.Fatalf("read truncated boundary: %v", err)
+	}
+	if truncatedBefore != firstMessageEvent.EventID {
+		t.Fatalf("unexpected truncated boundary: got=%d want=%d", truncatedBefore, firstMessageEvent.EventID)
+	}
+
+	stats, err := st.eventLogTrimStats(ctx)
+	if err != nil {
+		t.Fatalf("event log trim stats: %v", err)
+	}
+	if stats.TrimmedTotal != 2 || stats.LastTrimmedAt == nil {
+		t.Fatalf("unexpected event log trim stats: %+v", stats)
+	}
+}
+
 func openPebbleTestStore(t *testing.T, name string, nodeSlot uint16, messageWindowSize int) *Store {
+	t.Helper()
+	return openPebbleTestStoreWithRetention(t, name, nodeSlot, messageWindowSize, DefaultEventLogMaxEventsPerOrigin)
+}
+
+func openPebbleTestStoreWithRetention(t *testing.T, name string, nodeSlot uint16, messageWindowSize int, maxEventsPerOrigin int) *Store {
 	t.Helper()
 
 	dir := t.TempDir()
 	st, err := Open(filepath.Join(dir, name+".db"), Options{
-		NodeID:            testNodeID(nodeSlot),
-		Engine:            EnginePebble,
-		PebblePath:        filepath.Join(dir, name+".pebble"),
-		MessageWindowSize: messageWindowSize,
+		NodeID:                     testNodeID(nodeSlot),
+		Engine:                     EnginePebble,
+		PebblePath:                 filepath.Join(dir, name+".pebble"),
+		MessageWindowSize:          messageWindowSize,
+		EventLogMaxEventsPerOrigin: maxEventsPerOrigin,
 	})
 	if err != nil {
 		t.Fatalf("open pebble store: %v", err)

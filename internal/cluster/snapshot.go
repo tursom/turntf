@@ -319,6 +319,35 @@ func (m *Manager) requestSnapshotPartition(sess *session, partition *internalpro
 	})
 }
 
+func (m *Manager) requestSnapshotRepairForOrigin(sess *session, originNodeID int64) {
+	if sess == nil || originNodeID <= 0 {
+		return
+	}
+	partitions := []*internalproto.SnapshotPartitionDigest{
+		{
+			Partition: store.SnapshotUsersPartition,
+			Kind:      internalproto.SnapshotPartitionKind_SNAPSHOT_PARTITION_KIND_USERS,
+		},
+		{
+			Partition: store.SnapshotSubscriptionsPartition,
+			Kind:      internalproto.SnapshotPartitionKind_SNAPSHOT_PARTITION_KIND_SUBSCRIPTIONS,
+		},
+		{
+			Partition: store.SnapshotBlacklistsPartition,
+			Kind:      internalproto.SnapshotPartitionKind_SNAPSHOT_PARTITION_KIND_BLACKLISTS,
+		},
+	}
+	if sess.remoteMessageWindowSize == m.cfg.MessageWindowSize {
+		partitions = append(partitions, &internalproto.SnapshotPartitionDigest{
+			Partition: store.MessageSnapshotPartition(originNodeID),
+			Kind:      internalproto.SnapshotPartitionKind_SNAPSHOT_PARTITION_KIND_MESSAGES,
+		})
+	}
+	for _, partition := range partitions {
+		m.requestSnapshotPartition(sess, partition)
+	}
+}
+
 func (m *Manager) snapshotProducerNodeIDs() []int64 {
 	producers := make([]int64, 0, 1+len(m.peers))
 	producers = append(producers, m.cfg.NodeID)

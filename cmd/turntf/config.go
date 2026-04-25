@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/BurntSushi/toml"
 
@@ -14,6 +15,7 @@ import (
 const defaultConfigPath = "./config.toml"
 const defaultSQLitePath = "./data/turntf.db"
 const defaultPebblePath = "./data/turntf.pebble"
+const defaultEventLogPruneIntervalSeconds = 60
 
 type serveConfig struct {
 	Services servicesConfig    `toml:"services"`
@@ -34,10 +36,17 @@ type httpServiceConfig struct {
 }
 
 type storeConfig struct {
-	MessageWindowSize int               `toml:"message_window_size"`
-	Engine            string            `toml:"engine"`
-	SQLite            sqliteStoreConfig `toml:"sqlite"`
-	Pebble            pebbleStoreConfig `toml:"pebble"`
+	MessageWindowSize int                 `toml:"message_window_size"`
+	Engine            string              `toml:"engine"`
+	EventLog          eventLogStoreConfig `toml:"event_log"`
+	SQLite            sqliteStoreConfig   `toml:"sqlite"`
+	Pebble            pebbleStoreConfig   `toml:"pebble"`
+}
+
+type eventLogStoreConfig struct {
+	Enabled              *bool `toml:"enabled"`
+	MaxEventsPerOrigin   int   `toml:"max_events_per_origin"`
+	PruneIntervalSeconds int   `toml:"prune_interval_seconds"`
 }
 
 type sqliteStoreConfig struct {
@@ -138,14 +147,16 @@ type libP2PFileConfig struct {
 }
 
 type runtimeServeConfig struct {
-	ConfigPath   string
-	Services     runtimeServicesConfig
-	SQLitePath   string
-	PebblePath   string
-	StoreOptions store.Options
-	Auth         runtimeAuthConfig
-	Logging      runtimeLoggingConfig
-	Cluster      cluster.Config
+	ConfigPath            string
+	Services              runtimeServicesConfig
+	SQLitePath            string
+	PebblePath            string
+	EventLogPruneEnabled  bool
+	EventLogPruneInterval time.Duration
+	StoreOptions          store.Options
+	Auth                  runtimeAuthConfig
+	Logging               runtimeLoggingConfig
+	Cluster               cluster.Config
 }
 
 type runtimeServicesConfig struct {
@@ -211,6 +222,12 @@ func (c serveConfig) runtimeConfig(configPath string) (runtimeServeConfig, error
 	if c.Store.MessageWindowSize < 0 {
 		return runtimeServeConfig{}, fmt.Errorf("store.message_window_size must be positive")
 	}
+	if c.Store.EventLog.MaxEventsPerOrigin < 0 {
+		return runtimeServeConfig{}, fmt.Errorf("store.event_log.max_events_per_origin must be positive")
+	}
+	if c.Store.EventLog.PruneIntervalSeconds < 0 {
+		return runtimeServeConfig{}, fmt.Errorf("store.event_log.prune_interval_seconds must be positive")
+	}
 	engine := strings.ToLower(strings.TrimSpace(c.Store.Engine))
 	if engine == "" {
 		engine = store.EngineSQLite
@@ -238,6 +255,18 @@ func (c serveConfig) runtimeConfig(configPath string) (runtimeServeConfig, error
 	messageWindowSize := c.Store.MessageWindowSize
 	if messageWindowSize == 0 {
 		messageWindowSize = store.DefaultMessageWindowSize
+	}
+	eventLogMaxEventsPerOrigin := c.Store.EventLog.MaxEventsPerOrigin
+	if eventLogMaxEventsPerOrigin == 0 {
+		eventLogMaxEventsPerOrigin = store.DefaultEventLogMaxEventsPerOrigin
+	}
+	eventLogPruneEnabled := true
+	if c.Store.EventLog.Enabled != nil {
+		eventLogPruneEnabled = *c.Store.EventLog.Enabled
+	}
+	eventLogPruneIntervalSeconds := c.Store.EventLog.PruneIntervalSeconds
+	if eventLogPruneIntervalSeconds == 0 {
+		eventLogPruneIntervalSeconds = defaultEventLogPruneIntervalSeconds
 	}
 	sqlitePath := strings.TrimSpace(c.Store.SQLite.DBPath)
 	if sqlitePath == "" {
@@ -349,12 +378,15 @@ func (c serveConfig) runtimeConfig(configPath string) (runtimeServeConfig, error
 			ZeroMQ: clusterCfg.ZeroMQ,
 			LibP2P: clusterCfg.LibP2P,
 		},
-		SQLitePath: filepath.Clean(sqlitePath),
-		PebblePath: filepath.Clean(pebblePath),
+		SQLitePath:            filepath.Clean(sqlitePath),
+		PebblePath:            filepath.Clean(pebblePath),
+		EventLogPruneEnabled:  eventLogPruneEnabled,
+		EventLogPruneInterval: time.Duration(eventLogPruneIntervalSeconds) * time.Second,
 		StoreOptions: store.Options{
-			Engine:            engine,
-			PebblePath:        filepath.Clean(pebblePath),
-			MessageWindowSize: messageWindowSize,
+			Engine:                     engine,
+			PebblePath:                 filepath.Clean(pebblePath),
+			MessageWindowSize:          messageWindowSize,
+			EventLogMaxEventsPerOrigin: eventLogMaxEventsPerOrigin,
 		},
 		Auth: runtimeAuthConfig{
 			TokenSecret:     strings.TrimSpace(c.Auth.TokenSecret),

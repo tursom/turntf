@@ -720,6 +720,10 @@ func clientProtoOperationsStatus(status operationsStatus) *internalproto.Operati
 			TrimmedTotal:  status.MessageTrim.TrimmedTotal,
 			LastTrimmedAt: status.MessageTrim.LastTrimmedAt,
 		},
+		EventLogTrim: &internalproto.EventLogTrimStatus{
+			TrimmedTotal:  status.EventLogTrim.TrimmedTotal,
+			LastTrimmedAt: status.EventLogTrim.LastTrimmedAt,
+		},
 		Projection: &internalproto.ProjectionStatus{
 			PendingTotal: status.Projection.PendingTotal,
 			LastFailedAt: status.Projection.LastFailedAt,

@@ -48,6 +48,15 @@ engine = "sqlite"
 # 每节点每用户本地保留的消息窗口大小；超出窗口的旧消息会在本地裁剪。
 message_window_size = 500
 
+# 事件日志按 origin 定期裁剪；默认开启。
+[store.event_log]
+# 是否启用启动时 + 周期性 event_log 裁剪。
+enabled = true
+# 每个 origin 至少保留最近多少条事件。
+max_events_per_origin = 100000
+# 后台裁剪周期，单位秒。
+prune_interval_seconds = 60
+
 # SQLite 始终用于保存用户、订阅、游标、发现到的 peer 等元数据。
 # 当 engine = "sqlite" 时，也用于事件日志和消息投影。
 [store.sqlite]

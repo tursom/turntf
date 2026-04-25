@@ -66,6 +66,7 @@ type Options struct {
 type Store struct {
 	db                         *sql.DB
 	pebbleDB                   *pebble.DB
+	pebbleWrites               *pebbleWriteCoordinator
 	engine                     string
 	nodeID                     int64
 	clock                      *clock.Clock
@@ -288,6 +289,7 @@ func Open(dbPath string, opts Options) (*Store, error) {
 	st := &Store{
 		db:                         db,
 		pebbleDB:                   pebbleDB,
+		pebbleWrites:               newPebbleWriteCoordinator(pebbleDB),
 		engine:                     engine,
 		initialNodeID:              opts.NodeID,
 		messageWindowSize:          normalizeMessageWindowSize(opts.MessageWindowSize),
@@ -318,8 +320,13 @@ func (s *Store) EventLogMaxEventsPerOrigin() int {
 
 func (s *Store) Close() error {
 	var err error
+	if s.pebbleWrites != nil {
+		err = s.pebbleWrites.Close()
+	}
 	if s.pebbleDB != nil {
-		err = s.pebbleDB.Close()
+		if closeErr := s.pebbleDB.Close(); err == nil {
+			err = closeErr
+		}
 	}
 	if closeErr := s.db.Close(); err == nil {
 		err = closeErr

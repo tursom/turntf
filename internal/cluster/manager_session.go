@@ -263,9 +263,18 @@ func (s *session) beginBootstrap() bool {
 }
 
 func (s *session) markReplicationReady() {
+	var manager *Manager
+	var peerID int64
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	if !s.replicationReady {
+		manager = s.manager
+		peerID = s.peerID
+	}
 	s.replicationReady = true
+	s.mu.Unlock()
+	if manager != nil && peerID > 0 {
+		manager.markSnapshotDigestDirty(peerID, false)
+	}
 }
 
 func (s *session) isReplicationReady() bool {

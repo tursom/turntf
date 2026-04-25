@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/tursom/turntf/internal/clock"
 	internalproto "github.com/tursom/turntf/internal/proto"
@@ -30,15 +31,15 @@ func (m *Manager) buildSnapshotDigestEnvelope() (*internalproto.Envelope, error)
 	}, nil
 }
 
-func (m *Manager) sendSnapshotDigest(sess *session) {
+func (m *Manager) sendSnapshotDigest(sess *session) bool {
 	if m.store == nil || sess == nil || sess.peerID == 0 {
-		return
+		return false
 	}
-	if !sess.isReplicationReady() || sess.hasPendingPulls() || sess.isClosed() {
-		return
+	if !sess.isReplicationReady() || sess.hasPendingPulls() || sess.pendingSnapshotCount() > 0 || sess.isClosed() {
+		return false
 	}
 	if sess.remoteSnapshotVersion != internalproto.SnapshotVersion {
-		return
+		return false
 	}
 	m.mu.Lock()
 	if err := m.allowSnapshotTrafficForSessionLocked(sess); err != nil {
@@ -46,7 +47,7 @@ func (m *Manager) sendSnapshotDigest(sess *session) {
 		m.logSessionWarn("snapshot_digest_skipped_by_clock", sess, nil).
 			Str("reason", err.Error()).
 			Msg("skipping snapshot digest due to clock protection")
-		return
+		return false
 	}
 	m.mu.Unlock()
 
@@ -54,7 +55,7 @@ func (m *Manager) sendSnapshotDigest(sess *session) {
 	if err != nil {
 		m.logSessionWarn("build_snapshot_digest_failed", sess, err).
 			Msg("build snapshot digest failed")
-		return
+		return false
 	}
 	m.markSnapshotDigestSent(sess.peerID)
 	digest := envelope.GetSnapshotDigest()
@@ -69,10 +70,12 @@ func (m *Manager) sendSnapshotDigest(sess *session) {
 		if err := m.routeMeshSnapshotManifest(context.Background(), sess.peerID, digest); err != nil {
 			m.logSessionWarn("mesh_snapshot_manifest_forward_failed", sess, err).
 				Msg("failed to forward snapshot manifest over mesh")
+			return false
 		}
-		return
+		return true
 	}
 	sess.enqueue(envelope)
+	return true
 }
 
 func (m *Manager) handleSnapshotDigest(sess *session, envelope *internalproto.Envelope) error {
@@ -269,7 +272,7 @@ func (m *Manager) handleSnapshotChunk(sess *session, envelope *internalproto.Env
 		Stringer("kind", chunk.Kind).
 		Int("row_count", len(chunk.GetRows())).
 		Msg("snapshot chunk applied")
-	m.sendSnapshotDigest(sess)
+	m.markSnapshotDigestDirty(sess.peerID, snapshotDigestImmediateAfterRepair)
 	return nil
 }
 
@@ -323,6 +326,7 @@ func (m *Manager) requestSnapshotRepairForOrigin(sess *session, originNodeID int
 	if sess == nil || originNodeID <= 0 {
 		return
 	}
+	m.markSnapshotDigestDirty(sess.peerID, snapshotDigestImmediateAfterRepair)
 	partitions := []*internalproto.SnapshotPartitionDigest{
 		{
 			Partition: store.SnapshotUsersPartition,
@@ -345,6 +349,93 @@ func (m *Manager) requestSnapshotRepairForOrigin(sess *session, originNodeID int
 	}
 	for _, partition := range partitions {
 		m.requestSnapshotPartition(sess, partition)
+	}
+}
+
+func (m *Manager) markSnapshotDigestDirty(peerID int64, immediate bool) {
+	if m == nil || peerID <= 0 {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	peer := m.peers[peerID]
+	if peer == nil {
+		return
+	}
+	peer.snapshotDigestDirty = true
+	if immediate && snapshotDigestImmediateAfterRepair {
+		peer.snapshotDigestImmediate = true
+	}
+}
+
+func (m *Manager) clearSnapshotDigestDirty(peerID int64) {
+	if m == nil || peerID <= 0 {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	peer := m.peers[peerID]
+	if peer == nil {
+		return
+	}
+	peer.snapshotDigestDirty = false
+	peer.snapshotDigestImmediate = false
+}
+
+func (m *Manager) markSnapshotDigestQueued(peerID int64, queuedAt time.Time) {
+	m.markSnapshotActivity(peerID, func(peer *peerState, _ time.Time) {
+		peer.lastSnapshotDigestQueuedAt = queuedAt
+	})
+}
+
+func (m *Manager) flushSnapshotDigestsDue(now time.Time) {
+	if m == nil || m.store == nil {
+		return
+	}
+
+	type candidate struct {
+		peerID         int64
+		sess           *session
+		lastSentAt     time.Time
+		lastQueuedAt   time.Time
+		dirtyImmediate bool
+	}
+
+	m.mu.Lock()
+	candidates := make([]candidate, 0, len(m.peers))
+	for peerID, peer := range m.peers {
+		if peerID <= 0 || peer == nil || !peer.snapshotDigestDirty || peer.active == nil {
+			continue
+		}
+		candidates = append(candidates, candidate{
+			peerID:         peerID,
+			sess:           peer.active,
+			lastSentAt:     peer.lastSnapshotDigestAt,
+			lastQueuedAt:   peer.lastSnapshotDigestQueuedAt,
+			dirtyImmediate: peer.snapshotDigestImmediate,
+		})
+	}
+	m.mu.Unlock()
+
+	for _, item := range candidates {
+		if item.sess == nil || !item.sess.isReplicationReady() || item.sess.hasPendingPulls() || item.sess.pendingSnapshotCount() > 0 || item.sess.isClosed() {
+			continue
+		}
+		if item.sess.snapshotVersion() != internalproto.SnapshotVersion {
+			continue
+		}
+		if !item.dirtyImmediate && !item.lastSentAt.IsZero() && now.Sub(item.lastSentAt) < snapshotDigestMinInterval {
+			continue
+		}
+		if !item.lastQueuedAt.IsZero() && now.Sub(item.lastQueuedAt) < snapshotDigestSweepInterval {
+			continue
+		}
+		m.markSnapshotDigestQueued(item.peerID, now)
+		if m.sendSnapshotDigest(item.sess) {
+			m.clearSnapshotDigestDirty(item.peerID)
+		}
 	}
 }
 

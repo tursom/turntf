@@ -493,7 +493,6 @@ func (m *Manager) meshPeerSession(peerID int64) *session {
 		return nil
 	}
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	peer := m.peers[peerID]
 	if peer == nil {
 		peer = &peerState{
@@ -505,7 +504,9 @@ func (m *Manager) meshPeerSession(peerID int64) *session {
 		peer.sessions = make(map[uint64]*session)
 	}
 	if peer.active != nil && peer.active.conn == nil && peer.active.peerID == peerID {
-		return peer.active
+		sess := peer.active
+		m.mu.Unlock()
+		return sess
 	}
 	m.nextConnectionID++
 	connectionID := m.nextConnectionID
@@ -528,6 +529,7 @@ func (m *Manager) meshPeerSession(peerID int64) *session {
 	peer.clockState = clockStateProbing
 	peer.sessions[sess.connectionID] = sess
 	m.refreshNodeClockStateLocked()
+	m.mu.Unlock()
 	return sess
 }
 

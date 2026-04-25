@@ -21,6 +21,7 @@ var pebbleEventSequenceKey = []byte("meta/event_sequence")
 
 type pebbleEventLogRepository struct {
 	db     *pebble.DB
+	writes *pebbleWriteCoordinator
 	ids    *clock.IDGenerator
 	nodeID int64
 	clock  *clock.Clock
@@ -29,6 +30,7 @@ type pebbleEventLogRepository struct {
 
 type pebbleMessageProjectionRepository struct {
 	db                *pebble.DB
+	writes            *pebbleWriteCoordinator
 	messageWindowSize int
 	userRepository    UserRepository
 	subscriptions     SubscriptionRepository
@@ -84,17 +86,16 @@ func (r *pebbleEventLogRepository) appendStored(ctx context.Context, event Event
 	event.Sequence = sequence
 
 	batch := r.db.NewBatch()
-	defer batch.Close()
-	if err := batch.Set(pebbleEventSeqKey(sequence), value, pebble.Sync); err != nil {
+	if err := batch.Set(pebbleEventSeqKey(sequence), value, nil); err != nil {
 		return Event{}, false, fmt.Errorf("write event sequence index: %w", err)
 	}
-	if err := batch.Set(originKey, encodeInt64(sequence), pebble.Sync); err != nil {
+	if err := batch.Set(originKey, encodeInt64(sequence), nil); err != nil {
 		return Event{}, false, fmt.Errorf("write event origin index: %w", err)
 	}
-	if err := batch.Set(pebbleEventSequenceKey, encodeInt64(sequence), pebble.Sync); err != nil {
+	if err := batch.Set(pebbleEventSequenceKey, encodeInt64(sequence), nil); err != nil {
 		return Event{}, false, fmt.Errorf("write event sequence meta: %w", err)
 	}
-	if err := batch.Commit(pebble.Sync); err != nil {
+	if err := applyPebbleBatch(batch, r.writes, pebbleEventRequiresForceSync(event)); err != nil {
 		return Event{}, false, fmt.Errorf("commit event append: %w", err)
 	}
 	return event, true, nil
@@ -285,10 +286,10 @@ func (r *pebbleMessageProjectionRepository) ApplyMessageCreated(ctx context.Cont
 	} else if ok {
 		return nil
 	}
-	if err := r.putMessage(message); err != nil {
+	if err := r.putMessage(message, false); err != nil {
 		return err
 	}
-	return r.trimMessagesForUser(ctx, key)
+	return r.trimMessagesForUser(ctx, key, false)
 }
 
 func (r *pebbleMessageProjectionRepository) ListMessagesByUser(ctx context.Context, key UserKey, limit int) ([]Message, error) {
@@ -405,7 +406,7 @@ func (r *pebbleMessageProjectionRepository) ApplyMessageSnapshotRows(ctx context
 		}
 	}
 	for key := range affectedUsers {
-		if err := r.trimMessagesForUser(ctx, key); err != nil {
+		if err := r.trimMessagesForUser(ctx, key, true); err != nil {
 			return err
 		}
 	}
@@ -457,7 +458,7 @@ func (r *pebbleMessageProjectionRepository) applyMessageSnapshotRow(ctx context.
 	} else if ok {
 		return key, nil
 	}
-	if err := r.putMessage(message); err != nil {
+	if err := r.putMessage(message, true); err != nil {
 		return UserKey{}, err
 	}
 	return key, nil
@@ -474,19 +475,18 @@ func (r *pebbleMessageProjectionRepository) messageExists(message Message) (bool
 	return true, closer.Close()
 }
 
-func (r *pebbleMessageProjectionRepository) putMessage(message Message) error {
+func (r *pebbleMessageProjectionRepository) putMessage(message Message, forceSync bool) error {
 	value, err := pebbleMessageValue(message)
 	if err != nil {
 		return err
 	}
 	batch := r.db.NewBatch()
-	defer batch.Close()
 	for _, key := range pebbleMessageKeys(message) {
-		if err := batch.Set(key, value, pebble.Sync); err != nil {
+		if err := batch.Set(key, value, nil); err != nil {
 			return fmt.Errorf("write message projection: %w", err)
 		}
 	}
-	if err := batch.Commit(pebble.Sync); err != nil {
+	if err := applyPebbleBatch(batch, r.writes, forceSync); err != nil {
 		return fmt.Errorf("commit message projection: %w", err)
 	}
 	return nil
@@ -526,7 +526,7 @@ func (r *pebbleMessageProjectionRepository) listRawMessagesByUser(ctx context.Co
 	return messages, nil
 }
 
-func (r *pebbleMessageProjectionRepository) trimMessagesForUser(ctx context.Context, key UserKey) error {
+func (r *pebbleMessageProjectionRepository) trimMessagesForUser(ctx context.Context, key UserKey, forceSync bool) error {
 	messages, err := r.listRawMessagesByUser(ctx, key, 0, nil)
 	if err != nil {
 		return err
@@ -537,18 +537,35 @@ func (r *pebbleMessageProjectionRepository) trimMessagesForUser(ctx context.Cont
 	}
 
 	batch := r.db.NewBatch()
-	defer batch.Close()
 	for _, message := range messages[windowSize:] {
 		for _, key := range pebbleMessageKeys(message) {
-			if err := batch.Delete(key, pebble.Sync); err != nil {
+			if err := batch.Delete(key, nil); err != nil {
 				return fmt.Errorf("delete trimmed message: %w", err)
 			}
 		}
 	}
-	if err := batch.Commit(pebble.Sync); err != nil {
+	if err := applyPebbleBatch(batch, r.writes, forceSync); err != nil {
 		return fmt.Errorf("commit message trim: %w", err)
 	}
 	return r.messageTrim.RecordMessageTrim(ctx, int64(len(messages)-windowSize))
+}
+
+func pebbleEventRequiresForceSync(event Event) bool {
+	return event.EventType != EventTypeMessageCreated
+}
+
+func applyPebbleBatch(batch *pebble.Batch, writes *pebbleWriteCoordinator, forceSync bool) error {
+	if batch == nil {
+		return fmt.Errorf("%w: pebble batch cannot be nil", ErrInvalidInput)
+	}
+	if writes != nil {
+		return writes.Apply(batch, forceSync)
+	}
+	defer batch.Close()
+	if forceSync {
+		return batch.Commit(pebble.Sync)
+	}
+	return batch.Commit(pebble.NoSync)
 }
 
 func pebbleMessageValue(message Message) ([]byte, error) {

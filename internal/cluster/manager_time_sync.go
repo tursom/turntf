@@ -241,7 +241,7 @@ func (m *Manager) sessionSyncLoop(sess *session) {
 			if sess.isClosed() {
 				return
 			}
-			m.sendSnapshotDigest(sess)
+			m.markSnapshotDigestDirty(sess.peerID, false)
 		}
 	}
 }

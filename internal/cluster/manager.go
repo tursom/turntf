@@ -16,27 +16,33 @@ import (
 )
 
 const (
-	WebSocketPath                    = websocketPath
-	websocketPath                    = "/internal/cluster/ws"
-	writeWait                        = 10 * time.Second
-	pingInterval                     = 15 * time.Second
-	readTimeout                      = 45 * time.Second
-	outboundQueueSize                = 128
-	managerPublishQueue              = 256
-	pullBatchSize                    = 128
-	timeSyncSampleCount              = 7
-	timeSyncInterval                 = 30 * time.Second
-	timeSyncTimeout                  = 8 * time.Second
-	queryLoggedInUsersTimeout        = 3 * time.Second
-	catchupRetryInterval             = time.Second
-	antiEntropyInterval              = 60 * time.Second
-	membershipUpdateInterval         = 5 * time.Second
-	discoveryCandidateTTL            = 10 * time.Minute
-	maxDynamicDiscoveredPeers        = 8
-	routeRetryInterval               = 200 * time.Millisecond
-	routeRetryTTL                    = 3 * time.Second
-	defaultPacketTTLHops             = 8
-	defaultLoggedInUsersQueryMaxHops = 8
+	WebSocketPath                      = websocketPath
+	websocketPath                      = "/internal/cluster/ws"
+	writeWait                          = 10 * time.Second
+	pingInterval                       = 15 * time.Second
+	readTimeout                        = 45 * time.Second
+	outboundQueueSize                  = 128
+	managerPublishQueue                = 256
+	pullBatchSize                      = 128
+	maxBatchEvents                     = 32
+	maxBatchBytes                      = 64 << 10
+	maxBatchDelay                      = 2 * time.Millisecond
+	timeSyncSampleCount                = 7
+	timeSyncInterval                   = 30 * time.Second
+	timeSyncTimeout                    = 8 * time.Second
+	queryLoggedInUsersTimeout          = 3 * time.Second
+	catchupRetryInterval               = time.Second
+	antiEntropyInterval                = 60 * time.Second
+	snapshotDigestMinInterval          = 250 * time.Millisecond
+	snapshotDigestSweepInterval        = 25 * time.Millisecond
+	snapshotDigestImmediateAfterRepair = true
+	membershipUpdateInterval           = 5 * time.Second
+	discoveryCandidateTTL              = 10 * time.Minute
+	maxDynamicDiscoveredPeers          = 8
+	routeRetryInterval                 = 200 * time.Millisecond
+	routeRetryTTL                      = 3 * time.Second
+	defaultPacketTTLHops               = 8
+	defaultLoggedInUsersQueryMaxHops   = 8
 )
 
 var marshalOptions = proto.MarshalOptions{Deterministic: true}
@@ -49,17 +55,18 @@ type Manager struct {
 	store *store.Store
 	clock *clock.Clock
 
-	mux       *http.ServeMux
-	publishCh chan store.Event
-	ctx       context.Context
-	cancel    context.CancelFunc
-	wg        sync.WaitGroup
-	startOnce sync.Once
-	startErr  error
-	closeOnce sync.Once
-	websocket *webSocketTransport
-	dialers   map[string]Dialer
-	libp2p    *libP2PTransport
+	mux                *http.ServeMux
+	publishCh          chan store.Event
+	replicationBatches *replicationBatcher
+	ctx                context.Context
+	cancel             context.CancelFunc
+	wg                 sync.WaitGroup
+	startOnce          sync.Once
+	startErr           error
+	closeOnce          sync.Once
+	websocket          *webSocketTransport
+	dialers            map[string]Dialer
+	libp2p             *libP2PTransport
 
 	zeroMQListenerRunning bool
 
@@ -139,12 +146,15 @@ type peerState struct {
 	sessions                 map[uint64]*session
 	joinedLogged             bool
 
-	snapshotDigestsSent     uint64
-	snapshotDigestsReceived uint64
-	snapshotChunksSent      uint64
-	snapshotChunksReceived  uint64
-	lastSnapshotDigestAt    time.Time
-	lastSnapshotChunkAt     time.Time
+	snapshotDigestsSent        uint64
+	snapshotDigestsReceived    uint64
+	snapshotChunksSent         uint64
+	snapshotChunksReceived     uint64
+	lastSnapshotDigestAt       time.Time
+	lastSnapshotDigestQueuedAt time.Time
+	lastSnapshotChunkAt        time.Time
+	snapshotDigestDirty        bool
+	snapshotDigestImmediate    bool
 }
 
 type session struct {
@@ -240,6 +250,7 @@ func NewManager(cfg Config, st *store.Store) (*Manager, error) {
 		dialers:                 make(map[string]Dialer, 2),
 		mux:                     http.NewServeMux(),
 		publishCh:               make(chan store.Event, managerPublishQueue),
+		replicationBatches:      newReplicationBatcher(),
 		peers:                   make(map[int64]*peerState, len(cfg.Peers)),
 		configuredPeers:         configuredPeers,
 		discoveredPeers:         make(map[string]*discoveredPeerState),

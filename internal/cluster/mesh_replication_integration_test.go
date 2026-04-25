@@ -27,7 +27,7 @@ func TestManagerReplicatesEventBatchViaMeshMultiHop(t *testing.T) {
 		t.Fatalf("create source user: %v", err)
 	}
 
-	mgrA.broadcastEvent(event)
+	mgrA.Publish(event)
 
 	waitFor(t, 5*time.Second, func() bool {
 		replicated, err := mgrC.store.GetUser(context.Background(), user.Key())

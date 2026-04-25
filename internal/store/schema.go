@@ -276,6 +276,7 @@ VALUES(?, ?)
 	case EnginePebble:
 		s.messageProjection = &pebbleMessageProjectionRepository{
 			db:                s.pebbleDB,
+			writes:            s.pebbleWrites,
 			messageWindowSize: s.messageWindowSize,
 			userRepository:    s.userRepository,
 			subscriptions:     s.subscriptions,
@@ -284,6 +285,7 @@ VALUES(?, ?)
 		}
 		s.eventLog = &pebbleEventLogRepository{
 			db:     s.pebbleDB,
+			writes: s.pebbleWrites,
 			ids:    s.ids,
 			nodeID: s.nodeID,
 			clock:  s.clock,

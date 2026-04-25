@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	internalproto "github.com/tursom/turntf/internal/proto"
 	"github.com/tursom/turntf/internal/store"
@@ -13,17 +14,7 @@ import (
 
 func (m *Manager) broadcastEvent(event store.Event) {
 	replicated := store.ToReplicatedEvent(event)
-	envelope := &internalproto.Envelope{
-		NodeId:    m.cfg.NodeID,
-		Sequence:  uint64(event.Sequence),
-		SentAtHlc: event.HLC.String(),
-		Body: &internalproto.Envelope_EventBatch{
-			EventBatch: &internalproto.EventBatch{
-				Events:       []*internalproto.ReplicatedEvent{replicated},
-				OriginNodeId: event.OriginNodeID,
-			},
-		},
-	}
+	envelope := m.buildEventBatchEnvelope(uint64(event.Sequence), event.HLC.String(), event.OriginNodeID, []*internalproto.ReplicatedEvent{replicated})
 
 	if m.MeshRuntime() != nil {
 		m.ensureMeshPeerSessions()
@@ -40,6 +31,118 @@ func (m *Manager) broadcastEvent(event store.Event) {
 		sess.enqueue(envelope)
 	}
 	m.publishLibP2PEvent(envelope)
+}
+
+func (m *Manager) buildEventBatchEnvelope(sequence uint64, sentAtHLC string, originNodeID int64, events []*internalproto.ReplicatedEvent) *internalproto.Envelope {
+	return &internalproto.Envelope{
+		NodeId:    m.cfg.NodeID,
+		Sequence:  sequence,
+		SentAtHlc: sentAtHLC,
+		Body: &internalproto.Envelope_EventBatch{
+			EventBatch: &internalproto.EventBatch{
+				Events:       events,
+				OriginNodeId: originNodeID,
+			},
+		},
+	}
+}
+
+func (m *Manager) queuePublishedEvent(event store.Event) {
+	if m == nil || m.replicationBatches == nil {
+		return
+	}
+	now := time.Now().UTC()
+	flushes := make([]*flushedReplicationBatch, 0)
+
+	if m.MeshRuntime() != nil {
+		m.ensureMeshPeerSessions()
+		for _, sess := range m.meshPeerSessions() {
+			flushes = append(flushes, m.replicationBatches.enqueue(sess.peerID, event, now)...)
+		}
+	} else {
+		for _, sess := range m.activeSessions() {
+			flushes = append(flushes, m.replicationBatches.enqueue(sess.peerID, event, now)...)
+		}
+		m.publishLibP2PEvent(m.buildEventBatchEnvelope(
+			uint64(event.Sequence),
+			event.HLC.String(),
+			event.OriginNodeID,
+			[]*internalproto.ReplicatedEvent{store.ToReplicatedEvent(event)},
+		))
+	}
+
+	m.dispatchReplicationBatches(flushes)
+}
+
+func (m *Manager) drainPublishedEvents() {
+	if m == nil {
+		return
+	}
+	for {
+		select {
+		case event := <-m.publishCh:
+			m.queuePublishedEvent(event)
+		default:
+			return
+		}
+	}
+}
+
+func (m *Manager) flushReplicationBatches() {
+	if m == nil || m.replicationBatches == nil {
+		return
+	}
+	m.dispatchReplicationBatches(m.replicationBatches.flushAll())
+}
+
+func (m *Manager) flushReplicationBatchesDue(now time.Time) {
+	if m == nil || m.replicationBatches == nil {
+		return
+	}
+	m.dispatchReplicationBatches(m.replicationBatches.flushDue(now))
+}
+
+func (m *Manager) dispatchReplicationBatches(flushes []*flushedReplicationBatch) {
+	dispatchCtx := context.Background()
+	if m != nil && m.ctx != nil && m.ctx.Err() == nil {
+		dispatchCtx = m.ctx
+	}
+	for _, flushed := range flushes {
+		if flushed == nil || len(flushed.events) == 0 {
+			continue
+		}
+		if m.MeshRuntime() != nil {
+			if err := m.routeMeshReplicationBatch(dispatchCtx, flushed.peerID, flushed.sequence, flushed.sentAtHLC, &internalproto.EventBatch{
+				Events:       flushed.events,
+				OriginNodeId: flushed.originNodeID,
+			}); err != nil {
+				if sess := m.activeSessionForPeer(flushed.peerID); sess != nil {
+					m.logSessionWarn("mesh_event_batch_forward_failed", sess, err).
+						Msg("failed to forward event batch over mesh")
+				}
+			}
+			continue
+		}
+
+		sess := m.activeSessionForPeer(flushed.peerID)
+		if sess == nil {
+			continue
+		}
+		sess.enqueue(m.buildEventBatchEnvelope(flushed.sequence, flushed.sentAtHLC, flushed.originNodeID, flushed.events))
+	}
+}
+
+func (m *Manager) activeSessionForPeer(peerID int64) *session {
+	if m == nil || peerID <= 0 {
+		return nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	peer := m.peers[peerID]
+	if peer == nil {
+		return nil
+	}
+	return peer.active
 }
 
 func (m *Manager) handleAck(sess *session, envelope *internalproto.Envelope) error {
@@ -135,7 +238,7 @@ func (m *Manager) handleEventBatch(sess *session, envelope *internalproto.Envelo
 				return err
 			}
 			if !requested {
-				m.sendSnapshotDigest(sess)
+				m.markSnapshotDigestDirty(sess.peerID, false)
 			}
 		}
 		m.logSessionDebug("event_batch_pull_completed", sess).
@@ -225,8 +328,8 @@ func (m *Manager) handleEventBatch(sess *session, envelope *internalproto.Envelo
 		if err != nil {
 			return err
 		}
-		if !requested {
-			m.sendSnapshotDigest(sess)
+		if batch.GetPullRequestId() > 0 && !requested {
+			m.markSnapshotDigestDirty(sess.peerID, false)
 		}
 	}
 	return nil

@@ -138,6 +138,8 @@ func (m *Manager) Start(parent context.Context) error {
 		m.wg.Add(1)
 		go m.publishLoop()
 		m.wg.Add(1)
+		go m.snapshotDigestLoop()
+		m.wg.Add(1)
 		go m.transientRetryLoop()
 		m.wg.Add(1)
 		go m.meshReplicationLoop()
@@ -213,19 +215,21 @@ func (m *Manager) Close() error {
 			}
 		}
 		binding := m.meshRuntime
-		m.meshRuntime = nil
 		m.mu.Unlock()
 
 		for _, sess := range sessions {
 			sess.close()
 		}
-		if binding != nil {
-			_ = binding.Close()
-		}
 		if m.libp2p != nil {
 			_ = m.libp2p.Close()
 		}
 		m.wg.Wait()
+		m.mu.Lock()
+		m.meshRuntime = nil
+		m.mu.Unlock()
+		if binding != nil {
+			_ = binding.Close()
+		}
 	})
 	return nil
 }
@@ -250,13 +254,37 @@ func (m *Manager) Publish(event store.Event) {
 
 func (m *Manager) publishLoop() {
 	defer m.wg.Done()
+	flushTicker := time.NewTicker(maxBatchDelay)
+	defer flushTicker.Stop()
+
+	for {
+		select {
+		case <-m.ctx.Done():
+			m.drainPublishedEvents()
+			m.flushReplicationBatches()
+			return
+		case event := <-m.publishCh:
+			m.queuePublishedEvent(event)
+		case <-flushTicker.C:
+			m.flushReplicationBatchesDue(time.Now().UTC())
+		}
+	}
+}
+
+func (m *Manager) snapshotDigestLoop() {
+	defer m.wg.Done()
+	if m == nil || m.ctx == nil {
+		return
+	}
+	ticker := time.NewTicker(snapshotDigestSweepInterval)
+	defer ticker.Stop()
 
 	for {
 		select {
 		case <-m.ctx.Done():
 			return
-		case event := <-m.publishCh:
-			m.broadcastEvent(event)
+		case <-ticker.C:
+			m.flushSnapshotDigestsDue(time.Now().UTC())
 		}
 	}
 }
@@ -302,7 +330,7 @@ func (m *Manager) meshReplicationLoop() {
 		case <-antiEntropyTicker.C:
 			m.ensureMeshPeerSessions()
 			for _, sess := range m.meshPeerSessions() {
-				m.sendSnapshotDigest(sess)
+				m.markSnapshotDigestDirty(sess.peerID, false)
 			}
 		}
 	}

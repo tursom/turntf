@@ -167,6 +167,11 @@ func (s *Store) pruneEventLogOriginPebble(ctx context.Context, originNodeID int6
 	if s.pebbleDB == nil {
 		return 0, fmt.Errorf("pebble event log prune requires pebble db")
 	}
+	if s.pebbleWrites != nil {
+		if err := s.pebbleWrites.Flush(); err != nil {
+			return 0, err
+		}
+	}
 
 	total, err := countPebbleOriginEvents(ctx, s.pebbleDB, originNodeID)
 	if err != nil {
@@ -285,10 +290,10 @@ func deletePebbleOriginEvents(ctx context.Context, db *pebble.DB, originNodeID, 
 			return 0, err
 		}
 		sequence := decodeInt64(iter.Value())
-		if err := batch.Delete(pebbleEventOriginKey(originNodeID, eventID), pebble.Sync); err != nil {
+		if err := batch.Delete(pebbleEventOriginKey(originNodeID, eventID), nil); err != nil {
 			return 0, fmt.Errorf("delete pebble origin event key: %w", err)
 		}
-		if err := batch.Delete(pebbleEventSeqKey(sequence), pebble.Sync); err != nil {
+		if err := batch.Delete(pebbleEventSeqKey(sequence), nil); err != nil {
 			return 0, fmt.Errorf("delete pebble event sequence key: %w", err)
 		}
 		trimmed++

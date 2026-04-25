@@ -74,7 +74,7 @@ func benchmarkMeshReplicationPebbleLinear(b *testing.B, payloadSize int) {
 	if err != nil {
 		b.Fatalf("create benchmark recipient: %v", err)
 	}
-	source.broadcastEvent(userEvent)
+	source.Publish(userEvent)
 
 	waitForBenchmark(b, ackTimeout, func() bool {
 		replicated, err := target.store.GetUser(ctx, recipient.Key())
@@ -101,7 +101,7 @@ func benchmarkMeshReplicationPebbleLinear(b *testing.B, payloadSize int) {
 		if err != nil {
 			b.Fatalf("create benchmark message: %v", err)
 		}
-		source.broadcastEvent(event)
+		source.Publish(event)
 
 		waitForBenchmark(b, ackTimeout, func() bool {
 			messages, err := target.store.ListMessagesByUser(ctx, recipient.Key(), 1)

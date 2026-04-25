@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"testing"
 )
@@ -115,6 +116,59 @@ func TestPebbleMessageSnapshotRoundTrip(t *testing.T) {
 	}
 	if string(messages[0].Body) != "message-3" || string(messages[1].Body) != "message-2" {
 		t.Fatalf("unexpected target messages: %+v", messages)
+	}
+}
+
+func TestPebbleDeferredTrimKeepsVisibleWindowBounded(t *testing.T) {
+	const windowSize = 64
+
+	ctx := context.Background()
+	st := openPebbleTestStore(t, "deferred-trim", 1, windowSize)
+
+	user, _, err := st.CreateUser(ctx, CreateUserParams{
+		Username:     "deferred-trim-user",
+		PasswordHash: "hash-deferred-trim",
+		Role:         RoleUser,
+	})
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	for i := 1; i <= 80; i++ {
+		if _, _, err := st.CreateMessage(ctx, CreateMessageParams{
+			UserKey: user.Key(),
+			Sender:  testSenderKey(9, 1),
+			Body:    []byte(fmt.Sprintf("message-%02d", i)),
+		}); err != nil {
+			t.Fatalf("create message %d: %v", i, err)
+		}
+	}
+
+	messages, err := st.ListMessagesByUser(ctx, user.Key(), 100)
+	if err != nil {
+		t.Fatalf("list messages: %v", err)
+	}
+	if len(messages) != windowSize {
+		t.Fatalf("expected visible window to stay bounded at %d messages, got %d", windowSize, len(messages))
+	}
+	if string(messages[0].Body) != "message-80" || string(messages[len(messages)-1].Body) != "message-17" {
+		t.Fatalf("unexpected visible message window: first=%q last=%q", messages[0].Body, messages[len(messages)-1].Body)
+	}
+
+	chunk, err := st.BuildSnapshotChunk(ctx, MessageSnapshotPartition(st.NodeID()))
+	if err != nil {
+		t.Fatalf("build message snapshot chunk: %v", err)
+	}
+	if len(chunk.Rows) != windowSize {
+		t.Fatalf("expected message snapshot rows to stay bounded at %d, got %d", windowSize, len(chunk.Rows))
+	}
+
+	stats, err := st.OperationsStats(ctx, nil)
+	if err != nil {
+		t.Fatalf("operations stats: %v", err)
+	}
+	if stats.MessageTrim.TrimmedTotal != 0 {
+		t.Fatalf("expected trim to remain deferred below threshold, got %+v", stats.MessageTrim)
 	}
 }
 

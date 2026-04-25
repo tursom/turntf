@@ -153,9 +153,6 @@ VALUES(?, ?, ?)
 		}
 		return nil
 	}
-	if err := s.clearPendingProjection(ctx, decoded.OriginNodeID, decoded.EventID); err != nil {
-		return err
-	}
 	return nil
 }
 

@@ -79,9 +79,6 @@ func (s *Store) CreateMessage(ctx context.Context, params CreateMessageParams) (
 		}
 		return message, event, fmt.Errorf("%w: %v", ErrProjectionDeferred, err)
 	}
-	if err := s.clearPendingProjection(ctx, event.OriginNodeID, event.EventID); err != nil {
-		return Message{}, Event{}, err
-	}
 	return message, event, nil
 }
 

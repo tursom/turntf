@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strconv"
 	"sync"
 	"testing"
@@ -54,6 +55,17 @@ func captureClusterLogs(t *testing.T) *clusterLogBuffer {
 	return logOutput
 }
 
+func silenceClusterLogs(tb testing.TB) {
+	tb.Helper()
+	clusterLogCaptureMu.Lock()
+	originalLogger := log.Logger
+	log.Logger = zerolog.New(io.Discard)
+	tb.Cleanup(func() {
+		log.Logger = originalLogger
+		clusterLogCaptureMu.Unlock()
+	})
+}
+
 func newHandshakeTestManager(t *testing.T) *Manager {
 	t.Helper()
 	mgr, err := NewManager(Config{
@@ -76,59 +88,91 @@ func newHandshakeTestManager(t *testing.T) *Manager {
 	return mgr
 }
 
-func newReplicationTestStore(t *testing.T, nodeID string, slot uint16) *store.Store {
-	t.Helper()
-	return newReplicationTestStoreWithWindow(t, nodeID, slot, store.DefaultMessageWindowSize)
+func newReplicationTestStore(tb testing.TB, nodeID string, slot uint16) *store.Store {
+	tb.Helper()
+	return newReplicationTestStoreWithWindow(tb, nodeID, slot, store.DefaultMessageWindowSize)
 }
 
-func newReplicationTestStoreWithRetention(t *testing.T, nodeID string, slot uint16, messageWindowSize int, maxEventsPerOrigin int) *store.Store {
-	t.Helper()
-	_ = nodeID
-	dbPath := t.TempDir() + "/cluster.db"
+func newReplicationTestStoreWithRetention(tb testing.TB, nodeID string, slot uint16, messageWindowSize int, maxEventsPerOrigin int) *store.Store {
+	tb.Helper()
+	dbPath := filepath.Join(tb.TempDir(), nodeID+".db")
 	st, err := store.Open(dbPath, store.Options{
 		NodeID:                     testNodeID(slot),
 		MessageWindowSize:          messageWindowSize,
 		EventLogMaxEventsPerOrigin: maxEventsPerOrigin,
 	})
 	if err != nil {
-		t.Fatalf("open store: %v", err)
+		tb.Fatalf("open store: %v", err)
 	}
 	if err := st.Init(context.Background()); err != nil {
-		t.Fatalf("init store: %v", err)
+		tb.Fatalf("init store: %v", err)
 	}
-	t.Cleanup(func() {
+	tb.Cleanup(func() {
 		_ = st.Close()
 	})
 	return st
 }
 
-func newReplicationTestStoreWithWindow(t *testing.T, nodeID string, slot uint16, messageWindowSize int) *store.Store {
-	t.Helper()
-	_ = nodeID
-	dbPath := t.TempDir() + "/cluster.db"
+func newReplicationTestStoreWithWindow(tb testing.TB, nodeID string, slot uint16, messageWindowSize int) *store.Store {
+	tb.Helper()
+	dbPath := filepath.Join(tb.TempDir(), nodeID+".db")
 	st, err := store.Open(dbPath, store.Options{
 		NodeID:            testNodeID(slot),
 		MessageWindowSize: messageWindowSize,
 	})
 	if err != nil {
-		t.Fatalf("open store: %v", err)
+		tb.Fatalf("open store: %v", err)
 	}
 	if err := st.Init(context.Background()); err != nil {
-		t.Fatalf("init store: %v", err)
+		tb.Fatalf("init store: %v", err)
 	}
-	t.Cleanup(func() {
+	tb.Cleanup(func() {
 		_ = st.Close()
 	})
 	return st
 }
 
-func newReplicationTestManager(t *testing.T, st *store.Store) *Manager {
-	t.Helper()
-	return newReplicationTestManagerWithWindow(t, st, store.DefaultMessageWindowSize)
+func newPebbleReplicationTestStore(tb testing.TB, nodeID string, slot uint16) *store.Store {
+	tb.Helper()
+	return newPebbleReplicationTestStoreWithWindow(tb, nodeID, slot, store.DefaultMessageWindowSize)
 }
 
-func newReplicationTestManagerWithWindow(t *testing.T, st *store.Store, messageWindowSize int) *Manager {
-	t.Helper()
+func newPebbleReplicationTestStoreWithWindow(tb testing.TB, nodeID string, slot uint16, messageWindowSize int) *store.Store {
+	tb.Helper()
+	return newPebbleReplicationTestStoreWithRetention(tb, nodeID, slot, messageWindowSize, store.DefaultEventLogMaxEventsPerOrigin)
+}
+
+func newPebbleReplicationTestStoreWithRetention(tb testing.TB, nodeID string, slot uint16, messageWindowSize int, maxEventsPerOrigin int) *store.Store {
+	tb.Helper()
+	dir := tb.TempDir()
+	st, err := store.Open(filepath.Join(dir, nodeID+".db"), store.Options{
+		NodeID:                     testNodeID(slot),
+		Engine:                     store.EnginePebble,
+		PebblePath:                 filepath.Join(dir, nodeID+".pebble"),
+		MessageWindowSize:          messageWindowSize,
+		EventLogMaxEventsPerOrigin: maxEventsPerOrigin,
+	})
+	if err != nil {
+		tb.Fatalf("open pebble store: %v", err)
+	}
+	if err := st.Init(context.Background()); err != nil {
+		tb.Fatalf("init pebble store: %v", err)
+	}
+	tb.Cleanup(func() {
+		if err := st.Close(); err != nil {
+			tb.Fatalf("close pebble store: %v", err)
+		}
+	})
+	return st
+}
+
+func newReplicationTestManager(tb testing.TB, st *store.Store) *Manager {
+	tb.Helper()
+	return newReplicationTestManagerWithWindow(tb, st, store.DefaultMessageWindowSize)
+}
+
+func newReplicationTestManagerWithWindow(tb testing.TB, st *store.Store, messageWindowSize int) *Manager {
+	tb.Helper()
 	mgr, err := NewManager(Config{
 		NodeID:            testNodeID(2),
 		AdvertisePath:     websocketPath,
@@ -141,13 +185,13 @@ func newReplicationTestManagerWithWindow(t *testing.T, st *store.Store, messageW
 		},
 	}, st)
 	if err != nil {
-		t.Fatalf("new manager: %v", err)
+		tb.Fatalf("new manager: %v", err)
 	}
 	mgr.ctx, mgr.cancel = context.WithCancel(context.Background())
 	mgr.timeSyncer = func(*session) (timeSyncSample, error) {
 		return timeSyncSample{offsetMs: 0, rttMs: 1}, nil
 	}
-	t.Cleanup(func() {
+	tb.Cleanup(func() {
 		if mgr.cancel != nil {
 			mgr.cancel()
 		}
@@ -155,24 +199,24 @@ func newReplicationTestManagerWithWindow(t *testing.T, st *store.Store, messageW
 	return mgr
 }
 
-func mustHashPassword(t *testing.T, password string) string {
-	t.Helper()
+func mustHashPassword(tb testing.TB, password string) string {
+	tb.Helper()
 	hash, err := auth.HashPassword(password)
 	if err != nil {
-		t.Fatalf("hash password: %v", err)
+		tb.Fatalf("hash password: %v", err)
 	}
 	return hash
 }
 
-func mustJSON(t *testing.T, data []byte, dst any) {
-	t.Helper()
+func mustJSON(tb testing.TB, data []byte, dst any) {
+	tb.Helper()
 	if err := json.Unmarshal(data, dst); err != nil {
-		t.Fatalf("unmarshal json: %v body=%s", err, string(data))
+		tb.Fatalf("unmarshal json: %v body=%s", err, string(data))
 	}
 }
 
-func waitFor(t *testing.T, timeout time.Duration, fn func() bool) {
-	t.Helper()
+func waitFor(tb testing.TB, timeout time.Duration, fn func() bool) {
+	tb.Helper()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		if fn() {
@@ -181,7 +225,7 @@ func waitFor(t *testing.T, timeout time.Duration, fn func() bool) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	if !fn() {
-		t.Fatalf("condition not met within %s", timeout)
+		tb.Fatalf("condition not met within %s", timeout)
 	}
 }
 
@@ -207,48 +251,48 @@ func snapshotDigestEnvelope(nodeID int64, digest *internalproto.SnapshotDigest) 
 	}
 }
 
-func assertSnapshotRequest(t *testing.T, sess *session, partition string) {
-	t.Helper()
+func assertSnapshotRequest(tb testing.TB, sess *session, partition string) {
+	tb.Helper()
 	select {
 	case envelope := <-sess.send:
 		chunk := envelope.GetSnapshotChunk()
 		if chunk == nil {
-			t.Fatalf("expected snapshot chunk request, got %+v", envelope)
+			tb.Fatalf("expected snapshot chunk request, got %+v", envelope)
 		}
 		if !chunk.Request {
-			t.Fatalf("expected snapshot chunk request flag")
+			tb.Fatalf("expected snapshot chunk request flag")
 		}
 		if chunk.Partition != partition {
-			t.Fatalf("unexpected snapshot partition: got=%q want=%q", chunk.Partition, partition)
+			tb.Fatalf("unexpected snapshot partition: got=%q want=%q", chunk.Partition, partition)
 		}
 	default:
-		t.Fatalf("expected snapshot chunk request for %s", partition)
+		tb.Fatalf("expected snapshot chunk request for %s", partition)
 	}
 }
 
-func mustListen(t *testing.T) net.Listener {
-	t.Helper()
+func mustListen(tb testing.TB) net.Listener {
+	tb.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		t.Fatalf("listen: %v", err)
+		tb.Fatalf("listen: %v", err)
 	}
 	return ln
 }
 
-func newClusterHTTPTestServer(t *testing.T, handler http.Handler) *httptest.Server {
-	t.Helper()
+func newClusterHTTPTestServer(tb testing.TB, handler http.Handler) *httptest.Server {
+	tb.Helper()
 	server := httptest.NewUnstartedServer(handler)
-	server.Listener = mustListen(t)
+	server.Listener = mustListen(tb)
 	server.Start()
-	t.Cleanup(server.Close)
+	tb.Cleanup(server.Close)
 	return server
 }
 
-func doJSON(t *testing.T, baseURL, method, path string, body any, wantStatus int) []byte {
-	t.Helper()
+func doJSON(tb testing.TB, baseURL, method, path string, body any, wantStatus int) []byte {
+	tb.Helper()
 	data, err := doJSONRequestWithHeaders(baseURL, method, path, body, wantStatus, nil)
 	if err != nil {
-		t.Fatalf("request failed: %v", err)
+		tb.Fatalf("request failed: %v", err)
 	}
 	return data
 }

@@ -29,6 +29,8 @@
 ├── docs/distributed-system-roadmap.md # 分布式系统未来演进路线图
 ├── docs/distributed-test-framework-enhancement.md # 分布式测试框架增强计划
 ├── docs/distributed-test-framework-enhancement-results.md # 分布式测试框架增强执行结果
+├── docs/performance-baseline.md      # 多节点性能基线
+├── docs/throughput-optimization-plan.md # 吞吐优化落地方案
 ├── docs/replication-semantics.md   # 复制语义专题文档
 ├── docs/peer-discovery.md          # peer 自动发现专题文档
 ├── docs/operations.md              # 运维与上线手册
@@ -62,6 +64,8 @@
 未来演进路线图见 [docs/distributed-system-roadmap.md](/root/dev/sys/turntf/docs/distributed-system-roadmap.md)。
 分布式测试框架增强计划见 [docs/distributed-test-framework-enhancement.md](/root/dev/sys/turntf/docs/distributed-test-framework-enhancement.md)。
 分布式测试框架增强执行结果见 [docs/distributed-test-framework-enhancement-results.md](/root/dev/sys/turntf/docs/distributed-test-framework-enhancement-results.md)。
+性能基线见 [docs/performance-baseline.md](/root/dev/sys/turntf/docs/performance-baseline.md)。
+吞吐优化方案见 [docs/throughput-optimization-plan.md](/root/dev/sys/turntf/docs/throughput-optimization-plan.md)。
 复制语义规范见 [docs/replication-semantics.md](/root/dev/sys/turntf/docs/replication-semantics.md)。
 时钟保护算法见 [docs/clock-protection.md](/root/dev/sys/turntf/docs/clock-protection.md)。
 peer 自动发现见 [docs/peer-discovery.md](/root/dev/sys/turntf/docs/peer-discovery.md)。

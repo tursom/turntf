@@ -162,24 +162,6 @@ func TestManagerLargeMixedTransportClusterRoutesAcrossAlternatingBridges(t *test
 	}
 }
 
-func startLinearWebSocketManagers(t *testing.T, nodeCount int) []*Manager {
-	t.Helper()
-	managers := make([]*Manager, 0, nodeCount)
-	serverURLs := make([]string, 0, nodeCount)
-	for idx := 0; idx < nodeCount; idx++ {
-		nodeSlot := uint16(idx + 1)
-		st := newReplicationTestStore(t, "linear-websocket", nodeSlot)
-		cfg := mixedTransportBaseConfig(nodeSlot)
-		if idx > 0 {
-			cfg.Peers = []Peer{{URL: websocketURL(serverURLs[idx-1]) + websocketPath}}
-		}
-		mgr, serverURL := startMixedTransportManager(t, cfg, st)
-		managers = append(managers, mgr)
-		serverURLs = append(serverURLs, serverURL)
-	}
-	return managers
-}
-
 func startAlternatingWebSocketLibP2PManagers(t *testing.T) []*Manager {
 	t.Helper()
 	managers := make([]*Manager, 5)

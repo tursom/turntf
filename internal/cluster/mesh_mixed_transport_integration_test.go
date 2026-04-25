@@ -104,27 +104,27 @@ func TestManagerWebSocketLibP2PBridgeRejectsReplicationAndSnapshot(t *testing.T)
 	}
 }
 
-func startWebSocketLibP2PBridgeManagers(t *testing.T) (*Manager, *Manager, *Manager) {
-	t.Helper()
+func startWebSocketLibP2PBridgeManagers(tb testing.TB) (*Manager, *Manager, *Manager) {
+	tb.Helper()
 
-	stC := newReplicationTestStore(t, "node-c", 3)
+	stC := newReplicationTestStore(tb, "node-c", 3)
 	cfgC := mixedTransportBaseConfig(3)
-	cfgC.LibP2P = mixedTransportLibP2PConfig(t, "node-c")
-	mgrC, _ := startMixedTransportManager(t, cfgC, stC)
-	cLibP2PURL := firstLibP2PListenAddr(t, mgrC)
+	cfgC.LibP2P = mixedTransportLibP2PConfig(tb, "node-c")
+	mgrC, _ := startMixedTransportManager(tb, cfgC, stC)
+	cLibP2PURL := firstLibP2PListenAddr(tb, mgrC)
 
-	stA := newReplicationTestStore(t, "node-a", 1)
+	stA := newReplicationTestStore(tb, "node-a", 1)
 	cfgA := mixedTransportBaseConfig(1)
-	mgrA, serverAURL := startMixedTransportManager(t, cfgA, stA)
+	mgrA, serverAURL := startMixedTransportManager(tb, cfgA, stA)
 
-	stB := newReplicationTestStore(t, "node-b", 2)
+	stB := newReplicationTestStore(tb, "node-b", 2)
 	cfgB := mixedTransportBaseConfig(2)
-	cfgB.LibP2P = mixedTransportLibP2PConfig(t, "node-b")
+	cfgB.LibP2P = mixedTransportLibP2PConfig(tb, "node-b")
 	cfgB.Peers = []Peer{
 		{URL: websocketURL(serverAURL) + websocketPath},
 		{URL: cLibP2PURL},
 	}
-	mgrB, _ := startMixedTransportManager(t, cfgB, stB)
+	mgrB, _ := startMixedTransportManager(tb, cfgB, stB)
 
 	return mgrA, mgrB, mgrC
 }
@@ -140,38 +140,38 @@ func mixedTransportBaseConfig(nodeSlot uint16) Config {
 	}
 }
 
-func mixedTransportLibP2PConfig(t *testing.T, name string) LibP2PConfig {
-	t.Helper()
+func mixedTransportLibP2PConfig(tb testing.TB, name string) LibP2PConfig {
+	tb.Helper()
 	return LibP2PConfig{
 		Enabled:            true,
-		PrivateKeyPath:     filepath.Join(t.TempDir(), name+".key"),
+		PrivateKeyPath:     filepath.Join(tb.TempDir(), name+".key"),
 		ListenAddrs:        []string{"/ip4/127.0.0.1/tcp/0"},
 		EnableHolePunching: true,
 	}
 }
 
-func startMixedTransportManager(t *testing.T, cfg Config, st *store.Store) (*Manager, string) {
-	t.Helper()
+func startMixedTransportManager(tb testing.TB, cfg Config, st *store.Store) (*Manager, string) {
+	tb.Helper()
 	mgr, err := NewManager(cfg, st)
 	if err != nil {
-		t.Fatalf("new mixed transport manager: %v", err)
+		tb.Fatalf("new mixed transport manager: %v", err)
 	}
-	server := newClusterHTTPTestServer(t, mgr.Handler())
+	server := newClusterHTTPTestServer(tb, mgr.Handler())
 	if err := mgr.Start(context.Background()); err != nil {
-		t.Fatalf("start mixed transport manager: %v", err)
+		tb.Fatalf("start mixed transport manager: %v", err)
 	}
-	t.Cleanup(func() { _ = mgr.Close() })
+	tb.Cleanup(func() { _ = mgr.Close() })
 	return mgr, server.URL
 }
 
-func firstLibP2PListenAddr(t *testing.T, mgr *Manager) string {
-	t.Helper()
+func firstLibP2PListenAddr(tb testing.TB, mgr *Manager) string {
+	tb.Helper()
 	if mgr == nil || mgr.libp2p == nil {
-		t.Fatalf("expected libp2p manager")
+		tb.Fatalf("expected libp2p manager")
 	}
 	addrs := mgr.libp2p.ListenAddrs()
 	if len(addrs) == 0 {
-		t.Fatalf("expected libp2p listen address")
+		tb.Fatalf("expected libp2p listen address")
 	}
 	for _, addr := range addrs {
 		if strings.Contains(addr, "/ip4/127.0.0.1/") {
@@ -181,9 +181,9 @@ func firstLibP2PListenAddr(t *testing.T, mgr *Manager) string {
 	return addrs[0]
 }
 
-func waitForMeshRouteDecision(t *testing.T, mgr *Manager, destinationNodeID int64, trafficClass mesh.TrafficClass, nextHopNodeID int64, outboundTransport mesh.TransportKind) mesh.RouteDecision {
-	t.Helper()
-	waitFor(t, 5*time.Second, func() bool {
+func waitForMeshRouteDecision(tb testing.TB, mgr *Manager, destinationNodeID int64, trafficClass mesh.TrafficClass, nextHopNodeID int64, outboundTransport mesh.TransportKind) mesh.RouteDecision {
+	tb.Helper()
+	waitFor(tb, 5*time.Second, func() bool {
 		binding := mgr.MeshRuntime()
 		if binding == nil {
 			return false
@@ -193,14 +193,14 @@ func waitForMeshRouteDecision(t *testing.T, mgr *Manager, destinationNodeID int6
 	})
 	binding := mgr.MeshRuntime()
 	if binding == nil {
-		t.Fatalf("mesh runtime is not attached")
+		tb.Fatalf("mesh runtime is not attached")
 	}
 	decision, ok := binding.DescribeRoute(destinationNodeID, trafficClass)
 	if !ok {
-		t.Fatalf("expected mesh route to node %d for traffic %v", destinationNodeID, trafficClass)
+		tb.Fatalf("expected mesh route to node %d for traffic %v", destinationNodeID, trafficClass)
 	}
 	if decision.NextHopNodeID != nextHopNodeID || decision.OutboundTransport != outboundTransport {
-		t.Fatalf("unexpected mesh route decision: got=%+v want next=%d transport=%v", decision, nextHopNodeID, outboundTransport)
+		tb.Fatalf("unexpected mesh route decision: got=%+v want next=%d transport=%v", decision, nextHopNodeID, outboundTransport)
 	}
 	return decision
 }

@@ -222,7 +222,7 @@ func appendBenchmarkUserEvents(tb testing.TB, st *Store, count int) {
 			VersionRole:         now,
 			OriginNodeID:        st.NodeID(),
 		}
-		if _, err := st.eventLog.Append(ctx, Event{
+		if _, err := st.backend.EventLog().Append(ctx, Event{
 			EventType:       EventTypeUserCreated,
 			Aggregate:       "user",
 			AggregateNodeID: user.NodeID,

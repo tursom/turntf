@@ -83,20 +83,14 @@ func (s *Store) CreateMessage(ctx context.Context, params CreateMessageParams) (
 }
 
 func (s *Store) ListMessagesByUser(ctx context.Context, key UserKey, limit int) ([]Message, error) {
-	return s.messageProjection.ListMessagesByUser(ctx, key, limit)
+	return s.backend.MessageProjection().ListMessagesByUser(ctx, key, limit)
 }
 
 func (s *Store) nextMessageSeqTx(ctx context.Context, tx *sql.Tx, key UserKey, nodeID int64) (int64, error) {
-	if s.engine == EnginePebble {
-		if s.messageSequences == nil {
-			return 0, fmt.Errorf("pebble message sequence repository is not initialized")
-		}
-		return s.messageSequences.NextSequenceTx(ctx, tx, key, nodeID)
-	}
-	return s.nextSQLiteMessageSeqTx(ctx, tx, key, nodeID)
+	return s.backend.NextMessageSeqTx(ctx, tx, key, nodeID)
 }
 
-func (s *Store) nextSQLiteMessageSeqTx(ctx context.Context, tx *sql.Tx, key UserKey, nodeID int64) (int64, error) {
+func nextSQLiteMessageSeqTx(ctx context.Context, tx *sql.Tx, key UserKey, nodeID int64) (int64, error) {
 	if err := key.Validate(); err != nil {
 		return 0, err
 	}

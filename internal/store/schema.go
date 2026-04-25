@@ -258,44 +258,20 @@ VALUES(?, ?)
 		s.clock = clock.NewClock(nodeID)
 	}
 	s.messageTrim = &sqliteMessageTrimRepository{db: s.db, clock: s.clock}
-	switch s.engine {
-	case EngineSQLite:
-		s.messageProjection = &sqliteMessageProjectionRepository{
-			db:                s.db,
-			clock:             s.clock,
-			messageWindowSize: s.messageWindowSize,
-			userRepository:    s.userRepository,
-			blacklists:        s.blacklists,
-		}
-		s.eventLog = &sqliteEventLogRepository{
-			db:     s.db,
-			ids:    s.ids,
-			nodeID: s.nodeID,
-			clock:  s.clock,
-		}
-	case EnginePebble:
-		s.messageProjection = &pebbleMessageProjectionRepository{
-			db:                s.pebbleDB,
-			writes:            s.pebbleWrites,
-			messageWindowSize: s.messageWindowSize,
-			userRepository:    s.userRepository,
-			subscriptions:     s.subscriptions,
-			blacklists:        s.blacklists,
-			messageTrim:       s.messageTrim,
-		}
-		s.messageSequences = &pebbleMessageSequenceRepository{
-			db:     s.pebbleDB,
-			writes: s.pebbleWrites,
-		}
-		s.eventLog = &pebbleEventLogRepository{
-			db:     s.pebbleDB,
-			writes: s.pebbleWrites,
-			ids:    s.ids,
-			nodeID: s.nodeID,
-			clock:  s.clock,
-		}
-	default:
-		return fmt.Errorf("%w: unsupported store engine %q", ErrInvalidInput, s.engine)
+	if s.backend == nil {
+		return fmt.Errorf("store backend is not initialized")
+	}
+	if err := s.backend.Bind(storeBackendBindings{
+		NodeID:            s.nodeID,
+		Clock:             s.clock,
+		IDs:               s.ids,
+		MessageWindowSize: s.messageWindowSize,
+		UserRepository:    s.userRepository,
+		Subscriptions:     s.subscriptions,
+		Blacklists:        s.blacklists,
+		MessageTrim:       s.messageTrim,
+	}); err != nil {
+		return fmt.Errorf("bind %s backend: %w", s.backend.Name(), err)
 	}
 	return nil
 }

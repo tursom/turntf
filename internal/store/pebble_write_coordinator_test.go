@@ -14,8 +14,9 @@ func TestPebbleWriteCoordinatorSeparatesRelaxedAndForceSyncPaths(t *testing.T) {
 
 	ctx := context.Background()
 	st := openPebbleTestStore(t, "stats", 1, DefaultMessageWindowSize)
+	backend := requirePebbleBackend(t, st)
 
-	before := st.pebbleWrites.statsSnapshot()
+	before := backend.writes.statsSnapshot()
 	user, _, err := st.CreateUser(ctx, CreateUserParams{
 		Username:     "force-sync-user",
 		PasswordHash: "hash-1",
@@ -24,7 +25,7 @@ func TestPebbleWriteCoordinatorSeparatesRelaxedAndForceSyncPaths(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create user: %v", err)
 	}
-	afterUser := st.pebbleWrites.statsSnapshot()
+	afterUser := backend.writes.statsSnapshot()
 	if afterUser.ForceSyncBatches <= before.ForceSyncBatches {
 		t.Fatalf("expected user event to use force sync path: before=%+v after=%+v", before, afterUser)
 	}
@@ -39,7 +40,7 @@ func TestPebbleWriteCoordinatorSeparatesRelaxedAndForceSyncPaths(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("create message: %v", err)
 	}
-	afterMessage := st.pebbleWrites.statsSnapshot()
+	afterMessage := backend.writes.statsSnapshot()
 	if afterMessage.RelaxedBatches <= afterUser.RelaxedBatches {
 		t.Fatalf("expected message event/projection to use relaxed path: user=%+v message=%+v", afterUser, afterMessage)
 	}
@@ -150,4 +151,14 @@ func waitForCoordinatorStat(t *testing.T, timeout time.Duration, check func(pebb
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("coordinator stat condition not satisfied: %+v", coordinator.statsSnapshot())
+}
+
+func requirePebbleBackend(tb testing.TB, st *Store) *pebbleStoreBackend {
+	tb.Helper()
+
+	backend, ok := st.backend.(*pebbleStoreBackend)
+	if !ok {
+		tb.Fatalf("expected pebble backend, got %T", st.backend)
+	}
+	return backend
 }

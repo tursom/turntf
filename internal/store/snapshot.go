@@ -81,7 +81,7 @@ func (s *Store) BuildSnapshotDigest(ctx context.Context, producerNodeIDs []int64
 	})
 
 	for _, producer := range normalizeProducerNodeIDs(producerNodeIDs) {
-		rows, err := s.messageProjection.BuildMessageSnapshotRows(ctx, producer)
+		rows, err := s.backend.MessageProjection().BuildMessageSnapshotRows(ctx, producer)
 		if err != nil {
 			return nil, err
 		}
@@ -138,7 +138,7 @@ func (s *Store) BuildSnapshotChunk(ctx context.Context, partition string) (*clus
 		if err != nil {
 			return nil, fmt.Errorf("%w: message snapshot partition missing producer", ErrInvalidInput)
 		}
-		rows, err := s.messageProjection.BuildMessageSnapshotRows(ctx, producer)
+		rows, err := s.backend.MessageProjection().BuildMessageSnapshotRows(ctx, producer)
 		if err != nil {
 			return nil, err
 		}
@@ -210,7 +210,7 @@ func (s *Store) ApplySnapshotChunk(ctx context.Context, chunk *clusterproto.Snap
 		if err := tx.Commit(); err != nil {
 			return fmt.Errorf("commit apply snapshot chunk: %w", err)
 		}
-		return s.messageProjection.ApplyMessageSnapshotRows(ctx, producer, chunk.Rows)
+		return s.backend.MessageProjection().ApplyMessageSnapshotRows(ctx, producer, chunk.Rows)
 	default:
 		return fmt.Errorf("%w: unsupported snapshot partition %q", ErrInvalidInput, partition)
 	}

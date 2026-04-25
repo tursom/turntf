@@ -26,7 +26,7 @@ type EventLogPruneResult struct {
 
 func (s *Store) PruneEventLogOnce(ctx context.Context) (EventLogPruneResult, error) {
 	maxEvents := normalizeEventLogMaxEventsPerOrigin(s.eventLogMaxEventsPerOrigin)
-	progress, err := s.eventLog.ListOriginProgress(ctx)
+	progress, err := s.backend.EventLog().ListOriginProgress(ctx)
 	if err != nil {
 		return EventLogPruneResult{}, err
 	}
@@ -95,111 +95,7 @@ WHERE scope = ?
 }
 
 func (s *Store) pruneEventLogOrigin(ctx context.Context, originNodeID int64, maxEvents int) (int64, error) {
-	switch s.engine {
-	case EngineSQLite:
-		return s.pruneEventLogOriginSQLite(ctx, originNodeID, maxEvents)
-	case EnginePebble:
-		return s.pruneEventLogOriginPebble(ctx, originNodeID, maxEvents)
-	default:
-		return 0, fmt.Errorf("%w: unsupported store engine %q", ErrInvalidInput, s.engine)
-	}
-}
-
-func (s *Store) pruneEventLogOriginSQLite(ctx context.Context, originNodeID int64, maxEvents int) (int64, error) {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return 0, fmt.Errorf("begin sqlite event log prune: %w", err)
-	}
-	defer tx.Rollback()
-
-	var count int64
-	if err := tx.QueryRowContext(ctx, `
-SELECT COUNT(*)
-FROM event_log
-WHERE origin_node_id = ?
-`, originNodeID).Scan(&count); err != nil {
-		return 0, fmt.Errorf("count sqlite event log rows: %w", err)
-	}
-	if count <= int64(maxEvents) {
-		return 0, nil
-	}
-
-	trimCount := count - int64(maxEvents)
-	var truncatedBefore int64
-	if err := tx.QueryRowContext(ctx, `
-SELECT event_id
-FROM event_log
-WHERE origin_node_id = ?
-ORDER BY event_id ASC
-LIMIT 1 OFFSET ?
-`, originNodeID, trimCount-1).Scan(&truncatedBefore); err != nil {
-		return 0, fmt.Errorf("query sqlite event log truncation boundary: %w", err)
-	}
-
-	result, err := tx.ExecContext(ctx, `
-DELETE FROM event_log
-WHERE origin_node_id = ? AND event_id <= ?
-`, originNodeID, truncatedBefore)
-	if err != nil {
-		return 0, fmt.Errorf("delete sqlite event log rows: %w", err)
-	}
-	trimmed, err := result.RowsAffected()
-	if err != nil {
-		return 0, fmt.Errorf("count deleted sqlite event log rows: %w", err)
-	}
-	if trimmed > 0 {
-		now := s.clock.Now().String()
-		if err := upsertEventLogTruncationTx(ctx, tx, originNodeID, truncatedBefore, now); err != nil {
-			return 0, err
-		}
-		if err := recordEventLogTrimTx(ctx, tx, trimmed, now); err != nil {
-			return 0, err
-		}
-	}
-
-	if err := tx.Commit(); err != nil {
-		return 0, fmt.Errorf("commit sqlite event log prune: %w", err)
-	}
-	return trimmed, nil
-}
-
-func (s *Store) pruneEventLogOriginPebble(ctx context.Context, originNodeID int64, maxEvents int) (int64, error) {
-	if s.pebbleDB == nil {
-		return 0, fmt.Errorf("pebble event log prune requires pebble db")
-	}
-	if s.pebbleWrites != nil {
-		if err := s.pebbleWrites.Flush(); err != nil {
-			return 0, err
-		}
-	}
-
-	total, err := countPebbleOriginEvents(ctx, s.pebbleDB, originNodeID)
-	if err != nil {
-		return 0, err
-	}
-	if total <= int64(maxEvents) {
-		return 0, nil
-	}
-
-	trimCount := total - int64(maxEvents)
-	truncatedBefore, err := nthPebbleOriginEventID(ctx, s.pebbleDB, originNodeID, trimCount-1)
-	if err != nil {
-		return 0, err
-	}
-	if err := s.upsertEventLogTruncation(ctx, originNodeID, truncatedBefore); err != nil {
-		return 0, err
-	}
-
-	trimmed, err := deletePebbleOriginEvents(ctx, s.pebbleDB, originNodeID, trimCount)
-	if err != nil {
-		return 0, err
-	}
-	if trimmed > 0 {
-		if err := s.recordEventLogTrim(ctx, trimmed); err != nil {
-			return 0, err
-		}
-	}
-	return trimmed, nil
+	return s.backend.PruneEventLogOrigin(ctx, s.db, s.clock, originNodeID, maxEvents)
 }
 
 func countPebbleOriginEvents(ctx context.Context, db *pebble.DB, originNodeID int64) (int64, error) {
@@ -313,9 +209,9 @@ func deletePebbleOriginEvents(ctx context.Context, db *pebble.DB, originNodeID, 
 	return trimmed, nil
 }
 
-func (s *Store) upsertEventLogTruncation(ctx context.Context, originNodeID, truncatedBefore int64) error {
-	now := s.clock.Now().String()
-	if _, err := s.db.ExecContext(ctx, `
+func upsertEventLogTruncation(ctx context.Context, db *sql.DB, clk *clock.Clock, originNodeID, truncatedBefore int64) error {
+	now := clk.Now().String()
+	if _, err := db.ExecContext(ctx, `
 INSERT INTO event_log_truncation_meta(origin_node_id, truncated_before_event_id, updated_at_hlc)
 VALUES(?, ?, ?)
 ON CONFLICT(origin_node_id) DO UPDATE SET
@@ -348,12 +244,12 @@ ON CONFLICT(origin_node_id) DO UPDATE SET
 	return nil
 }
 
-func (s *Store) recordEventLogTrim(ctx context.Context, trimmed int64) error {
+func recordEventLogTrim(ctx context.Context, db *sql.DB, clk *clock.Clock, trimmed int64) error {
 	if trimmed <= 0 {
 		return nil
 	}
-	now := s.clock.Now().String()
-	if _, err := s.db.ExecContext(ctx, `
+	now := clk.Now().String()
+	if _, err := db.ExecContext(ctx, `
 INSERT INTO event_log_trim_stats(scope, trimmed_total, last_trimmed_at_hlc)
 VALUES(?, ?, ?)
 ON CONFLICT(scope) DO UPDATE SET

@@ -366,12 +366,12 @@ func TestApplyReplicatedEventDefersFailedMessageProjectionForReplay(t *testing.T
 		t.Fatalf("create source message: %v", err)
 	}
 
-	originalProjection := target.messageProjection
-	target.messageProjection = failingMessageProjectionRepository{
+	originalProjection := messageProjectionForTest(t, target)
+	setMessageProjectionForTest(t, target, failingMessageProjectionRepository{
 		delegate: originalProjection,
 		failType: EventTypeMessageCreated,
 		err:      errors.New("projection unavailable"),
-	}
+	})
 	if err := target.ApplyReplicatedEvent(ctx, ToReplicatedEvent(messageEvent)); err != nil {
 		t.Fatalf("apply replicated message with deferred projection: %v", err)
 	}
@@ -400,7 +400,7 @@ func TestApplyReplicatedEventDefersFailedMessageProjectionForReplay(t *testing.T
 		t.Fatalf("expected one pending projection before replay: %+v", stats)
 	}
 
-	target.messageProjection = originalProjection
+	setMessageProjectionForTest(t, target, originalProjection)
 	if err := target.ReplayPendingEvents(ctx, 10); err != nil {
 		t.Fatalf("replay replicated pending events: %v", err)
 	}
@@ -451,6 +451,20 @@ func TestInitGeneratesAndPersistsNodeID(t *testing.T) {
 	}
 	if second.NodeID() != nodeID {
 		t.Fatalf("expected persisted node identity, got id=%d want id=%d", second.NodeID(), nodeID)
+	}
+}
+
+func TestStoreCloseSucceedsForSQLiteAndPebbleBackends(t *testing.T) {
+	t.Parallel()
+
+	sqliteStore := openTestStore(t)
+	if err := sqliteStore.Close(); err != nil {
+		t.Fatalf("close sqlite store: %v", err)
+	}
+
+	pebbleStore := openPersistentPebbleTestStore(t, t.TempDir(), "close", 1, DefaultMessageWindowSize)
+	if err := pebbleStore.Close(); err != nil {
+		t.Fatalf("close pebble store: %v", err)
 	}
 }
 
@@ -897,12 +911,12 @@ func TestCreateMessageDefersProjectionWhenApplyFails(t *testing.T) {
 		t.Fatalf("create user: %v", err)
 	}
 
-	originalProjection := st.messageProjection
-	st.messageProjection = failingMessageProjectionRepository{
+	originalProjection := messageProjectionForTest(t, st)
+	setMessageProjectionForTest(t, st, failingMessageProjectionRepository{
 		delegate: originalProjection,
 		failType: EventTypeMessageCreated,
 		err:      errors.New("projection unavailable"),
-	}
+	})
 
 	message, event, err := st.CreateMessage(ctx, CreateMessageParams{
 		UserKey: user.Key(),
@@ -956,12 +970,12 @@ func TestReplayPendingEventsProjectsDeferredMessages(t *testing.T) {
 		t.Fatalf("create user: %v", err)
 	}
 
-	originalProjection := st.messageProjection
-	st.messageProjection = failingMessageProjectionRepository{
+	originalProjection := messageProjectionForTest(t, st)
+	setMessageProjectionForTest(t, st, failingMessageProjectionRepository{
 		delegate: originalProjection,
 		failType: EventTypeMessageCreated,
 		err:      errors.New("projection unavailable"),
-	}
+	})
 	if _, _, err := st.CreateMessage(ctx, CreateMessageParams{
 		UserKey: user.Key(),
 		Sender:  testSenderKey(9, 1),
@@ -970,7 +984,7 @@ func TestReplayPendingEventsProjectsDeferredMessages(t *testing.T) {
 		t.Fatalf("expected deferred projection error, got %v", err)
 	}
 
-	st.messageProjection = originalProjection
+	setMessageProjectionForTest(t, st, originalProjection)
 	if err := st.ReplayPendingEvents(ctx, 10); err != nil {
 		t.Fatalf("replay pending events: %v", err)
 	}
@@ -2692,6 +2706,33 @@ func openNamedTestStoreWithWindow(t *testing.T, nodeID string, nodeSlot uint16, 
 		t.Fatalf("init store: %v", err)
 	}
 	return st
+}
+
+func messageProjectionForTest(tb testing.TB, st *Store) MessageProjectionRepository {
+	tb.Helper()
+
+	switch backend := st.backend.(type) {
+	case *sqliteStoreBackend:
+		return backend.messageProjection
+	case *pebbleStoreBackend:
+		return backend.messageProjection
+	default:
+		tb.Fatalf("unexpected store backend %T", st.backend)
+		return nil
+	}
+}
+
+func setMessageProjectionForTest(tb testing.TB, st *Store, repo MessageProjectionRepository) {
+	tb.Helper()
+
+	switch backend := st.backend.(type) {
+	case *sqliteStoreBackend:
+		backend.messageProjection = repo
+	case *pebbleStoreBackend:
+		backend.messageProjection = repo
+	default:
+		tb.Fatalf("unexpected store backend %T", st.backend)
+	}
 }
 
 type failingMessageProjectionRepository struct {

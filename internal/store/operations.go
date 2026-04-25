@@ -175,71 +175,11 @@ func (s *Store) peerOperationsStats(ctx context.Context, peerNodeIDs []int64) ([
 }
 
 func (s *Store) listLocalOriginEventStats(ctx context.Context) (map[int64]localOriginEventStats, error) {
-	if s.engine != EngineSQLite {
-		progress, err := s.eventLog.ListOriginProgress(ctx)
-		if err != nil {
-			return nil, err
-		}
-		stats := make(map[int64]localOriginEventStats, len(progress))
-		for _, item := range progress {
-			count, err := s.eventLog.CountEventsByOrigin(ctx, item.OriginNodeID, 0)
-			if err != nil {
-				return nil, err
-			}
-			stats[item.OriginNodeID] = localOriginEventStats{
-				LastEventID: item.LastEventID,
-				EventCount:  count,
-			}
-		}
-		return stats, nil
-	}
-
-	rows, err := s.db.QueryContext(ctx, `
-SELECT origin_node_id, COALESCE(MAX(event_id), 0), COUNT(*)
-FROM event_log
-GROUP BY origin_node_id
-ORDER BY origin_node_id ASC
-`)
-	if err != nil {
-		return nil, fmt.Errorf("query local origin event stats: %w", err)
-	}
-	defer rows.Close()
-
-	stats := make(map[int64]localOriginEventStats)
-	for rows.Next() {
-		var originNodeID int64
-		var item localOriginEventStats
-		if err := rows.Scan(&originNodeID, &item.LastEventID, &item.EventCount); err != nil {
-			return nil, fmt.Errorf("scan local origin event stats: %w", err)
-		}
-		stats[originNodeID] = item
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate local origin event stats: %w", err)
-	}
-	return stats, nil
+	return s.backend.ListLocalOriginEventStats(ctx, s.db)
 }
 
 func (s *Store) countUnconfirmedOriginEvents(ctx context.Context, originNodeID, ackedEventID, fallbackCount int64) (int64, error) {
-	if originNodeID <= 0 {
-		return 0, nil
-	}
-	if ackedEventID <= 0 {
-		return fallbackCount, nil
-	}
-	if s.engine != EngineSQLite {
-		return s.eventLog.CountEventsByOrigin(ctx, originNodeID, ackedEventID)
-	}
-
-	var count int64
-	if err := s.db.QueryRowContext(ctx, `
-SELECT COUNT(*)
-FROM event_log
-WHERE origin_node_id = ? AND event_id > ?
-`, originNodeID, ackedEventID).Scan(&count); err != nil {
-		return 0, fmt.Errorf("count unconfirmed origin events: %w", err)
-	}
-	return count, nil
+	return s.backend.CountUnconfirmedOriginEvents(ctx, s.db, originNodeID, ackedEventID, fallbackCount)
 }
 
 func chooseLaterTimestamp(current, candidate *clock.Timestamp) *clock.Timestamp {

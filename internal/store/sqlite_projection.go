@@ -812,64 +812,7 @@ func (s *Store) listPendingProjectionEvents(ctx context.Context, limit int) ([]E
 	if limit <= 0 || limit > 1000 {
 		limit = 100
 	}
-	if s.engine != EngineSQLite {
-		rows, err := s.db.QueryContext(ctx, `
-SELECT origin_node_id, event_id
-FROM pending_projections
-ORDER BY last_failed_at_hlc ASC, origin_node_id ASC, event_id ASC
-LIMIT ?
-`, limit)
-		if err != nil {
-			return nil, fmt.Errorf("list pending projection keys: %w", err)
-		}
-		defer rows.Close()
-
-		var events []Event
-		for rows.Next() {
-			var originNodeID, eventID int64
-			if err := rows.Scan(&originNodeID, &eventID); err != nil {
-				return nil, fmt.Errorf("scan pending projection key: %w", err)
-			}
-			found, err := s.eventLog.ListEventsByOrigin(ctx, originNodeID, eventID-1, 1)
-			if err != nil {
-				return nil, err
-			}
-			if len(found) == 1 && found[0].OriginNodeID == originNodeID && found[0].EventID == eventID {
-				events = append(events, found[0])
-			}
-		}
-		if err := rows.Err(); err != nil {
-			return nil, fmt.Errorf("iterate pending projection keys: %w", err)
-		}
-		return events, nil
-	}
-
-	rows, err := s.db.QueryContext(ctx, `
-SELECT e.sequence, e.event_id, e.origin_node_id, e.value
-FROM pending_projections p
-JOIN event_log e
-  ON e.origin_node_id = p.origin_node_id
- AND e.event_id = p.event_id
-ORDER BY p.last_failed_at_hlc ASC, p.origin_node_id ASC, p.event_id ASC
-LIMIT ?
-`, limit)
-	if err != nil {
-		return nil, fmt.Errorf("list pending projection events: %w", err)
-	}
-	defer rows.Close()
-
-	var events []Event
-	for rows.Next() {
-		event, err := scanEvent(rows)
-		if err != nil {
-			return nil, err
-		}
-		events = append(events, event)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate pending projection events: %w", err)
-	}
-	return events, nil
+	return s.backend.ListPendingProjectionEvents(ctx, s.db, limit)
 }
 
 func (s *Store) ReplayPendingEvents(ctx context.Context, limit int) error {
@@ -900,7 +843,7 @@ func (s *Store) projectMessageEvent(ctx context.Context, event Event) error {
 	if err != nil {
 		return err
 	}
-	return s.messageProjection.ApplyMessageCreated(ctx, message)
+	return s.backend.MessageProjection().ApplyMessageCreated(ctx, message)
 }
 
 func messageFromCreatedEvent(body *clusterproto.MessageCreatedEvent) (Message, error) {

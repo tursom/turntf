@@ -65,9 +65,7 @@ type Options struct {
 
 type Store struct {
 	db                         *sql.DB
-	pebbleDB                   *pebble.DB
-	pebbleWrites               *pebbleWriteCoordinator
-	engine                     string
+	backend                    storeBackend
 	nodeID                     int64
 	clock                      *clock.Clock
 	ids                        *clock.IDGenerator
@@ -80,8 +78,6 @@ type Store struct {
 	subscriptions              SubscriptionRepository
 	blacklists                 BlacklistRepository
 	messageTrim                MessageTrimRepository
-	messageProjection          MessageProjectionRepository
-	messageSequences           *pebbleMessageSequenceRepository
 }
 
 type UserKey struct {
@@ -287,11 +283,18 @@ func Open(dbPath string, opts Options) (*Store, error) {
 		}
 	}
 
+	backend, err := newStoreBackend(engine, db, pebbleDB)
+	if err != nil {
+		if pebbleDB != nil {
+			_ = pebbleDB.Close()
+		}
+		_ = db.Close()
+		return nil, err
+	}
+
 	st := &Store{
 		db:                         db,
-		pebbleDB:                   pebbleDB,
-		pebbleWrites:               newPebbleWriteCoordinator(pebbleDB),
-		engine:                     engine,
+		backend:                    backend,
 		initialNodeID:              opts.NodeID,
 		messageWindowSize:          normalizeMessageWindowSize(opts.MessageWindowSize),
 		eventLogMaxEventsPerOrigin: normalizeEventLogMaxEventsPerOrigin(opts.EventLogMaxEventsPerOrigin),
@@ -321,13 +324,8 @@ func (s *Store) EventLogMaxEventsPerOrigin() int {
 
 func (s *Store) Close() error {
 	var err error
-	if s.pebbleWrites != nil {
-		err = s.pebbleWrites.Close()
-	}
-	if s.pebbleDB != nil {
-		if closeErr := s.pebbleDB.Close(); err == nil {
-			err = closeErr
-		}
+	if s.backend != nil {
+		err = s.backend.Close()
 	}
 	if closeErr := s.db.Close(); err == nil {
 		err = closeErr

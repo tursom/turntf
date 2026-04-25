@@ -1,0 +1,471 @@
+package store
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+
+	"github.com/cockroachdb/pebble"
+	gproto "google.golang.org/protobuf/proto"
+
+	"github.com/tursom/turntf/internal/clock"
+	internalproto "github.com/tursom/turntf/internal/proto"
+)
+
+type storeBackend interface {
+	Name() string
+	Bind(storeBackendBindings) error
+	EventLog() EventLogRepository
+	MessageProjection() MessageProjectionRepository
+	NextMessageSeqTx(context.Context, *sql.Tx, UserKey, int64) (int64, error)
+	InsertLocalEventTx(context.Context, *sql.Tx, Event) (Event, error)
+	StoreReplicatedEventTx(context.Context, *sql.Tx, *internalproto.ReplicatedEvent, Event) (Event, bool, error)
+	ListPendingProjectionEvents(context.Context, *sql.DB, int) ([]Event, error)
+	ListLocalOriginEventStats(context.Context, *sql.DB) (map[int64]localOriginEventStats, error)
+	CountUnconfirmedOriginEvents(context.Context, *sql.DB, int64, int64, int64) (int64, error)
+	PruneEventLogOrigin(context.Context, *sql.DB, *clock.Clock, int64, int) (int64, error)
+	Close() error
+}
+
+type storeBackendBindings struct {
+	NodeID            int64
+	Clock             *clock.Clock
+	IDs               *clock.IDGenerator
+	MessageWindowSize int
+	UserRepository    UserRepository
+	Subscriptions     SubscriptionRepository
+	Blacklists        BlacklistRepository
+	MessageTrim       MessageTrimRepository
+}
+
+func newStoreBackend(engine string, db *sql.DB, pebbleDB *pebble.DB) (storeBackend, error) {
+	switch engine {
+	case EngineSQLite:
+		return &sqliteStoreBackend{db: db}, nil
+	case EnginePebble:
+		if pebbleDB == nil {
+			return nil, fmt.Errorf("pebble backend requires pebble db")
+		}
+		return &pebbleStoreBackend{
+			db:     pebbleDB,
+			writes: newPebbleWriteCoordinator(pebbleDB),
+		}, nil
+	default:
+		return nil, fmt.Errorf("%w: unsupported store engine %q", ErrInvalidInput, engine)
+	}
+}
+
+type sqliteStoreBackend struct {
+	db                *sql.DB
+	nodeID            int64
+	clock             *clock.Clock
+	ids               *clock.IDGenerator
+	messageWindowSize int
+	eventLog          *sqliteEventLogRepository
+	messageProjection MessageProjectionRepository
+}
+
+func (b *sqliteStoreBackend) Name() string {
+	return EngineSQLite
+}
+
+func (b *sqliteStoreBackend) Bind(bindings storeBackendBindings) error {
+	b.nodeID = bindings.NodeID
+	b.clock = bindings.Clock
+	b.ids = bindings.IDs
+	b.messageWindowSize = bindings.MessageWindowSize
+	b.messageProjection = &sqliteMessageProjectionRepository{
+		db:                b.db,
+		clock:             b.clock,
+		messageWindowSize: b.messageWindowSize,
+		userRepository:    bindings.UserRepository,
+		blacklists:        bindings.Blacklists,
+	}
+	b.eventLog = &sqliteEventLogRepository{
+		db:     b.db,
+		ids:    b.ids,
+		nodeID: b.nodeID,
+		clock:  b.clock,
+	}
+	return nil
+}
+
+func (b *sqliteStoreBackend) EventLog() EventLogRepository {
+	return b.eventLog
+}
+
+func (b *sqliteStoreBackend) MessageProjection() MessageProjectionRepository {
+	return b.messageProjection
+}
+
+func (b *sqliteStoreBackend) NextMessageSeqTx(ctx context.Context, tx *sql.Tx, key UserKey, nodeID int64) (int64, error) {
+	return nextSQLiteMessageSeqTx(ctx, tx, key, nodeID)
+}
+
+func (b *sqliteStoreBackend) InsertLocalEventTx(ctx context.Context, tx *sql.Tx, event Event) (Event, error) {
+	if b.ids == nil {
+		return Event{}, fmt.Errorf("append event before id generator initialization")
+	}
+	if b.clock == nil {
+		return Event{}, fmt.Errorf("append event before clock initialization")
+	}
+
+	event.EventID = b.ids.Next()
+	event.OriginNodeID = b.nodeID
+
+	value, err := eventLogValue(event)
+	if err != nil {
+		return Event{}, err
+	}
+
+	result, err := tx.ExecContext(ctx, `
+INSERT INTO event_log(event_id, origin_node_id, value)
+VALUES(?, ?, ?)
+`, event.EventID, event.OriginNodeID, value)
+	if err != nil {
+		return Event{}, fmt.Errorf("insert event: %w", err)
+	}
+
+	event.Sequence, err = result.LastInsertId()
+	if err != nil {
+		return Event{}, fmt.Errorf("read event sequence: %w", err)
+	}
+	if err := upsertOriginCursorTx(ctx, tx, event.OriginNodeID, event.EventID, b.clock.Now().String()); err != nil {
+		return Event{}, fmt.Errorf("record local origin cursor: %w", err)
+	}
+	return event, nil
+}
+
+func (b *sqliteStoreBackend) StoreReplicatedEventTx(ctx context.Context, tx *sql.Tx, rawEvent *internalproto.ReplicatedEvent, decoded Event) (Event, bool, error) {
+	if rawEvent == nil {
+		return Event{}, false, fmt.Errorf("%w: replicated event cannot be nil", ErrInvalidInput)
+	}
+	value, err := gproto.Marshal(rawEvent)
+	if err != nil {
+		return Event{}, false, fmt.Errorf("marshal replicated event: %w", err)
+	}
+	result, err := tx.ExecContext(ctx, `
+INSERT INTO event_log(event_id, origin_node_id, value)
+VALUES(?, ?, ?)
+`, rawEvent.EventId, rawEvent.OriginNodeId, value)
+	if err != nil {
+		if isUniqueConstraint(err) {
+			return decoded, false, nil
+		}
+		return Event{}, false, fmt.Errorf("insert replicated event log: %w", err)
+	}
+	decoded.Sequence, err = result.LastInsertId()
+	if err != nil {
+		return Event{}, false, fmt.Errorf("read replicated event sequence: %w", err)
+	}
+	return decoded, true, nil
+}
+
+func (b *sqliteStoreBackend) ListPendingProjectionEvents(ctx context.Context, db *sql.DB, limit int) ([]Event, error) {
+	rows, err := db.QueryContext(ctx, `
+SELECT e.sequence, e.event_id, e.origin_node_id, e.value
+FROM pending_projections p
+JOIN event_log e
+  ON e.origin_node_id = p.origin_node_id
+ AND e.event_id = p.event_id
+ORDER BY p.last_failed_at_hlc ASC, p.origin_node_id ASC, p.event_id ASC
+LIMIT ?
+`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list pending projection events: %w", err)
+	}
+	defer rows.Close()
+
+	var events []Event
+	for rows.Next() {
+		event, err := scanEvent(rows)
+		if err != nil {
+			return nil, err
+		}
+		events = append(events, event)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate pending projection events: %w", err)
+	}
+	return events, nil
+}
+
+func (b *sqliteStoreBackend) ListLocalOriginEventStats(ctx context.Context, db *sql.DB) (map[int64]localOriginEventStats, error) {
+	rows, err := db.QueryContext(ctx, `
+SELECT origin_node_id, COALESCE(MAX(event_id), 0), COUNT(*)
+FROM event_log
+GROUP BY origin_node_id
+ORDER BY origin_node_id ASC
+`)
+	if err != nil {
+		return nil, fmt.Errorf("query local origin event stats: %w", err)
+	}
+	defer rows.Close()
+
+	stats := make(map[int64]localOriginEventStats)
+	for rows.Next() {
+		var originNodeID int64
+		var item localOriginEventStats
+		if err := rows.Scan(&originNodeID, &item.LastEventID, &item.EventCount); err != nil {
+			return nil, fmt.Errorf("scan local origin event stats: %w", err)
+		}
+		stats[originNodeID] = item
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate local origin event stats: %w", err)
+	}
+	return stats, nil
+}
+
+func (b *sqliteStoreBackend) CountUnconfirmedOriginEvents(ctx context.Context, db *sql.DB, originNodeID, ackedEventID, fallbackCount int64) (int64, error) {
+	if originNodeID <= 0 {
+		return 0, nil
+	}
+	if ackedEventID <= 0 {
+		return fallbackCount, nil
+	}
+
+	var count int64
+	if err := db.QueryRowContext(ctx, `
+SELECT COUNT(*)
+FROM event_log
+WHERE origin_node_id = ? AND event_id > ?
+`, originNodeID, ackedEventID).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count unconfirmed origin events: %w", err)
+	}
+	return count, nil
+}
+
+func (b *sqliteStoreBackend) PruneEventLogOrigin(ctx context.Context, db *sql.DB, clk *clock.Clock, originNodeID int64, maxEvents int) (int64, error) {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin sqlite event log prune: %w", err)
+	}
+	defer tx.Rollback()
+
+	var count int64
+	if err := tx.QueryRowContext(ctx, `
+SELECT COUNT(*)
+FROM event_log
+WHERE origin_node_id = ?
+`, originNodeID).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count sqlite event log rows: %w", err)
+	}
+	if count <= int64(maxEvents) {
+		return 0, nil
+	}
+
+	trimCount := count - int64(maxEvents)
+	var truncatedBefore int64
+	if err := tx.QueryRowContext(ctx, `
+SELECT event_id
+FROM event_log
+WHERE origin_node_id = ?
+ORDER BY event_id ASC
+LIMIT 1 OFFSET ?
+`, originNodeID, trimCount-1).Scan(&truncatedBefore); err != nil {
+		return 0, fmt.Errorf("query sqlite event log truncation boundary: %w", err)
+	}
+
+	result, err := tx.ExecContext(ctx, `
+DELETE FROM event_log
+WHERE origin_node_id = ? AND event_id <= ?
+`, originNodeID, truncatedBefore)
+	if err != nil {
+		return 0, fmt.Errorf("delete sqlite event log rows: %w", err)
+	}
+	trimmed, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("count deleted sqlite event log rows: %w", err)
+	}
+	if trimmed > 0 {
+		now := clk.Now().String()
+		if err := upsertEventLogTruncationTx(ctx, tx, originNodeID, truncatedBefore, now); err != nil {
+			return 0, err
+		}
+		if err := recordEventLogTrimTx(ctx, tx, trimmed, now); err != nil {
+			return 0, err
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit sqlite event log prune: %w", err)
+	}
+	return trimmed, nil
+}
+
+func (b *sqliteStoreBackend) Close() error {
+	return nil
+}
+
+type pebbleStoreBackend struct {
+	db                *pebble.DB
+	writes            *pebbleWriteCoordinator
+	eventLog          *pebbleEventLogRepository
+	messageProjection MessageProjectionRepository
+	messageSequences  *pebbleMessageSequenceRepository
+}
+
+func (b *pebbleStoreBackend) Name() string {
+	return EnginePebble
+}
+
+func (b *pebbleStoreBackend) Bind(bindings storeBackendBindings) error {
+	b.messageProjection = &pebbleMessageProjectionRepository{
+		db:                b.db,
+		writes:            b.writes,
+		messageWindowSize: bindings.MessageWindowSize,
+		userRepository:    bindings.UserRepository,
+		subscriptions:     bindings.Subscriptions,
+		blacklists:        bindings.Blacklists,
+		messageTrim:       bindings.MessageTrim,
+	}
+	b.messageSequences = &pebbleMessageSequenceRepository{
+		db:     b.db,
+		writes: b.writes,
+	}
+	b.eventLog = &pebbleEventLogRepository{
+		db:     b.db,
+		writes: b.writes,
+		ids:    bindings.IDs,
+		nodeID: bindings.NodeID,
+		clock:  bindings.Clock,
+	}
+	return nil
+}
+
+func (b *pebbleStoreBackend) EventLog() EventLogRepository {
+	return b.eventLog
+}
+
+func (b *pebbleStoreBackend) MessageProjection() MessageProjectionRepository {
+	return b.messageProjection
+}
+
+func (b *pebbleStoreBackend) NextMessageSeqTx(ctx context.Context, tx *sql.Tx, key UserKey, nodeID int64) (int64, error) {
+	if b.messageSequences == nil {
+		return 0, fmt.Errorf("pebble message sequence repository is not initialized")
+	}
+	return b.messageSequences.NextSequenceTx(ctx, tx, key, nodeID)
+}
+
+func (b *pebbleStoreBackend) InsertLocalEventTx(ctx context.Context, tx *sql.Tx, event Event) (Event, error) {
+	return b.eventLog.Append(ctx, event)
+}
+
+func (b *pebbleStoreBackend) StoreReplicatedEventTx(ctx context.Context, tx *sql.Tx, rawEvent *internalproto.ReplicatedEvent, decoded Event) (Event, bool, error) {
+	return b.eventLog.AppendReplicated(ctx, decoded)
+}
+
+func (b *pebbleStoreBackend) ListPendingProjectionEvents(ctx context.Context, db *sql.DB, limit int) ([]Event, error) {
+	rows, err := db.QueryContext(ctx, `
+SELECT origin_node_id, event_id
+FROM pending_projections
+ORDER BY last_failed_at_hlc ASC, origin_node_id ASC, event_id ASC
+LIMIT ?
+`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list pending projection keys: %w", err)
+	}
+	defer rows.Close()
+
+	var events []Event
+	for rows.Next() {
+		var originNodeID, eventID int64
+		if err := rows.Scan(&originNodeID, &eventID); err != nil {
+			return nil, fmt.Errorf("scan pending projection key: %w", err)
+		}
+		found, err := b.eventLog.ListEventsByOrigin(ctx, originNodeID, eventID-1, 1)
+		if err != nil {
+			return nil, err
+		}
+		if len(found) == 1 && found[0].OriginNodeID == originNodeID && found[0].EventID == eventID {
+			events = append(events, found[0])
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate pending projection keys: %w", err)
+	}
+	return events, nil
+}
+
+func (b *pebbleStoreBackend) ListLocalOriginEventStats(ctx context.Context, db *sql.DB) (map[int64]localOriginEventStats, error) {
+	progress, err := b.eventLog.ListOriginProgress(ctx)
+	if err != nil {
+		return nil, err
+	}
+	stats := make(map[int64]localOriginEventStats, len(progress))
+	for _, item := range progress {
+		count, err := b.eventLog.CountEventsByOrigin(ctx, item.OriginNodeID, 0)
+		if err != nil {
+			return nil, err
+		}
+		stats[item.OriginNodeID] = localOriginEventStats{
+			LastEventID: item.LastEventID,
+			EventCount:  count,
+		}
+	}
+	return stats, nil
+}
+
+func (b *pebbleStoreBackend) CountUnconfirmedOriginEvents(ctx context.Context, db *sql.DB, originNodeID, ackedEventID, fallbackCount int64) (int64, error) {
+	if originNodeID <= 0 {
+		return 0, nil
+	}
+	if ackedEventID <= 0 {
+		return fallbackCount, nil
+	}
+	return b.eventLog.CountEventsByOrigin(ctx, originNodeID, ackedEventID)
+}
+
+func (b *pebbleStoreBackend) PruneEventLogOrigin(ctx context.Context, db *sql.DB, clk *clock.Clock, originNodeID int64, maxEvents int) (int64, error) {
+	if b.db == nil {
+		return 0, fmt.Errorf("pebble event log prune requires pebble db")
+	}
+	if b.writes != nil {
+		if err := b.writes.Flush(); err != nil {
+			return 0, err
+		}
+	}
+
+	total, err := countPebbleOriginEvents(ctx, b.db, originNodeID)
+	if err != nil {
+		return 0, err
+	}
+	if total <= int64(maxEvents) {
+		return 0, nil
+	}
+
+	trimCount := total - int64(maxEvents)
+	truncatedBefore, err := nthPebbleOriginEventID(ctx, b.db, originNodeID, trimCount-1)
+	if err != nil {
+		return 0, err
+	}
+	if err := upsertEventLogTruncation(ctx, db, clk, originNodeID, truncatedBefore); err != nil {
+		return 0, err
+	}
+
+	trimmed, err := deletePebbleOriginEvents(ctx, b.db, originNodeID, trimCount)
+	if err != nil {
+		return 0, err
+	}
+	if trimmed > 0 {
+		if err := recordEventLogTrim(ctx, db, clk, trimmed); err != nil {
+			return 0, err
+		}
+	}
+	return trimmed, nil
+}
+
+func (b *pebbleStoreBackend) Close() error {
+	var err error
+	if b.writes != nil {
+		err = b.writes.Close()
+	}
+	if b.db != nil {
+		if closeErr := b.db.Close(); err == nil {
+			err = closeErr
+		}
+	}
+	return err
+}

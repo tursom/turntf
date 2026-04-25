@@ -283,6 +283,10 @@ VALUES(?, ?)
 			blacklists:        s.blacklists,
 			messageTrim:       s.messageTrim,
 		}
+		s.messageSequences = &pebbleMessageSequenceRepository{
+			db:     s.pebbleDB,
+			writes: s.pebbleWrites,
+		}
 		s.eventLog = &pebbleEventLogRepository{
 			db:     s.pebbleDB,
 			writes: s.pebbleWrites,

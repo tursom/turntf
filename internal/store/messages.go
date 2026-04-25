@@ -87,6 +87,16 @@ func (s *Store) ListMessagesByUser(ctx context.Context, key UserKey, limit int) 
 }
 
 func (s *Store) nextMessageSeqTx(ctx context.Context, tx *sql.Tx, key UserKey, nodeID int64) (int64, error) {
+	if s.engine == EnginePebble {
+		if s.messageSequences == nil {
+			return 0, fmt.Errorf("pebble message sequence repository is not initialized")
+		}
+		return s.messageSequences.NextSequenceTx(ctx, tx, key, nodeID)
+	}
+	return s.nextSQLiteMessageSeqTx(ctx, tx, key, nodeID)
+}
+
+func (s *Store) nextSQLiteMessageSeqTx(ctx context.Context, tx *sql.Tx, key UserKey, nodeID int64) (int64, error) {
 	if err := key.Validate(); err != nil {
 		return 0, err
 	}
@@ -94,24 +104,15 @@ func (s *Store) nextMessageSeqTx(ctx context.Context, tx *sql.Tx, key UserKey, n
 		return 0, fmt.Errorf("%w: user id and node id are required for message sequence", ErrInvalidInput)
 	}
 
-	var seq int64
-	err := tx.QueryRowContext(ctx, `
-SELECT next_seq
-FROM message_sequence_counters
-WHERE user_node_id = ? AND user_id = ? AND node_id = ?
-`, key.NodeID, key.UserID, nodeID).Scan(&seq)
-	switch {
-	case err == nil:
-	case errors.Is(err, sql.ErrNoRows):
-		if err := tx.QueryRowContext(ctx, `
-SELECT COALESCE(MAX(seq), 0) + 1
-FROM messages
-WHERE user_node_id = ? AND user_id = ? AND node_id = ?
-`, key.NodeID, key.UserID, nodeID).Scan(&seq); err != nil {
-			return 0, fmt.Errorf("seed next message sequence: %w", err)
+	seq, ok, err := readStoredMessageCounterNextSeqTx(ctx, tx, key, nodeID)
+	if err != nil {
+		return 0, err
+	}
+	if !ok {
+		seq, err = readProjectedMessageNextSeqTx(ctx, tx, key, nodeID)
+		if err != nil {
+			return 0, err
 		}
-	default:
-		return 0, fmt.Errorf("read next message sequence: %w", err)
 	}
 
 	if _, err := tx.ExecContext(ctx, `
@@ -120,6 +121,35 @@ VALUES(?, ?, ?, ?)
 ON CONFLICT(user_node_id, user_id, node_id) DO UPDATE SET next_seq = excluded.next_seq
 `, key.NodeID, key.UserID, nodeID, seq+1); err != nil {
 		return 0, fmt.Errorf("store next message sequence: %w", err)
+	}
+	return seq, nil
+}
+
+func readStoredMessageCounterNextSeqTx(ctx context.Context, tx *sql.Tx, key UserKey, nodeID int64) (int64, bool, error) {
+	var seq int64
+	err := tx.QueryRowContext(ctx, `
+SELECT next_seq
+FROM message_sequence_counters
+WHERE user_node_id = ? AND user_id = ? AND node_id = ?
+`, key.NodeID, key.UserID, nodeID).Scan(&seq)
+	switch {
+	case err == nil:
+		return seq, true, nil
+	case errors.Is(err, sql.ErrNoRows):
+		return 0, false, nil
+	default:
+		return 0, false, fmt.Errorf("read next message sequence: %w", err)
+	}
+}
+
+func readProjectedMessageNextSeqTx(ctx context.Context, tx *sql.Tx, key UserKey, nodeID int64) (int64, error) {
+	var seq int64
+	if err := tx.QueryRowContext(ctx, `
+SELECT COALESCE(MAX(seq), 0) + 1
+FROM messages
+WHERE user_node_id = ? AND user_id = ? AND node_id = ?
+`, key.NodeID, key.UserID, nodeID).Scan(&seq); err != nil {
+		return 0, fmt.Errorf("seed next message sequence: %w", err)
 	}
 	return seq, nil
 }

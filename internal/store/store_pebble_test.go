@@ -172,6 +172,108 @@ func TestPebbleDeferredTrimKeepsVisibleWindowBounded(t *testing.T) {
 	}
 }
 
+func TestPebbleMessageSequencePersistsAcrossRestart(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	dir := t.TempDir()
+
+	first := openPersistentPebbleTestStore(t, dir, "restart", 1, DefaultMessageWindowSize)
+	user, _, err := first.CreateUser(ctx, CreateUserParams{
+		Username:     "restart-sequence-user",
+		PasswordHash: "hash-restart-sequence",
+		Role:         RoleUser,
+	})
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	message, _, err := first.CreateMessage(ctx, CreateMessageParams{
+		UserKey: user.Key(),
+		Sender:  testSenderKey(9, 1),
+		Body:    []byte("first"),
+	})
+	if err != nil {
+		t.Fatalf("create first message: %v", err)
+	}
+	if message.Seq != 1 {
+		t.Fatalf("unexpected first message seq: %+v", message)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatalf("close first store: %v", err)
+	}
+
+	second := openPersistentPebbleTestStore(t, dir, "restart", 1, DefaultMessageWindowSize)
+	defer second.Close()
+
+	restartedMessage, _, err := second.CreateMessage(ctx, CreateMessageParams{
+		UserKey: user.Key(),
+		Sender:  testSenderKey(9, 1),
+		Body:    []byte("second"),
+	})
+	if err != nil {
+		t.Fatalf("create second message after restart: %v", err)
+	}
+	if restartedMessage.Seq != 2 {
+		t.Fatalf("expected restarted store to continue from seq 2, got %+v", restartedMessage)
+	}
+}
+
+func TestPebbleMessageSequenceSeedsFromLegacySQLiteCounter(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	st := openPebbleTestStore(t, "legacy-sequence-counter", 1, DefaultMessageWindowSize)
+
+	user, _, err := st.CreateUser(ctx, CreateUserParams{
+		Username:     "legacy-sequence-user",
+		PasswordHash: "hash-legacy-sequence",
+		Role:         RoleUser,
+	})
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	if _, err := st.db.ExecContext(ctx, `
+INSERT INTO message_sequence_counters(user_node_id, user_id, node_id, next_seq)
+VALUES(?, ?, ?, ?)
+`, user.NodeID, user.ID, st.NodeID(), 41); err != nil {
+		t.Fatalf("seed legacy message sequence counter: %v", err)
+	}
+
+	first, _, err := st.CreateMessage(ctx, CreateMessageParams{
+		UserKey: user.Key(),
+		Sender:  testSenderKey(9, 1),
+		Body:    []byte("legacy-first"),
+	})
+	if err != nil {
+		t.Fatalf("create first message from legacy counter: %v", err)
+	}
+	second, _, err := st.CreateMessage(ctx, CreateMessageParams{
+		UserKey: user.Key(),
+		Sender:  testSenderKey(9, 1),
+		Body:    []byte("legacy-second"),
+	})
+	if err != nil {
+		t.Fatalf("create second message from pebble sequence: %v", err)
+	}
+
+	if first.Seq != 41 || second.Seq != 42 {
+		t.Fatalf("expected legacy counter to seed pebble seqs 41/42, got first=%+v second=%+v", first, second)
+	}
+
+	var nextSeq int64
+	if err := st.db.QueryRowContext(ctx, `
+SELECT next_seq
+FROM message_sequence_counters
+WHERE user_node_id = ? AND user_id = ? AND node_id = ?
+`, user.NodeID, user.ID, st.NodeID()).Scan(&nextSeq); err != nil {
+		t.Fatalf("read legacy message sequence counter: %v", err)
+	}
+	if nextSeq != 41 {
+		t.Fatalf("expected pebble create message to stop updating SQLite counter, got %d", nextSeq)
+	}
+}
+
 func TestPebblePruneEventLogKeepsLatestEventsPerOrigin(t *testing.T) {
 	ctx := context.Background()
 	st := openPebbleTestStoreWithRetention(t, "node-a", 1, 10, 2)
@@ -268,6 +370,26 @@ func openPebbleTestStoreWithRetention(t *testing.T, name string, nodeSlot uint16
 	})
 	if err := st.Init(context.Background()); err != nil {
 		t.Fatalf("init pebble store: %v", err)
+	}
+	return st
+}
+
+func openPersistentPebbleTestStore(t *testing.T, dir, name string, nodeSlot uint16, messageWindowSize int) *Store {
+	t.Helper()
+
+	st, err := Open(filepath.Join(dir, name+".db"), Options{
+		NodeID:                     testNodeID(nodeSlot),
+		Engine:                     EnginePebble,
+		PebblePath:                 filepath.Join(dir, name+".pebble"),
+		MessageWindowSize:          messageWindowSize,
+		EventLogMaxEventsPerOrigin: DefaultEventLogMaxEventsPerOrigin,
+	})
+	if err != nil {
+		t.Fatalf("open persistent pebble store: %v", err)
+	}
+	if err := st.Init(context.Background()); err != nil {
+		_ = st.Close()
+		t.Fatalf("init persistent pebble store: %v", err)
 	}
 	return st
 }

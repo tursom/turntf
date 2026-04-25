@@ -81,6 +81,7 @@ type Store struct {
 	blacklists                 BlacklistRepository
 	messageTrim                MessageTrimRepository
 	messageProjection          MessageProjectionRepository
+	messageSequences           *pebbleMessageSequenceRepository
 }
 
 type UserKey struct {

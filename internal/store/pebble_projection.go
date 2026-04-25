@@ -816,6 +816,14 @@ func pebbleEventOriginKey(originNodeID, eventID int64) []byte {
 	return fmt.Appendf(nil, "event/origin/%020d/%020d", originNodeID, eventID)
 }
 
+func pebbleMessageSequenceKey(key UserKey, nodeID int64) []byte {
+	return fmt.Appendf(nil, "meta/message_sequence/%020d/%020d/%020d", key.NodeID, key.UserID, nodeID)
+}
+
+func pebbleMessageIDPrefix(key UserKey, nodeID int64) []byte {
+	return fmt.Appendf(nil, "message/id/%020d/%020d/%020d/", key.NodeID, key.UserID, nodeID)
+}
+
 func pebbleMessageIDKey(message Message) []byte {
 	return pebbleMessageIDKeyFromRef(pebbleMessageRefFromMessage(message))
 }
@@ -854,6 +862,14 @@ func parsePebbleOriginKey(key []byte) (int64, int64, error) {
 		return 0, 0, fmt.Errorf("parse event origin key %q: %w", key, err)
 	}
 	return originNodeID, eventID, nil
+}
+
+func parsePebbleMessageIDKey(key []byte) (UserKey, int64, int64, error) {
+	var userNodeID, userID, nodeID, seq int64
+	if _, err := fmt.Sscanf(string(key), "message/id/%020d/%020d/%020d/%020d", &userNodeID, &userID, &nodeID, &seq); err != nil {
+		return UserKey{}, 0, 0, fmt.Errorf("parse message id key %q: %w", key, err)
+	}
+	return UserKey{NodeID: userNodeID, UserID: userID}, nodeID, seq, nil
 }
 
 func encodeInt64(value int64) []byte {

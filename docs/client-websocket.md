@@ -151,6 +151,7 @@ ClientEnvelope {
     request_id: 42
     target: { node_id: 4096, user_id: 1025 }
     body: "\xff\x00payload"
+    sync_mode: CLIENT_MESSAGE_SYNC_MODE_FORCE_SYNC
   }
 }
 ```
@@ -177,6 +178,7 @@ ClientEnvelope {
 - `body`：原始字节数组，不能为空；不要求 UTF-8。
 - `delivery_kind`：可选 `CLIENT_DELIVERY_KIND_PERSISTENT` 或 `CLIENT_DELIVERY_KIND_TRANSIENT`，默认是持久化消息。
 - `delivery_mode`：仅在 `delivery_kind = CLIENT_DELIVERY_KIND_TRANSIENT` 时生效；可选 `CLIENT_DELIVERY_MODE_BEST_EFFORT` 或 `CLIENT_DELIVERY_MODE_ROUTE_RETRY`。
+- `sync_mode`：仅在 `delivery_kind = CLIENT_DELIVERY_KIND_PERSISTENT` 时生效；可选 `CLIENT_MESSAGE_SYNC_MODE_FORCE_SYNC`、`CLIENT_MESSAGE_SYNC_MODE_NO_SYNC`，省略时走服务端默认值。
 
 权限规则与 HTTP 写消息接口一致：
 

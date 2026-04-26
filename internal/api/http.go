@@ -53,6 +53,7 @@ type createMessageRequest struct {
 	Body         []byte `json:"body"`
 	DeliveryKind string `json:"delivery_kind,omitempty"`
 	DeliveryMode string `json:"delivery_mode,omitempty"`
+	SyncMode     string `json:"sync_mode,omitempty"`
 }
 
 type subscriptionRequest struct {
@@ -354,6 +355,10 @@ func (h *HTTP) handleCreateMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if deliveryKind == deliveryKindTransient {
+		if strings.TrimSpace(req.SyncMode) != "" {
+			writeStoreError(w, fmt.Errorf("%w: sync_mode is only allowed for persistent messages", store.ErrInvalidInput))
+			return
+		}
 		mode, err := store.NormalizeDeliveryMode(req.DeliveryMode)
 		if err != nil {
 			writeStoreError(w, err)
@@ -371,11 +376,17 @@ func (h *HTTP) handleCreateMessage(w http.ResponseWriter, r *http.Request) {
 		writeStoreError(w, fmt.Errorf("%w: delivery_mode is only allowed for transient messages", store.ErrInvalidInput))
 		return
 	}
+	syncMode, err := store.NormalizePebbleMessageSyncMode(req.SyncMode)
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
 
 	message, _, err := h.service.CreateMessage(r.Context(), store.CreateMessageParams{
-		UserKey: key,
-		Sender:  sender,
-		Body:    req.Body,
+		UserKey:               key,
+		Sender:                sender,
+		Body:                  req.Body,
+		PebbleMessageSyncMode: syncMode,
 	})
 	if err != nil {
 		writeStoreError(w, err)

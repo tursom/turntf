@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"runtime"
 	"sort"
+	"sync/atomic"
 
 	"github.com/cockroachdb/pebble"
 )
@@ -26,6 +27,32 @@ type pebbleSequenceReservation struct {
 	cacheKey string
 	key      []byte
 	next     int64
+}
+
+type pebbleLocalMessageBatchStats struct {
+	noSyncBatches    atomic.Uint64
+	forceSyncBatches atomic.Uint64
+}
+
+type pebbleLocalMessageBatchStatsSnapshot struct {
+	NoSyncBatches    uint64
+	ForceSyncBatches uint64
+}
+
+func (s *pebbleLocalMessageBatchStats) record(mode PebbleMessageSyncMode) {
+	switch mode {
+	case PebbleMessageSyncModeForceSync:
+		s.forceSyncBatches.Add(1)
+	default:
+		s.noSyncBatches.Add(1)
+	}
+}
+
+func (s *pebbleLocalMessageBatchStats) snapshot() pebbleLocalMessageBatchStatsSnapshot {
+	return pebbleLocalMessageBatchStatsSnapshot{
+		NoSyncBatches:    s.noSyncBatches.Load(),
+		ForceSyncBatches: s.forceSyncBatches.Load(),
+	}
 }
 
 func (b *pebbleStoreBackend) startLocalMessageLoop() {
@@ -121,7 +148,12 @@ func (b *pebbleStoreBackend) runLocalMessageLoop() {
 				if limit > pebbleLocalMessageBatchMaxOps {
 					limit = pebbleLocalMessageBatchMaxOps
 				}
-				b.processLocalMessageBatch(pending[:limit])
+				chunk := pending[:limit]
+				for len(chunk) > 0 {
+					segmentEnd := contiguousLocalMessageSyncModePrefix(chunk)
+					b.processLocalMessageBatch(chunk[:segmentEnd])
+					chunk = chunk[segmentEnd:]
+				}
 				pending = pending[limit:]
 				if len(pending) == 0 {
 					pending = append(pending, drainQueued()...)
@@ -171,8 +203,14 @@ func (b *pebbleStoreBackend) processLocalMessageBatch(requests []pebbleLocalMess
 	windowSize := normalizeMessageWindowSize(projection.messageWindowSize)
 	trimThreshold := int64(pebbleMessageTrimThreshold(windowSize))
 	hardTrimThreshold := int64(pebbleMessageTrimHardThreshold(windowSize))
+	syncMode := requests[0].params.PebbleMessageSyncMode
+	forceSync := syncMode == PebbleMessageSyncModeForceSync
 
 	for i, request := range requests {
+		if request.params.PebbleMessageSyncMode != syncMode {
+			respondLocalMessageBatchError(requests, fmt.Errorf("%w: local pebble message batch contains mixed sync modes", ErrInvalidInput))
+			return
+		}
 		key := request.params.UserKey
 
 		state, ok := userStates[key]
@@ -267,17 +305,22 @@ func (b *pebbleStoreBackend) processLocalMessageBatch(requests []pebbleLocalMess
 		}
 	}
 
-	if err := batch.Commit(pebble.NoSync); err != nil {
+	commitOptions := pebble.NoSync
+	if forceSync {
+		commitOptions = pebble.Sync
+	}
+	if err := batch.Commit(commitOptions); err != nil {
 		respondLocalMessageBatchError(requests, fmt.Errorf("commit local pebble message batch: %w", err))
 		return
 	}
+	b.localMessageStats.record(syncMode)
 
 	b.eventLog.lastSequence = results[len(results)-1].event.Sequence
 	b.eventLog.sequenceLoaded = true
 	b.messageSequences.StoreCommittedNextByCacheKey(committedNextByCacheKey)
 
 	for _, key := range sortedUserKeys(hardTrimUsers) {
-		if err := projection.trimMessagesForUserLocked(ctx, key, false); err != nil {
+		if err := projection.trimMessagesForUserLocked(ctx, key, forceSync); err != nil {
 			dirtyUsers[key] = struct{}{}
 			continue
 		}
@@ -297,6 +340,19 @@ func respondLocalMessageBatchError(requests []pebbleLocalMessageWriteRequest, er
 	for _, request := range requests {
 		request.response <- pebbleLocalMessageWriteResult{err: err}
 	}
+}
+
+func contiguousLocalMessageSyncModePrefix(requests []pebbleLocalMessageWriteRequest) int {
+	if len(requests) == 0 {
+		return 0
+	}
+	mode := requests[0].params.PebbleMessageSyncMode
+	for i := 1; i < len(requests); i++ {
+		if requests[i].params.PebbleMessageSyncMode != mode {
+			return i
+		}
+	}
+	return len(requests)
 }
 
 func uniqueMessageRecipients(requests []pebbleLocalMessageWriteRequest) []UserKey {

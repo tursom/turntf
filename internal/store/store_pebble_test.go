@@ -211,6 +211,180 @@ func TestPebbleCreateMessageRejectsBlockedSender(t *testing.T) {
 	}
 }
 
+func TestPebbleCreateMessageUsesConfiguredSyncModeByDefault(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	noSyncStore := openPebbleTestStoreWithSyncMode(t, "default-no-sync", 1, DefaultMessageWindowSize, PebbleMessageSyncModeNoSync)
+	noSyncUser, _, err := noSyncStore.CreateUser(ctx, CreateUserParams{
+		Username:     "default-no-sync-user",
+		PasswordHash: "hash-default-no-sync",
+		Role:         RoleUser,
+	})
+	if err != nil {
+		t.Fatalf("create no-sync user: %v", err)
+	}
+	if _, _, err := noSyncStore.CreateMessage(ctx, CreateMessageParams{
+		UserKey: noSyncUser.Key(),
+		Sender:  noSyncUser.Key(),
+		Body:    []byte("default-no-sync-message"),
+	}); err != nil {
+		t.Fatalf("create default no-sync message: %v", err)
+	}
+	noSyncStats := pebbleLocalMessageBatchStatsForTest(t, noSyncStore)
+	if noSyncStats.NoSyncBatches != 1 || noSyncStats.ForceSyncBatches != 0 {
+		t.Fatalf("unexpected default no-sync stats: %+v", noSyncStats)
+	}
+
+	forceSyncStore := openPebbleTestStoreWithSyncMode(t, "default-force-sync", 2, DefaultMessageWindowSize, PebbleMessageSyncModeForceSync)
+	forceSyncUser, _, err := forceSyncStore.CreateUser(ctx, CreateUserParams{
+		Username:     "default-force-sync-user",
+		PasswordHash: "hash-default-force-sync",
+		Role:         RoleUser,
+	})
+	if err != nil {
+		t.Fatalf("create force-sync user: %v", err)
+	}
+	if _, _, err := forceSyncStore.CreateMessage(ctx, CreateMessageParams{
+		UserKey: forceSyncUser.Key(),
+		Sender:  forceSyncUser.Key(),
+		Body:    []byte("default-force-sync-message"),
+	}); err != nil {
+		t.Fatalf("create default force-sync message: %v", err)
+	}
+	forceSyncStats := pebbleLocalMessageBatchStatsForTest(t, forceSyncStore)
+	if forceSyncStats.ForceSyncBatches != 1 || forceSyncStats.NoSyncBatches != 0 {
+		t.Fatalf("unexpected default force-sync stats: %+v", forceSyncStats)
+	}
+}
+
+func TestPebbleCreateMessageRequestSyncModeOverridesDefault(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	forceSyncStore := openPebbleTestStoreWithSyncMode(t, "override-to-no-sync", 1, DefaultMessageWindowSize, PebbleMessageSyncModeForceSync)
+	forceSyncUser, _, err := forceSyncStore.CreateUser(ctx, CreateUserParams{
+		Username:     "override-force-sync-user",
+		PasswordHash: "hash-override-force-sync",
+		Role:         RoleUser,
+	})
+	if err != nil {
+		t.Fatalf("create force-sync user: %v", err)
+	}
+	if _, _, err := forceSyncStore.CreateMessage(ctx, CreateMessageParams{
+		UserKey:               forceSyncUser.Key(),
+		Sender:                forceSyncUser.Key(),
+		Body:                  []byte("override-no-sync-message"),
+		PebbleMessageSyncMode: PebbleMessageSyncModeNoSync,
+	}); err != nil {
+		t.Fatalf("create override no-sync message: %v", err)
+	}
+	forceSyncStats := pebbleLocalMessageBatchStatsForTest(t, forceSyncStore)
+	if forceSyncStats.NoSyncBatches != 1 || forceSyncStats.ForceSyncBatches != 0 {
+		t.Fatalf("unexpected override-to-no-sync stats: %+v", forceSyncStats)
+	}
+
+	noSyncStore := openPebbleTestStoreWithSyncMode(t, "override-to-force-sync", 2, DefaultMessageWindowSize, PebbleMessageSyncModeNoSync)
+	noSyncUser, _, err := noSyncStore.CreateUser(ctx, CreateUserParams{
+		Username:     "override-no-sync-user",
+		PasswordHash: "hash-override-no-sync",
+		Role:         RoleUser,
+	})
+	if err != nil {
+		t.Fatalf("create no-sync user: %v", err)
+	}
+	if _, _, err := noSyncStore.CreateMessage(ctx, CreateMessageParams{
+		UserKey:               noSyncUser.Key(),
+		Sender:                noSyncUser.Key(),
+		Body:                  []byte("override-force-sync-message"),
+		PebbleMessageSyncMode: PebbleMessageSyncModeForceSync,
+	}); err != nil {
+		t.Fatalf("create override force-sync message: %v", err)
+	}
+	noSyncStats := pebbleLocalMessageBatchStatsForTest(t, noSyncStore)
+	if noSyncStats.ForceSyncBatches != 1 || noSyncStats.NoSyncBatches != 0 {
+		t.Fatalf("unexpected override-to-force-sync stats: %+v", noSyncStats)
+	}
+}
+
+func TestPebbleLocalMessageSyncModeSegmentsPreserveOrder(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	st := openPebbleTestStoreWithSyncMode(t, "mixed-sync-batches", 1, DefaultMessageWindowSize, PebbleMessageSyncModeNoSync)
+	backend := requirePebbleBackend(t, st)
+
+	user, _, err := st.CreateUser(ctx, CreateUserParams{
+		Username:     "mixed-sync-user",
+		PasswordHash: "hash-mixed-sync",
+		Role:         RoleUser,
+	})
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	requests := []pebbleLocalMessageWriteRequest{
+		{
+			params: CreateMessageParams{
+				UserKey:               user.Key(),
+				Sender:                user.Key(),
+				Body:                  []byte("m1"),
+				PebbleMessageSyncMode: PebbleMessageSyncModeForceSync,
+			},
+			response: make(chan pebbleLocalMessageWriteResult, 1),
+		},
+		{
+			params: CreateMessageParams{
+				UserKey:               user.Key(),
+				Sender:                user.Key(),
+				Body:                  []byte("m2"),
+				PebbleMessageSyncMode: PebbleMessageSyncModeNoSync,
+			},
+			response: make(chan pebbleLocalMessageWriteResult, 1),
+		},
+		{
+			params: CreateMessageParams{
+				UserKey:               user.Key(),
+				Sender:                user.Key(),
+				Body:                  []byte("m3"),
+				PebbleMessageSyncMode: PebbleMessageSyncModeNoSync,
+			},
+			response: make(chan pebbleLocalMessageWriteResult, 1),
+		},
+		{
+			params: CreateMessageParams{
+				UserKey:               user.Key(),
+				Sender:                user.Key(),
+				Body:                  []byte("m4"),
+				PebbleMessageSyncMode: PebbleMessageSyncModeForceSync,
+			},
+			response: make(chan pebbleLocalMessageWriteResult, 1),
+		},
+	}
+
+	pending := requests
+	for len(pending) > 0 {
+		segmentEnd := contiguousLocalMessageSyncModePrefix(pending)
+		backend.processLocalMessageBatch(pending[:segmentEnd])
+		pending = pending[segmentEnd:]
+	}
+
+	for i, request := range requests {
+		result := <-request.response
+		if result.err != nil {
+			t.Fatalf("request %d failed: %v", i, result.err)
+		}
+		if result.message.Seq != int64(i+1) {
+			t.Fatalf("unexpected message seq for request %d: %+v", i, result.message)
+		}
+	}
+
+	stats := pebbleLocalMessageBatchStatsForTest(t, st)
+	if stats.ForceSyncBatches != 2 || stats.NoSyncBatches != 1 {
+		t.Fatalf("unexpected mixed-sync batch stats: %+v", stats)
+	}
+}
+
 func TestPebbleBackgroundTrimEventuallyUpdatesMessageUserState(t *testing.T) {
 	t.Parallel()
 
@@ -467,10 +641,20 @@ func TestPebblePruneEventLogKeepsLatestEventsPerOrigin(t *testing.T) {
 
 func openPebbleTestStore(t *testing.T, name string, nodeSlot uint16, messageWindowSize int) *Store {
 	t.Helper()
-	return openPebbleTestStoreWithRetention(t, name, nodeSlot, messageWindowSize, DefaultEventLogMaxEventsPerOrigin)
+	return openPebbleTestStoreWithOptions(t, name, nodeSlot, messageWindowSize, DefaultEventLogMaxEventsPerOrigin, PebbleMessageSyncModeNoSync)
 }
 
 func openPebbleTestStoreWithRetention(t *testing.T, name string, nodeSlot uint16, messageWindowSize int, maxEventsPerOrigin int) *Store {
+	t.Helper()
+	return openPebbleTestStoreWithOptions(t, name, nodeSlot, messageWindowSize, maxEventsPerOrigin, PebbleMessageSyncModeNoSync)
+}
+
+func openPebbleTestStoreWithSyncMode(t *testing.T, name string, nodeSlot uint16, messageWindowSize int, syncMode PebbleMessageSyncMode) *Store {
+	t.Helper()
+	return openPebbleTestStoreWithOptions(t, name, nodeSlot, messageWindowSize, DefaultEventLogMaxEventsPerOrigin, syncMode)
+}
+
+func openPebbleTestStoreWithOptions(t *testing.T, name string, nodeSlot uint16, messageWindowSize int, maxEventsPerOrigin int, syncMode PebbleMessageSyncMode) *Store {
 	t.Helper()
 
 	dir := t.TempDir()
@@ -478,6 +662,7 @@ func openPebbleTestStoreWithRetention(t *testing.T, name string, nodeSlot uint16
 		NodeID:                     testNodeID(nodeSlot),
 		Engine:                     EnginePebble,
 		PebblePath:                 filepath.Join(dir, name+".pebble"),
+		PebbleMessageSyncMode:      syncMode,
 		MessageWindowSize:          messageWindowSize,
 		EventLogMaxEventsPerOrigin: maxEventsPerOrigin,
 	})
@@ -502,6 +687,7 @@ func openPersistentPebbleTestStore(t *testing.T, dir, name string, nodeSlot uint
 		NodeID:                     testNodeID(nodeSlot),
 		Engine:                     EnginePebble,
 		PebblePath:                 filepath.Join(dir, name+".pebble"),
+		PebbleMessageSyncMode:      PebbleMessageSyncModeNoSync,
 		MessageWindowSize:          messageWindowSize,
 		EventLogMaxEventsPerOrigin: DefaultEventLogMaxEventsPerOrigin,
 	})
@@ -540,4 +726,9 @@ func waitForPebbleCondition(t *testing.T, timeout time.Duration, check func() bo
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("condition not satisfied within %s", timeout)
+}
+
+func pebbleLocalMessageBatchStatsForTest(tb testing.TB, st *Store) pebbleLocalMessageBatchStatsSnapshot {
+	tb.Helper()
+	return requirePebbleBackend(tb, st).localMessageStats.snapshot()
 }

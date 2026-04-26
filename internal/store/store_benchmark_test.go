@@ -13,14 +13,28 @@ import (
 
 const storeBenchmarkWarmupPasses = 1
 
+type storeBenchmarkEngineScenario struct {
+	name                  string
+	engine                string
+	pebbleMessageSyncMode PebbleMessageSyncMode
+}
+
+func storeBenchmarkEngineScenarios() []storeBenchmarkEngineScenario {
+	return []storeBenchmarkEngineScenario{
+		{name: EngineSQLite, engine: EngineSQLite},
+		{name: EnginePebble + "/" + string(PebbleMessageSyncModeNoSync), engine: EnginePebble, pebbleMessageSyncMode: PebbleMessageSyncModeNoSync},
+		{name: EnginePebble + "/" + string(PebbleMessageSyncModeForceSync), engine: EnginePebble, pebbleMessageSyncMode: PebbleMessageSyncModeForceSync},
+	}
+}
+
 func BenchmarkStoreCreateMessage(b *testing.B) {
 	for _, mode := range benchroot.Modes(b) {
 		mode := mode
 		b.Run(mode.Name(), func(b *testing.B) {
-			for _, engine := range []string{EngineSQLite, EnginePebble} {
+			for _, scenario := range storeBenchmarkEngineScenarios() {
 				for _, payloadSize := range []int{256, 4 << 10} {
-					b.Run(fmt.Sprintf("%s/%dB", engine, payloadSize), func(b *testing.B) {
-						benchmarkStoreCreateMessage(b, mode, engine, payloadSize)
+					b.Run(fmt.Sprintf("%s/%dB", scenario.name, payloadSize), func(b *testing.B) {
+						benchmarkStoreCreateMessage(b, mode, scenario, payloadSize)
 					})
 				}
 			}
@@ -32,10 +46,10 @@ func BenchmarkStoreCreateMessageSteadyState(b *testing.B) {
 	for _, mode := range benchroot.Modes(b) {
 		mode := mode
 		b.Run(mode.Name(), func(b *testing.B) {
-			for _, engine := range []string{EngineSQLite, EnginePebble} {
+			for _, scenario := range storeBenchmarkEngineScenarios() {
 				for _, payloadSize := range []int{256, 4 << 10} {
-					b.Run(fmt.Sprintf("%s/%dB", engine, payloadSize), func(b *testing.B) {
-						benchmarkStoreCreateMessageSteadyState(b, mode, engine, payloadSize)
+					b.Run(fmt.Sprintf("%s/%dB", scenario.name, payloadSize), func(b *testing.B) {
+						benchmarkStoreCreateMessageSteadyState(b, mode, scenario, payloadSize)
 					})
 				}
 			}
@@ -47,7 +61,7 @@ func BenchmarkStoreCreateMessageParallel(b *testing.B) {
 	for _, mode := range benchroot.Modes(b) {
 		mode := mode
 		b.Run(mode.Name(), func(b *testing.B) {
-			for _, engine := range []string{EngineSQLite, EnginePebble} {
+			for _, scenario := range storeBenchmarkEngineScenarios() {
 				for _, tc := range []struct {
 					name      string
 					userCount int
@@ -55,8 +69,8 @@ func BenchmarkStoreCreateMessageParallel(b *testing.B) {
 					{name: "hotspot", userCount: 1},
 					{name: "uniform-1000", userCount: 1000},
 				} {
-					b.Run(fmt.Sprintf("%s/%s", engine, tc.name), func(b *testing.B) {
-						benchmarkStoreCreateMessageParallel(b, mode, engine, tc.userCount)
+					b.Run(fmt.Sprintf("%s/%s", scenario.name, tc.name), func(b *testing.B) {
+						benchmarkStoreCreateMessageParallel(b, mode, scenario, tc.userCount)
 					})
 				}
 			}
@@ -68,10 +82,10 @@ func BenchmarkStoreListMessagesByUser(b *testing.B) {
 	for _, mode := range benchroot.Modes(b) {
 		mode := mode
 		b.Run(mode.Name(), func(b *testing.B) {
-			for _, engine := range []string{EngineSQLite, EnginePebble} {
+			for _, scenario := range storeBenchmarkEngineScenarios() {
 				for _, history := range []int{100, 1000} {
-					b.Run(fmt.Sprintf("%s/history-%d", engine, history), func(b *testing.B) {
-						benchmarkStoreListMessagesByUser(b, mode, engine, history)
+					b.Run(fmt.Sprintf("%s/history-%d", scenario.name, history), func(b *testing.B) {
+						benchmarkStoreListMessagesByUser(b, mode, scenario, history)
 					})
 				}
 			}
@@ -83,7 +97,7 @@ func BenchmarkStorePruneEventLogOnce(b *testing.B) {
 	for _, mode := range benchroot.Modes(b) {
 		mode := mode
 		b.Run(mode.Name(), func(b *testing.B) {
-			for _, engine := range []string{EngineSQLite, EnginePebble} {
+			for _, scenario := range storeBenchmarkEngineScenarios() {
 				for _, tc := range []struct {
 					name       string
 					retain     int
@@ -92,8 +106,8 @@ func BenchmarkStorePruneEventLogOnce(b *testing.B) {
 					{name: "retain-128/events-256", retain: 128, eventCount: 256},
 					{name: "retain-128/events-4096", retain: 128, eventCount: 4096},
 				} {
-					b.Run(fmt.Sprintf("%s/%s", engine, tc.name), func(b *testing.B) {
-						benchmarkStorePruneEventLogOnce(b, mode, engine, tc.retain, tc.eventCount)
+					b.Run(fmt.Sprintf("%s/%s", scenario.name, tc.name), func(b *testing.B) {
+						benchmarkStorePruneEventLogOnce(b, mode, scenario, tc.retain, tc.eventCount)
 					})
 				}
 			}
@@ -101,9 +115,9 @@ func BenchmarkStorePruneEventLogOnce(b *testing.B) {
 	}
 }
 
-func benchmarkStoreCreateMessage(b *testing.B, mode benchroot.Mode, engine string, payloadSize int) {
+func benchmarkStoreCreateMessage(b *testing.B, mode benchroot.Mode, scenario storeBenchmarkEngineScenario, payloadSize int) {
 	ctx := context.Background()
-	st, closeStore := openBenchmarkStore(b, mode, engine, "create-message", 1, DefaultMessageWindowSize, DefaultEventLogMaxEventsPerOrigin)
+	st, closeStore := openBenchmarkStore(b, mode, scenario, "create-message", 1, DefaultMessageWindowSize, DefaultEventLogMaxEventsPerOrigin)
 	b.Cleanup(closeStore)
 
 	user, _, err := st.CreateUser(ctx, CreateUserParams{
@@ -119,7 +133,7 @@ func benchmarkStoreCreateMessage(b *testing.B, mode benchroot.Mode, engine strin
 	runStoreBenchmarkWarmup(b, func() {
 		mustCreateBenchmarkMessage(b, st, ctx, user.Key(), payload)
 	})
-	assertBenchmarkMessageSequenceCounter(b, st, ctx, engine, user.Key(), 2)
+	assertBenchmarkMessageSequenceCounter(b, st, ctx, scenario.engine, user.Key(), 2)
 	b.SetBytes(int64(payloadSize))
 	b.ResetTimer()
 
@@ -128,9 +142,9 @@ func benchmarkStoreCreateMessage(b *testing.B, mode benchroot.Mode, engine strin
 	}
 }
 
-func benchmarkStoreCreateMessageSteadyState(b *testing.B, mode benchroot.Mode, engine string, payloadSize int) {
+func benchmarkStoreCreateMessageSteadyState(b *testing.B, mode benchroot.Mode, scenario storeBenchmarkEngineScenario, payloadSize int) {
 	ctx := context.Background()
-	st, closeStore := openBenchmarkStore(b, mode, engine, "create-message-steady-state", 1, DefaultMessageWindowSize, DefaultEventLogMaxEventsPerOrigin)
+	st, closeStore := openBenchmarkStore(b, mode, scenario, "create-message-steady-state", 1, DefaultMessageWindowSize, DefaultEventLogMaxEventsPerOrigin)
 	b.Cleanup(closeStore)
 
 	user, _, err := st.CreateUser(ctx, CreateUserParams{
@@ -150,7 +164,7 @@ func benchmarkStoreCreateMessageSteadyState(b *testing.B, mode benchroot.Mode, e
 	runStoreBenchmarkWarmup(b, func() {
 		mustCreateBenchmarkMessage(b, st, ctx, user.Key(), payload)
 	})
-	assertBenchmarkMessageSequenceCounter(b, st, ctx, engine, user.Key(), 2)
+	assertBenchmarkMessageSequenceCounter(b, st, ctx, scenario.engine, user.Key(), 2)
 	b.SetBytes(int64(payloadSize))
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -158,9 +172,9 @@ func benchmarkStoreCreateMessageSteadyState(b *testing.B, mode benchroot.Mode, e
 	}
 }
 
-func benchmarkStoreCreateMessageParallel(b *testing.B, mode benchroot.Mode, engine string, userCount int) {
+func benchmarkStoreCreateMessageParallel(b *testing.B, mode benchroot.Mode, scenario storeBenchmarkEngineScenario, userCount int) {
 	ctx := context.Background()
-	st, closeStore := openBenchmarkStore(b, mode, engine, fmt.Sprintf("create-message-parallel-%d", userCount), 1, DefaultMessageWindowSize, DefaultEventLogMaxEventsPerOrigin)
+	st, closeStore := openBenchmarkStore(b, mode, scenario, fmt.Sprintf("create-message-parallel-%d", userCount), 1, DefaultMessageWindowSize, DefaultEventLogMaxEventsPerOrigin)
 	b.Cleanup(closeStore)
 
 	users := make([]User, 0, userCount)
@@ -181,7 +195,7 @@ func benchmarkStoreCreateMessageParallel(b *testing.B, mode benchroot.Mode, engi
 	runStoreBenchmarkWarmup(b, func() {
 		mustCreateBenchmarkMessage(b, st, ctx, users[0].Key(), payload)
 	})
-	assertBenchmarkMessageSequenceCounter(b, st, ctx, engine, users[0].Key(), 2)
+	assertBenchmarkMessageSequenceCounter(b, st, ctx, scenario.engine, users[0].Key(), 2)
 	b.SetBytes(int64(len(payload)))
 	b.ResetTimer()
 
@@ -196,11 +210,11 @@ func benchmarkStoreCreateMessageParallel(b *testing.B, mode benchroot.Mode, engi
 	})
 }
 
-func benchmarkStoreListMessagesByUser(b *testing.B, mode benchroot.Mode, engine string, history int) {
+func benchmarkStoreListMessagesByUser(b *testing.B, mode benchroot.Mode, scenario storeBenchmarkEngineScenario, history int) {
 	const limit = 50
 
 	ctx := context.Background()
-	st, closeStore := openBenchmarkStore(b, mode, engine, "list-messages", 1, DefaultMessageWindowSize, DefaultEventLogMaxEventsPerOrigin)
+	st, closeStore := openBenchmarkStore(b, mode, scenario, "list-messages", 1, DefaultMessageWindowSize, DefaultEventLogMaxEventsPerOrigin)
 	b.Cleanup(closeStore)
 
 	user, _, err := st.CreateUser(ctx, CreateUserParams{
@@ -236,12 +250,12 @@ func benchmarkStoreListMessagesByUser(b *testing.B, mode benchroot.Mode, engine 
 	}
 }
 
-func benchmarkStorePruneEventLogOnce(b *testing.B, mode benchroot.Mode, engine string, retain, eventCount int) {
+func benchmarkStorePruneEventLogOnce(b *testing.B, mode benchroot.Mode, scenario storeBenchmarkEngineScenario, retain, eventCount int) {
 	ctx := context.Background()
 
 	b.StopTimer()
 	runStoreBenchmarkWarmup(b, func() {
-		st, closeStore := openBenchmarkStore(b, mode, engine, "prune-event-log-warmup", 1, DefaultMessageWindowSize, retain)
+		st, closeStore := openBenchmarkStore(b, mode, scenario, "prune-event-log-warmup", 1, DefaultMessageWindowSize, retain)
 		appendBenchmarkUserEvents(b, st, eventCount)
 
 		result, err := st.PruneEventLogOnce(ctx)
@@ -254,7 +268,7 @@ func benchmarkStorePruneEventLogOnce(b *testing.B, mode benchroot.Mode, engine s
 	})
 	for i := 0; i < b.N; i++ {
 		b.StopTimer()
-		st, closeStore := openBenchmarkStore(b, mode, engine, "prune-event-log", 1, DefaultMessageWindowSize, retain)
+		st, closeStore := openBenchmarkStore(b, mode, scenario, "prune-event-log", 1, DefaultMessageWindowSize, retain)
 		appendBenchmarkUserEvents(b, st, eventCount)
 
 		b.StartTimer()
@@ -269,17 +283,18 @@ func benchmarkStorePruneEventLogOnce(b *testing.B, mode benchroot.Mode, engine s
 	}
 }
 
-func openBenchmarkStore(tb testing.TB, mode benchroot.Mode, engine, name string, nodeSlot uint16, messageWindowSize int, maxEventsPerOrigin int) (*Store, func()) {
+func openBenchmarkStore(tb testing.TB, mode benchroot.Mode, scenario storeBenchmarkEngineScenario, name string, nodeSlot uint16, messageWindowSize int, maxEventsPerOrigin int) (*Store, func()) {
 	tb.Helper()
 
 	dir, cleanupDir := mode.MkdirTemp(tb, "turntf-store-bench-*")
 	opts := Options{
 		NodeID:                     testNodeID(nodeSlot),
-		Engine:                     engine,
+		Engine:                     scenario.engine,
+		PebbleMessageSyncMode:      scenario.pebbleMessageSyncMode,
 		MessageWindowSize:          messageWindowSize,
 		EventLogMaxEventsPerOrigin: maxEventsPerOrigin,
 	}
-	if engine == EnginePebble {
+	if scenario.engine == EnginePebble {
 		opts.PebblePath = filepath.Join(dir, name+".pebble")
 	}
 	st, err := Open(filepath.Join(dir, name+".db"), opts)

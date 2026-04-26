@@ -449,6 +449,7 @@ type pebbleStoreBackend struct {
 	localMessageRequests  chan pebbleLocalMessageWriteRequest
 	localMessageCloseCh   chan chan error
 	localMessageDone      chan struct{}
+	localMessageStats     pebbleLocalMessageBatchStats
 	localMessageMu        sync.Mutex
 	localMessageClosed    bool
 }
@@ -524,6 +525,7 @@ func (b *pebbleStoreBackend) CreateMessage(ctx context.Context, s *Store, params
 			return Message{}, Event{}, ErrBlockedByBlacklist
 		}
 	}
+	params.PebbleMessageSyncMode = resolvePebbleMessageSyncMode(params.PebbleMessageSyncMode, s.pebbleMessageSyncMode)
 	return b.submitLocalMessage(ctx, params)
 }
 

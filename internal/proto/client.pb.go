@@ -119,6 +119,55 @@ func (ClientDeliveryMode) EnumDescriptor() ([]byte, []int) {
 	return file_client_proto_rawDescGZIP(), []int{1}
 }
 
+type ClientMessageSyncMode int32
+
+const (
+	ClientMessageSyncMode_CLIENT_MESSAGE_SYNC_MODE_UNSPECIFIED ClientMessageSyncMode = 0
+	ClientMessageSyncMode_CLIENT_MESSAGE_SYNC_MODE_FORCE_SYNC  ClientMessageSyncMode = 1
+	ClientMessageSyncMode_CLIENT_MESSAGE_SYNC_MODE_NO_SYNC     ClientMessageSyncMode = 2
+)
+
+// Enum value maps for ClientMessageSyncMode.
+var (
+	ClientMessageSyncMode_name = map[int32]string{
+		0: "CLIENT_MESSAGE_SYNC_MODE_UNSPECIFIED",
+		1: "CLIENT_MESSAGE_SYNC_MODE_FORCE_SYNC",
+		2: "CLIENT_MESSAGE_SYNC_MODE_NO_SYNC",
+	}
+	ClientMessageSyncMode_value = map[string]int32{
+		"CLIENT_MESSAGE_SYNC_MODE_UNSPECIFIED": 0,
+		"CLIENT_MESSAGE_SYNC_MODE_FORCE_SYNC":  1,
+		"CLIENT_MESSAGE_SYNC_MODE_NO_SYNC":     2,
+	}
+)
+
+func (x ClientMessageSyncMode) Enum() *ClientMessageSyncMode {
+	p := new(ClientMessageSyncMode)
+	*p = x
+	return p
+}
+
+func (x ClientMessageSyncMode) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (ClientMessageSyncMode) Descriptor() protoreflect.EnumDescriptor {
+	return file_client_proto_enumTypes[2].Descriptor()
+}
+
+func (ClientMessageSyncMode) Type() protoreflect.EnumType {
+	return &file_client_proto_enumTypes[2]
+}
+
+func (x ClientMessageSyncMode) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use ClientMessageSyncMode.Descriptor instead.
+func (ClientMessageSyncMode) EnumDescriptor() ([]byte, []int) {
+	return file_client_proto_rawDescGZIP(), []int{2}
+}
+
 type ClientEnvelope struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Types that are valid to be assigned to Body:
@@ -1010,6 +1059,7 @@ type SendMessageRequest struct {
 	Body          []byte                 `protobuf:"bytes,3,opt,name=body,proto3" json:"body,omitempty"`
 	DeliveryKind  ClientDeliveryKind     `protobuf:"varint,4,opt,name=delivery_kind,json=deliveryKind,proto3,enum=notifier.client.v1.ClientDeliveryKind" json:"delivery_kind,omitempty"`
 	DeliveryMode  ClientDeliveryMode     `protobuf:"varint,5,opt,name=delivery_mode,json=deliveryMode,proto3,enum=notifier.client.v1.ClientDeliveryMode" json:"delivery_mode,omitempty"`
+	SyncMode      ClientMessageSyncMode  `protobuf:"varint,6,opt,name=sync_mode,json=syncMode,proto3,enum=notifier.client.v1.ClientMessageSyncMode" json:"sync_mode,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1077,6 +1127,13 @@ func (x *SendMessageRequest) GetDeliveryMode() ClientDeliveryMode {
 		return x.DeliveryMode
 	}
 	return ClientDeliveryMode_CLIENT_DELIVERY_MODE_UNSPECIFIED
+}
+
+func (x *SendMessageRequest) GetSyncMode() ClientMessageSyncMode {
+	if x != nil {
+		return x.SyncMode
+	}
+	return ClientMessageSyncMode_CLIENT_MESSAGE_SYNC_MODE_UNSPECIFIED
 }
 
 type SendMessageResponse struct {
@@ -4830,14 +4887,15 @@ const file_client_proto_rawDesc = "" +
 	"\rseen_messages\x18\x04 \x03(\v2!.notifier.client.v1.MessageCursorR\fseenMessages\"h\n" +
 	"\rLoginResponse\x12,\n" +
 	"\x04user\x18\x01 \x01(\v2\x18.notifier.client.v1.UserR\x04user\x12)\n" +
-	"\x10protocol_version\x18\x02 \x01(\tR\x0fprotocolVersion\"\x96\x02\n" +
+	"\x10protocol_version\x18\x02 \x01(\tR\x0fprotocolVersion\"\xde\x02\n" +
 	"\x12SendMessageRequest\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\x04R\trequestId\x123\n" +
 	"\x06target\x18\x02 \x01(\v2\x1b.notifier.client.v1.UserRefR\x06target\x12\x12\n" +
 	"\x04body\x18\x03 \x01(\fR\x04body\x12K\n" +
 	"\rdelivery_kind\x18\x04 \x01(\x0e2&.notifier.client.v1.ClientDeliveryKindR\fdeliveryKind\x12K\n" +
-	"\rdelivery_mode\x18\x05 \x01(\x0e2&.notifier.client.v1.ClientDeliveryModeR\fdeliveryMode\"\xcd\x01\n" +
+	"\rdelivery_mode\x18\x05 \x01(\x0e2&.notifier.client.v1.ClientDeliveryModeR\fdeliveryMode\x12F\n" +
+	"\tsync_mode\x18\x06 \x01(\x0e2).notifier.client.v1.ClientMessageSyncModeR\bsyncMode\"\xcd\x01\n" +
 	"\x13SendMessageResponse\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\x04R\trequestId\x127\n" +
@@ -5157,7 +5215,11 @@ const file_client_proto_rawDesc = "" +
 	"\x12ClientDeliveryMode\x12$\n" +
 	" CLIENT_DELIVERY_MODE_UNSPECIFIED\x10\x00\x12$\n" +
 	" CLIENT_DELIVERY_MODE_BEST_EFFORT\x10\x01\x12$\n" +
-	" CLIENT_DELIVERY_MODE_ROUTE_RETRY\x10\x02B/Z-github.com/tursom/turntf/internal/proto;protob\x06proto3"
+	" CLIENT_DELIVERY_MODE_ROUTE_RETRY\x10\x02*\x90\x01\n" +
+	"\x15ClientMessageSyncMode\x12(\n" +
+	"$CLIENT_MESSAGE_SYNC_MODE_UNSPECIFIED\x10\x00\x12'\n" +
+	"#CLIENT_MESSAGE_SYNC_MODE_FORCE_SYNC\x10\x01\x12$\n" +
+	" CLIENT_MESSAGE_SYNC_MODE_NO_SYNC\x10\x02B/Z-github.com/tursom/turntf/internal/proto;protob\x06proto3"
 
 var (
 	file_client_proto_rawDescOnce sync.Once
@@ -5171,183 +5233,185 @@ func file_client_proto_rawDescGZIP() []byte {
 	return file_client_proto_rawDescData
 }
 
-var file_client_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
+var file_client_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
 var file_client_proto_msgTypes = make([]protoimpl.MessageInfo, 63)
 var file_client_proto_goTypes = []any{
 	(ClientDeliveryKind)(0),               // 0: notifier.client.v1.ClientDeliveryKind
 	(ClientDeliveryMode)(0),               // 1: notifier.client.v1.ClientDeliveryMode
-	(*ClientEnvelope)(nil),                // 2: notifier.client.v1.ClientEnvelope
-	(*ServerEnvelope)(nil),                // 3: notifier.client.v1.ServerEnvelope
-	(*LoginRequest)(nil),                  // 4: notifier.client.v1.LoginRequest
-	(*LoginResponse)(nil),                 // 5: notifier.client.v1.LoginResponse
-	(*SendMessageRequest)(nil),            // 6: notifier.client.v1.SendMessageRequest
-	(*SendMessageResponse)(nil),           // 7: notifier.client.v1.SendMessageResponse
-	(*MessagePushed)(nil),                 // 8: notifier.client.v1.MessagePushed
-	(*PacketPushed)(nil),                  // 9: notifier.client.v1.PacketPushed
-	(*TransientAccepted)(nil),             // 10: notifier.client.v1.TransientAccepted
-	(*AckMessage)(nil),                    // 11: notifier.client.v1.AckMessage
-	(*Ping)(nil),                          // 12: notifier.client.v1.Ping
-	(*Pong)(nil),                          // 13: notifier.client.v1.Pong
-	(*Error)(nil),                         // 14: notifier.client.v1.Error
-	(*CreateUserRequest)(nil),             // 15: notifier.client.v1.CreateUserRequest
-	(*GetUserRequest)(nil),                // 16: notifier.client.v1.GetUserRequest
-	(*UpdateUserRequest)(nil),             // 17: notifier.client.v1.UpdateUserRequest
-	(*DeleteUserRequest)(nil),             // 18: notifier.client.v1.DeleteUserRequest
-	(*ListMessagesRequest)(nil),           // 19: notifier.client.v1.ListMessagesRequest
-	(*SubscribeChannelRequest)(nil),       // 20: notifier.client.v1.SubscribeChannelRequest
-	(*UnsubscribeChannelRequest)(nil),     // 21: notifier.client.v1.UnsubscribeChannelRequest
-	(*ListSubscriptionsRequest)(nil),      // 22: notifier.client.v1.ListSubscriptionsRequest
-	(*BlockUserRequest)(nil),              // 23: notifier.client.v1.BlockUserRequest
-	(*UnblockUserRequest)(nil),            // 24: notifier.client.v1.UnblockUserRequest
-	(*ListBlockedUsersRequest)(nil),       // 25: notifier.client.v1.ListBlockedUsersRequest
-	(*ListEventsRequest)(nil),             // 26: notifier.client.v1.ListEventsRequest
-	(*OperationsStatusRequest)(nil),       // 27: notifier.client.v1.OperationsStatusRequest
-	(*MetricsRequest)(nil),                // 28: notifier.client.v1.MetricsRequest
-	(*CreateUserResponse)(nil),            // 29: notifier.client.v1.CreateUserResponse
-	(*GetUserResponse)(nil),               // 30: notifier.client.v1.GetUserResponse
-	(*UpdateUserResponse)(nil),            // 31: notifier.client.v1.UpdateUserResponse
-	(*DeleteUserResponse)(nil),            // 32: notifier.client.v1.DeleteUserResponse
-	(*ListMessagesResponse)(nil),          // 33: notifier.client.v1.ListMessagesResponse
-	(*SubscribeChannelResponse)(nil),      // 34: notifier.client.v1.SubscribeChannelResponse
-	(*UnsubscribeChannelResponse)(nil),    // 35: notifier.client.v1.UnsubscribeChannelResponse
-	(*ListSubscriptionsResponse)(nil),     // 36: notifier.client.v1.ListSubscriptionsResponse
-	(*BlockUserResponse)(nil),             // 37: notifier.client.v1.BlockUserResponse
-	(*UnblockUserResponse)(nil),           // 38: notifier.client.v1.UnblockUserResponse
-	(*ListBlockedUsersResponse)(nil),      // 39: notifier.client.v1.ListBlockedUsersResponse
-	(*ListEventsResponse)(nil),            // 40: notifier.client.v1.ListEventsResponse
-	(*OperationsStatusResponse)(nil),      // 41: notifier.client.v1.OperationsStatusResponse
-	(*MetricsResponse)(nil),               // 42: notifier.client.v1.MetricsResponse
-	(*ListClusterNodesRequest)(nil),       // 43: notifier.client.v1.ListClusterNodesRequest
-	(*ListClusterNodesResponse)(nil),      // 44: notifier.client.v1.ListClusterNodesResponse
-	(*ListNodeLoggedInUsersRequest)(nil),  // 45: notifier.client.v1.ListNodeLoggedInUsersRequest
-	(*ListNodeLoggedInUsersResponse)(nil), // 46: notifier.client.v1.ListNodeLoggedInUsersResponse
-	(*ClusterNode)(nil),                   // 47: notifier.client.v1.ClusterNode
-	(*LoggedInUser)(nil),                  // 48: notifier.client.v1.LoggedInUser
-	(*StringField)(nil),                   // 49: notifier.client.v1.StringField
-	(*BytesField)(nil),                    // 50: notifier.client.v1.BytesField
-	(*MessageCursor)(nil),                 // 51: notifier.client.v1.MessageCursor
-	(*UserRef)(nil),                       // 52: notifier.client.v1.UserRef
-	(*User)(nil),                          // 53: notifier.client.v1.User
-	(*Message)(nil),                       // 54: notifier.client.v1.Message
-	(*Packet)(nil),                        // 55: notifier.client.v1.Packet
-	(*Subscription)(nil),                  // 56: notifier.client.v1.Subscription
-	(*BlacklistEntry)(nil),                // 57: notifier.client.v1.BlacklistEntry
-	(*Event)(nil),                         // 58: notifier.client.v1.Event
-	(*OperationsStatus)(nil),              // 59: notifier.client.v1.OperationsStatus
-	(*MessageTrimStatus)(nil),             // 60: notifier.client.v1.MessageTrimStatus
-	(*EventLogTrimStatus)(nil),            // 61: notifier.client.v1.EventLogTrimStatus
-	(*ProjectionStatus)(nil),              // 62: notifier.client.v1.ProjectionStatus
-	(*PeerOriginStatus)(nil),              // 63: notifier.client.v1.PeerOriginStatus
-	(*PeerStatus)(nil),                    // 64: notifier.client.v1.PeerStatus
+	(ClientMessageSyncMode)(0),            // 2: notifier.client.v1.ClientMessageSyncMode
+	(*ClientEnvelope)(nil),                // 3: notifier.client.v1.ClientEnvelope
+	(*ServerEnvelope)(nil),                // 4: notifier.client.v1.ServerEnvelope
+	(*LoginRequest)(nil),                  // 5: notifier.client.v1.LoginRequest
+	(*LoginResponse)(nil),                 // 6: notifier.client.v1.LoginResponse
+	(*SendMessageRequest)(nil),            // 7: notifier.client.v1.SendMessageRequest
+	(*SendMessageResponse)(nil),           // 8: notifier.client.v1.SendMessageResponse
+	(*MessagePushed)(nil),                 // 9: notifier.client.v1.MessagePushed
+	(*PacketPushed)(nil),                  // 10: notifier.client.v1.PacketPushed
+	(*TransientAccepted)(nil),             // 11: notifier.client.v1.TransientAccepted
+	(*AckMessage)(nil),                    // 12: notifier.client.v1.AckMessage
+	(*Ping)(nil),                          // 13: notifier.client.v1.Ping
+	(*Pong)(nil),                          // 14: notifier.client.v1.Pong
+	(*Error)(nil),                         // 15: notifier.client.v1.Error
+	(*CreateUserRequest)(nil),             // 16: notifier.client.v1.CreateUserRequest
+	(*GetUserRequest)(nil),                // 17: notifier.client.v1.GetUserRequest
+	(*UpdateUserRequest)(nil),             // 18: notifier.client.v1.UpdateUserRequest
+	(*DeleteUserRequest)(nil),             // 19: notifier.client.v1.DeleteUserRequest
+	(*ListMessagesRequest)(nil),           // 20: notifier.client.v1.ListMessagesRequest
+	(*SubscribeChannelRequest)(nil),       // 21: notifier.client.v1.SubscribeChannelRequest
+	(*UnsubscribeChannelRequest)(nil),     // 22: notifier.client.v1.UnsubscribeChannelRequest
+	(*ListSubscriptionsRequest)(nil),      // 23: notifier.client.v1.ListSubscriptionsRequest
+	(*BlockUserRequest)(nil),              // 24: notifier.client.v1.BlockUserRequest
+	(*UnblockUserRequest)(nil),            // 25: notifier.client.v1.UnblockUserRequest
+	(*ListBlockedUsersRequest)(nil),       // 26: notifier.client.v1.ListBlockedUsersRequest
+	(*ListEventsRequest)(nil),             // 27: notifier.client.v1.ListEventsRequest
+	(*OperationsStatusRequest)(nil),       // 28: notifier.client.v1.OperationsStatusRequest
+	(*MetricsRequest)(nil),                // 29: notifier.client.v1.MetricsRequest
+	(*CreateUserResponse)(nil),            // 30: notifier.client.v1.CreateUserResponse
+	(*GetUserResponse)(nil),               // 31: notifier.client.v1.GetUserResponse
+	(*UpdateUserResponse)(nil),            // 32: notifier.client.v1.UpdateUserResponse
+	(*DeleteUserResponse)(nil),            // 33: notifier.client.v1.DeleteUserResponse
+	(*ListMessagesResponse)(nil),          // 34: notifier.client.v1.ListMessagesResponse
+	(*SubscribeChannelResponse)(nil),      // 35: notifier.client.v1.SubscribeChannelResponse
+	(*UnsubscribeChannelResponse)(nil),    // 36: notifier.client.v1.UnsubscribeChannelResponse
+	(*ListSubscriptionsResponse)(nil),     // 37: notifier.client.v1.ListSubscriptionsResponse
+	(*BlockUserResponse)(nil),             // 38: notifier.client.v1.BlockUserResponse
+	(*UnblockUserResponse)(nil),           // 39: notifier.client.v1.UnblockUserResponse
+	(*ListBlockedUsersResponse)(nil),      // 40: notifier.client.v1.ListBlockedUsersResponse
+	(*ListEventsResponse)(nil),            // 41: notifier.client.v1.ListEventsResponse
+	(*OperationsStatusResponse)(nil),      // 42: notifier.client.v1.OperationsStatusResponse
+	(*MetricsResponse)(nil),               // 43: notifier.client.v1.MetricsResponse
+	(*ListClusterNodesRequest)(nil),       // 44: notifier.client.v1.ListClusterNodesRequest
+	(*ListClusterNodesResponse)(nil),      // 45: notifier.client.v1.ListClusterNodesResponse
+	(*ListNodeLoggedInUsersRequest)(nil),  // 46: notifier.client.v1.ListNodeLoggedInUsersRequest
+	(*ListNodeLoggedInUsersResponse)(nil), // 47: notifier.client.v1.ListNodeLoggedInUsersResponse
+	(*ClusterNode)(nil),                   // 48: notifier.client.v1.ClusterNode
+	(*LoggedInUser)(nil),                  // 49: notifier.client.v1.LoggedInUser
+	(*StringField)(nil),                   // 50: notifier.client.v1.StringField
+	(*BytesField)(nil),                    // 51: notifier.client.v1.BytesField
+	(*MessageCursor)(nil),                 // 52: notifier.client.v1.MessageCursor
+	(*UserRef)(nil),                       // 53: notifier.client.v1.UserRef
+	(*User)(nil),                          // 54: notifier.client.v1.User
+	(*Message)(nil),                       // 55: notifier.client.v1.Message
+	(*Packet)(nil),                        // 56: notifier.client.v1.Packet
+	(*Subscription)(nil),                  // 57: notifier.client.v1.Subscription
+	(*BlacklistEntry)(nil),                // 58: notifier.client.v1.BlacklistEntry
+	(*Event)(nil),                         // 59: notifier.client.v1.Event
+	(*OperationsStatus)(nil),              // 60: notifier.client.v1.OperationsStatus
+	(*MessageTrimStatus)(nil),             // 61: notifier.client.v1.MessageTrimStatus
+	(*EventLogTrimStatus)(nil),            // 62: notifier.client.v1.EventLogTrimStatus
+	(*ProjectionStatus)(nil),              // 63: notifier.client.v1.ProjectionStatus
+	(*PeerOriginStatus)(nil),              // 64: notifier.client.v1.PeerOriginStatus
+	(*PeerStatus)(nil),                    // 65: notifier.client.v1.PeerStatus
 }
 var file_client_proto_depIdxs = []int32{
-	4,   // 0: notifier.client.v1.ClientEnvelope.login:type_name -> notifier.client.v1.LoginRequest
-	6,   // 1: notifier.client.v1.ClientEnvelope.send_message:type_name -> notifier.client.v1.SendMessageRequest
-	11,  // 2: notifier.client.v1.ClientEnvelope.ack_message:type_name -> notifier.client.v1.AckMessage
-	12,  // 3: notifier.client.v1.ClientEnvelope.ping:type_name -> notifier.client.v1.Ping
-	15,  // 4: notifier.client.v1.ClientEnvelope.create_user:type_name -> notifier.client.v1.CreateUserRequest
-	16,  // 5: notifier.client.v1.ClientEnvelope.get_user:type_name -> notifier.client.v1.GetUserRequest
-	17,  // 6: notifier.client.v1.ClientEnvelope.update_user:type_name -> notifier.client.v1.UpdateUserRequest
-	18,  // 7: notifier.client.v1.ClientEnvelope.delete_user:type_name -> notifier.client.v1.DeleteUserRequest
-	19,  // 8: notifier.client.v1.ClientEnvelope.list_messages:type_name -> notifier.client.v1.ListMessagesRequest
-	20,  // 9: notifier.client.v1.ClientEnvelope.subscribe_channel:type_name -> notifier.client.v1.SubscribeChannelRequest
-	21,  // 10: notifier.client.v1.ClientEnvelope.unsubscribe_channel:type_name -> notifier.client.v1.UnsubscribeChannelRequest
-	22,  // 11: notifier.client.v1.ClientEnvelope.list_subscriptions:type_name -> notifier.client.v1.ListSubscriptionsRequest
-	26,  // 12: notifier.client.v1.ClientEnvelope.list_events:type_name -> notifier.client.v1.ListEventsRequest
-	27,  // 13: notifier.client.v1.ClientEnvelope.operations_status:type_name -> notifier.client.v1.OperationsStatusRequest
-	28,  // 14: notifier.client.v1.ClientEnvelope.metrics:type_name -> notifier.client.v1.MetricsRequest
-	43,  // 15: notifier.client.v1.ClientEnvelope.list_cluster_nodes:type_name -> notifier.client.v1.ListClusterNodesRequest
-	45,  // 16: notifier.client.v1.ClientEnvelope.list_node_logged_in_users:type_name -> notifier.client.v1.ListNodeLoggedInUsersRequest
-	23,  // 17: notifier.client.v1.ClientEnvelope.block_user:type_name -> notifier.client.v1.BlockUserRequest
-	24,  // 18: notifier.client.v1.ClientEnvelope.unblock_user:type_name -> notifier.client.v1.UnblockUserRequest
-	25,  // 19: notifier.client.v1.ClientEnvelope.list_blocked_users:type_name -> notifier.client.v1.ListBlockedUsersRequest
-	5,   // 20: notifier.client.v1.ServerEnvelope.login_response:type_name -> notifier.client.v1.LoginResponse
-	8,   // 21: notifier.client.v1.ServerEnvelope.message_pushed:type_name -> notifier.client.v1.MessagePushed
-	7,   // 22: notifier.client.v1.ServerEnvelope.send_message_response:type_name -> notifier.client.v1.SendMessageResponse
-	14,  // 23: notifier.client.v1.ServerEnvelope.error:type_name -> notifier.client.v1.Error
-	13,  // 24: notifier.client.v1.ServerEnvelope.pong:type_name -> notifier.client.v1.Pong
-	9,   // 25: notifier.client.v1.ServerEnvelope.packet_pushed:type_name -> notifier.client.v1.PacketPushed
-	29,  // 26: notifier.client.v1.ServerEnvelope.create_user_response:type_name -> notifier.client.v1.CreateUserResponse
-	30,  // 27: notifier.client.v1.ServerEnvelope.get_user_response:type_name -> notifier.client.v1.GetUserResponse
-	31,  // 28: notifier.client.v1.ServerEnvelope.update_user_response:type_name -> notifier.client.v1.UpdateUserResponse
-	32,  // 29: notifier.client.v1.ServerEnvelope.delete_user_response:type_name -> notifier.client.v1.DeleteUserResponse
-	33,  // 30: notifier.client.v1.ServerEnvelope.list_messages_response:type_name -> notifier.client.v1.ListMessagesResponse
-	34,  // 31: notifier.client.v1.ServerEnvelope.subscribe_channel_response:type_name -> notifier.client.v1.SubscribeChannelResponse
-	35,  // 32: notifier.client.v1.ServerEnvelope.unsubscribe_channel_response:type_name -> notifier.client.v1.UnsubscribeChannelResponse
-	36,  // 33: notifier.client.v1.ServerEnvelope.list_subscriptions_response:type_name -> notifier.client.v1.ListSubscriptionsResponse
-	40,  // 34: notifier.client.v1.ServerEnvelope.list_events_response:type_name -> notifier.client.v1.ListEventsResponse
-	41,  // 35: notifier.client.v1.ServerEnvelope.operations_status_response:type_name -> notifier.client.v1.OperationsStatusResponse
-	42,  // 36: notifier.client.v1.ServerEnvelope.metrics_response:type_name -> notifier.client.v1.MetricsResponse
-	44,  // 37: notifier.client.v1.ServerEnvelope.list_cluster_nodes_response:type_name -> notifier.client.v1.ListClusterNodesResponse
-	46,  // 38: notifier.client.v1.ServerEnvelope.list_node_logged_in_users_response:type_name -> notifier.client.v1.ListNodeLoggedInUsersResponse
-	37,  // 39: notifier.client.v1.ServerEnvelope.block_user_response:type_name -> notifier.client.v1.BlockUserResponse
-	38,  // 40: notifier.client.v1.ServerEnvelope.unblock_user_response:type_name -> notifier.client.v1.UnblockUserResponse
-	39,  // 41: notifier.client.v1.ServerEnvelope.list_blocked_users_response:type_name -> notifier.client.v1.ListBlockedUsersResponse
-	52,  // 42: notifier.client.v1.LoginRequest.user:type_name -> notifier.client.v1.UserRef
-	51,  // 43: notifier.client.v1.LoginRequest.seen_messages:type_name -> notifier.client.v1.MessageCursor
-	53,  // 44: notifier.client.v1.LoginResponse.user:type_name -> notifier.client.v1.User
-	52,  // 45: notifier.client.v1.SendMessageRequest.target:type_name -> notifier.client.v1.UserRef
+	5,   // 0: notifier.client.v1.ClientEnvelope.login:type_name -> notifier.client.v1.LoginRequest
+	7,   // 1: notifier.client.v1.ClientEnvelope.send_message:type_name -> notifier.client.v1.SendMessageRequest
+	12,  // 2: notifier.client.v1.ClientEnvelope.ack_message:type_name -> notifier.client.v1.AckMessage
+	13,  // 3: notifier.client.v1.ClientEnvelope.ping:type_name -> notifier.client.v1.Ping
+	16,  // 4: notifier.client.v1.ClientEnvelope.create_user:type_name -> notifier.client.v1.CreateUserRequest
+	17,  // 5: notifier.client.v1.ClientEnvelope.get_user:type_name -> notifier.client.v1.GetUserRequest
+	18,  // 6: notifier.client.v1.ClientEnvelope.update_user:type_name -> notifier.client.v1.UpdateUserRequest
+	19,  // 7: notifier.client.v1.ClientEnvelope.delete_user:type_name -> notifier.client.v1.DeleteUserRequest
+	20,  // 8: notifier.client.v1.ClientEnvelope.list_messages:type_name -> notifier.client.v1.ListMessagesRequest
+	21,  // 9: notifier.client.v1.ClientEnvelope.subscribe_channel:type_name -> notifier.client.v1.SubscribeChannelRequest
+	22,  // 10: notifier.client.v1.ClientEnvelope.unsubscribe_channel:type_name -> notifier.client.v1.UnsubscribeChannelRequest
+	23,  // 11: notifier.client.v1.ClientEnvelope.list_subscriptions:type_name -> notifier.client.v1.ListSubscriptionsRequest
+	27,  // 12: notifier.client.v1.ClientEnvelope.list_events:type_name -> notifier.client.v1.ListEventsRequest
+	28,  // 13: notifier.client.v1.ClientEnvelope.operations_status:type_name -> notifier.client.v1.OperationsStatusRequest
+	29,  // 14: notifier.client.v1.ClientEnvelope.metrics:type_name -> notifier.client.v1.MetricsRequest
+	44,  // 15: notifier.client.v1.ClientEnvelope.list_cluster_nodes:type_name -> notifier.client.v1.ListClusterNodesRequest
+	46,  // 16: notifier.client.v1.ClientEnvelope.list_node_logged_in_users:type_name -> notifier.client.v1.ListNodeLoggedInUsersRequest
+	24,  // 17: notifier.client.v1.ClientEnvelope.block_user:type_name -> notifier.client.v1.BlockUserRequest
+	25,  // 18: notifier.client.v1.ClientEnvelope.unblock_user:type_name -> notifier.client.v1.UnblockUserRequest
+	26,  // 19: notifier.client.v1.ClientEnvelope.list_blocked_users:type_name -> notifier.client.v1.ListBlockedUsersRequest
+	6,   // 20: notifier.client.v1.ServerEnvelope.login_response:type_name -> notifier.client.v1.LoginResponse
+	9,   // 21: notifier.client.v1.ServerEnvelope.message_pushed:type_name -> notifier.client.v1.MessagePushed
+	8,   // 22: notifier.client.v1.ServerEnvelope.send_message_response:type_name -> notifier.client.v1.SendMessageResponse
+	15,  // 23: notifier.client.v1.ServerEnvelope.error:type_name -> notifier.client.v1.Error
+	14,  // 24: notifier.client.v1.ServerEnvelope.pong:type_name -> notifier.client.v1.Pong
+	10,  // 25: notifier.client.v1.ServerEnvelope.packet_pushed:type_name -> notifier.client.v1.PacketPushed
+	30,  // 26: notifier.client.v1.ServerEnvelope.create_user_response:type_name -> notifier.client.v1.CreateUserResponse
+	31,  // 27: notifier.client.v1.ServerEnvelope.get_user_response:type_name -> notifier.client.v1.GetUserResponse
+	32,  // 28: notifier.client.v1.ServerEnvelope.update_user_response:type_name -> notifier.client.v1.UpdateUserResponse
+	33,  // 29: notifier.client.v1.ServerEnvelope.delete_user_response:type_name -> notifier.client.v1.DeleteUserResponse
+	34,  // 30: notifier.client.v1.ServerEnvelope.list_messages_response:type_name -> notifier.client.v1.ListMessagesResponse
+	35,  // 31: notifier.client.v1.ServerEnvelope.subscribe_channel_response:type_name -> notifier.client.v1.SubscribeChannelResponse
+	36,  // 32: notifier.client.v1.ServerEnvelope.unsubscribe_channel_response:type_name -> notifier.client.v1.UnsubscribeChannelResponse
+	37,  // 33: notifier.client.v1.ServerEnvelope.list_subscriptions_response:type_name -> notifier.client.v1.ListSubscriptionsResponse
+	41,  // 34: notifier.client.v1.ServerEnvelope.list_events_response:type_name -> notifier.client.v1.ListEventsResponse
+	42,  // 35: notifier.client.v1.ServerEnvelope.operations_status_response:type_name -> notifier.client.v1.OperationsStatusResponse
+	43,  // 36: notifier.client.v1.ServerEnvelope.metrics_response:type_name -> notifier.client.v1.MetricsResponse
+	45,  // 37: notifier.client.v1.ServerEnvelope.list_cluster_nodes_response:type_name -> notifier.client.v1.ListClusterNodesResponse
+	47,  // 38: notifier.client.v1.ServerEnvelope.list_node_logged_in_users_response:type_name -> notifier.client.v1.ListNodeLoggedInUsersResponse
+	38,  // 39: notifier.client.v1.ServerEnvelope.block_user_response:type_name -> notifier.client.v1.BlockUserResponse
+	39,  // 40: notifier.client.v1.ServerEnvelope.unblock_user_response:type_name -> notifier.client.v1.UnblockUserResponse
+	40,  // 41: notifier.client.v1.ServerEnvelope.list_blocked_users_response:type_name -> notifier.client.v1.ListBlockedUsersResponse
+	53,  // 42: notifier.client.v1.LoginRequest.user:type_name -> notifier.client.v1.UserRef
+	52,  // 43: notifier.client.v1.LoginRequest.seen_messages:type_name -> notifier.client.v1.MessageCursor
+	54,  // 44: notifier.client.v1.LoginResponse.user:type_name -> notifier.client.v1.User
+	53,  // 45: notifier.client.v1.SendMessageRequest.target:type_name -> notifier.client.v1.UserRef
 	0,   // 46: notifier.client.v1.SendMessageRequest.delivery_kind:type_name -> notifier.client.v1.ClientDeliveryKind
 	1,   // 47: notifier.client.v1.SendMessageRequest.delivery_mode:type_name -> notifier.client.v1.ClientDeliveryMode
-	54,  // 48: notifier.client.v1.SendMessageResponse.message:type_name -> notifier.client.v1.Message
-	10,  // 49: notifier.client.v1.SendMessageResponse.transient_accepted:type_name -> notifier.client.v1.TransientAccepted
-	54,  // 50: notifier.client.v1.MessagePushed.message:type_name -> notifier.client.v1.Message
-	55,  // 51: notifier.client.v1.PacketPushed.packet:type_name -> notifier.client.v1.Packet
-	52,  // 52: notifier.client.v1.TransientAccepted.recipient:type_name -> notifier.client.v1.UserRef
-	1,   // 53: notifier.client.v1.TransientAccepted.delivery_mode:type_name -> notifier.client.v1.ClientDeliveryMode
-	51,  // 54: notifier.client.v1.AckMessage.cursor:type_name -> notifier.client.v1.MessageCursor
-	52,  // 55: notifier.client.v1.GetUserRequest.user:type_name -> notifier.client.v1.UserRef
-	52,  // 56: notifier.client.v1.UpdateUserRequest.user:type_name -> notifier.client.v1.UserRef
-	49,  // 57: notifier.client.v1.UpdateUserRequest.username:type_name -> notifier.client.v1.StringField
-	49,  // 58: notifier.client.v1.UpdateUserRequest.password:type_name -> notifier.client.v1.StringField
-	50,  // 59: notifier.client.v1.UpdateUserRequest.profile_json:type_name -> notifier.client.v1.BytesField
-	49,  // 60: notifier.client.v1.UpdateUserRequest.role:type_name -> notifier.client.v1.StringField
-	52,  // 61: notifier.client.v1.DeleteUserRequest.user:type_name -> notifier.client.v1.UserRef
-	52,  // 62: notifier.client.v1.ListMessagesRequest.user:type_name -> notifier.client.v1.UserRef
-	52,  // 63: notifier.client.v1.SubscribeChannelRequest.subscriber:type_name -> notifier.client.v1.UserRef
-	52,  // 64: notifier.client.v1.SubscribeChannelRequest.channel:type_name -> notifier.client.v1.UserRef
-	52,  // 65: notifier.client.v1.UnsubscribeChannelRequest.subscriber:type_name -> notifier.client.v1.UserRef
-	52,  // 66: notifier.client.v1.UnsubscribeChannelRequest.channel:type_name -> notifier.client.v1.UserRef
-	52,  // 67: notifier.client.v1.ListSubscriptionsRequest.subscriber:type_name -> notifier.client.v1.UserRef
-	52,  // 68: notifier.client.v1.BlockUserRequest.owner:type_name -> notifier.client.v1.UserRef
-	52,  // 69: notifier.client.v1.BlockUserRequest.blocked:type_name -> notifier.client.v1.UserRef
-	52,  // 70: notifier.client.v1.UnblockUserRequest.owner:type_name -> notifier.client.v1.UserRef
-	52,  // 71: notifier.client.v1.UnblockUserRequest.blocked:type_name -> notifier.client.v1.UserRef
-	52,  // 72: notifier.client.v1.ListBlockedUsersRequest.owner:type_name -> notifier.client.v1.UserRef
-	53,  // 73: notifier.client.v1.CreateUserResponse.user:type_name -> notifier.client.v1.User
-	53,  // 74: notifier.client.v1.GetUserResponse.user:type_name -> notifier.client.v1.User
-	53,  // 75: notifier.client.v1.UpdateUserResponse.user:type_name -> notifier.client.v1.User
-	52,  // 76: notifier.client.v1.DeleteUserResponse.user:type_name -> notifier.client.v1.UserRef
-	54,  // 77: notifier.client.v1.ListMessagesResponse.items:type_name -> notifier.client.v1.Message
-	56,  // 78: notifier.client.v1.SubscribeChannelResponse.subscription:type_name -> notifier.client.v1.Subscription
-	56,  // 79: notifier.client.v1.UnsubscribeChannelResponse.subscription:type_name -> notifier.client.v1.Subscription
-	56,  // 80: notifier.client.v1.ListSubscriptionsResponse.items:type_name -> notifier.client.v1.Subscription
-	57,  // 81: notifier.client.v1.BlockUserResponse.entry:type_name -> notifier.client.v1.BlacklistEntry
-	57,  // 82: notifier.client.v1.UnblockUserResponse.entry:type_name -> notifier.client.v1.BlacklistEntry
-	57,  // 83: notifier.client.v1.ListBlockedUsersResponse.items:type_name -> notifier.client.v1.BlacklistEntry
-	58,  // 84: notifier.client.v1.ListEventsResponse.items:type_name -> notifier.client.v1.Event
-	59,  // 85: notifier.client.v1.OperationsStatusResponse.status:type_name -> notifier.client.v1.OperationsStatus
-	47,  // 86: notifier.client.v1.ListClusterNodesResponse.items:type_name -> notifier.client.v1.ClusterNode
-	48,  // 87: notifier.client.v1.ListNodeLoggedInUsersResponse.items:type_name -> notifier.client.v1.LoggedInUser
-	52,  // 88: notifier.client.v1.Message.recipient:type_name -> notifier.client.v1.UserRef
-	52,  // 89: notifier.client.v1.Message.sender:type_name -> notifier.client.v1.UserRef
-	52,  // 90: notifier.client.v1.Packet.recipient:type_name -> notifier.client.v1.UserRef
-	52,  // 91: notifier.client.v1.Packet.sender:type_name -> notifier.client.v1.UserRef
-	1,   // 92: notifier.client.v1.Packet.delivery_mode:type_name -> notifier.client.v1.ClientDeliveryMode
-	52,  // 93: notifier.client.v1.Subscription.subscriber:type_name -> notifier.client.v1.UserRef
-	52,  // 94: notifier.client.v1.Subscription.channel:type_name -> notifier.client.v1.UserRef
-	52,  // 95: notifier.client.v1.BlacklistEntry.owner:type_name -> notifier.client.v1.UserRef
-	52,  // 96: notifier.client.v1.BlacklistEntry.blocked:type_name -> notifier.client.v1.UserRef
-	60,  // 97: notifier.client.v1.OperationsStatus.message_trim:type_name -> notifier.client.v1.MessageTrimStatus
-	62,  // 98: notifier.client.v1.OperationsStatus.projection:type_name -> notifier.client.v1.ProjectionStatus
-	64,  // 99: notifier.client.v1.OperationsStatus.peers:type_name -> notifier.client.v1.PeerStatus
-	61,  // 100: notifier.client.v1.OperationsStatus.event_log_trim:type_name -> notifier.client.v1.EventLogTrimStatus
-	63,  // 101: notifier.client.v1.PeerStatus.origins:type_name -> notifier.client.v1.PeerOriginStatus
-	102, // [102:102] is the sub-list for method output_type
-	102, // [102:102] is the sub-list for method input_type
-	102, // [102:102] is the sub-list for extension type_name
-	102, // [102:102] is the sub-list for extension extendee
-	0,   // [0:102] is the sub-list for field type_name
+	2,   // 48: notifier.client.v1.SendMessageRequest.sync_mode:type_name -> notifier.client.v1.ClientMessageSyncMode
+	55,  // 49: notifier.client.v1.SendMessageResponse.message:type_name -> notifier.client.v1.Message
+	11,  // 50: notifier.client.v1.SendMessageResponse.transient_accepted:type_name -> notifier.client.v1.TransientAccepted
+	55,  // 51: notifier.client.v1.MessagePushed.message:type_name -> notifier.client.v1.Message
+	56,  // 52: notifier.client.v1.PacketPushed.packet:type_name -> notifier.client.v1.Packet
+	53,  // 53: notifier.client.v1.TransientAccepted.recipient:type_name -> notifier.client.v1.UserRef
+	1,   // 54: notifier.client.v1.TransientAccepted.delivery_mode:type_name -> notifier.client.v1.ClientDeliveryMode
+	52,  // 55: notifier.client.v1.AckMessage.cursor:type_name -> notifier.client.v1.MessageCursor
+	53,  // 56: notifier.client.v1.GetUserRequest.user:type_name -> notifier.client.v1.UserRef
+	53,  // 57: notifier.client.v1.UpdateUserRequest.user:type_name -> notifier.client.v1.UserRef
+	50,  // 58: notifier.client.v1.UpdateUserRequest.username:type_name -> notifier.client.v1.StringField
+	50,  // 59: notifier.client.v1.UpdateUserRequest.password:type_name -> notifier.client.v1.StringField
+	51,  // 60: notifier.client.v1.UpdateUserRequest.profile_json:type_name -> notifier.client.v1.BytesField
+	50,  // 61: notifier.client.v1.UpdateUserRequest.role:type_name -> notifier.client.v1.StringField
+	53,  // 62: notifier.client.v1.DeleteUserRequest.user:type_name -> notifier.client.v1.UserRef
+	53,  // 63: notifier.client.v1.ListMessagesRequest.user:type_name -> notifier.client.v1.UserRef
+	53,  // 64: notifier.client.v1.SubscribeChannelRequest.subscriber:type_name -> notifier.client.v1.UserRef
+	53,  // 65: notifier.client.v1.SubscribeChannelRequest.channel:type_name -> notifier.client.v1.UserRef
+	53,  // 66: notifier.client.v1.UnsubscribeChannelRequest.subscriber:type_name -> notifier.client.v1.UserRef
+	53,  // 67: notifier.client.v1.UnsubscribeChannelRequest.channel:type_name -> notifier.client.v1.UserRef
+	53,  // 68: notifier.client.v1.ListSubscriptionsRequest.subscriber:type_name -> notifier.client.v1.UserRef
+	53,  // 69: notifier.client.v1.BlockUserRequest.owner:type_name -> notifier.client.v1.UserRef
+	53,  // 70: notifier.client.v1.BlockUserRequest.blocked:type_name -> notifier.client.v1.UserRef
+	53,  // 71: notifier.client.v1.UnblockUserRequest.owner:type_name -> notifier.client.v1.UserRef
+	53,  // 72: notifier.client.v1.UnblockUserRequest.blocked:type_name -> notifier.client.v1.UserRef
+	53,  // 73: notifier.client.v1.ListBlockedUsersRequest.owner:type_name -> notifier.client.v1.UserRef
+	54,  // 74: notifier.client.v1.CreateUserResponse.user:type_name -> notifier.client.v1.User
+	54,  // 75: notifier.client.v1.GetUserResponse.user:type_name -> notifier.client.v1.User
+	54,  // 76: notifier.client.v1.UpdateUserResponse.user:type_name -> notifier.client.v1.User
+	53,  // 77: notifier.client.v1.DeleteUserResponse.user:type_name -> notifier.client.v1.UserRef
+	55,  // 78: notifier.client.v1.ListMessagesResponse.items:type_name -> notifier.client.v1.Message
+	57,  // 79: notifier.client.v1.SubscribeChannelResponse.subscription:type_name -> notifier.client.v1.Subscription
+	57,  // 80: notifier.client.v1.UnsubscribeChannelResponse.subscription:type_name -> notifier.client.v1.Subscription
+	57,  // 81: notifier.client.v1.ListSubscriptionsResponse.items:type_name -> notifier.client.v1.Subscription
+	58,  // 82: notifier.client.v1.BlockUserResponse.entry:type_name -> notifier.client.v1.BlacklistEntry
+	58,  // 83: notifier.client.v1.UnblockUserResponse.entry:type_name -> notifier.client.v1.BlacklistEntry
+	58,  // 84: notifier.client.v1.ListBlockedUsersResponse.items:type_name -> notifier.client.v1.BlacklistEntry
+	59,  // 85: notifier.client.v1.ListEventsResponse.items:type_name -> notifier.client.v1.Event
+	60,  // 86: notifier.client.v1.OperationsStatusResponse.status:type_name -> notifier.client.v1.OperationsStatus
+	48,  // 87: notifier.client.v1.ListClusterNodesResponse.items:type_name -> notifier.client.v1.ClusterNode
+	49,  // 88: notifier.client.v1.ListNodeLoggedInUsersResponse.items:type_name -> notifier.client.v1.LoggedInUser
+	53,  // 89: notifier.client.v1.Message.recipient:type_name -> notifier.client.v1.UserRef
+	53,  // 90: notifier.client.v1.Message.sender:type_name -> notifier.client.v1.UserRef
+	53,  // 91: notifier.client.v1.Packet.recipient:type_name -> notifier.client.v1.UserRef
+	53,  // 92: notifier.client.v1.Packet.sender:type_name -> notifier.client.v1.UserRef
+	1,   // 93: notifier.client.v1.Packet.delivery_mode:type_name -> notifier.client.v1.ClientDeliveryMode
+	53,  // 94: notifier.client.v1.Subscription.subscriber:type_name -> notifier.client.v1.UserRef
+	53,  // 95: notifier.client.v1.Subscription.channel:type_name -> notifier.client.v1.UserRef
+	53,  // 96: notifier.client.v1.BlacklistEntry.owner:type_name -> notifier.client.v1.UserRef
+	53,  // 97: notifier.client.v1.BlacklistEntry.blocked:type_name -> notifier.client.v1.UserRef
+	61,  // 98: notifier.client.v1.OperationsStatus.message_trim:type_name -> notifier.client.v1.MessageTrimStatus
+	63,  // 99: notifier.client.v1.OperationsStatus.projection:type_name -> notifier.client.v1.ProjectionStatus
+	65,  // 100: notifier.client.v1.OperationsStatus.peers:type_name -> notifier.client.v1.PeerStatus
+	62,  // 101: notifier.client.v1.OperationsStatus.event_log_trim:type_name -> notifier.client.v1.EventLogTrimStatus
+	64,  // 102: notifier.client.v1.PeerStatus.origins:type_name -> notifier.client.v1.PeerOriginStatus
+	103, // [103:103] is the sub-list for method output_type
+	103, // [103:103] is the sub-list for method input_type
+	103, // [103:103] is the sub-list for extension type_name
+	103, // [103:103] is the sub-list for extension extendee
+	0,   // [0:103] is the sub-list for field type_name
 }
 
 func init() { file_client_proto_init() }
@@ -5410,7 +5474,7 @@ func file_client_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_client_proto_rawDesc), len(file_client_proto_rawDesc)),
-			NumEnums:      2,
+			NumEnums:      3,
 			NumMessages:   63,
 			NumExtensions: 0,
 			NumServices:   0,

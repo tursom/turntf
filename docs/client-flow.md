@@ -16,7 +16,7 @@
 - `POST /nodes/{node_id}/users/{user_id}/subscriptions`：维护用户对 channel 的订阅。
 - `POST /nodes/{node_id}/users/{user_id}/blacklist`：维护用户拒收的普通用户列表。
 - `GET /nodes/{node_id}/users/{user_id}/messages?limit=N`：HTTP 查询消息，`body` 是 base64 字节。
-- `POST /nodes/{node_id}/users/{user_id}/messages`：HTTP 写消息，`body` 是 base64 字节。
+- `POST /nodes/{node_id}/users/{user_id}/messages`：HTTP 写消息，`body` 是 base64 字节；持久消息可选 `sync_mode = "no_sync" | "force_sync"`。
 - `POST /nodes/{node_id}/users/{user_id}/messages`：HTTP 发送消息；当 `delivery_kind = transient` 时走不落库瞬时投递。
 - `GET /ws/client`：客户端 WebSocket 长连接，连接后第一帧必须是 protobuf `LoginRequest`。
 - `zmq+tcp://host:port`：客户端 ZeroMQ 长连接，对应服务端 `services.zeromq.bind_url`；第一帧必须是 `ZeroMQMuxHello{role=CLIENT, protocol_version="zeromq-mux-v1"}`，第二帧必须是 protobuf `LoginRequest`。
@@ -282,10 +282,22 @@ HTTP 消息接口也使用 bytes body，但 JSON 中以 base64 表示。
 curl -sS -X POST http://127.0.0.1:8080/nodes/4096/users/1025/messages \
   -H "Authorization: Bearer ${ADMIN_TOKEN}" \
   -H 'Content-Type: application/json' \
-  -d '{"body":"/wBwYXlsb2Fk"}'
+ -d '{"body":"/wBwYXlsb2Fk"}'
 ```
 
 其中 `/wBwYXlsb2Fk` 是字节 `ff 00 70 61 79 6c 6f 61 64` 的 base64。
+
+持久消息也可以显式指定 Pebble 提交方式：
+
+```bash
+curl -sS -X POST http://127.0.0.1:8080/nodes/4096/users/1025/messages \
+  -H "Authorization: Bearer ${ADMIN_TOKEN}" \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "body":"/wBwYXlsb2Fk",
+    "sync_mode":"force_sync"
+  }'
+```
 
 发送目标用户瞬时包示例：
 
@@ -382,7 +394,7 @@ ServerEnvelope {
 
 - `unauthorized`：停止自动重试，提示用户重新输入密码或重新获取账号信息。
 - `invalid_request`：检查客户端构造的 protobuf 字段，通常是目标缺失、正文为空或参数非法。
-- `invalid_request` 也包括 `delivery_kind` 非法、给不可登录目标发送瞬时消息，或在持久化消息中错误携带 `delivery_mode`。
+- `invalid_request` 也包括 `delivery_kind` 非法、给不可登录目标发送瞬时消息，或在持久化消息中错误携带 `delivery_mode`、在瞬时消息中错误携带 `sync_mode`。
 - `forbidden`：提示没有权限，必要时刷新订阅关系或联系管理员。
 - `not_found`：目标用户、channel 或 broadcast 地址不存在。
 - `internal_error`：保留连接并稍后重试；如果连接断开，按断线重连流程处理。

@@ -17,6 +17,9 @@ func (s *Store) CreateMessage(ctx context.Context, params CreateMessageParams) (
 	if len(params.Body) == 0 {
 		return Message{}, Event{}, fmt.Errorf("%w: body cannot be empty", ErrInvalidInput)
 	}
+	if _, err := NormalizePebbleMessageSyncMode(string(params.PebbleMessageSyncMode)); err != nil {
+		return Message{}, Event{}, err
+	}
 	if err := ctx.Err(); err != nil {
 		return Message{}, Event{}, err
 	}

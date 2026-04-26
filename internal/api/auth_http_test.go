@@ -408,16 +408,30 @@ func TestNodeLoggedInUsersHTTPReturns503WhenRemoteNodeUnavailable(t *testing.T) 
 
 func newAuthenticatedTestAPI(t *testing.T) authenticatedTestAPI {
 	t.Helper()
-	return newAuthenticatedTestAPIWithSink(t, nil)
+	return newAuthenticatedTestAPIWithSinkAndStoreOptions(t, nil, store.Options{})
 }
 
 func newAuthenticatedTestAPIWithSink(t *testing.T, sink EventSink) authenticatedTestAPI {
 	t.Helper()
+	return newAuthenticatedTestAPIWithSinkAndStoreOptions(t, sink, store.Options{})
+}
+
+func newAuthenticatedTestAPIWithStoreOptions(t *testing.T, opts store.Options) authenticatedTestAPI {
+	t.Helper()
+	return newAuthenticatedTestAPIWithSinkAndStoreOptions(t, nil, opts)
+}
+
+func newAuthenticatedTestAPIWithSinkAndStoreOptions(t *testing.T, sink EventSink, opts store.Options) authenticatedTestAPI {
+	t.Helper()
 
 	dbPath := filepath.Join(t.TempDir(), "auth-api.db")
-	st, err := store.Open(dbPath, store.Options{
-		NodeID: testNodeID(1),
-	})
+	if opts.NodeID == 0 {
+		opts.NodeID = testNodeID(1)
+	}
+	if opts.Engine == store.EnginePebble && strings.TrimSpace(opts.PebblePath) == "" {
+		opts.PebblePath = filepath.Join(t.TempDir(), "auth-api.pebble")
+	}
+	st, err := store.Open(dbPath, opts)
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -787,6 +801,71 @@ func TestTransientHTTPAndWebSocketPacket(t *testing.T) {
 	}
 }
 
+func TestPersistentHTTPCreateMessageAcceptsSyncModeOnPebble(t *testing.T) {
+	t.Parallel()
+
+	testAPI := newAuthenticatedTestAPIWithStoreOptions(t, store.Options{
+		Engine:                store.EnginePebble,
+		PebbleMessageSyncMode: store.PebbleMessageSyncModeNoSync,
+	})
+	adminKey := store.UserKey{NodeID: testNodeID(1), UserID: store.BootstrapAdminUserID}
+	adminToken := loginToken(t, testAPI.handler, adminKey, "root-password")
+	aliceKey := createUserAs(t, testAPI.handler, adminToken, "alice", "alice-password", store.RoleUser)
+
+	for _, syncMode := range []string{"force_sync", "no_sync"} {
+		doJSONWithHeaders(t, testAPI.handler, http.MethodPost, userMessagesPath(aliceKey.NodeID, aliceKey.UserID), map[string]any{
+			"body":      []byte("message-" + syncMode),
+			"sync_mode": syncMode,
+		}, map[string]string{
+			"Authorization": "Bearer " + adminToken,
+		}, http.StatusCreated)
+	}
+
+	var listed struct {
+		Items []authMessageItem `json:"items"`
+		Count int               `json:"count"`
+	}
+	mustJSON(t, doJSONWithHeaders(t, testAPI.handler, http.MethodGet, userMessagesPath(aliceKey.NodeID, aliceKey.UserID)+"?limit=10", nil, map[string]string{
+		"Authorization": "Bearer " + loginToken(t, testAPI.handler, aliceKey, "alice-password"),
+	}, http.StatusOK), &listed)
+	if listed.Count != 2 || !responseMessagesContainBody(listed.Items, "message-force_sync") || !responseMessagesContainBody(listed.Items, "message-no_sync") {
+		t.Fatalf("unexpected persisted messages after sync_mode HTTP writes: %+v", listed)
+	}
+}
+
+func TestPersistentHTTPCreateMessageIgnoresSyncModeOnSQLite(t *testing.T) {
+	t.Parallel()
+
+	testAPI := newAuthenticatedTestAPI(t)
+	adminKey := store.UserKey{NodeID: testNodeID(1), UserID: store.BootstrapAdminUserID}
+	adminToken := loginToken(t, testAPI.handler, adminKey, "root-password")
+	aliceKey := createUserAs(t, testAPI.handler, adminToken, "alice", "alice-password", store.RoleUser)
+
+	doJSONWithHeaders(t, testAPI.handler, http.MethodPost, userMessagesPath(aliceKey.NodeID, aliceKey.UserID), map[string]any{
+		"body":      []byte("sqlite-sync-mode"),
+		"sync_mode": "force_sync",
+	}, map[string]string{
+		"Authorization": "Bearer " + adminToken,
+	}, http.StatusCreated)
+}
+
+func TestTransientHTTPRejectsSyncMode(t *testing.T) {
+	t.Parallel()
+
+	testAPI := newAuthenticatedTestAPI(t)
+	adminKey := store.UserKey{NodeID: testNodeID(1), UserID: store.BootstrapAdminUserID}
+	adminToken := loginToken(t, testAPI.handler, adminKey, "root-password")
+	aliceKey := createUserAs(t, testAPI.handler, adminToken, "alice", "alice-password", store.RoleUser)
+
+	doJSONWithHeaders(t, testAPI.handler, http.MethodPost, userMessagesPath(aliceKey.NodeID, aliceKey.UserID), map[string]any{
+		"body":          []byte("transient"),
+		"delivery_kind": string(deliveryKindTransient),
+		"sync_mode":     "force_sync",
+	}, map[string]string{
+		"Authorization": "Bearer " + adminToken,
+	}, http.StatusBadRequest)
+}
+
 func TestTransientRequiresLoginRecipient(t *testing.T) {
 	t.Parallel()
 
@@ -1098,6 +1177,86 @@ func TestClientWebSocketRPCRespectsUserAuthorizationAndSubscriptions(t *testing.
 	})
 	if rpcErr := readServerEnvelope(t, conn).GetError(); rpcErr == nil || rpcErr.RequestId != 29 || rpcErr.Code != "forbidden" {
 		t.Fatalf("unexpected send forbidden error: %+v", rpcErr)
+	}
+}
+
+func TestClientWebSocketPersistentSendMessageAcceptsSyncMode(t *testing.T) {
+	t.Parallel()
+
+	testAPI := newAuthenticatedTestAPIWithStoreOptions(t, store.Options{
+		Engine:                store.EnginePebble,
+		PebbleMessageSyncMode: store.PebbleMessageSyncModeForceSync,
+	})
+	server := newIPv4TestServer(t, testAPI.handler)
+	defer server.Close()
+
+	adminKey := store.UserKey{NodeID: testNodeID(1), UserID: store.BootstrapAdminUserID}
+	adminToken := loginToken(t, testAPI.handler, adminKey, "root-password")
+	aliceKey := createUserAs(t, testAPI.handler, adminToken, "alice", "alice-password", store.RoleUser)
+
+	conn := dialClientWebSocket(t, server.URL)
+	defer conn.Close()
+	loginClientWebSocket(t, conn, aliceKey, "alice-password")
+
+	writeClientEnvelope(t, conn, &internalproto.ClientEnvelope{
+		Body: &internalproto.ClientEnvelope_SendMessage{
+			SendMessage: &internalproto.SendMessageRequest{
+				RequestId: 301,
+				Target:    &internalproto.UserRef{NodeId: aliceKey.NodeID, UserId: aliceKey.UserID},
+				Body:      []byte("ws-no-sync"),
+				SyncMode:  internalproto.ClientMessageSyncMode_CLIENT_MESSAGE_SYNC_MODE_NO_SYNC,
+			},
+		},
+	})
+	firstResp := readServerEnvelope(t, conn).GetSendMessageResponse()
+	if firstResp == nil || firstResp.RequestId != 301 || string(firstResp.GetMessage().GetBody()) != "ws-no-sync" {
+		t.Fatalf("unexpected websocket send response with explicit no_sync: %+v", firstResp)
+	}
+
+	writeClientEnvelope(t, conn, &internalproto.ClientEnvelope{
+		Body: &internalproto.ClientEnvelope_SendMessage{
+			SendMessage: &internalproto.SendMessageRequest{
+				RequestId: 302,
+				Target:    &internalproto.UserRef{NodeId: aliceKey.NodeID, UserId: aliceKey.UserID},
+				Body:      []byte("ws-default-sync"),
+			},
+		},
+	})
+	secondResp := readServerEnvelope(t, conn).GetSendMessageResponse()
+	if secondResp == nil || secondResp.RequestId != 302 || string(secondResp.GetMessage().GetBody()) != "ws-default-sync" {
+		t.Fatalf("unexpected websocket send response with default sync mode: %+v", secondResp)
+	}
+}
+
+func TestClientWebSocketTransientSendMessageRejectsSyncMode(t *testing.T) {
+	t.Parallel()
+
+	testAPI := newAuthenticatedTestAPI(t)
+	server := newIPv4TestServer(t, testAPI.handler)
+	defer server.Close()
+
+	adminKey := store.UserKey{NodeID: testNodeID(1), UserID: store.BootstrapAdminUserID}
+	adminToken := loginToken(t, testAPI.handler, adminKey, "root-password")
+	aliceKey := createUserAs(t, testAPI.handler, adminToken, "alice", "alice-password", store.RoleUser)
+
+	conn := dialClientWebSocket(t, server.URL)
+	defer conn.Close()
+	loginClientWebSocket(t, conn, aliceKey, "alice-password")
+
+	writeClientEnvelope(t, conn, &internalproto.ClientEnvelope{
+		Body: &internalproto.ClientEnvelope_SendMessage{
+			SendMessage: &internalproto.SendMessageRequest{
+				RequestId:    303,
+				Target:       &internalproto.UserRef{NodeId: aliceKey.NodeID, UserId: aliceKey.UserID},
+				Body:         []byte("ephemeral"),
+				DeliveryKind: internalproto.ClientDeliveryKind_CLIENT_DELIVERY_KIND_TRANSIENT,
+				SyncMode:     internalproto.ClientMessageSyncMode_CLIENT_MESSAGE_SYNC_MODE_FORCE_SYNC,
+			},
+		},
+	})
+	rpcErr := readServerEnvelope(t, conn).GetError()
+	if rpcErr == nil || rpcErr.RequestId != 303 || rpcErr.Code != "invalid_request" {
+		t.Fatalf("unexpected transient sync_mode websocket error: %+v", rpcErr)
 	}
 }
 

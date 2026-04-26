@@ -291,6 +291,9 @@ listen_addr = ":8080"
 	if cfg.StoreOptions.EventLogMaxEventsPerOrigin != store.DefaultEventLogMaxEventsPerOrigin {
 		t.Fatalf("unexpected default event log retention: %d", cfg.StoreOptions.EventLogMaxEventsPerOrigin)
 	}
+	if cfg.StoreOptions.PebbleMessageSyncMode != store.PebbleMessageSyncModeNoSync {
+		t.Fatalf("unexpected default pebble message sync mode: %q", cfg.StoreOptions.PebbleMessageSyncMode)
+	}
 }
 
 func TestLoadServeRuntimeConfigReadsEventLogPruneConfig(t *testing.T) {
@@ -342,6 +345,7 @@ db_path = "./data/state.db"
 
 [store.pebble]
 path = "./data/projections.pebble"
+message_sync_mode = "force_sync"
 `)
 
 	cfg, err := loadServeRuntimeConfig(configPath)
@@ -360,6 +364,33 @@ path = "./data/projections.pebble"
 	if cfg.StoreOptions.PebblePath != filepath.Clean("./data/projections.pebble") {
 		t.Fatalf("unexpected store options pebble path: %q", cfg.StoreOptions.PebblePath)
 	}
+	if cfg.StoreOptions.PebbleMessageSyncMode != store.PebbleMessageSyncModeForceSync {
+		t.Fatalf("unexpected pebble message sync mode: %q", cfg.StoreOptions.PebbleMessageSyncMode)
+	}
+}
+
+func TestLoadServeRuntimeConfigReadsPebbleMessageSyncModeNoSync(t *testing.T) {
+	t.Parallel()
+
+	configPath := filepath.Join(t.TempDir(), "pebble-no-sync.toml")
+	writeTestConfig(t, configPath, `
+[services.http]
+listen_addr = ":8080"
+
+[store]
+engine = "pebble"
+
+[store.pebble]
+message_sync_mode = "no_sync"
+`)
+
+	cfg, err := loadServeRuntimeConfig(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if cfg.StoreOptions.PebbleMessageSyncMode != store.PebbleMessageSyncModeNoSync {
+		t.Fatalf("unexpected pebble message sync mode: %q", cfg.StoreOptions.PebbleMessageSyncMode)
+	}
 }
 
 func TestLoadServeRuntimeConfigRejectsUnknownStoreEngine(t *testing.T) {
@@ -376,6 +407,27 @@ engine = "badger"
 
 	_, err := loadServeRuntimeConfig(configPath)
 	if err == nil || !strings.Contains(err.Error(), "store.engine must be sqlite or pebble") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestLoadServeRuntimeConfigRejectsInvalidPebbleMessageSyncMode(t *testing.T) {
+	t.Parallel()
+
+	configPath := filepath.Join(t.TempDir(), "bad-pebble-sync.toml")
+	writeTestConfig(t, configPath, `
+[services.http]
+listen_addr = ":8080"
+
+[store]
+engine = "pebble"
+
+[store.pebble]
+message_sync_mode = "later"
+`)
+
+	_, err := loadServeRuntimeConfig(configPath)
+	if err == nil || !strings.Contains(err.Error(), "store.pebble.message_sync_mode") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

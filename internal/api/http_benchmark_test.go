@@ -18,13 +18,27 @@ import (
 
 const apiBenchmarkWarmupPasses = 1
 
+type apiBenchmarkEngineScenario struct {
+	name                  string
+	engine                string
+	pebbleMessageSyncMode store.PebbleMessageSyncMode
+}
+
+func apiBenchmarkEngineScenarios() []apiBenchmarkEngineScenario {
+	return []apiBenchmarkEngineScenario{
+		{name: store.EngineSQLite, engine: store.EngineSQLite},
+		{name: store.EnginePebble + "/" + string(store.PebbleMessageSyncModeNoSync), engine: store.EnginePebble, pebbleMessageSyncMode: store.PebbleMessageSyncModeNoSync},
+		{name: store.EnginePebble + "/" + string(store.PebbleMessageSyncModeForceSync), engine: store.EnginePebble, pebbleMessageSyncMode: store.PebbleMessageSyncModeForceSync},
+	}
+}
+
 func BenchmarkHTTPCreateMessageAuthenticated(b *testing.B) {
 	for _, mode := range benchroot.Modes(b) {
 		mode := mode
 		b.Run(mode.Name(), func(b *testing.B) {
-			for _, engine := range []string{store.EngineSQLite, store.EnginePebble} {
-				b.Run(engine, func(b *testing.B) {
-					benchmarkHTTPCreateMessageAuthenticated(b, mode, engine)
+			for _, scenario := range apiBenchmarkEngineScenarios() {
+				b.Run(scenario.name, func(b *testing.B) {
+					benchmarkHTTPCreateMessageAuthenticated(b, mode, scenario)
 				})
 			}
 		})
@@ -35,17 +49,17 @@ func BenchmarkHTTPListMessagesByUserAuthenticated(b *testing.B) {
 	for _, mode := range benchroot.Modes(b) {
 		mode := mode
 		b.Run(mode.Name(), func(b *testing.B) {
-			for _, engine := range []string{store.EngineSQLite, store.EnginePebble} {
-				b.Run(engine, func(b *testing.B) {
-					benchmarkHTTPListMessagesByUserAuthenticated(b, mode, engine)
+			for _, scenario := range apiBenchmarkEngineScenarios() {
+				b.Run(scenario.name, func(b *testing.B) {
+					benchmarkHTTPListMessagesByUserAuthenticated(b, mode, scenario)
 				})
 			}
 		})
 	}
 }
 
-func benchmarkHTTPCreateMessageAuthenticated(b *testing.B, mode benchroot.Mode, engine string) {
-	testAPI, closeAPI := openBenchmarkAuthenticatedTestAPI(b, mode, engine)
+func benchmarkHTTPCreateMessageAuthenticated(b *testing.B, mode benchroot.Mode, scenario apiBenchmarkEngineScenario) {
+	testAPI, closeAPI := openBenchmarkAuthenticatedTestAPI(b, mode, scenario)
 	b.Cleanup(closeAPI)
 
 	adminKey := store.UserKey{NodeID: testNodeID(1), UserID: store.BootstrapAdminUserID}
@@ -65,12 +79,12 @@ func benchmarkHTTPCreateMessageAuthenticated(b *testing.B, mode benchroot.Mode, 
 	}
 }
 
-func benchmarkHTTPListMessagesByUserAuthenticated(b *testing.B, mode benchroot.Mode, engine string) {
+func benchmarkHTTPListMessagesByUserAuthenticated(b *testing.B, mode benchroot.Mode, scenario apiBenchmarkEngineScenario) {
 	const history = 100
 	const limit = 50
 
 	ctx := context.Background()
-	testAPI, closeAPI := openBenchmarkAuthenticatedTestAPI(b, mode, engine)
+	testAPI, closeAPI := openBenchmarkAuthenticatedTestAPI(b, mode, scenario)
 	b.Cleanup(closeAPI)
 
 	adminKey := store.UserKey{NodeID: testNodeID(1), UserID: store.BootstrapAdminUserID}
@@ -102,12 +116,16 @@ func benchmarkHTTPListMessagesByUserAuthenticated(b *testing.B, mode benchroot.M
 	}
 }
 
-func openBenchmarkAuthenticatedTestAPI(tb testing.TB, mode benchroot.Mode, engine string) (authenticatedTestAPI, func()) {
+func openBenchmarkAuthenticatedTestAPI(tb testing.TB, mode benchroot.Mode, scenario apiBenchmarkEngineScenario) (authenticatedTestAPI, func()) {
 	tb.Helper()
 
 	dir, cleanupDir := mode.MkdirTemp(tb, "turntf-api-bench-*")
-	opts := store.Options{NodeID: testNodeID(1), Engine: engine}
-	if engine == store.EnginePebble {
+	opts := store.Options{
+		NodeID:                testNodeID(1),
+		Engine:                scenario.engine,
+		PebbleMessageSyncMode: scenario.pebbleMessageSyncMode,
+	}
+	if scenario.engine == store.EnginePebble {
 		opts.PebblePath = filepath.Join(dir, "api.pebble")
 	}
 	st, err := store.Open(filepath.Join(dir, "api.db"), opts)

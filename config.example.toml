@@ -65,6 +65,8 @@ db_path = "./data/turntf.db"
 # Pebble 仅在 engine = "pebble" 时用于事件日志和消息投影。
 [store.pebble]
 path = "./data/turntf.pebble"
+# 本地持久消息默认提交方式，可选 no_sync 或 force_sync。
+message_sync_mode = "no_sync"
 
 # 外部登录鉴权配置。
 [auth]

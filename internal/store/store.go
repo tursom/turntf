@@ -46,6 +46,14 @@ const (
 	EnginePebble = "pebble"
 )
 
+type PebbleMessageSyncMode string
+
+const (
+	PebbleMessageSyncModeDefault   PebbleMessageSyncMode = ""
+	PebbleMessageSyncModeNoSync    PebbleMessageSyncMode = "no_sync"
+	PebbleMessageSyncModeForceSync PebbleMessageSyncMode = "force_sync"
+)
+
 const (
 	RoleSuperAdmin                      = "super_admin"
 	RoleAdmin                           = "admin"
@@ -73,6 +81,7 @@ type Options struct {
 	NodeID                     int64
 	Engine                     string
 	PebblePath                 string
+	PebbleMessageSyncMode      PebbleMessageSyncMode
 	MessageWindowSize          int
 	EventLogMaxEventsPerOrigin int
 	Clock                      *clock.Clock
@@ -87,6 +96,7 @@ type Store struct {
 	initialNodeID              int64
 	messageWindowSize          int
 	eventLogMaxEventsPerOrigin int
+	pebbleMessageSyncMode      PebbleMessageSyncMode
 	bootstrapAdmin             BootstrapAdminConfig
 	eventLog                   EventLogRepository
 	userRepository             UserRepository
@@ -209,9 +219,10 @@ type UpdateUserParams struct {
 }
 
 type CreateMessageParams struct {
-	UserKey UserKey
-	Sender  UserKey
-	Body    []byte
+	UserKey               UserKey
+	Sender                UserKey
+	Body                  []byte
+	PebbleMessageSyncMode PebbleMessageSyncMode
 }
 
 type DeliveryMode string
@@ -241,6 +252,19 @@ func NormalizeDeliveryMode(raw string) (DeliveryMode, error) {
 		return DeliveryModeRouteRetry, nil
 	default:
 		return "", fmt.Errorf("%w: unsupported delivery mode %q", ErrInvalidInput, raw)
+	}
+}
+
+func NormalizePebbleMessageSyncMode(raw string) (PebbleMessageSyncMode, error) {
+	switch PebbleMessageSyncMode(strings.ToLower(strings.TrimSpace(raw))) {
+	case PebbleMessageSyncModeDefault:
+		return PebbleMessageSyncModeDefault, nil
+	case PebbleMessageSyncModeNoSync:
+		return PebbleMessageSyncModeNoSync, nil
+	case PebbleMessageSyncModeForceSync:
+		return PebbleMessageSyncModeForceSync, nil
+	default:
+		return "", fmt.Errorf("%w: unsupported pebble message sync mode %q", ErrInvalidInput, raw)
 	}
 }
 
@@ -309,6 +333,7 @@ func Open(dbPath string, opts Options) (*Store, error) {
 		initialNodeID:              opts.NodeID,
 		messageWindowSize:          normalizeMessageWindowSize(opts.MessageWindowSize),
 		eventLogMaxEventsPerOrigin: normalizeEventLogMaxEventsPerOrigin(opts.EventLogMaxEventsPerOrigin),
+		pebbleMessageSyncMode:      normalizePebbleMessageSyncModeOption(opts.PebbleMessageSyncMode),
 		clock:                      opts.Clock,
 		userRepository:             newCachedUserRepository(&sqliteUserRepository{db: db}),
 		subscriptions:              &sqliteSubscriptionRepository{db: db},
@@ -380,6 +405,28 @@ func normalizeEngine(engine string) string {
 		return EnginePebble
 	default:
 		return ""
+	}
+}
+
+func normalizePebbleMessageSyncModeOption(mode PebbleMessageSyncMode) PebbleMessageSyncMode {
+	switch mode {
+	case PebbleMessageSyncModeForceSync:
+		return PebbleMessageSyncModeForceSync
+	case PebbleMessageSyncModeDefault, PebbleMessageSyncModeNoSync:
+		return PebbleMessageSyncModeNoSync
+	default:
+		return PebbleMessageSyncModeNoSync
+	}
+}
+
+func resolvePebbleMessageSyncMode(mode PebbleMessageSyncMode, fallback PebbleMessageSyncMode) PebbleMessageSyncMode {
+	switch mode {
+	case PebbleMessageSyncModeForceSync:
+		return PebbleMessageSyncModeForceSync
+	case PebbleMessageSyncModeNoSync:
+		return PebbleMessageSyncModeNoSync
+	default:
+		return normalizePebbleMessageSyncModeOption(fallback)
 	}
 }
 

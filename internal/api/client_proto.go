@@ -86,6 +86,19 @@ func clientDeliveryModeString(mode internalproto.ClientDeliveryMode) string {
 	}
 }
 
+func clientMessageSyncModeFromProto(mode internalproto.ClientMessageSyncMode) (store.PebbleMessageSyncMode, error) {
+	switch mode {
+	case internalproto.ClientMessageSyncMode_CLIENT_MESSAGE_SYNC_MODE_UNSPECIFIED:
+		return store.PebbleMessageSyncModeDefault, nil
+	case internalproto.ClientMessageSyncMode_CLIENT_MESSAGE_SYNC_MODE_FORCE_SYNC:
+		return store.PebbleMessageSyncModeForceSync, nil
+	case internalproto.ClientMessageSyncMode_CLIENT_MESSAGE_SYNC_MODE_NO_SYNC:
+		return store.PebbleMessageSyncModeNoSync, nil
+	default:
+		return "", fmt.Errorf("%w: unsupported message sync mode %q", store.ErrInvalidInput, mode.String())
+	}
+}
+
 func messageFromClientPushEvent(event store.Event) (store.Message, bool, error) {
 	body, ok := event.Body.(*internalproto.MessageCreatedEvent)
 	if !ok {

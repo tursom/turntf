@@ -73,6 +73,7 @@ message SendMessageRequest {
   bytes body = 3;
   ClientDeliveryKind delivery_kind = 4;
   ClientDeliveryMode delivery_mode = 5;
+  ClientMessageSyncMode sync_mode = 6;
 }
 
 message SendMessageResponse {
@@ -331,6 +332,12 @@ enum ClientDeliveryMode {
   CLIENT_DELIVERY_MODE_UNSPECIFIED = 0;
   CLIENT_DELIVERY_MODE_BEST_EFFORT = 1;
   CLIENT_DELIVERY_MODE_ROUTE_RETRY = 2;
+}
+
+enum ClientMessageSyncMode {
+  CLIENT_MESSAGE_SYNC_MODE_UNSPECIFIED = 0;
+  CLIENT_MESSAGE_SYNC_MODE_FORCE_SYNC = 1;
+  CLIENT_MESSAGE_SYNC_MODE_NO_SYNC = 2;
 }
 
 message UserRef {

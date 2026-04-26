@@ -33,6 +33,9 @@ func (s *clientWSSession) handleSendMessage(ctx context.Context, req *internalpr
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
 	if deliveryKind == deliveryKindTransient {
+		if req.SyncMode != internalproto.ClientMessageSyncMode_CLIENT_MESSAGE_SYNC_MODE_UNSPECIFIED {
+			return s.writeStoreOrRequestError(req.RequestId, fmt.Errorf("%w: sync_mode is only allowed for persistent messages", store.ErrInvalidInput))
+		}
 		mode, err := store.NormalizeDeliveryMode(clientDeliveryModeString(req.DeliveryMode))
 		if err != nil {
 			return s.writeStoreOrRequestError(req.RequestId, err)
@@ -55,10 +58,15 @@ func (s *clientWSSession) handleSendMessage(ctx context.Context, req *internalpr
 	if req.DeliveryMode != internalproto.ClientDeliveryMode_CLIENT_DELIVERY_MODE_UNSPECIFIED {
 		return s.writeStoreOrRequestError(req.RequestId, fmt.Errorf("%w: delivery_mode is only allowed for transient messages", store.ErrInvalidInput))
 	}
+	syncMode, err := clientMessageSyncModeFromProto(req.SyncMode)
+	if err != nil {
+		return s.writeStoreOrRequestError(req.RequestId, err)
+	}
 	message, _, err := s.http.service.CreateMessage(ctx, store.CreateMessageParams{
-		UserKey: target,
-		Sender:  sender,
-		Body:    req.Body,
+		UserKey:               target,
+		Sender:                sender,
+		Body:                  req.Body,
+		PebbleMessageSyncMode: syncMode,
 	})
 	if err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)

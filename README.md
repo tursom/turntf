@@ -261,6 +261,7 @@ db_path = "./data/turntf.db"
 
 [store.pebble]
 path = "./data/turntf.pebble"
+message_sync_mode = "no_sync"
 
 [auth]
 token_secret = "replace-me"
@@ -315,6 +316,7 @@ zeromq = { curve_server_public_key = "" }
 - `store.engine`：事件日志和消息投影 repository 引擎，可选 `sqlite` 或 `pebble`，默认 `sqlite`
 - `store.sqlite.db_path`：本地 SQLite 数据库路径，默认 `./data/turntf.db`。即使 `store.engine = "pebble"`，用户、订阅、游标、pending projection 和运维统计等状态仍保存在 SQLite
 - `store.pebble.path`：Pebble 数据目录，默认 `./data/turntf.pebble`。仅在 `store.engine = "pebble"` 时用于事件日志和消息投影
+- `store.pebble.message_sync_mode`：Pebble 模式下本地持久消息的默认提交方式，可选 `no_sync` 或 `force_sync`，默认 `no_sync`
 - `store.message_window_size`：每节点每用户本地保留的消息窗口，默认 `500`。超过窗口的旧消息会在本地写入或复制应用时被裁剪
 - `store.event_log.enabled`：是否启用事件日志定期裁剪，默认 `true`
 - `store.event_log.max_events_per_origin`：每个 `origin_node_id` 至少保留的最近事件数，默认 `100000`
@@ -372,6 +374,7 @@ zeromq = { curve_server_public_key = "" }
 - `GET /nodes/{node_id}/users/{user_id}` 允许本人或管理员访问
 - `GET /nodes/{node_id}/users/{user_id}/messages` 对可登录用户允许本人或管理员访问；对 `role=channel` 或 `role=broadcast` 地址仅管理员可直接查询原始消息
 - `POST /nodes/{node_id}/users/{user_id}/messages` 需要登录；普通用户只能给自己或已订阅的 `role=channel` 地址写消息，管理员可给任意地址写消息，包括广播地址
+- 持久消息可额外携带可选的 `sync_mode`：`no_sync`、`force_sync`；省略时走服务端默认值。该字段仅在 `store.engine = "pebble"` 下影响本地持久消息提交方式，其他引擎会接受但忽略
 - 当目标是 `(node_id, 3)` 时，请求进入“节点入口瞬时包”模式：`relay_target` 必填，任意已登录用户都可以发送；该数据包不会持久化，只会尽力转发给目标节点上当前在线的指定用户
 - 订阅接口允许普通用户维护自己的 channel 订阅，管理员可维护任意用户订阅
 - 登录请求固定使用 `node_id + user_id + password`

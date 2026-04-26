@@ -458,6 +458,9 @@ func newAuthenticatedTestAPIWithSinkAndStoreOptions(t *testing.T, sink EventSink
 		Signer:   signer,
 		TokenTTL: time.Hour,
 	})
+	t.Cleanup(func() {
+		_ = httpAPI.Close()
+	})
 	return authenticatedTestAPI{
 		handler: httpAPI.Handler(),
 		http:    httpAPI,
@@ -499,6 +502,214 @@ func TestClientWebSocketLoginAndPushesBytesMessages(t *testing.T) {
 	pushed := readServerEnvelope(t, conn).GetMessagePushed()
 	if pushed == nil || !senderMatchesRef(pushed.Message.GetSender(), adminKey) || string(pushed.Message.GetBody()) != string(body) {
 		t.Fatalf("unexpected pushed message: %+v", pushed)
+	}
+}
+
+func TestClientWebSocketTransientOnlyLoginSkipsPersistentCatchupButStillReceivesPackets(t *testing.T) {
+	t.Parallel()
+
+	testAPI := newAuthenticatedTestAPI(t)
+	server := newIPv4TestServer(t, testAPI.handler)
+	defer server.Close()
+
+	adminKey := store.UserKey{NodeID: testNodeID(1), UserID: store.BootstrapAdminUserID}
+	adminToken := loginToken(t, testAPI.handler, adminKey, "root-password")
+	aliceKey := createUserAs(t, testAPI.handler, adminToken, "alice", "alice-password", store.RoleUser)
+	doJSONWithHeaders(t, testAPI.handler, http.MethodPost, userMessagesPath(aliceKey.NodeID, aliceKey.UserID), map[string]any{
+		"body": []byte("persistent-history"),
+	}, map[string]string{
+		"Authorization": "Bearer " + adminToken,
+	}, http.StatusCreated)
+
+	conn := dialClientWebSocket(t, server.URL)
+	defer conn.Close()
+	loginClientWebSocketWithOptions(t, conn, aliceKey, "alice-password", true)
+
+	if !testAPI.http.ReceiveTransientPacket(store.TransientPacket{
+		PacketID:     1,
+		SourceNodeID: adminKey.NodeID,
+		TargetNodeID: aliceKey.NodeID,
+		Recipient:    aliceKey,
+		Sender:       adminKey,
+		Body:         []byte("transient"),
+		DeliveryMode: store.DeliveryModeBestEffort,
+	}) {
+		t.Fatal("expected transient-only session to receive local packet")
+	}
+
+	packet := readServerEnvelope(t, conn).GetPacketPushed()
+	if packet == nil || packet.Packet == nil || string(packet.Packet.GetBody()) != "transient" || !senderMatchesRef(packet.Packet.GetSender(), adminKey) {
+		t.Fatalf("unexpected transient packet push: %+v", packet)
+	}
+}
+
+func TestClientWebSocketLoginStartsRealtimePushFromLoginWatermark(t *testing.T) {
+	t.Parallel()
+
+	testAPI := newAuthenticatedTestAPI(t)
+	server := newIPv4TestServer(t, testAPI.handler)
+	defer server.Close()
+
+	adminKey := store.UserKey{NodeID: testNodeID(1), UserID: store.BootstrapAdminUserID}
+	adminToken := loginToken(t, testAPI.handler, adminKey, "root-password")
+	aliceKey := createUserAs(t, testAPI.handler, adminToken, "alice", "alice-password", store.RoleUser)
+
+	conn := dialClientWebSocket(t, server.URL)
+	defer conn.Close()
+	loginClientWebSocket(t, conn, aliceKey, "alice-password")
+
+	doJSONWithHeaders(t, testAPI.handler, http.MethodPost, userMessagesPath(aliceKey.NodeID, aliceKey.UserID), map[string]any{
+		"body": []byte("after-login"),
+	}, map[string]string{
+		"Authorization": "Bearer " + adminToken,
+	}, http.StatusCreated)
+
+	pushed := readServerEnvelope(t, conn).GetMessagePushed()
+	if pushed == nil || pushed.Message == nil || string(pushed.Message.GetBody()) != "after-login" || !senderMatchesRef(pushed.Message.GetSender(), adminKey) {
+		t.Fatalf("unexpected pushed message after login watermark: %+v", pushed)
+	}
+}
+
+func TestRealtimeWebSocketAllowsPresenceAndTransientOnlyTraffic(t *testing.T) {
+	t.Parallel()
+
+	testAPI := newAuthenticatedTestAPI(t)
+	server := newIPv4TestServer(t, testAPI.handler)
+	defer server.Close()
+
+	adminKey := store.UserKey{NodeID: testNodeID(1), UserID: store.BootstrapAdminUserID}
+	adminToken := loginToken(t, testAPI.handler, adminKey, "root-password")
+	aliceKey := createUserAs(t, testAPI.handler, adminToken, "alice", "alice-password", store.RoleUser)
+
+	conn := dialClientRealtimeWebSocket(t, server.URL)
+	defer conn.Close()
+	loginClientWebSocket(t, conn, aliceKey, "alice-password")
+
+	writeClientEnvelope(t, conn, &internalproto.ClientEnvelope{
+		Body: &internalproto.ClientEnvelope_ListNodeLoggedInUsers{
+			ListNodeLoggedInUsers: &internalproto.ListNodeLoggedInUsersRequest{
+				RequestId: 201,
+				NodeId:    testNodeID(1),
+			},
+		},
+	})
+	usersResp := readServerEnvelope(t, conn).GetListNodeLoggedInUsersResponse()
+	if usersResp == nil || usersResp.RequestId != 201 || usersResp.Count != 1 || usersResp.Items[0].GetUserId() != aliceKey.UserID {
+		t.Fatalf("unexpected realtime logged-in users response: %+v", usersResp)
+	}
+
+	writeClientEnvelope(t, conn, &internalproto.ClientEnvelope{
+		Body: &internalproto.ClientEnvelope_SendMessage{
+			SendMessage: &internalproto.SendMessageRequest{
+				RequestId: 202,
+				Target:    &internalproto.UserRef{NodeId: aliceKey.NodeID, UserId: aliceKey.UserID},
+				Body:      []byte("persistent"),
+			},
+		},
+	})
+	rpcErr := readServerEnvelope(t, conn).GetError()
+	if rpcErr == nil || rpcErr.RequestId != 202 || rpcErr.Code != "invalid_request" {
+		t.Fatalf("unexpected realtime persistent rejection: %+v", rpcErr)
+	}
+
+	writeClientEnvelope(t, conn, &internalproto.ClientEnvelope{
+		Body: &internalproto.ClientEnvelope_SendMessage{
+			SendMessage: &internalproto.SendMessageRequest{
+				RequestId:    203,
+				Target:       &internalproto.UserRef{NodeId: aliceKey.NodeID, UserId: aliceKey.UserID},
+				Body:         []byte("ephemeral"),
+				DeliveryKind: internalproto.ClientDeliveryKind_CLIENT_DELIVERY_KIND_TRANSIENT,
+				DeliveryMode: internalproto.ClientDeliveryMode_CLIENT_DELIVERY_MODE_BEST_EFFORT,
+			},
+		},
+	})
+	var (
+		gotSendResp bool
+		gotPacket   bool
+	)
+	for range 2 {
+		envelope := readServerEnvelope(t, conn)
+		if sendResp := envelope.GetSendMessageResponse(); sendResp != nil {
+			if sendResp.RequestId != 203 || sendResp.GetTransientAccepted() == nil {
+				t.Fatalf("unexpected realtime transient send response: %+v", sendResp)
+			}
+			gotSendResp = true
+			continue
+		}
+		if packet := envelope.GetPacketPushed(); packet != nil {
+			if packet.Packet == nil || string(packet.Packet.GetBody()) != "ephemeral" || !senderMatchesRef(packet.Packet.GetSender(), aliceKey) {
+				t.Fatalf("unexpected realtime transient packet push: %+v", packet)
+			}
+			gotPacket = true
+			continue
+		}
+		t.Fatalf("unexpected realtime websocket envelope: %+v", envelope)
+	}
+	if !gotSendResp || !gotPacket {
+		t.Fatalf("expected realtime transient response and packet push, got response=%v packet=%v", gotSendResp, gotPacket)
+	}
+}
+
+func TestClientWebSocketSubscribedChannelReceivesRealtimePush(t *testing.T) {
+	t.Parallel()
+
+	testAPI := newAuthenticatedTestAPI(t)
+	server := newIPv4TestServer(t, testAPI.handler)
+	defer server.Close()
+
+	adminKey := store.UserKey{NodeID: testNodeID(1), UserID: store.BootstrapAdminUserID}
+	adminToken := loginToken(t, testAPI.handler, adminKey, "root-password")
+	aliceKey := createUserAs(t, testAPI.handler, adminToken, "alice", "alice-password", store.RoleUser)
+	channelKey := createUserAs(t, testAPI.handler, adminToken, "orders", "", store.RoleChannel)
+	aliceToken := loginToken(t, testAPI.handler, aliceKey, "alice-password")
+
+	doJSONWithHeaders(t, testAPI.handler, http.MethodPost, subscriptionsPath(aliceKey.NodeID, aliceKey.UserID), map[string]any{
+		"channel_node_id": channelKey.NodeID,
+		"channel_user_id": channelKey.UserID,
+	}, map[string]string{
+		"Authorization": "Bearer " + aliceToken,
+	}, http.StatusCreated)
+
+	conn := dialClientWebSocket(t, server.URL)
+	defer conn.Close()
+	loginClientWebSocket(t, conn, aliceKey, "alice-password")
+
+	doJSONWithHeaders(t, testAPI.handler, http.MethodPost, userMessagesPath(channelKey.NodeID, channelKey.UserID), map[string]any{
+		"body": []byte("channel-live"),
+	}, map[string]string{
+		"Authorization": "Bearer " + adminToken,
+	}, http.StatusCreated)
+
+	pushed := readServerEnvelope(t, conn).GetMessagePushed()
+	if pushed == nil || pushed.Message == nil || string(pushed.Message.GetBody()) != "channel-live" || pushed.Message.GetRecipient().GetUserId() != channelKey.UserID {
+		t.Fatalf("unexpected channel pushed message: %+v", pushed)
+	}
+}
+
+func TestClientWebSocketAdminReceivesDirectMessagePushFromSharedDispatcher(t *testing.T) {
+	t.Parallel()
+
+	testAPI := newAuthenticatedTestAPI(t)
+	server := newIPv4TestServer(t, testAPI.handler)
+	defer server.Close()
+
+	adminKey := store.UserKey{NodeID: testNodeID(1), UserID: store.BootstrapAdminUserID}
+	adminToken := loginToken(t, testAPI.handler, adminKey, "root-password")
+	aliceKey := createUserAs(t, testAPI.handler, adminToken, "alice", "alice-password", store.RoleUser)
+
+	conn := dialClientWebSocket(t, server.URL)
+	defer conn.Close()
+	loginClientWebSocket(t, conn, adminKey, "root-password")
+
+	doJSONWithHeaders(t, testAPI.handler, http.MethodPost, userMessagesPath(aliceKey.NodeID, aliceKey.UserID), map[string]any{
+		"body": []byte("admin-audit"),
+	}, map[string]string{
+		"Authorization": "Bearer " + adminToken,
+	}, http.StatusCreated)
+
+	pushed := readServerEnvelope(t, conn).GetMessagePushed()
+	if pushed == nil || pushed.Message == nil || string(pushed.Message.GetBody()) != "admin-audit" || pushed.Message.GetRecipient().GetUserId() != aliceKey.UserID {
+		t.Fatalf("unexpected admin pushed message: %+v", pushed)
 	}
 }
 
@@ -1320,17 +1531,41 @@ func TestClientWebSocketBlacklistRPC(t *testing.T) {
 
 func loginClientWebSocket(t *testing.T, conn *websocket.Conn, key store.UserKey, password string) {
 	t.Helper()
+	loginClientWebSocketWithOptions(t, conn, key, password, false)
+}
+
+func loginClientWebSocketWithOptions(t *testing.T, conn *websocket.Conn, key store.UserKey, password string, transientOnly bool) {
+	t.Helper()
 	writeClientEnvelope(t, conn, &internalproto.ClientEnvelope{
 		Body: &internalproto.ClientEnvelope_Login{
 			Login: &internalproto.LoginRequest{
-				User:     &internalproto.UserRef{NodeId: key.NodeID, UserId: key.UserID},
-				Password: password,
+				User:          &internalproto.UserRef{NodeId: key.NodeID, UserId: key.UserID},
+				Password:      password,
+				TransientOnly: transientOnly,
 			},
 		},
 	})
 	loginResp := readServerEnvelope(t, conn).GetLoginResponse()
 	if loginResp == nil || loginResp.User.GetUserId() != key.UserID {
 		t.Fatalf("unexpected login response: %+v", loginResp)
+	}
+}
+
+func expectNoServerEnvelopeWithin(t *testing.T, conn *websocket.Conn, timeout time.Duration) {
+	t.Helper()
+	if err := conn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
+		t.Fatalf("set read deadline: %v", err)
+	}
+	_, _, err := conn.ReadMessage()
+	if err == nil {
+		t.Fatal("expected no websocket server envelope")
+	}
+	var netErr net.Error
+	if !errors.As(err, &netErr) || !netErr.Timeout() {
+		t.Fatalf("expected websocket timeout, got %v", err)
+	}
+	if err := conn.SetReadDeadline(time.Time{}); err != nil {
+		t.Fatalf("clear read deadline: %v", err)
 	}
 }
 
@@ -1399,12 +1634,22 @@ func responseMessagesContainBody(messages []authMessageItem, body string) bool {
 
 func dialClientWebSocket(t *testing.T, serverURL string) *websocket.Conn {
 	t.Helper()
+	return dialClientWebSocketPath(t, serverURL, clientWSPath)
+}
+
+func dialClientRealtimeWebSocket(t *testing.T, serverURL string) *websocket.Conn {
+	t.Helper()
+	return dialClientWebSocketPath(t, serverURL, clientRealtimeWSPath)
+}
+
+func dialClientWebSocketPath(t *testing.T, serverURL, path string) *websocket.Conn {
+	t.Helper()
 	parsed, err := url.Parse(serverURL)
 	if err != nil {
 		t.Fatalf("parse server url: %v", err)
 	}
 	parsed.Scheme = "ws"
-	parsed.Path = "/ws/client"
+	parsed.Path = path
 	conn, _, err := websocket.DefaultDialer.Dial(parsed.String(), nil)
 	if err != nil {
 		t.Fatalf("dial client websocket: %v", err)

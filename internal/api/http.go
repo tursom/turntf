@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/tursom/turntf/internal/app"
@@ -19,14 +20,36 @@ import (
 	"github.com/tursom/turntf/internal/store"
 )
 
+const clientSessionShardCount = 256
+
+type clientSessionShard struct {
+	mu       sync.RWMutex
+	sessions map[store.UserKey]map[*clientWSSession]struct{}
+}
+
+type onlineUserState struct {
+	Username     string
+	SessionCount int
+}
+
 type HTTP struct {
-	service    *Service
-	mux        *http.ServeMux
-	nodeID     int64
-	signer     *auth.Signer
-	tokenTTL   time.Duration
-	sessionsMu sync.RWMutex
-	sessions   map[store.UserKey]map[*clientWSSession]struct{}
+	service          *Service
+	mux              *http.ServeMux
+	nodeID           int64
+	signer           *auth.Signer
+	tokenTTL         time.Duration
+	sessionShards    [clientSessionShardCount]clientSessionShard
+	persistentMu     sync.RWMutex
+	persistent       map[*clientWSSession]struct{}
+	persistentAdmin  map[*clientWSSession]struct{}
+	onlineUsersMu    sync.RWMutex
+	onlineUsers      map[store.UserKey]onlineUserState
+	onlineUserCount  atomic.Int64
+	targetRoleMu     sync.Mutex
+	targetRoleCache  map[store.UserKey]clientRoleCacheEntry
+	dispatcherMu     sync.Mutex
+	dispatcherCancel context.CancelFunc
+	closeOnce        sync.Once
 }
 
 type HTTPOptions struct {
@@ -105,12 +128,18 @@ func NewHTTP(service *Service, opts ...HTTPOptions) *HTTP {
 		tokenTTL = 24 * time.Hour
 	}
 	h := &HTTP{
-		service:  service,
-		mux:      http.NewServeMux(),
-		nodeID:   resolved.NodeID,
-		signer:   resolved.Signer,
-		tokenTTL: tokenTTL,
-		sessions: make(map[store.UserKey]map[*clientWSSession]struct{}),
+		service:         service,
+		mux:             http.NewServeMux(),
+		nodeID:          resolved.NodeID,
+		signer:          resolved.Signer,
+		tokenTTL:        tokenTTL,
+		persistent:      make(map[*clientWSSession]struct{}),
+		persistentAdmin: make(map[*clientWSSession]struct{}),
+		onlineUsers:     make(map[store.UserKey]onlineUserState),
+		targetRoleCache: make(map[store.UserKey]clientRoleCacheEntry),
+	}
+	for idx := range h.sessionShards {
+		h.sessionShards[idx].sessions = make(map[store.UserKey]map[*clientWSSession]struct{})
 	}
 	if service != nil {
 		service.SetTransientPacketReceiver(h)
@@ -124,9 +153,22 @@ func (h *HTTP) Handler() http.Handler {
 	return h.mux
 }
 
+func (h *HTTP) Close() error {
+	if h == nil {
+		return nil
+	}
+	h.closeOnce.Do(func() {
+		if h.dispatcherCancel != nil {
+			h.dispatcherCancel()
+		}
+	})
+	return nil
+}
+
 func (h *HTTP) routes() {
 	h.mux.HandleFunc("GET /healthz", h.handleHealth)
-	h.mux.HandleFunc("GET /ws/client", h.handleClientWebSocket)
+	h.mux.HandleFunc("GET "+clientWSPath, h.handleClientWebSocket)
+	h.mux.HandleFunc("GET "+clientRealtimeWSPath, h.handleRealtimeWebSocket)
 	h.mux.HandleFunc("POST /auth/login", h.handleLogin)
 	h.mux.HandleFunc("POST /users", h.handleCreateUser)
 	h.mux.HandleFunc("GET /nodes/{node_id}/users/{user_id}", h.handleGetUser)
@@ -233,6 +275,7 @@ func (h *HTTP) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		writeStoreError(w, err)
 		return
 	}
+	h.invalidateTargetRoleCache(user.Key())
 
 	writeJSON(w, http.StatusCreated, userResponseFromStore(user))
 }
@@ -251,6 +294,7 @@ func (h *HTTP) handleGetUser(w http.ResponseWriter, r *http.Request) {
 		writeStoreError(w, err)
 		return
 	}
+	h.invalidateTargetRoleCache(user.Key())
 
 	writeJSON(w, http.StatusOK, userResponseFromStore(user))
 }
@@ -317,6 +361,7 @@ func (h *HTTP) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 		writeStoreError(w, err)
 		return
 	}
+	h.invalidateTargetRoleCache(key)
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":  "deleted",
@@ -485,6 +530,7 @@ func (h *HTTP) handleSubscribeChannel(w http.ResponseWriter, r *http.Request) {
 		writeStoreError(w, err)
 		return
 	}
+	h.invalidateUserChannelSubscriptionCache(subscriber, channel)
 	writeJSON(w, http.StatusCreated, subscriptionResponseFromStore(subscription))
 }
 
@@ -512,6 +558,7 @@ func (h *HTTP) handleUnsubscribeChannel(w http.ResponseWriter, r *http.Request) 
 		writeStoreError(w, err)
 		return
 	}
+	h.invalidateUserChannelSubscriptionCache(subscriber, subscription.Channel)
 	writeJSON(w, http.StatusOK, subscriptionResponseFromStore(subscription))
 }
 
@@ -560,6 +607,7 @@ func (h *HTTP) handleBlockUser(w http.ResponseWriter, r *http.Request) {
 		writeStoreError(w, err)
 		return
 	}
+	h.invalidateUserBlacklistCache(owner, entry.Blocked)
 	writeJSON(w, http.StatusCreated, blacklistResponseFromStore(entry))
 }
 
@@ -587,6 +635,7 @@ func (h *HTTP) handleUnblockUser(w http.ResponseWriter, r *http.Request) {
 		writeStoreError(w, err)
 		return
 	}
+	h.invalidateUserBlacklistCache(owner, entry.Blocked)
 	writeJSON(w, http.StatusOK, blacklistResponseFromStore(entry))
 }
 
@@ -808,33 +857,95 @@ func transientPacketAcceptedResponse(packet store.TransientPacket) transientPack
 	}
 }
 
+func clientSessionShardIndex(key store.UserKey) int {
+	hash := uint64(key.NodeID)*11400714819323198485 ^ (uint64(key.UserID) + 0x9e3779b97f4a7c15)
+	return int(hash % clientSessionShardCount)
+}
+
+func (h *HTTP) sessionShard(key store.UserKey) *clientSessionShard {
+	if h == nil {
+		return nil
+	}
+	return &h.sessionShards[clientSessionShardIndex(key)]
+}
+
 func (h *HTTP) registerClientSession(key store.UserKey, sess *clientWSSession) {
 	if h == nil || sess == nil {
 		return
 	}
-	h.sessionsMu.Lock()
-	defer h.sessionsMu.Unlock()
-	bucket := h.sessions[key]
+	shard := h.sessionShard(key)
+	if shard == nil {
+		return
+	}
+	shard.mu.Lock()
+	bucket := shard.sessions[key]
 	if bucket == nil {
 		bucket = make(map[*clientWSSession]struct{})
-		h.sessions[key] = bucket
+		shard.sessions[key] = bucket
+	}
+	if _, exists := bucket[sess]; exists {
+		shard.mu.Unlock()
+		return
 	}
 	bucket[sess] = struct{}{}
+	shard.mu.Unlock()
+
+	h.onlineUsersMu.Lock()
+	state := h.onlineUsers[key]
+	if state.SessionCount == 0 {
+		h.onlineUserCount.Add(1)
+	}
+	if sess.principal != nil && sess.principal.User.Username != "" {
+		state.Username = sess.principal.User.Username
+	}
+	state.SessionCount++
+	h.onlineUsers[key] = state
+	h.onlineUsersMu.Unlock()
+
+	if sess.requiresPersistentPush() {
+		h.registerPersistentSession(sess)
+	}
 }
 
 func (h *HTTP) unregisterClientSession(key store.UserKey, sess *clientWSSession) {
 	if h == nil || sess == nil {
 		return
 	}
-	h.sessionsMu.Lock()
-	defer h.sessionsMu.Unlock()
-	bucket := h.sessions[key]
+	shard := h.sessionShard(key)
+	if shard == nil {
+		return
+	}
+	shard.mu.Lock()
+	bucket := shard.sessions[key]
 	if bucket == nil {
+		shard.mu.Unlock()
+		return
+	}
+	if _, exists := bucket[sess]; !exists {
+		shard.mu.Unlock()
 		return
 	}
 	delete(bucket, sess)
 	if len(bucket) == 0 {
-		delete(h.sessions, key)
+		delete(shard.sessions, key)
+	}
+	shard.mu.Unlock()
+
+	h.onlineUsersMu.Lock()
+	state, ok := h.onlineUsers[key]
+	if ok {
+		if state.SessionCount <= 1 {
+			delete(h.onlineUsers, key)
+			h.onlineUserCount.Add(-1)
+		} else {
+			state.SessionCount--
+			h.onlineUsers[key] = state
+		}
+	}
+	h.onlineUsersMu.Unlock()
+
+	if sess.requiresPersistentPush() {
+		h.unregisterPersistentSession(sess)
 	}
 }
 
@@ -844,13 +955,17 @@ func (h *HTTP) ReceiveTransientPacket(packet store.TransientPacket) bool {
 		h.service.RecordBlacklistHit()
 		return false
 	}
-	h.sessionsMu.RLock()
-	bucket := h.sessions[packet.Recipient]
+	shard := h.sessionShard(packet.Recipient)
+	if shard == nil {
+		return false
+	}
+	shard.mu.RLock()
+	bucket := shard.sessions[packet.Recipient]
 	sessions := make([]*clientWSSession, 0, len(bucket))
 	for sess := range bucket {
 		sessions = append(sessions, sess)
 	}
-	h.sessionsMu.RUnlock()
+	shard.mu.RUnlock()
 	if len(sessions) == 0 {
 		return false
 	}
@@ -867,24 +982,16 @@ func (h *HTTP) ListLoggedInUsers(context.Context) ([]app.LoggedInUserSummary, er
 	if h == nil {
 		return nil, nil
 	}
-	h.sessionsMu.RLock()
-	users := make([]app.LoggedInUserSummary, 0, len(h.sessions))
-	for key, bucket := range h.sessions {
-		var username string
-		for sess := range bucket {
-			if sess == nil || sess.principal == nil {
-				continue
-			}
-			username = sess.principal.User.Username
-			break
-		}
+	h.onlineUsersMu.RLock()
+	users := make([]app.LoggedInUserSummary, 0, int(h.onlineUserCount.Load()))
+	for key, state := range h.onlineUsers {
 		users = append(users, app.LoggedInUserSummary{
 			NodeID:   key.NodeID,
 			UserID:   key.UserID,
-			Username: username,
+			Username: state.Username,
 		})
 	}
-	h.sessionsMu.RUnlock()
+	h.onlineUsersMu.RUnlock()
 
 	sort.Slice(users, func(i, j int) bool {
 		if users[i].NodeID != users[j].NodeID {

@@ -167,6 +167,7 @@ func openBenchmarkAuthenticatedTestAPI(tb testing.TB, mode benchroot.Mode, scena
 			handler: httpAPI.Handler(),
 			http:    httpAPI,
 		}, func() {
+			_ = httpAPI.Close()
 			_ = st.Close()
 			cleanupDir()
 		}

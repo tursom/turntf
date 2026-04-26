@@ -7,11 +7,24 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
+const (
+	clientWSPath         = "/ws/client"
+	clientRealtimeWSPath = "/ws/realtime"
+)
+
 var clientWSUpgrader = websocket.Upgrader{
 	CheckOrigin: func(*http.Request) bool { return true },
 }
 
 func (h *HTTP) handleClientWebSocket(w http.ResponseWriter, r *http.Request) {
+	h.handleUpgradedClientWebSocket(w, r)
+}
+
+func (h *HTTP) handleRealtimeWebSocket(w http.ResponseWriter, r *http.Request) {
+	h.handleUpgradedClientWebSocket(w, r)
+}
+
+func (h *HTTP) handleUpgradedClientWebSocket(w http.ResponseWriter, r *http.Request) {
 	conn, err := clientWSUpgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Warn().

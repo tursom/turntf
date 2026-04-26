@@ -90,6 +90,7 @@ func serveRuntime(ctx context.Context, configPath string, logOutput io.Writer) e
 		Signer:   signer,
 		TokenTTL: time.Duration(cfg.Auth.TokenTTLMinutes) * time.Minute,
 	})
+	defer httpAPI.Close()
 	if manager != nil {
 		manager.SetTransientHandler(httpAPI.ReceiveTransientPacket)
 		manager.SetLoggedInUsersProvider(httpAPI.ListLoggedInUsers)

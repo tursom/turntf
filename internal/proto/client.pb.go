@@ -945,6 +945,7 @@ type LoginRequest struct {
 	User          *UserRef               `protobuf:"bytes,1,opt,name=user,proto3" json:"user,omitempty"`
 	Password      string                 `protobuf:"bytes,3,opt,name=password,proto3" json:"password,omitempty"`
 	SeenMessages  []*MessageCursor       `protobuf:"bytes,4,rep,name=seen_messages,json=seenMessages,proto3" json:"seen_messages,omitempty"`
+	TransientOnly bool                   `protobuf:"varint,5,opt,name=transient_only,json=transientOnly,proto3" json:"transient_only,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -998,6 +999,13 @@ func (x *LoginRequest) GetSeenMessages() []*MessageCursor {
 		return x.SeenMessages
 	}
 	return nil
+}
+
+func (x *LoginRequest) GetTransientOnly() bool {
+	if x != nil {
+		return x.TransientOnly
+	}
+	return false
 }
 
 type LoginResponse struct {
@@ -4880,11 +4888,12 @@ const file_client_proto_rawDesc = "" +
 	"\x13block_user_response\x18\x14 \x01(\v2%.notifier.client.v1.BlockUserResponseH\x00R\x11blockUserResponse\x12]\n" +
 	"\x15unblock_user_response\x18\x15 \x01(\v2'.notifier.client.v1.UnblockUserResponseH\x00R\x13unblockUserResponse\x12m\n" +
 	"\x1blist_blocked_users_response\x18\x16 \x01(\v2,.notifier.client.v1.ListBlockedUsersResponseH\x00R\x18listBlockedUsersResponseB\x06\n" +
-	"\x04body\"\xa3\x01\n" +
+	"\x04body\"\xca\x01\n" +
 	"\fLoginRequest\x12/\n" +
 	"\x04user\x18\x01 \x01(\v2\x1b.notifier.client.v1.UserRefR\x04user\x12\x1a\n" +
 	"\bpassword\x18\x03 \x01(\tR\bpassword\x12F\n" +
-	"\rseen_messages\x18\x04 \x03(\v2!.notifier.client.v1.MessageCursorR\fseenMessages\"h\n" +
+	"\rseen_messages\x18\x04 \x03(\v2!.notifier.client.v1.MessageCursorR\fseenMessages\x12%\n" +
+	"\x0etransient_only\x18\x05 \x01(\bR\rtransientOnly\"h\n" +
 	"\rLoginResponse\x12,\n" +
 	"\x04user\x18\x01 \x01(\v2\x18.notifier.client.v1.UserR\x04user\x12)\n" +
 	"\x10protocol_version\x18\x02 \x01(\tR\x0fprotocolVersion\"\xde\x02\n" +

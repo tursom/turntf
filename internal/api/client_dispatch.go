@@ -39,6 +39,12 @@ func (s *clientWSSession) readLoop(ctx context.Context) error {
 		}
 		switch body := envelope.Body.(type) {
 		case *internalproto.ClientEnvelope_SendMessage:
+			if s.realtimeOnly && body.SendMessage.GetDeliveryKind() != internalproto.ClientDeliveryKind_CLIENT_DELIVERY_KIND_TRANSIENT {
+				if err := s.writeError("invalid_request", "realtime stream only supports transient send_message", requestIDForClientEnvelopeBody(body)); err != nil {
+					return err
+				}
+				continue
+			}
 			s.logRequest("send_message", requestIDForClientEnvelopeBody(body)).
 				Int64("target_node_id", body.SendMessage.GetTarget().GetNodeId()).
 				Int64("target_user_id", body.SendMessage.GetTarget().GetUserId()).
@@ -48,6 +54,12 @@ func (s *clientWSSession) readLoop(ctx context.Context) error {
 				return err
 			}
 		case *internalproto.ClientEnvelope_CreateUser:
+			if s.realtimeOnly {
+				if err := s.writeError("invalid_request", "realtime stream does not support create_user", requestIDForClientEnvelopeBody(body)); err != nil {
+					return err
+				}
+				continue
+			}
 			s.logRequest("create_user", requestIDForClientEnvelopeBody(body)).
 				Str("role", body.CreateUser.GetRole()).
 				Str("username", body.CreateUser.GetUsername()).
@@ -56,6 +68,12 @@ func (s *clientWSSession) readLoop(ctx context.Context) error {
 				return err
 			}
 		case *internalproto.ClientEnvelope_GetUser:
+			if s.realtimeOnly {
+				if err := s.writeError("invalid_request", "realtime stream does not support get_user", requestIDForClientEnvelopeBody(body)); err != nil {
+					return err
+				}
+				continue
+			}
 			s.logRequest("get_user", requestIDForClientEnvelopeBody(body)).
 				Int64("target_node_id", body.GetUser.GetUser().GetNodeId()).
 				Int64("target_user_id", body.GetUser.GetUser().GetUserId()).
@@ -64,6 +82,12 @@ func (s *clientWSSession) readLoop(ctx context.Context) error {
 				return err
 			}
 		case *internalproto.ClientEnvelope_UpdateUser:
+			if s.realtimeOnly {
+				if err := s.writeError("invalid_request", "realtime stream does not support update_user", requestIDForClientEnvelopeBody(body)); err != nil {
+					return err
+				}
+				continue
+			}
 			s.logRequest("update_user", requestIDForClientEnvelopeBody(body)).
 				Int64("target_node_id", body.UpdateUser.GetUser().GetNodeId()).
 				Int64("target_user_id", body.UpdateUser.GetUser().GetUserId()).
@@ -72,6 +96,12 @@ func (s *clientWSSession) readLoop(ctx context.Context) error {
 				return err
 			}
 		case *internalproto.ClientEnvelope_DeleteUser:
+			if s.realtimeOnly {
+				if err := s.writeError("invalid_request", "realtime stream does not support delete_user", requestIDForClientEnvelopeBody(body)); err != nil {
+					return err
+				}
+				continue
+			}
 			s.logRequest("delete_user", requestIDForClientEnvelopeBody(body)).
 				Int64("target_node_id", body.DeleteUser.GetUser().GetNodeId()).
 				Int64("target_user_id", body.DeleteUser.GetUser().GetUserId()).
@@ -80,6 +110,12 @@ func (s *clientWSSession) readLoop(ctx context.Context) error {
 				return err
 			}
 		case *internalproto.ClientEnvelope_ListMessages:
+			if s.realtimeOnly {
+				if err := s.writeError("invalid_request", "realtime stream does not support list_messages", requestIDForClientEnvelopeBody(body)); err != nil {
+					return err
+				}
+				continue
+			}
 			s.logRequest("list_messages", requestIDForClientEnvelopeBody(body)).
 				Int64("target_node_id", body.ListMessages.GetUser().GetNodeId()).
 				Int64("target_user_id", body.ListMessages.GetUser().GetUserId()).
@@ -89,6 +125,12 @@ func (s *clientWSSession) readLoop(ctx context.Context) error {
 				return err
 			}
 		case *internalproto.ClientEnvelope_SubscribeChannel:
+			if s.realtimeOnly {
+				if err := s.writeError("invalid_request", "realtime stream does not support subscribe_channel", requestIDForClientEnvelopeBody(body)); err != nil {
+					return err
+				}
+				continue
+			}
 			s.logRequest("subscribe_channel", requestIDForClientEnvelopeBody(body)).
 				Int64("subscriber_node_id", body.SubscribeChannel.GetSubscriber().GetNodeId()).
 				Int64("subscriber_user_id", body.SubscribeChannel.GetSubscriber().GetUserId()).
@@ -99,6 +141,12 @@ func (s *clientWSSession) readLoop(ctx context.Context) error {
 				return err
 			}
 		case *internalproto.ClientEnvelope_UnsubscribeChannel:
+			if s.realtimeOnly {
+				if err := s.writeError("invalid_request", "realtime stream does not support unsubscribe_channel", requestIDForClientEnvelopeBody(body)); err != nil {
+					return err
+				}
+				continue
+			}
 			s.logRequest("unsubscribe_channel", requestIDForClientEnvelopeBody(body)).
 				Int64("subscriber_node_id", body.UnsubscribeChannel.GetSubscriber().GetNodeId()).
 				Int64("subscriber_user_id", body.UnsubscribeChannel.GetSubscriber().GetUserId()).
@@ -109,6 +157,12 @@ func (s *clientWSSession) readLoop(ctx context.Context) error {
 				return err
 			}
 		case *internalproto.ClientEnvelope_ListSubscriptions:
+			if s.realtimeOnly {
+				if err := s.writeError("invalid_request", "realtime stream does not support list_subscriptions", requestIDForClientEnvelopeBody(body)); err != nil {
+					return err
+				}
+				continue
+			}
 			s.logRequest("list_subscriptions", requestIDForClientEnvelopeBody(body)).
 				Int64("subscriber_node_id", body.ListSubscriptions.GetSubscriber().GetNodeId()).
 				Int64("subscriber_user_id", body.ListSubscriptions.GetSubscriber().GetUserId()).
@@ -117,6 +171,12 @@ func (s *clientWSSession) readLoop(ctx context.Context) error {
 				return err
 			}
 		case *internalproto.ClientEnvelope_BlockUser:
+			if s.realtimeOnly {
+				if err := s.writeError("invalid_request", "realtime stream does not support block_user", requestIDForClientEnvelopeBody(body)); err != nil {
+					return err
+				}
+				continue
+			}
 			s.logRequest("block_user", requestIDForClientEnvelopeBody(body)).
 				Int64("owner_node_id", body.BlockUser.GetOwner().GetNodeId()).
 				Int64("owner_user_id", body.BlockUser.GetOwner().GetUserId()).
@@ -127,6 +187,12 @@ func (s *clientWSSession) readLoop(ctx context.Context) error {
 				return err
 			}
 		case *internalproto.ClientEnvelope_UnblockUser:
+			if s.realtimeOnly {
+				if err := s.writeError("invalid_request", "realtime stream does not support unblock_user", requestIDForClientEnvelopeBody(body)); err != nil {
+					return err
+				}
+				continue
+			}
 			s.logRequest("unblock_user", requestIDForClientEnvelopeBody(body)).
 				Int64("owner_node_id", body.UnblockUser.GetOwner().GetNodeId()).
 				Int64("owner_user_id", body.UnblockUser.GetOwner().GetUserId()).
@@ -137,6 +203,12 @@ func (s *clientWSSession) readLoop(ctx context.Context) error {
 				return err
 			}
 		case *internalproto.ClientEnvelope_ListBlockedUsers:
+			if s.realtimeOnly {
+				if err := s.writeError("invalid_request", "realtime stream does not support list_blocked_users", requestIDForClientEnvelopeBody(body)); err != nil {
+					return err
+				}
+				continue
+			}
 			s.logRequest("list_blocked_users", requestIDForClientEnvelopeBody(body)).
 				Int64("owner_node_id", body.ListBlockedUsers.GetOwner().GetNodeId()).
 				Int64("owner_user_id", body.ListBlockedUsers.GetOwner().GetUserId()).
@@ -145,6 +217,12 @@ func (s *clientWSSession) readLoop(ctx context.Context) error {
 				return err
 			}
 		case *internalproto.ClientEnvelope_ListEvents:
+			if s.realtimeOnly {
+				if err := s.writeError("invalid_request", "realtime stream does not support list_events", requestIDForClientEnvelopeBody(body)); err != nil {
+					return err
+				}
+				continue
+			}
 			s.logRequest("list_events", requestIDForClientEnvelopeBody(body)).
 				Int64("after", body.ListEvents.GetAfter()).
 				Int32("limit", body.ListEvents.GetLimit()).
@@ -153,6 +231,12 @@ func (s *clientWSSession) readLoop(ctx context.Context) error {
 				return err
 			}
 		case *internalproto.ClientEnvelope_OperationsStatus:
+			if s.realtimeOnly {
+				if err := s.writeError("invalid_request", "realtime stream does not support operations_status", requestIDForClientEnvelopeBody(body)); err != nil {
+					return err
+				}
+				continue
+			}
 			s.logRequest("operations_status", requestIDForClientEnvelopeBody(body)).
 				Msg("client transport request")
 			if err := s.handleOperationsStatus(ctx, body.OperationsStatus); err != nil {
@@ -172,6 +256,12 @@ func (s *clientWSSession) readLoop(ctx context.Context) error {
 				return err
 			}
 		case *internalproto.ClientEnvelope_Metrics:
+			if s.realtimeOnly {
+				if err := s.writeError("invalid_request", "realtime stream does not support metrics", requestIDForClientEnvelopeBody(body)); err != nil {
+					return err
+				}
+				continue
+			}
 			s.logRequest("metrics", requestIDForClientEnvelopeBody(body)).
 				Msg("client transport request")
 			if err := s.handleMetrics(ctx, body.Metrics); err != nil {

@@ -111,6 +111,7 @@ func (s *clientWSSession) handleCreateUser(ctx context.Context, req *internalpro
 	if err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
+	s.http.invalidateTargetRoleCache(user.Key())
 	return s.writeEnvelope(&internalproto.ServerEnvelope{
 		Body: &internalproto.ServerEnvelope_CreateUserResponse{
 			CreateUserResponse: &internalproto.CreateUserResponse{
@@ -186,6 +187,7 @@ func (s *clientWSSession) handleUpdateUser(ctx context.Context, req *internalpro
 	if err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
+	s.http.invalidateTargetRoleCache(user.Key())
 	return s.writeEnvelope(&internalproto.ServerEnvelope{
 		Body: &internalproto.ServerEnvelope_UpdateUserResponse{
 			UpdateUserResponse: &internalproto.UpdateUserResponse{
@@ -210,6 +212,7 @@ func (s *clientWSSession) handleDeleteUser(ctx context.Context, req *internalpro
 	if _, err := s.http.service.DeleteUser(ctx, key); err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
+	s.http.invalidateTargetRoleCache(key)
 	return s.writeEnvelope(&internalproto.ServerEnvelope{
 		Body: &internalproto.ServerEnvelope_DeleteUserResponse{
 			DeleteUserResponse: &internalproto.DeleteUserResponse{
@@ -277,6 +280,7 @@ func (s *clientWSSession) handleSubscribeChannel(ctx context.Context, req *inter
 	if err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
+	s.http.invalidateUserChannelSubscriptionCache(subscriber, channel)
 	return s.writeEnvelope(&internalproto.ServerEnvelope{
 		Body: &internalproto.ServerEnvelope_SubscribeChannelResponse{
 			SubscribeChannelResponse: &internalproto.SubscribeChannelResponse{
@@ -309,6 +313,7 @@ func (s *clientWSSession) handleUnsubscribeChannel(ctx context.Context, req *int
 	if err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
+	s.http.invalidateUserChannelSubscriptionCache(subscriber, channel)
 	return s.writeEnvelope(&internalproto.ServerEnvelope{
 		Body: &internalproto.ServerEnvelope_UnsubscribeChannelResponse{
 			UnsubscribeChannelResponse: &internalproto.UnsubscribeChannelResponse{
@@ -371,6 +376,7 @@ func (s *clientWSSession) handleBlockUser(ctx context.Context, req *internalprot
 	if err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
+	s.http.invalidateUserBlacklistCache(owner, blocked)
 	return s.writeEnvelope(&internalproto.ServerEnvelope{
 		Body: &internalproto.ServerEnvelope_BlockUserResponse{
 			BlockUserResponse: &internalproto.BlockUserResponse{
@@ -403,6 +409,7 @@ func (s *clientWSSession) handleUnblockUser(ctx context.Context, req *internalpr
 	if err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
+	s.http.invalidateUserBlacklistCache(owner, blocked)
 	return s.writeEnvelope(&internalproto.ServerEnvelope{
 		Body: &internalproto.ServerEnvelope_UnblockUserResponse{
 			UnblockUserResponse: &internalproto.UnblockUserResponse{

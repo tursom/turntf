@@ -20,14 +20,22 @@ type clientMessageCursor struct {
 }
 
 type clientWSSession struct {
-	http       *HTTP
-	conn       clientTransportConn
-	protocol   string
-	remoteAddr string
-	principal  *requestPrincipal
-	seen       map[clientMessageCursor]struct{}
-	seenMu     sync.Mutex
-	writeMu    sync.Mutex
+	http              *HTTP
+	conn              clientTransportConn
+	protocol          string
+	remoteAddr        string
+	principal         *requestPrincipal
+	realtimeOnly      bool
+	transientOnly     bool
+	afterSequence     int64
+	seen              map[clientMessageCursor]struct{}
+	seenMu            sync.Mutex
+	writeMu           sync.Mutex
+	persistentMu      sync.Mutex
+	persistentReady   bool
+	pendingPersistent []queuedPersistentMessage
+	blacklistCache    map[store.UserKey]clientBoolCacheEntry
+	subscriptionCache map[store.UserKey]clientBoolCacheEntry
 }
 
 func (h *HTTP) AcceptZeroMQConn(conn clientTransportConn) {
@@ -42,11 +50,14 @@ func (h *HTTP) serveClientConn(conn clientTransportConn, baseCtx context.Context
 		return
 	}
 	sess := &clientWSSession{
-		http:       h,
-		conn:       conn,
-		protocol:   conn.Transport(),
-		remoteAddr: conn.RemoteAddr(),
-		seen:       make(map[clientMessageCursor]struct{}),
+		http:              h,
+		conn:              conn,
+		protocol:          conn.Transport(),
+		remoteAddr:        conn.RemoteAddr(),
+		realtimeOnly:      path == clientRealtimeWSPath,
+		seen:              make(map[clientMessageCursor]struct{}),
+		blacklistCache:    make(map[store.UserKey]clientBoolCacheEntry),
+		subscriptionCache: make(map[store.UserKey]clientBoolCacheEntry),
 	}
 	defer conn.Close()
 	log.Info().
@@ -75,11 +86,7 @@ func (h *HTTP) serveClientConn(conn clientTransportConn, baseCtx context.Context
 	ctx, cancel := context.WithCancel(baseCtx)
 	defer cancel()
 
-	errCh := make(chan error, 2)
-	go func() { errCh <- sess.readLoop(ctx) }()
-	go func() { errCh <- sess.pushLoop(ctx) }()
-
-	err := <-errCh
+	err := sess.readLoop(ctx)
 	if err != nil && !errors.Is(err, context.Canceled) {
 		sess.logWarn("client_closed_with_error", err).
 			Msg("client transport closed with error")
@@ -119,9 +126,19 @@ func (s *clientWSSession) login(ctx context.Context) error {
 		}
 		s.markSeen(cursor.NodeId, cursor.Seq)
 	}
+	s.transientOnly = login.TransientOnly || s.realtimeOnly
+	if s.requiresPersistentPush() {
+		afterSequence, err := s.http.service.LastEventSequence(ctx)
+		if err != nil {
+			return fmt.Errorf("load login event watermark: %w", err)
+		}
+		s.afterSequence = afterSequence
+	}
 	s.principal = &requestPrincipal{User: user}
 	s.http.registerClientSession(s.principal.User.Key(), s)
 	s.logInfo("client_authenticated").
+		Bool("realtime_stream", s.realtimeOnly).
+		Bool("transient_only", s.transientOnly).
 		Msg("client transport authenticated")
 	if err := s.writeEnvelope(&internalproto.ServerEnvelope{
 		Body: &internalproto.ServerEnvelope_LoginResponse{
@@ -134,11 +151,21 @@ func (s *clientWSSession) login(ctx context.Context) error {
 		s.http.unregisterClientSession(s.principal.User.Key(), s)
 		return err
 	}
-	if err := s.pushInitialMessages(ctx); err != nil {
-		s.http.unregisterClientSession(s.principal.User.Key(), s)
-		return err
+	if s.requiresPersistentPush() {
+		if err := s.pushInitialMessages(ctx); err != nil {
+			s.http.unregisterClientSession(s.principal.User.Key(), s)
+			return err
+		}
+		if err := s.enablePersistentDispatch(); err != nil {
+			s.http.unregisterClientSession(s.principal.User.Key(), s)
+			return err
+		}
 	}
 	return nil
+}
+
+func (s *clientWSSession) requiresPersistentPush() bool {
+	return s != nil && !s.transientOnly
 }
 
 func (s *clientWSSession) writeError(code, message string, requestID uint64) error {

@@ -219,11 +219,11 @@ func benchmarkClientWebSocketTransientSendMessageAuthenticatedLinearMesh(b *test
 	})
 
 	adminKey := store.UserKey{NodeID: sourceNode.nodeID, UserID: store.BootstrapAdminUserID}
-	sender := dialBenchmarkClientWebSocket(b, sourceNode.serverURL)
+	sender := dialBenchmarkClientWebSocketWithOptions(b, sourceNode.serverURL, true)
 	b.Cleanup(func() {
 		_ = sender.Close()
 	})
-	recipientClient := dialBenchmarkClientWebSocket(b, targetNode.serverURL)
+	recipientClient := dialBenchmarkClientWebSocketWithOptions(b, targetNode.serverURL, true)
 	b.Cleanup(func() {
 		_ = recipientClient.Close()
 	})
@@ -347,7 +347,7 @@ func benchmarkClientWebSocketTransientSendMessageAuthenticatedLinearMeshWithOnli
 		if loggedIn != count {
 			b.Fatalf("unexpected local benchmark user count on node %d: got=%d want=%d", node.nodeID, loggedIn, count)
 		}
-		idleClients = append(idleClients, dialAndLoginBenchmarkIdleClientWebSockets(b, node.serverURL, nodeKeys, "bench-password", 64)...)
+		idleClients = append(idleClients, dialAndLoginBenchmarkIdleClientWebSocketsWithOptions(b, node.serverURL, nodeKeys, "bench-password", 64, true)...)
 	}
 	for _, conn := range idleClients {
 		conn := conn
@@ -366,8 +366,8 @@ func benchmarkClientWebSocketTransientSendMessageAuthenticatedLinearMeshWithOnli
 		_ = recipientClient.Close()
 	})
 
-	benchmarkLoginClientWebSocket(b, sender, adminKey, "root-password")
-	benchmarkLoginClientWebSocket(b, recipientClient, recipient.Key(), "bench-password")
+	benchmarkLoginClientWebSocketWithOptions(b, sender, adminKey, "root-password", true)
+	benchmarkLoginClientWebSocketWithOptions(b, recipientClient, recipient.Key(), "bench-password", true)
 
 	expectedOnlineUsersByNode := make([]int, nodeCount)
 	copy(expectedOnlineUsersByNode, backgroundCounts)
@@ -375,8 +375,8 @@ func benchmarkClientWebSocketTransientSendMessageAuthenticatedLinearMeshWithOnli
 	expectedOnlineUsersByNode[0]++
 	waitForAPIBenchmarkOnlineUsers(b, timeout, meshCluster.nodes, expectedOnlineUsersByNode)
 
-	// Give background sessions one poll interval to clear the trimmed setup backlog
-	// so the measured path is closer to steady-state online load than first-login catchup.
+	// Give the connection burst a short settle window so the measured path is closer
+	// to steady-state online load than the initial registration spike.
 	time.Sleep(clientWSPollInterval + 200*time.Millisecond)
 
 	payload := bytes.Repeat([]byte("t"), payloadSize)
@@ -533,13 +533,18 @@ func openBenchmarkClientWebSocketServer(tb testing.TB, handler http.Handler) (*h
 
 func dialBenchmarkClientWebSocket(tb testing.TB, serverURL string) *benchmarkClientWebSocket {
 	tb.Helper()
+	return dialBenchmarkClientWebSocketWithOptions(tb, serverURL, false)
+}
+
+func dialBenchmarkClientWebSocketWithOptions(tb testing.TB, serverURL string, realtime bool) *benchmarkClientWebSocket {
+	tb.Helper()
 
 	parsed, err := url.Parse(serverURL)
 	if err != nil {
 		tb.Fatalf("parse server url: %v", err)
 	}
 	parsed.Scheme = "ws"
-	parsed.Path = "/ws/client"
+	parsed.Path = benchmarkClientWebSocketPath(realtime)
 
 	conn, _, err := websocket.DefaultDialer.Dial(parsed.String(), nil)
 	if err != nil {
@@ -552,6 +557,13 @@ func dialBenchmarkClientWebSocket(tb testing.TB, serverURL string) *benchmarkCli
 	}
 	go client.readLoop()
 	return client
+}
+
+func benchmarkClientWebSocketPath(realtime bool) string {
+	if realtime {
+		return clientRealtimeWSPath
+	}
+	return clientWSPath
 }
 
 func (c *benchmarkClientWebSocket) readLoop() {
@@ -618,12 +630,18 @@ func (c *benchmarkClientWebSocket) Close() error {
 
 func benchmarkLoginClientWebSocket(tb testing.TB, client *benchmarkClientWebSocket, key store.UserKey, password string) {
 	tb.Helper()
+	benchmarkLoginClientWebSocketWithOptions(tb, client, key, password, false)
+}
+
+func benchmarkLoginClientWebSocketWithOptions(tb testing.TB, client *benchmarkClientWebSocket, key store.UserKey, password string, transientOnly bool) {
+	tb.Helper()
 
 	benchmarkWriteClientEnvelope(tb, client.conn, &internalproto.ClientEnvelope{
 		Body: &internalproto.ClientEnvelope_Login{
 			Login: &internalproto.LoginRequest{
-				User:     &internalproto.UserRef{NodeId: key.NodeID, UserId: key.UserID},
-				Password: password,
+				User:          &internalproto.UserRef{NodeId: key.NodeID, UserId: key.UserID},
+				Password:      password,
+				TransientOnly: transientOnly,
 			},
 		},
 	})
@@ -675,8 +693,13 @@ func readBenchmarkServerEnvelopeOnce(tb testing.TB, conn *websocket.Conn, timeou
 
 func dialAndLoginBenchmarkIdleClientWebSocket(tb testing.TB, serverURL string, key store.UserKey, password string) *websocket.Conn {
 	tb.Helper()
+	return dialAndLoginBenchmarkIdleClientWebSocketWithOptions(tb, serverURL, key, password, false)
+}
 
-	conn, err := dialAndLoginBenchmarkIdleClientWebSocketConn(serverURL, key, password)
+func dialAndLoginBenchmarkIdleClientWebSocketWithOptions(tb testing.TB, serverURL string, key store.UserKey, password string, transientOnly bool) *websocket.Conn {
+	tb.Helper()
+
+	conn, err := dialAndLoginBenchmarkIdleClientWebSocketConnWithOptions(serverURL, key, password, transientOnly)
 	if err != nil {
 		tb.Fatalf("dial idle client websocket: %v", err)
 	}
@@ -684,6 +707,11 @@ func dialAndLoginBenchmarkIdleClientWebSocket(tb testing.TB, serverURL string, k
 }
 
 func dialAndLoginBenchmarkIdleClientWebSockets(tb testing.TB, serverURL string, keys []store.UserKey, password string, parallelism int) []*websocket.Conn {
+	tb.Helper()
+	return dialAndLoginBenchmarkIdleClientWebSocketsWithOptions(tb, serverURL, keys, password, parallelism, false)
+}
+
+func dialAndLoginBenchmarkIdleClientWebSocketsWithOptions(tb testing.TB, serverURL string, keys []store.UserKey, password string, parallelism int, transientOnly bool) []*websocket.Conn {
 	tb.Helper()
 
 	if len(keys) == 0 {
@@ -706,7 +734,7 @@ func dialAndLoginBenchmarkIdleClientWebSockets(tb testing.TB, serverURL string, 
 		go func() {
 			defer wg.Done()
 			for idx := range indexes {
-				conn, err := dialAndLoginBenchmarkIdleClientWebSocketConn(serverURL, keys[idx], password)
+				conn, err := dialAndLoginBenchmarkIdleClientWebSocketConnWithOptions(serverURL, keys[idx], password, transientOnly)
 				if err != nil {
 					select {
 					case errCh <- err:
@@ -739,12 +767,16 @@ func dialAndLoginBenchmarkIdleClientWebSockets(tb testing.TB, serverURL string, 
 }
 
 func dialAndLoginBenchmarkIdleClientWebSocketConn(serverURL string, key store.UserKey, password string) (*websocket.Conn, error) {
+	return dialAndLoginBenchmarkIdleClientWebSocketConnWithOptions(serverURL, key, password, false)
+}
+
+func dialAndLoginBenchmarkIdleClientWebSocketConnWithOptions(serverURL string, key store.UserKey, password string, transientOnly bool) (*websocket.Conn, error) {
 	parsed, err := url.Parse(serverURL)
 	if err != nil {
 		return nil, fmt.Errorf("parse server url: %w", err)
 	}
 	parsed.Scheme = "ws"
-	parsed.Path = "/ws/client"
+	parsed.Path = benchmarkClientWebSocketPath(transientOnly)
 
 	conn, _, err := websocket.DefaultDialer.Dial(parsed.String(), nil)
 	if err != nil {
@@ -754,8 +786,9 @@ func dialAndLoginBenchmarkIdleClientWebSocketConn(serverURL string, key store.Us
 	loginEnvelope := &internalproto.ClientEnvelope{
 		Body: &internalproto.ClientEnvelope_Login{
 			Login: &internalproto.LoginRequest{
-				User:     &internalproto.UserRef{NodeId: key.NodeID, UserId: key.UserID},
-				Password: password,
+				User:          &internalproto.UserRef{NodeId: key.NodeID, UserId: key.UserID},
+				Password:      password,
+				TransientOnly: transientOnly,
 			},
 		},
 	}
@@ -877,6 +910,9 @@ func openBenchmarkAuthenticatedLinearMeshAPIClusterWithEventLogLimit(tb testing.
 			NodeID:   st.NodeID(),
 			Signer:   signer,
 			TokenTTL: time.Hour,
+		})
+		meshCluster.closeFns = append(meshCluster.closeFns, func() {
+			_ = httpAPI.Close()
 		})
 		manager.SetTransientHandler(httpAPI.ReceiveTransientPacket)
 		manager.SetLoggedInUsersProvider(httpAPI.ListLoggedInUsers)

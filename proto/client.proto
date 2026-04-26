@@ -60,6 +60,7 @@ message LoginRequest {
   UserRef user = 1;
   string password = 3;
   repeated MessageCursor seen_messages = 4;
+  bool transient_only = 5;
 }
 
 message LoginResponse {

@@ -248,6 +248,10 @@ func (s *Service) ListEvents(ctx context.Context, afterSequence int64, limit int
 	return s.store.ListEvents(ctx, afterSequence, limit)
 }
 
+func (s *Service) LastEventSequence(ctx context.Context) (int64, error) {
+	return s.store.LastEventSequence(ctx)
+}
+
 func (s *Service) BlockUser(ctx context.Context, params store.BlacklistParams) (store.BlacklistEntry, store.Event, error) {
 	if err := s.allowWrite(ctx); err != nil {
 		return store.BlacklistEntry{}, store.Event{}, err

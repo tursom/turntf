@@ -12,6 +12,7 @@
   - [internal/cluster/mesh_benchmark_test.go](/root/dev/sys/turntf/turntf/internal/cluster/mesh_benchmark_test.go)
   - [internal/cluster/mesh_recovery_benchmark_test.go](/root/dev/sys/turntf/turntf/internal/cluster/mesh_recovery_benchmark_test.go)
   - [internal/store/store_benchmark_test.go](/root/dev/sys/turntf/turntf/internal/store/store_benchmark_test.go)
+  - [internal/store/store_degradation_benchmark_test.go](/root/dev/sys/turntf/turntf/internal/store/store_degradation_benchmark_test.go)
   - [internal/api/http_benchmark_test.go](/root/dev/sys/turntf/turntf/internal/api/http_benchmark_test.go)
 
 当前基线覆盖以下场景：
@@ -24,6 +25,8 @@
 - `BenchmarkStoreCreateMessage`：`SQLite` / `Pebble` 下直接消息写入。
 - `BenchmarkStoreListMessagesByUser`：`SQLite` / `Pebble` 下典型读路径。
 - `BenchmarkStorePruneEventLogOnce`：`SQLite` / `Pebble` 下 retention 截断成本。
+- `BenchmarkDegradationStoreListMessagesByUser`：按历史消息量分层，观察 `SQLite` / `Pebble` 读路径的退化倍数和单位规模增量成本。
+- `BenchmarkDegradationStorePruneEventLogOnce`：按 event log 规模分层，观察 `SQLite` / `Pebble` 截断路径的退化倍数和单位规模增量成本。
 - `BenchmarkHTTPCreateMessageAuthenticated`：带鉴权的 `POST /nodes/{node_id}/users/{user_id}/messages`。
 - `BenchmarkHTTPListMessagesByUserAuthenticated`：带鉴权的 `GET /nodes/{node_id}/users/{user_id}/messages?limit=50`。
 
@@ -40,6 +43,14 @@ go test ./internal/cluster -run '^$' -bench 'BenchmarkMesh(Replication|QueryLogg
 ```bash
 go test ./internal/store ./internal/api -run '^$' -bench 'Benchmark(Store|HTTP)' -benchmem -count=1
 ```
+
+退化曲线 benchmark：
+
+```bash
+go test ./internal/store -run '^$' -bench 'BenchmarkDegradationStore(ListMessagesByUser|PruneEventLogOnce)' -benchmem -count=1 -benchtime=1x
+```
+
+这组 benchmark 主要用来看“规模增长时慢了多少”，默认不并入上面的常规 `store/api` 基线命令。
 
 回归命令：
 
@@ -65,6 +76,9 @@ go test ./internal/store ./internal/api -run '^$' -bench 'Benchmark(Store|HTTP)'
 - `delivery_ms/op`：瞬时包场景从源节点发起路由到目标节点本地 handler 收到包的平均耗时。
 - `snapshot_ms/op`：snapshot repair 场景从发送 digest 到目标节点收敛的平均耗时。
 - `truncated_repair_ms/op`：truncated response 触发 snapshot repair 并完成恢复的平均耗时。
+- `history_00064_ns/op` / `events_00256_ns/op`：退化曲线 benchmark 中，对应规模层的平均耗时。
+- `*_vs_*_x`：相对首层规模的退化倍数。
+- `*_delta_ns_per_1k`：相对首层规模，每额外 `1000` 条消息 / event 带来的平均增量耗时。
 
 ## 基线环境
 

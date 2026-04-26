@@ -4,12 +4,14 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/cockroachdb/pebble"
-	_ "github.com/mattn/go-sqlite3"
+	sqlite3 "github.com/mattn/go-sqlite3"
 
 	"github.com/tursom/turntf/internal/clock"
 	internalproto "github.com/tursom/turntf/internal/proto"
@@ -25,6 +27,18 @@ var (
 
 const DefaultMessageWindowSize = 500
 const DefaultEventLogMaxEventsPerOrigin = 100000
+
+const (
+	sqliteDriverName          = "turntf-sqlite3"
+	sqliteMaxOpenConns        = 4
+	sqliteMaxIdleConns        = 4
+	sqliteBusyTimeoutMillis   = "5000"
+	sqliteJournalMode         = "WAL"
+	sqliteSynchronousMode     = "NORMAL"
+	sqliteTempStoreMemoryPrag = "PRAGMA temp_store = MEMORY;"
+)
+
+var sqliteDriverOnce sync.Once
 
 const (
 	EngineSQLite = "sqlite"
@@ -253,16 +267,12 @@ func Open(dbPath string, opts Options) (*Store, error) {
 		return nil, fmt.Errorf("create db dir: %w", err)
 	}
 
-	db, err := sql.Open("sqlite3", dbPath)
+	db, err := sql.Open(sqliteDriverName, sqliteDSN(dbPath))
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
-	db.SetMaxOpenConns(1)
-
-	if _, err := db.Exec(`PRAGMA foreign_keys = ON;`); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("enable foreign keys: %w", err)
-	}
+	db.SetMaxOpenConns(sqliteMaxOpenConns)
+	db.SetMaxIdleConns(sqliteMaxIdleConns)
 
 	var pebbleDB *pebble.DB
 	if engine == EnginePebble {
@@ -304,6 +314,33 @@ func Open(dbPath string, opts Options) (*Store, error) {
 		blacklists:                 &sqliteBlacklistRepository{db: db},
 	}
 	return st, nil
+}
+
+func init() {
+	registerSQLiteDriver()
+}
+
+func registerSQLiteDriver() {
+	sqliteDriverOnce.Do(func() {
+		sql.Register(sqliteDriverName, &sqlite3.SQLiteDriver{
+			ConnectHook: func(conn *sqlite3.SQLiteConn) error {
+				if _, err := conn.Exec(sqliteTempStoreMemoryPrag, nil); err != nil {
+					return fmt.Errorf("set sqlite temp_store: %w", err)
+				}
+				return nil
+			},
+		})
+	})
+}
+
+func sqliteDSN(dbPath string) string {
+	values := url.Values{}
+	values.Set("mode", "rwc")
+	values.Set("_busy_timeout", sqliteBusyTimeoutMillis)
+	values.Set("_foreign_keys", "1")
+	values.Set("_journal_mode", sqliteJournalMode)
+	values.Set("_synchronous", sqliteSynchronousMode)
+	return "file:" + dbPath + "?" + values.Encode()
 }
 
 func (s *Store) Clock() *clock.Clock {

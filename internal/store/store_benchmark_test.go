@@ -119,6 +119,7 @@ func benchmarkStoreCreateMessage(b *testing.B, mode benchroot.Mode, engine strin
 	runStoreBenchmarkWarmup(b, func() {
 		mustCreateBenchmarkMessage(b, st, ctx, user.Key(), payload)
 	})
+	assertBenchmarkMessageSequenceCounter(b, st, ctx, engine, user.Key(), 2)
 	b.SetBytes(int64(payloadSize))
 	b.ResetTimer()
 
@@ -149,6 +150,7 @@ func benchmarkStoreCreateMessageSteadyState(b *testing.B, mode benchroot.Mode, e
 	runStoreBenchmarkWarmup(b, func() {
 		mustCreateBenchmarkMessage(b, st, ctx, user.Key(), payload)
 	})
+	assertBenchmarkMessageSequenceCounter(b, st, ctx, engine, user.Key(), 2)
 	b.SetBytes(int64(payloadSize))
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -179,6 +181,7 @@ func benchmarkStoreCreateMessageParallel(b *testing.B, mode benchroot.Mode, engi
 	runStoreBenchmarkWarmup(b, func() {
 		mustCreateBenchmarkMessage(b, st, ctx, users[0].Key(), payload)
 	})
+	assertBenchmarkMessageSequenceCounter(b, st, ctx, engine, users[0].Key(), 2)
 	b.SetBytes(int64(len(payload)))
 	b.ResetTimer()
 
@@ -368,6 +371,25 @@ func mustListBenchmarkMessages(tb testing.TB, st *Store, ctx context.Context, ke
 	}
 	if !bytes.Equal(messages[0].Body, wantFirst) || !bytes.Equal(messages[len(messages)-1].Body, wantLast) {
 		tb.Fatalf("unexpected message order: first=%q last=%q", messages[0].Body, messages[len(messages)-1].Body)
+	}
+}
+
+func assertBenchmarkMessageSequenceCounter(tb testing.TB, st *Store, ctx context.Context, engine string, key UserKey, wantAtLeast int64) {
+	tb.Helper()
+	if engine != EngineSQLite {
+		return
+	}
+
+	var nextSeq int64
+	if err := st.db.QueryRowContext(ctx, `
+SELECT next_seq
+FROM message_sequence_counters
+WHERE user_node_id = ? AND user_id = ? AND node_id = ?
+`, key.NodeID, key.UserID, st.NodeID()).Scan(&nextSeq); err != nil {
+		tb.Fatalf("read benchmark message sequence counter: %v", err)
+	}
+	if nextSeq < wantAtLeast {
+		tb.Fatalf("unexpected benchmark message sequence counter: got=%d want-at-least=%d", nextSeq, wantAtLeast)
 	}
 }
 

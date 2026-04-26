@@ -26,6 +26,10 @@ type sqliteMessageProjectionRepository struct {
 	blacklists        BlacklistRepository
 }
 
+type sqlExecContext interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}
+
 func (r *sqliteEventLogRepository) Append(ctx context.Context, event Event) (Event, error) {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -353,9 +357,6 @@ func (r *sqliteMessageProjectionRepository) ApplyMessageSnapshotRows(ctx context
 func (r *sqliteMessageProjectionRepository) applyMessageCreatedTx(ctx context.Context, tx *sql.Tx, message Message) error {
 	key := message.UserKey()
 	if err := validateMessageIdentity(key, message.NodeID, message.Seq); err != nil {
-		return err
-	}
-	if _, err := r.userRepository.GetUserTx(ctx, tx, key, false); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `
@@ -700,6 +701,21 @@ func (r *sqliteMessageProjectionRepository) trimMessagesForUserTx(ctx context.Co
 		return err
 	}
 	windowSize := normalizeMessageWindowSize(r.messageWindowSize)
+	var overflowMarker int
+	err := tx.QueryRowContext(ctx, `
+SELECT 1
+FROM messages
+WHERE user_node_id = ? AND user_id = ?
+ORDER BY created_at_hlc DESC, node_id ASC, seq DESC
+LIMIT 1 OFFSET ?
+`, key.NodeID, key.UserID, windowSize).Scan(&overflowMarker)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return nil
+	case err != nil:
+		return fmt.Errorf("check message trim overflow for user %d:%d: %w", key.NodeID, key.UserID, err)
+	}
+
 	result, err := tx.ExecContext(ctx, `
 DELETE FROM messages
 WHERE user_node_id = ? AND user_id = ?
@@ -744,6 +760,14 @@ ON CONFLICT(scope) DO UPDATE SET
 }
 
 func (s *Store) recordPendingProjection(ctx context.Context, event Event, reason error) error {
+	return s.recordPendingProjectionAt(ctx, s.db, event, reason)
+}
+
+func (s *Store) recordPendingProjectionTx(ctx context.Context, tx *sql.Tx, event Event, reason error) error {
+	return s.recordPendingProjectionAt(ctx, tx, event, reason)
+}
+
+func (s *Store) recordPendingProjectionAt(ctx context.Context, execer sqlExecContext, event Event, reason error) error {
 	now := s.clock.Now().String()
 	message := ""
 	if reason != nil {
@@ -752,7 +776,7 @@ func (s *Store) recordPendingProjection(ctx context.Context, event Event, reason
 	if message == "" {
 		message = "projection failed"
 	}
-	_, err := s.db.ExecContext(ctx, `
+	_, err := execer.ExecContext(ctx, `
 INSERT INTO pending_projections(
     origin_node_id, event_id, event_type, aggregate_type, aggregate_node_id, aggregate_id,
     attempt_count, last_error, first_failed_at_hlc, last_failed_at_hlc

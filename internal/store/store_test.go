@@ -3,6 +3,7 @@ package store
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"path/filepath"
@@ -454,6 +455,36 @@ func TestInitGeneratesAndPersistsNodeID(t *testing.T) {
 	}
 }
 
+func TestOpenConfiguresSQLitePragmasAndPool(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	st, err := Open(filepath.Join(t.TempDir(), "sqlite-config.db"), Options{})
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	if stats := st.db.Stats(); stats.MaxOpenConnections != sqliteMaxOpenConns {
+		t.Fatalf("unexpected max open connections: got=%d want=%d", stats.MaxOpenConnections, sqliteMaxOpenConns)
+	}
+
+	conn1, err := st.db.Conn(ctx)
+	if err != nil {
+		t.Fatalf("open sqlite conn1: %v", err)
+	}
+	defer conn1.Close()
+
+	conn2, err := st.db.Conn(ctx)
+	if err != nil {
+		t.Fatalf("open sqlite conn2: %v", err)
+	}
+	defer conn2.Close()
+
+	assertSQLitePragmas(t, ctx, conn1)
+	assertSQLitePragmas(t, ctx, conn2)
+}
+
 func TestStoreCloseSucceedsForSQLiteAndPebbleBackends(t *testing.T) {
 	t.Parallel()
 
@@ -840,6 +871,65 @@ func TestLocalMessageWriteAndQuery(t *testing.T) {
 	}
 	if len(events) != 3 {
 		t.Fatalf("expected 3 events (user + 2 message), got %d", len(events))
+	}
+}
+
+func TestSQLiteCreateMessageUsesStoredCounterAfterFirstWrite(t *testing.T) {
+	t.Parallel()
+
+	st := openTestStore(t)
+	defer st.Close()
+
+	ctx := context.Background()
+	user, _, err := st.CreateUser(ctx, CreateUserParams{
+		Username:     "sqlite-seq",
+		PasswordHash: "hash-1",
+	})
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	first, _, err := st.CreateMessage(ctx, CreateMessageParams{
+		UserKey: user.Key(),
+		Sender:  testSenderKey(9, 1),
+		Body:    []byte("first"),
+	})
+	if err != nil {
+		t.Fatalf("create first message: %v", err)
+	}
+	if first.Seq != 1 {
+		t.Fatalf("unexpected first sequence: %+v", first)
+	}
+
+	if _, err := st.db.ExecContext(ctx, `
+DELETE FROM messages
+WHERE user_node_id = ? AND user_id = ?
+`, user.NodeID, user.ID); err != nil {
+		t.Fatalf("delete projected messages: %v", err)
+	}
+
+	second, _, err := st.CreateMessage(ctx, CreateMessageParams{
+		UserKey: user.Key(),
+		Sender:  testSenderKey(9, 1),
+		Body:    []byte("second"),
+	})
+	if err != nil {
+		t.Fatalf("create second message: %v", err)
+	}
+	if second.Seq != 2 {
+		t.Fatalf("expected stored counter to continue at seq 2, got %+v", second)
+	}
+
+	var nextSeq int64
+	if err := st.db.QueryRowContext(ctx, `
+SELECT next_seq
+FROM message_sequence_counters
+WHERE user_node_id = ? AND user_id = ? AND node_id = ?
+`, user.NodeID, user.ID, st.NodeID()).Scan(&nextSeq); err != nil {
+		t.Fatalf("read next message sequence: %v", err)
+	}
+	if nextSeq != 3 {
+		t.Fatalf("unexpected next message sequence: got=%d want=3", nextSeq)
 	}
 }
 
@@ -2748,6 +2838,17 @@ func (r failingMessageProjectionRepository) ApplyMessageCreated(ctx context.Cont
 	return r.delegate.ApplyMessageCreated(ctx, message)
 }
 
+func (r failingMessageProjectionRepository) applyMessageCreatedTx(ctx context.Context, tx *sql.Tx, message Message) error {
+	if r.failType == EventTypeMessageCreated {
+		return r.err
+	}
+	delegate, ok := r.delegate.(txMessageProjectionRepository)
+	if !ok {
+		return r.delegate.ApplyMessageCreated(ctx, message)
+	}
+	return delegate.applyMessageCreatedTx(ctx, tx, message)
+}
+
 func (r failingMessageProjectionRepository) ListMessagesByUser(ctx context.Context, key UserKey, limit int) ([]Message, error) {
 	return r.delegate.ListMessagesByUser(ctx, key, limit)
 }
@@ -2758,4 +2859,52 @@ func (r failingMessageProjectionRepository) BuildMessageSnapshotRows(ctx context
 
 func (r failingMessageProjectionRepository) ApplyMessageSnapshotRows(ctx context.Context, producer int64, rows []*proto.SnapshotRow) error {
 	return r.delegate.ApplyMessageSnapshotRows(ctx, producer, rows)
+}
+
+type sqlitePragmaQueryer interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
+func assertSQLitePragmas(tb testing.TB, ctx context.Context, querier sqlitePragmaQueryer) {
+	tb.Helper()
+
+	var journalMode string
+	if err := querier.QueryRowContext(ctx, `PRAGMA journal_mode;`).Scan(&journalMode); err != nil {
+		tb.Fatalf("read journal_mode pragma: %v", err)
+	}
+	if journalMode != "wal" {
+		tb.Fatalf("unexpected journal_mode: got=%q want=%q", journalMode, "wal")
+	}
+
+	var synchronous int
+	if err := querier.QueryRowContext(ctx, `PRAGMA synchronous;`).Scan(&synchronous); err != nil {
+		tb.Fatalf("read synchronous pragma: %v", err)
+	}
+	if synchronous != 1 {
+		tb.Fatalf("unexpected synchronous pragma: got=%d want=1", synchronous)
+	}
+
+	var busyTimeout int
+	if err := querier.QueryRowContext(ctx, `PRAGMA busy_timeout;`).Scan(&busyTimeout); err != nil {
+		tb.Fatalf("read busy_timeout pragma: %v", err)
+	}
+	if busyTimeout != 5000 {
+		tb.Fatalf("unexpected busy_timeout pragma: got=%d want=5000", busyTimeout)
+	}
+
+	var foreignKeys int
+	if err := querier.QueryRowContext(ctx, `PRAGMA foreign_keys;`).Scan(&foreignKeys); err != nil {
+		tb.Fatalf("read foreign_keys pragma: %v", err)
+	}
+	if foreignKeys != 1 {
+		tb.Fatalf("unexpected foreign_keys pragma: got=%d want=1", foreignKeys)
+	}
+
+	var tempStore int
+	if err := querier.QueryRowContext(ctx, `PRAGMA temp_store;`).Scan(&tempStore); err != nil {
+		tb.Fatalf("read temp_store pragma: %v", err)
+	}
+	if tempStore != 2 {
+		tb.Fatalf("unexpected temp_store pragma: got=%d want=2", tempStore)
+	}
 }

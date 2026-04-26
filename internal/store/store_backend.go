@@ -30,6 +30,10 @@ type storeBackend interface {
 	Close() error
 }
 
+type txMessageProjectionRepository interface {
+	applyMessageCreatedTx(context.Context, *sql.Tx, Message) error
+}
+
 type storeBackendBindings struct {
 	NodeID            int64
 	Clock             *clock.Clock
@@ -103,30 +107,107 @@ func (b *sqliteStoreBackend) MessageProjection() MessageProjectionRepository {
 }
 
 func (b *sqliteStoreBackend) CreateMessage(ctx context.Context, s *Store, params CreateMessageParams) (Message, Event, error) {
+	projection, ok := b.messageProjection.(txMessageProjectionRepository)
+	if !ok {
+		return b.createMessageLegacy(ctx, s, params)
+	}
+	return b.createMessageFast(ctx, s, params, projection)
+}
+
+func (b *sqliteStoreBackend) createMessageFast(ctx context.Context, s *Store, params CreateMessageParams, projection txMessageProjectionRepository) (Message, Event, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return Message{}, Event{}, fmt.Errorf("begin create message: %w", err)
 	}
 	defer tx.Rollback()
 
+	message, event, err := b.createMessageEventTx(ctx, s, tx, params)
+	if err != nil {
+		return Message{}, Event{}, err
+	}
+
+	const projectionSavepoint = "turntf_create_message_projection"
+	if _, err := tx.ExecContext(ctx, "SAVEPOINT "+projectionSavepoint); err != nil {
+		return Message{}, Event{}, fmt.Errorf("begin create message projection savepoint: %w", err)
+	}
+	projectionErr := projection.applyMessageCreatedTx(ctx, tx, message)
+	if projectionErr != nil {
+		if _, err := tx.ExecContext(ctx, "ROLLBACK TO SAVEPOINT "+projectionSavepoint); err != nil {
+			return Message{}, Event{}, fmt.Errorf("rollback create message projection savepoint: %w", err)
+		}
+		if err := s.recordPendingProjectionTx(ctx, tx, event, projectionErr); err != nil {
+			return Message{}, Event{}, fmt.Errorf("record deferred message projection: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, "RELEASE SAVEPOINT "+projectionSavepoint); err != nil {
+			return Message{}, Event{}, fmt.Errorf("release deferred create message projection savepoint: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return Message{}, Event{}, fmt.Errorf("commit create message: %w", err)
+		}
+		return message, event, fmt.Errorf("%w: %v", ErrProjectionDeferred, projectionErr)
+	}
+	if _, err := tx.ExecContext(ctx, "RELEASE SAVEPOINT "+projectionSavepoint); err != nil {
+		return Message{}, Event{}, fmt.Errorf("release create message projection savepoint: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return Message{}, Event{}, fmt.Errorf("commit create message: %w", err)
+	}
+	return message, event, nil
+}
+
+func (b *sqliteStoreBackend) createMessageLegacy(ctx context.Context, s *Store, params CreateMessageParams) (Message, Event, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Message{}, Event{}, fmt.Errorf("begin create message: %w", err)
+	}
+	defer tx.Rollback()
+
+	message, event, err := b.createMessageEventTx(ctx, s, tx, params)
+	if err != nil {
+		return Message{}, Event{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Message{}, Event{}, fmt.Errorf("commit create message: %w", err)
+	}
+	if err := s.projectMessageEvent(ctx, event); err != nil {
+		if recordErr := s.recordPendingProjection(ctx, event, err); recordErr != nil {
+			return Message{}, Event{}, fmt.Errorf("record deferred message projection: %w", recordErr)
+		}
+		return message, event, fmt.Errorf("%w: %v", ErrProjectionDeferred, err)
+	}
+	return message, event, nil
+}
+
+func (b *sqliteStoreBackend) createMessageEventTx(ctx context.Context, s *Store, tx *sql.Tx, params CreateMessageParams) (Message, Event, error) {
 	recipient, err := s.getUserTx(ctx, tx, params.UserKey, false)
 	if err != nil {
 		return Message{}, Event{}, err
 	}
-	sender, err := s.getUserTx(ctx, tx, params.Sender, false)
-	switch {
-	case err == nil:
-		if recipient.CanLogin() && sender.Role == RoleUser {
-			blocked, err := s.isBlockedByRecipientTx(ctx, tx, recipient.Key(), sender.Key(), nil)
-			if err != nil {
-				return Message{}, Event{}, err
-			}
-			if blocked {
-				return Message{}, Event{}, ErrBlockedByBlacklist
-			}
+
+	sender := User{}
+	senderExists := false
+	if params.Sender == params.UserKey {
+		sender = recipient
+		senderExists = true
+	} else {
+		sender, err = s.getUserTx(ctx, tx, params.Sender, false)
+		switch {
+		case err == nil:
+			senderExists = true
+		case errors.Is(err, ErrNotFound):
+		default:
+			return Message{}, Event{}, err
 		}
-	case !errors.Is(err, ErrNotFound):
-		return Message{}, Event{}, err
+	}
+
+	if recipient.CanLogin() && senderExists && sender.Role == RoleUser && sender.Key() != recipient.Key() {
+		blocked, err := s.isBlockedByRecipientTx(ctx, tx, recipient.Key(), sender.Key(), nil)
+		if err != nil {
+			return Message{}, Event{}, err
+		}
+		if blocked {
+			return Message{}, Event{}, ErrBlockedByBlacklist
+		}
 	}
 
 	now := s.clock.Now()
@@ -153,16 +234,6 @@ func (b *sqliteStoreBackend) CreateMessage(ctx context.Context, s *Store, params
 	})
 	if err != nil {
 		return Message{}, Event{}, err
-	}
-
-	if err := tx.Commit(); err != nil {
-		return Message{}, Event{}, fmt.Errorf("commit create message: %w", err)
-	}
-	if err := s.projectMessageEvent(ctx, event); err != nil {
-		if recordErr := s.recordPendingProjection(ctx, event, err); recordErr != nil {
-			return Message{}, Event{}, fmt.Errorf("record deferred message projection: %w", recordErr)
-		}
-		return message, event, fmt.Errorf("%w: %v", ErrProjectionDeferred, err)
 	}
 	return message, event, nil
 }

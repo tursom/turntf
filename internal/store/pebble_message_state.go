@@ -304,6 +304,73 @@ func (r *pebbleMessageProjectionRepository) prepareMessageWrite(batch *pebble.Ba
 	return state, nil
 }
 
+func (r *pebbleMessageProjectionRepository) prepareInboxWrites(ctx context.Context, batch *pebble.Batch, message Message, recipient User) error {
+	if batch == nil {
+		return fmt.Errorf("%w: pebble batch cannot be nil", ErrInvalidInput)
+	}
+
+	switch {
+	case recipient.CanLogin():
+		return r.writeInboxEntry(batch, recipient.Key(), message)
+	case recipient.Role == RoleChannel:
+		subscribers, err := r.subscriptions.ListChannelSubscribers(ctx, recipient.Key())
+		if err != nil {
+			return err
+		}
+		for _, subscription := range subscribers {
+			if message.CreatedAt.Compare(subscription.SubscribedAt) < 0 {
+				continue
+			}
+			if err := r.writeInboxEntry(batch, subscription.Subscriber, message); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (r *pebbleMessageProjectionRepository) writeInboxEntry(batch *pebble.Batch, owner UserKey, message Message) error {
+	if err := owner.Validate(); err != nil {
+		return err
+	}
+
+	inboxKey := pebbleInboxUserKey(owner, message)
+	if err := batch.Set(inboxKey, pebbleMessageIndexValue(pebbleMessageRefFromMessage(message)), nil); err != nil {
+		return fmt.Errorf("write inbox index: %w", err)
+	}
+	if err := batch.Set(pebbleInboxSourceKey(message, owner), append([]byte(nil), inboxKey...), nil); err != nil {
+		return fmt.Errorf("write inbox source index: %w", err)
+	}
+	return nil
+}
+
+func (r *pebbleMessageProjectionRepository) deleteMessageInboxEntries(ctx context.Context, batch *pebble.Batch, message Message) error {
+	prefix := pebbleInboxSourcePrefix(message)
+	iter, err := r.db.NewIter(&pebble.IterOptions{LowerBound: prefix, UpperBound: prefixUpperBound(prefix)})
+	if err != nil {
+		return fmt.Errorf("open inbox source iterator: %w", err)
+	}
+	defer iter.Close()
+
+	for valid := iter.First(); valid; valid = iter.Next() {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		inboxKey := append([]byte(nil), iter.Value()...)
+		sourceKey := append([]byte(nil), iter.Key()...)
+		if err := batch.Delete(inboxKey, nil); err != nil {
+			return fmt.Errorf("delete inbox index: %w", err)
+		}
+		if err := batch.Delete(sourceKey, nil); err != nil {
+			return fmt.Errorf("delete inbox source index: %w", err)
+		}
+	}
+	if err := iter.Error(); err != nil {
+		return fmt.Errorf("iterate inbox source index: %w", err)
+	}
+	return nil
+}
+
 func (r *pebbleMessageProjectionRepository) trimMessagesForUser(ctx context.Context, key UserKey, forceSync bool) error {
 	unlock := r.lockUsers([]UserKey{key})
 	defer unlock()
@@ -348,6 +415,10 @@ func (r *pebbleMessageProjectionRepository) trimMessagesForUserLocked(ctx contex
 
 	batch := r.db.NewBatch()
 	for _, message := range messages[windowSize:] {
+		if err := r.deleteMessageInboxEntries(ctx, batch, message); err != nil {
+			_ = batch.Close()
+			return err
+		}
 		for _, key := range pebbleMessageKeys(message) {
 			if err := batch.Delete(key, nil); err != nil {
 				_ = batch.Close()

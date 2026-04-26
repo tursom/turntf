@@ -31,6 +31,9 @@ const (
 	timeSyncInterval                   = 30 * time.Second
 	timeSyncTimeout                    = 8 * time.Second
 	queryLoggedInUsersTimeout          = 3 * time.Second
+	loggedInUsersCacheTTL              = 250 * time.Millisecond
+	loggedInUsersCacheNegativeTTL      = 250 * time.Millisecond
+	loggedInUsersCacheMaxEntries       = 1024
 	catchupRetryInterval               = time.Second
 	antiEntropyInterval                = 60 * time.Second
 	snapshotDigestMinInterval          = 250 * time.Millisecond
@@ -96,6 +99,7 @@ type Manager struct {
 	nextConnectionID         uint64
 	nextLoggedInUsersQueryID uint64
 	pendingLoggedInUsers     map[uint64]chan loggedInUsersQueryResult
+	loggedInUsersCache       map[int64]loggedInUsersCacheEntry
 	nextMeshPacketID         uint64
 	meshForwardedPackets     map[string]uint64
 	meshForwardedBytes       map[string]uint64
@@ -212,6 +216,13 @@ type loggedInUsersQueryResult struct {
 	err      error
 }
 
+type loggedInUsersCacheEntry struct {
+	users     []app.LoggedInUserSummary
+	err       error
+	cachedAt  time.Time
+	expiresAt time.Time
+}
+
 type timeSyncSample struct {
 	offsetMs      int64
 	rttMs         int64
@@ -259,6 +270,7 @@ func NewManager(cfg Config, st *store.Store) (*Manager, error) {
 		supportsMembership:      !cfg.DiscoveryDisabled,
 		retryQueue:              make(map[string]queuedPacket),
 		pendingLoggedInUsers:    make(map[uint64]chan loggedInUsersQueryResult),
+		loggedInUsersCache:      make(map[int64]loggedInUsersCacheEntry),
 		clockStateTransitions:   make(map[clockStateTransitionKey]uint64),
 		meshForwardedPackets:    make(map[string]uint64),
 		meshForwardedBytes:      make(map[string]uint64),

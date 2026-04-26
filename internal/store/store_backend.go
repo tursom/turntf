@@ -446,6 +446,9 @@ type pebbleStoreBackend struct {
 	messageProjection     MessageProjectionRepository
 	messageProjectionRepo *pebbleMessageProjectionRepository
 	messageSequences      *pebbleMessageSequenceRepository
+	peerAckCursors        *pebblePeerAckCursorRepository
+	originCursors         *pebbleOriginCursorRepository
+	pendingProjections    *pebblePendingProjectionRepository
 	localMessageRequests  chan pebbleLocalMessageWriteRequest
 	localMessageCloseCh   chan chan error
 	localMessageDone      chan struct{}
@@ -474,6 +477,18 @@ func (b *pebbleStoreBackend) Bind(bindings storeBackendBindings) error {
 		db:     b.db,
 		sqlDB:  b.sqlDB,
 		writes: b.writes,
+	}
+	b.peerAckCursors = &pebblePeerAckCursorRepository{
+		db:    b.db,
+		clock: bindings.Clock,
+	}
+	b.originCursors = &pebbleOriginCursorRepository{
+		db:    b.db,
+		clock: bindings.Clock,
+	}
+	b.pendingProjections = &pebblePendingProjectionRepository{
+		db:    b.db,
+		clock: bindings.Clock,
 	}
 	b.eventLog = &pebbleEventLogRepository{
 		db:     b.db,
@@ -545,33 +560,46 @@ func (b *pebbleStoreBackend) StoreReplicatedEventTx(ctx context.Context, tx *sql
 }
 
 func (b *pebbleStoreBackend) ListPendingProjectionEvents(ctx context.Context, db *sql.DB, limit int) ([]Event, error) {
-	rows, err := db.QueryContext(ctx, `
+	var events []Event
+	var pending []pendingProjectionEnvelope
+	if b.pendingProjections != nil {
+		var err error
+		pending, err = b.pendingProjections.List(ctx, limit)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		rows, err := db.QueryContext(ctx, `
 SELECT origin_node_id, event_id
 FROM pending_projections
 ORDER BY last_failed_at_hlc ASC, origin_node_id ASC, event_id ASC
 LIMIT ?
 `, limit)
-	if err != nil {
-		return nil, fmt.Errorf("list pending projection keys: %w", err)
-	}
-	defer rows.Close()
-
-	var events []Event
-	for rows.Next() {
-		var originNodeID, eventID int64
-		if err := rows.Scan(&originNodeID, &eventID); err != nil {
-			return nil, fmt.Errorf("scan pending projection key: %w", err)
+		if err != nil {
+			return nil, fmt.Errorf("list pending projection keys: %w", err)
 		}
-		found, err := b.eventLog.ListEventsByOrigin(ctx, originNodeID, eventID-1, 1)
+		defer rows.Close()
+
+		for rows.Next() {
+			var originNodeID, eventID int64
+			if err := rows.Scan(&originNodeID, &eventID); err != nil {
+				return nil, fmt.Errorf("scan pending projection key: %w", err)
+			}
+			pending = append(pending, pendingProjectionEnvelope{OriginNodeID: originNodeID, EventID: eventID})
+		}
+		if err := rows.Err(); err != nil {
+			return nil, fmt.Errorf("iterate pending projection keys: %w", err)
+		}
+	}
+
+	for _, item := range pending {
+		found, err := b.eventLog.ListEventsByOrigin(ctx, item.OriginNodeID, item.EventID-1, 1)
 		if err != nil {
 			return nil, err
 		}
-		if len(found) == 1 && found[0].OriginNodeID == originNodeID && found[0].EventID == eventID {
+		if len(found) == 1 && found[0].OriginNodeID == item.OriginNodeID && found[0].EventID == item.EventID {
 			events = append(events, found[0])
 		}
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate pending projection keys: %w", err)
 	}
 	return events, nil
 }

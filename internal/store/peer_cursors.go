@@ -9,6 +9,9 @@ import (
 )
 
 func (s *Store) GetPeerAckCursor(ctx context.Context, peerNodeID, originNodeID int64) (PeerAckCursor, error) {
+	if pebbleBackend, ok := s.backend.(*pebbleStoreBackend); ok && pebbleBackend.peerAckCursors != nil {
+		return pebbleBackend.peerAckCursors.Get(ctx, peerNodeID, originNodeID)
+	}
 	if peerNodeID <= 0 {
 		return PeerAckCursor{}, fmt.Errorf("%w: peer node id cannot be empty", ErrInvalidInput)
 	}
@@ -33,6 +36,9 @@ WHERE peer_node_id = ? AND origin_node_id = ?
 }
 
 func (s *Store) ListPeerAckCursors(ctx context.Context) ([]PeerAckCursor, error) {
+	if pebbleBackend, ok := s.backend.(*pebbleStoreBackend); ok && pebbleBackend.peerAckCursors != nil {
+		return pebbleBackend.peerAckCursors.List(ctx)
+	}
 	rows, err := s.db.QueryContext(ctx, `
 SELECT peer_node_id, origin_node_id, acked_event_id, updated_at_hlc
 FROM peer_ack_cursors
@@ -65,6 +71,9 @@ func (s *Store) RecordPeerAck(ctx context.Context, peerNodeID, originNodeID, ack
 }
 
 func (s *Store) upsertPeerAckCursor(ctx context.Context, peerNodeID, originNodeID, ackedEventID int64) error {
+	if pebbleBackend, ok := s.backend.(*pebbleStoreBackend); ok && pebbleBackend.peerAckCursors != nil {
+		return pebbleBackend.peerAckCursors.Upsert(ctx, peerNodeID, originNodeID, ackedEventID)
+	}
 	if peerNodeID <= 0 {
 		return fmt.Errorf("%w: peer node id cannot be empty", ErrInvalidInput)
 	}
@@ -89,6 +98,9 @@ ON CONFLICT(peer_node_id, origin_node_id) DO UPDATE SET
 }
 
 func (s *Store) GetOriginCursor(ctx context.Context, originNodeID int64) (OriginCursor, error) {
+	if pebbleBackend, ok := s.backend.(*pebbleStoreBackend); ok && pebbleBackend.originCursors != nil {
+		return pebbleBackend.originCursors.Get(ctx, originNodeID)
+	}
 	if originNodeID <= 0 {
 		return OriginCursor{}, fmt.Errorf("%w: origin node id cannot be empty", ErrInvalidInput)
 	}
@@ -110,6 +122,9 @@ WHERE origin_node_id = ?
 }
 
 func (s *Store) ListOriginCursors(ctx context.Context) ([]OriginCursor, error) {
+	if pebbleBackend, ok := s.backend.(*pebbleStoreBackend); ok && pebbleBackend.originCursors != nil {
+		return pebbleBackend.originCursors.List(ctx)
+	}
 	rows, err := s.db.QueryContext(ctx, `
 SELECT origin_node_id, applied_event_id, updated_at_hlc
 FROM origin_cursors
@@ -142,6 +157,9 @@ func (s *Store) RecordOriginApplied(ctx context.Context, originNodeID, appliedEv
 }
 
 func (s *Store) upsertOriginCursor(ctx context.Context, originNodeID, appliedEventID int64) error {
+	if pebbleBackend, ok := s.backend.(*pebbleStoreBackend); ok && pebbleBackend.originCursors != nil {
+		return pebbleBackend.originCursors.Upsert(ctx, originNodeID, appliedEventID)
+	}
 	if originNodeID <= 0 {
 		return fmt.Errorf("%w: origin node id cannot be empty", ErrInvalidInput)
 	}

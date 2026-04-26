@@ -36,6 +36,7 @@ type UserRepository interface {
 
 type SubscriptionRepository interface {
 	ListActiveSubscriptions(context.Context, UserKey) ([]Subscription, error)
+	ListChannelSubscribers(context.Context, UserKey) ([]Subscription, error)
 }
 
 type BlacklistRepository interface {

@@ -2,6 +2,8 @@ package cluster
 
 import (
 	"context"
+	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -180,6 +182,96 @@ func TestManagerQueryLoggedInUsersMeshTimeoutClearsPending(t *testing.T) {
 		defer mgrA.mu.Unlock()
 		return len(mgrA.pendingLoggedInUsers) == 0
 	})
+}
+
+func TestManagerQueryLoggedInUsersUsesShortTTLCache(t *testing.T) {
+	t.Parallel()
+
+	mgrA, _, mgrC := startLinearMeshManagers(t)
+	var calls atomic.Int64
+	mgrC.SetLoggedInUsersProvider(func(context.Context) ([]app.LoggedInUserSummary, error) {
+		calls.Add(1)
+		return []app.LoggedInUserSummary{{
+			NodeID:   testNodeID(3),
+			UserID:   3001,
+			Username: "cached-user",
+		}}, nil
+	})
+
+	waitForMeshRoute(t, mgrA, testNodeID(3), mesh.TrafficControlQuery)
+
+	first, err := mgrA.QueryLoggedInUsers(context.Background(), testNodeID(3))
+	if err != nil {
+		t.Fatalf("first query logged-in users via mesh: %v", err)
+	}
+	second, err := mgrA.QueryLoggedInUsers(context.Background(), testNodeID(3))
+	if err != nil {
+		t.Fatalf("second query logged-in users via mesh: %v", err)
+	}
+	if len(first) != 1 || len(second) != 1 || first[0] != second[0] {
+		t.Fatalf("unexpected cached query results: first=%+v second=%+v", first, second)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("expected cached second query to skip remote provider, got %d provider calls", got)
+	}
+}
+
+func TestManagerQueryLoggedInUsersCacheExpires(t *testing.T) {
+	t.Parallel()
+
+	mgrA, _, mgrC := startLinearMeshManagers(t)
+	var calls atomic.Int64
+	mgrC.SetLoggedInUsersProvider(func(context.Context) ([]app.LoggedInUserSummary, error) {
+		call := calls.Add(1)
+		return []app.LoggedInUserSummary{{
+			NodeID:   testNodeID(3),
+			UserID:   4000 + call,
+			Username: "expiring-user",
+		}}, nil
+	})
+
+	waitForMeshRoute(t, mgrA, testNodeID(3), mesh.TrafficControlQuery)
+
+	first, err := mgrA.QueryLoggedInUsers(context.Background(), testNodeID(3))
+	if err != nil {
+		t.Fatalf("first query logged-in users via mesh: %v", err)
+	}
+	time.Sleep(loggedInUsersCacheTTL + 25*time.Millisecond)
+	second, err := mgrA.QueryLoggedInUsers(context.Background(), testNodeID(3))
+	if err != nil {
+		t.Fatalf("second query logged-in users via mesh: %v", err)
+	}
+	if len(first) != 1 || len(second) != 1 {
+		t.Fatalf("unexpected logged-in users results: first=%+v second=%+v", first, second)
+	}
+	if first[0].UserID == second[0].UserID {
+		t.Fatalf("expected cache expiry to refresh provider result, got first=%+v second=%+v", first, second)
+	}
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("expected cache expiry to trigger a second provider call, got %d", got)
+	}
+}
+
+func TestManagerQueryLoggedInUsersCachesShortFailures(t *testing.T) {
+	t.Parallel()
+
+	mgrA, _, mgrC := startLinearMeshManagers(t)
+	var calls atomic.Int64
+	mgrC.SetLoggedInUsersProvider(func(context.Context) ([]app.LoggedInUserSummary, error) {
+		calls.Add(1)
+		return nil, errors.New("upstream overloaded")
+	})
+
+	waitForMeshRoute(t, mgrA, testNodeID(3), mesh.TrafficControlQuery)
+
+	for i := 0; i < 2; i++ {
+		if _, err := mgrA.QueryLoggedInUsers(context.Background(), testNodeID(3)); err == nil {
+			t.Fatalf("expected query %d to fail", i+1)
+		}
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("expected negative cache to suppress repeated provider calls, got %d", got)
+	}
 }
 
 func TestManagerTransitNodeRecordsForwardingMetrics(t *testing.T) {

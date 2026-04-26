@@ -345,7 +345,8 @@ func (r *pebbleMessageProjectionRepository) ApplyMessageCreated(ctx context.Cont
 	if err := validateMessageIdentity(key, message.NodeID, message.Seq); err != nil {
 		return err
 	}
-	if _, err := r.userRepository.GetUser(ctx, key, false); err != nil {
+	recipient, err := r.userRepository.GetUser(ctx, key, false)
+	if err != nil {
 		return err
 	}
 
@@ -357,7 +358,7 @@ func (r *pebbleMessageProjectionRepository) ApplyMessageCreated(ctx context.Cont
 	} else if ok {
 		return nil
 	}
-	state, err := r.putMessage(ctx, message, false)
+	state, err := r.putMessage(ctx, message, recipient, false)
 	if err != nil {
 		return err
 	}
@@ -389,7 +390,15 @@ func (r *pebbleMessageProjectionRepository) ListMessagesByUser(ctx context.Conte
 	if !user.CanLogin() {
 		return r.listRawMessagesByUser(ctx, key, limit, nil)
 	}
+	if messages, ok, err := r.listLoginMessagesByUserViaInbox(ctx, key, limit); err != nil {
+		return nil, err
+	} else if ok {
+		return messages, nil
+	}
+	return r.listLoginMessagesByUserLegacy(ctx, key, limit)
+}
 
+func (r *pebbleMessageProjectionRepository) listLoginMessagesByUserLegacy(ctx context.Context, key UserKey, limit int) ([]Message, error) {
 	candidates := make([]Message, 0, limit)
 	seen := make(map[string]struct{})
 	add := func(messages []Message) {
@@ -443,6 +452,173 @@ func (r *pebbleMessageProjectionRepository) ListMessagesByUser(ctx context.Conte
 		candidates = candidates[:limit]
 	}
 	return candidates, nil
+}
+
+func (r *pebbleMessageProjectionRepository) listLoginMessagesByUserViaInbox(ctx context.Context, key UserKey, limit int) ([]Message, bool, error) {
+	scanLimit := limit
+	windowSize := normalizeMessageWindowSize(r.messageWindowSize)
+	if scanLimit < windowSize {
+		scanLimit = windowSize
+	}
+	inboxMessages, err := r.listInboxMessagesByUser(ctx, key, scanLimit)
+	if err != nil {
+		return nil, false, err
+	}
+
+	blockedAtBySender, err := r.blockedAtBySender(ctx, key)
+	if err != nil {
+		return nil, false, err
+	}
+	subscriptions, err := r.subscriptions.ListActiveSubscriptions(ctx, key)
+	if err != nil {
+		return nil, false, err
+	}
+	subscriptionByChannel := make(map[UserKey]clock.Timestamp, len(subscriptions))
+	for _, subscription := range subscriptions {
+		subscriptionByChannel[subscription.Channel] = subscription.SubscribedAt
+	}
+	senderRoleCache := make(map[UserKey]string, len(blockedAtBySender))
+	candidates := make([]Message, 0, limit)
+	for _, message := range inboxMessages {
+		visible, err := r.inboxMessageVisible(ctx, key, message, blockedAtBySender, subscriptionByChannel, senderRoleCache)
+		if err != nil {
+			return nil, false, err
+		}
+		if !visible {
+			continue
+		}
+		candidates = append(candidates, message)
+		if len(candidates) >= limit {
+			break
+		}
+	}
+	if len(candidates) < limit {
+		return nil, false, nil
+	}
+
+	broadcasts, err := r.listBroadcastMessages(ctx)
+	if err != nil {
+		return nil, false, err
+	}
+	if len(broadcasts) > 0 {
+		seen := make(map[string]struct{}, len(candidates)+len(broadcasts))
+		merged := make([]Message, 0, len(candidates)+len(broadcasts))
+		for _, message := range candidates {
+			id := messageIdentity(message)
+			seen[id] = struct{}{}
+			merged = append(merged, message)
+		}
+		for _, message := range broadcasts {
+			id := messageIdentity(message)
+			if _, ok := seen[id]; ok {
+				continue
+			}
+			seen[id] = struct{}{}
+			merged = append(merged, message)
+		}
+		candidates = merged
+		sortMessages(candidates)
+		if len(candidates) > limit {
+			candidates = candidates[:limit]
+		}
+	}
+	return candidates, true, nil
+}
+
+func (r *pebbleMessageProjectionRepository) listInboxMessagesByUser(ctx context.Context, key UserKey, limit int) ([]Message, error) {
+	if err := key.Validate(); err != nil {
+		return nil, err
+	}
+	if limit <= 0 {
+		limit = normalizeMessageWindowSize(r.messageWindowSize)
+	}
+
+	prefix := []byte(fmt.Sprintf("message/inbox/%020d/%020d/", key.NodeID, key.UserID))
+	iter, err := r.db.NewIter(&pebble.IterOptions{LowerBound: prefix, UpperBound: prefixUpperBound(prefix)})
+	if err != nil {
+		return nil, fmt.Errorf("open inbox iterator: %w", err)
+	}
+	defer iter.Close()
+
+	messages := make([]Message, 0, limit)
+	for valid := iter.First(); valid; valid = iter.Next() {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		message, err := r.messageFromIndexValue(iter.Value())
+		if err != nil {
+			return nil, err
+		}
+		messages = append(messages, message)
+		if len(messages) >= limit {
+			break
+		}
+	}
+	if err := iter.Error(); err != nil {
+		return nil, fmt.Errorf("iterate inbox messages: %w", err)
+	}
+	return messages, nil
+}
+
+func (r *pebbleMessageProjectionRepository) listBroadcastMessages(ctx context.Context) ([]Message, error) {
+	broadcasts, err := r.userRepository.ListBroadcastUserKeys(ctx)
+	if err != nil {
+		return nil, err
+	}
+	messages := make([]Message, 0)
+	for _, broadcast := range broadcasts {
+		items, err := r.listRawMessagesByUser(ctx, broadcast, 0, nil)
+		if err != nil {
+			return nil, err
+		}
+		messages = append(messages, items...)
+	}
+	return messages, nil
+}
+
+func (r *pebbleMessageProjectionRepository) blockedAtBySender(ctx context.Context, owner UserKey) (map[UserKey]clock.Timestamp, error) {
+	if r.blacklists == nil {
+		return nil, nil
+	}
+	entries, err := r.blacklists.ListActiveBlockedUsers(ctx, owner)
+	if err != nil {
+		return nil, err
+	}
+	blockedAtBySender := make(map[UserKey]clock.Timestamp, len(entries))
+	for _, entry := range entries {
+		blockedAtBySender[entry.Blocked] = entry.BlockedAt
+	}
+	return blockedAtBySender, nil
+}
+
+func (r *pebbleMessageProjectionRepository) inboxMessageVisible(ctx context.Context, owner UserKey, message Message, blockedAtBySender map[UserKey]clock.Timestamp, subscriptionByChannel map[UserKey]clock.Timestamp, senderRoleCache map[UserKey]string) (bool, error) {
+	if message.Recipient == owner {
+		blockedAt, blocked := blockedAtBySender[message.Sender]
+		if !blocked || message.CreatedAt.Compare(blockedAt) < 0 {
+			return true, nil
+		}
+		role, ok := senderRoleCache[message.Sender]
+		if !ok {
+			sender, err := r.userRepository.GetUser(ctx, message.Sender, false)
+			if err != nil {
+				if errors.Is(err, ErrNotFound) {
+					role = ""
+				} else {
+					return false, err
+				}
+			} else {
+				role = sender.Role
+			}
+			senderRoleCache[message.Sender] = role
+		}
+		return role != RoleUser, nil
+	}
+
+	subscribedAt, ok := subscriptionByChannel[message.Recipient]
+	if !ok {
+		return false, nil
+	}
+	return message.CreatedAt.Compare(subscribedAt) >= 0, nil
 }
 
 func (r *pebbleMessageProjectionRepository) BuildMessageSnapshotRows(ctx context.Context, producer int64) ([]*clusterproto.SnapshotRow, error) {
@@ -550,7 +726,14 @@ func (r *pebbleMessageProjectionRepository) applyMessageSnapshotRow(ctx context.
 	} else if ok {
 		return key, nil
 	}
-	if _, err := r.putMessage(ctx, message, true); err != nil {
+	recipient, err := r.userRepository.GetUser(ctx, key, false)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return UserKey{}, nil
+		}
+		return UserKey{}, err
+	}
+	if _, err := r.putMessage(ctx, message, recipient, true); err != nil {
 		return UserKey{}, err
 	}
 	return key, nil
@@ -567,7 +750,7 @@ func (r *pebbleMessageProjectionRepository) messageExists(message Message) (bool
 	return true, closer.Close()
 }
 
-func (r *pebbleMessageProjectionRepository) putMessage(ctx context.Context, message Message, forceSync bool) (pebbleMessageUserState, error) {
+func (r *pebbleMessageProjectionRepository) putMessage(ctx context.Context, message Message, recipient User, forceSync bool) (pebbleMessageUserState, error) {
 	state, err := r.messageUserStateLocked(ctx, message.UserKey())
 	if err != nil {
 		return pebbleMessageUserState{}, err
@@ -575,6 +758,10 @@ func (r *pebbleMessageProjectionRepository) putMessage(ctx context.Context, mess
 	batch := r.db.NewBatch()
 	state, err = r.prepareMessageWrite(batch, message, state)
 	if err != nil {
+		_ = batch.Close()
+		return pebbleMessageUserState{}, err
+	}
+	if err := r.prepareInboxWrites(ctx, batch, message, recipient); err != nil {
 		_ = batch.Close()
 		return pebbleMessageUserState{}, err
 	}
@@ -800,6 +987,22 @@ func pebbleMessageUserKey(message Message) []byte {
 func pebbleMessageProducerKey(message Message) []byte {
 	return fmt.Appendf(nil, "message/producer/%020d/%020d/%020d/%s/%020d",
 		message.NodeID, message.Recipient.NodeID, message.Recipient.UserID, descendingString(message.CreatedAt.String()), math.MaxInt64-message.Seq)
+}
+
+func pebbleInboxUserKey(owner UserKey, message Message) []byte {
+	return fmt.Appendf(nil, "message/inbox/%020d/%020d/%s/%020d/%020d/%020d/%020d",
+		owner.NodeID, owner.UserID, descendingString(message.CreatedAt.String()),
+		message.Recipient.NodeID, message.Recipient.UserID, message.NodeID, math.MaxInt64-message.Seq)
+}
+
+func pebbleInboxSourcePrefix(message Message) []byte {
+	return fmt.Appendf(nil, "message/inbox_source/%020d/%020d/%020d/%020d/",
+		message.Recipient.NodeID, message.Recipient.UserID, message.NodeID, message.Seq)
+}
+
+func pebbleInboxSourceKey(message Message, owner UserKey) []byte {
+	return fmt.Appendf(nil, "message/inbox_source/%020d/%020d/%020d/%020d/%020d/%020d",
+		message.Recipient.NodeID, message.Recipient.UserID, message.NodeID, message.Seq, owner.NodeID, owner.UserID)
 }
 
 func pebbleMessageKeys(message Message) [][]byte {

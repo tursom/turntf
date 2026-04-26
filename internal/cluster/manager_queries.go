@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/tursom/turntf/internal/app"
 	"github.com/tursom/turntf/internal/mesh"
@@ -22,6 +23,9 @@ func (m *Manager) QueryLoggedInUsers(ctx context.Context, nodeID int64) ([]app.L
 	if nodeID == m.cfg.NodeID {
 		return m.listLocalLoggedInUsers(ctx)
 	}
+	if users, err, ok := m.cachedLoggedInUsers(nodeID, time.Now()); ok {
+		return users, err
+	}
 
 	requestID, resultCh := m.beginLoggedInUsersQuery()
 	req := &internalproto.QueryLoggedInUsersRequest{
@@ -32,11 +36,15 @@ func (m *Manager) QueryLoggedInUsers(ctx context.Context, nodeID int64) ([]app.L
 	}
 	if m.MeshRuntime() == nil {
 		m.cancelLoggedInUsersQuery(requestID, mesh.ErrNoRoute)
-		return nil, fmt.Errorf("%w: node %d is not reachable", app.ErrServiceUnavailable, nodeID)
+		err := fmt.Errorf("%w: node %d is not reachable", app.ErrServiceUnavailable, nodeID)
+		m.storeLoggedInUsersError(nodeID, err, time.Now())
+		return nil, err
 	}
 	if err := m.routeMeshLoggedInUsersRequest(ctx, req); err != nil {
 		m.cancelLoggedInUsersQuery(requestID, err)
-		return nil, fmt.Errorf("%w: node %d is not reachable", app.ErrServiceUnavailable, nodeID)
+		wrapped := fmt.Errorf("%w: node %d is not reachable", app.ErrServiceUnavailable, nodeID)
+		m.storeLoggedInUsersError(nodeID, wrapped, time.Now())
+		return nil, wrapped
 	}
 
 	timeoutCtx := ctx
@@ -59,14 +67,20 @@ func (m *Manager) QueryLoggedInUsers(ctx context.Context, nodeID int64) ([]app.L
 				return nil, fmt.Errorf("%w: timed out querying node %d logged-in users", app.ErrServiceUnavailable, nodeID)
 			}
 			if errors.Is(result.err, errSessionClosed) {
-				return nil, fmt.Errorf("%w: peer session closed while querying node %d", app.ErrServiceUnavailable, nodeID)
+				wrapped := fmt.Errorf("%w: peer session closed while querying node %d", app.ErrServiceUnavailable, nodeID)
+				m.storeLoggedInUsersError(nodeID, wrapped, time.Now())
+				return nil, wrapped
 			}
+			m.storeLoggedInUsersError(nodeID, result.err, time.Now())
 			return nil, result.err
 		}
 		if err := clusterQueryError(result.response); err != nil {
+			m.storeLoggedInUsersError(nodeID, err, time.Now())
 			return nil, err
 		}
-		return loggedInUsersFromCluster(result.response.GetItems()), nil
+		users := loggedInUsersFromCluster(result.response.GetItems())
+		m.storeLoggedInUsersResult(nodeID, users, time.Now())
+		return users, nil
 	}
 }
 
@@ -169,4 +183,90 @@ func (m *Manager) resolveLoggedInUsersQuery(requestID uint64, result loggedInUse
 	ch <- result
 	close(ch)
 	return true
+}
+
+func (m *Manager) cachedLoggedInUsers(nodeID int64, now time.Time) ([]app.LoggedInUserSummary, error, bool) {
+	if m == nil || nodeID <= 0 {
+		return nil, nil, false
+	}
+
+	m.mu.Lock()
+	entry, ok := m.loggedInUsersCache[nodeID]
+	if ok && !entry.expiresAt.IsZero() && now.After(entry.expiresAt) {
+		delete(m.loggedInUsersCache, nodeID)
+		ok = false
+	}
+	m.mu.Unlock()
+
+	if !ok {
+		return nil, nil, false
+	}
+	return cloneLoggedInUsers(entry.users), entry.err, true
+}
+
+func (m *Manager) storeLoggedInUsersResult(nodeID int64, users []app.LoggedInUserSummary, now time.Time) {
+	if m == nil || nodeID <= 0 {
+		return
+	}
+	m.storeLoggedInUsersCacheEntry(nodeID, loggedInUsersCacheEntry{
+		users:     cloneLoggedInUsers(users),
+		cachedAt:  now,
+		expiresAt: now.Add(loggedInUsersCacheTTL),
+	})
+}
+
+func (m *Manager) storeLoggedInUsersError(nodeID int64, err error, now time.Time) {
+	if m == nil || nodeID <= 0 || err == nil {
+		return
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return
+	}
+	m.storeLoggedInUsersCacheEntry(nodeID, loggedInUsersCacheEntry{
+		err:       err,
+		cachedAt:  now,
+		expiresAt: now.Add(loggedInUsersCacheNegativeTTL),
+	})
+}
+
+func (m *Manager) storeLoggedInUsersCacheEntry(nodeID int64, entry loggedInUsersCacheEntry) {
+	if m == nil || nodeID <= 0 {
+		return
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.loggedInUsersCache == nil {
+		m.loggedInUsersCache = make(map[int64]loggedInUsersCacheEntry)
+	}
+	m.loggedInUsersCache[nodeID] = entry
+	if len(m.loggedInUsersCache) <= loggedInUsersCacheMaxEntries {
+		return
+	}
+
+	var (
+		evictNodeID int64
+		evictAt     time.Time
+		haveEvict   bool
+	)
+	for candidateNodeID, candidate := range m.loggedInUsersCache {
+		if !haveEvict || candidate.cachedAt.Before(evictAt) {
+			evictNodeID = candidateNodeID
+			evictAt = candidate.cachedAt
+			haveEvict = true
+		}
+	}
+	if haveEvict {
+		delete(m.loggedInUsersCache, evictNodeID)
+	}
+}
+
+func cloneLoggedInUsers(users []app.LoggedInUserSummary) []app.LoggedInUserSummary {
+	if len(users) == 0 {
+		return nil
+	}
+	cloned := make([]app.LoggedInUserSummary, len(users))
+	copy(cloned, users)
+	return cloned
 }

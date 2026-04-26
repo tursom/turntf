@@ -679,6 +679,35 @@ ORDER BY channel_node_id ASC, channel_user_id ASC
 	return subscriptions, nil
 }
 
+func (r *sqliteSubscriptionRepository) ListChannelSubscribers(ctx context.Context, channel UserKey) ([]Subscription, error) {
+	if err := channel.Validate(); err != nil {
+		return nil, err
+	}
+	rows, err := r.db.QueryContext(ctx, `
+SELECT subscriber_node_id, subscriber_user_id, channel_node_id, channel_user_id, subscribed_at_hlc, deleted_at_hlc, origin_node_id
+FROM channel_subscriptions
+WHERE channel_node_id = ? AND channel_user_id = ? AND deleted_at_hlc IS NULL
+ORDER BY subscriber_node_id ASC, subscriber_user_id ASC
+`, channel.NodeID, channel.UserID)
+	if err != nil {
+		return nil, fmt.Errorf("list channel subscribers: %w", err)
+	}
+	defer rows.Close()
+
+	subscriptions := make([]Subscription, 0)
+	for rows.Next() {
+		subscription, err := scanSubscription(rows)
+		if err != nil {
+			return nil, err
+		}
+		subscriptions = append(subscriptions, subscription)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate channel subscribers: %w", err)
+	}
+	return subscriptions, nil
+}
+
 func (r *sqliteMessageTrimRepository) RecordMessageTrim(ctx context.Context, trimmed int64) error {
 	if trimmed <= 0 {
 		return nil
@@ -760,6 +789,9 @@ ON CONFLICT(scope) DO UPDATE SET
 }
 
 func (s *Store) recordPendingProjection(ctx context.Context, event Event, reason error) error {
+	if pebbleBackend, ok := s.backend.(*pebbleStoreBackend); ok && pebbleBackend.pendingProjections != nil {
+		return pebbleBackend.pendingProjections.Record(ctx, event, reason)
+	}
 	return s.recordPendingProjectionAt(ctx, s.db, event, reason)
 }
 
@@ -798,6 +830,9 @@ ON CONFLICT(origin_node_id, event_id) DO UPDATE SET
 }
 
 func (s *Store) clearPendingProjection(ctx context.Context, originNodeID, eventID int64) error {
+	if pebbleBackend, ok := s.backend.(*pebbleStoreBackend); ok && pebbleBackend.pendingProjections != nil {
+		return pebbleBackend.pendingProjections.Clear(ctx, originNodeID, eventID)
+	}
 	if originNodeID <= 0 || eventID <= 0 {
 		return nil
 	}
@@ -811,6 +846,9 @@ WHERE origin_node_id = ? AND event_id = ?
 }
 
 func (s *Store) projectionStats(ctx context.Context) (ProjectionStats, error) {
+	if pebbleBackend, ok := s.backend.(*pebbleStoreBackend); ok && pebbleBackend.pendingProjections != nil {
+		return pebbleBackend.pendingProjections.Stats(ctx)
+	}
 	var (
 		total   int64
 		lastRaw sql.NullString

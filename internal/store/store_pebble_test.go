@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"testing"
@@ -208,6 +209,201 @@ func TestPebbleCreateMessageRejectsBlockedSender(t *testing.T) {
 		Body:    []byte("blocked"),
 	}); err != ErrBlockedByBlacklist {
 		t.Fatalf("expected blacklist rejection, got %v", err)
+	}
+}
+
+func TestPebbleListMessagesByUserPreservesChannelAndBroadcastSemantics(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	st := openPebbleTestStore(t, "login-inbox-semantics", 1, DefaultMessageWindowSize)
+
+	alice, _, err := st.CreateUser(ctx, CreateUserParams{
+		Username:     "alice",
+		PasswordHash: "hash-alice",
+		Role:         RoleUser,
+	})
+	if err != nil {
+		t.Fatalf("create alice: %v", err)
+	}
+	bob, _, err := st.CreateUser(ctx, CreateUserParams{
+		Username:     "bob",
+		PasswordHash: "hash-bob",
+		Role:         RoleUser,
+	})
+	if err != nil {
+		t.Fatalf("create bob: %v", err)
+	}
+	channel, _, err := st.CreateUser(ctx, CreateUserParams{
+		Username: "alerts",
+		Role:     RoleChannel,
+	})
+	if err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+
+	if _, _, err := st.CreateMessage(ctx, CreateMessageParams{
+		UserKey: channel.Key(),
+		Sender:  testSenderKey(9, 1),
+		Body:    []byte("before subscription"),
+	}); err != nil {
+		t.Fatalf("create pre-subscription channel message: %v", err)
+	}
+	if _, _, err := st.SubscribeChannel(ctx, ChannelSubscriptionParams{
+		Subscriber: alice.Key(),
+		Channel:    channel.Key(),
+	}); err != nil {
+		t.Fatalf("subscribe alice: %v", err)
+	}
+	if _, _, err := st.CreateMessage(ctx, CreateMessageParams{
+		UserKey: channel.Key(),
+		Sender:  testSenderKey(9, 1),
+		Body:    []byte("after subscription"),
+	}); err != nil {
+		t.Fatalf("create post-subscription channel message: %v", err)
+	}
+	broadcastKey := UserKey{NodeID: st.NodeID(), UserID: BroadcastUserID}
+	if _, err := st.GetUser(ctx, broadcastKey); err != nil {
+		if !errors.Is(err, ErrNotFound) {
+			t.Fatalf("get broadcast user: %v", err)
+		}
+		now := st.Clock().Now()
+		broadcast := User{
+			NodeID:              st.NodeID(),
+			ID:                  BroadcastUserID,
+			Username:            "broadcast",
+			PasswordHash:        disabledPasswordHash,
+			Profile:             "{}",
+			Role:                RoleBroadcast,
+			SystemReserved:      true,
+			CreatedAt:           now,
+			UpdatedAt:           now,
+			VersionUsername:     now,
+			VersionPasswordHash: now,
+			VersionProfile:      now,
+			VersionRole:         now,
+			OriginNodeID:        st.NodeID(),
+		}
+		if err := st.ApplyReplicatedEvent(ctx, ToReplicatedEvent(Event{
+			EventID:         9_001,
+			EventType:       EventTypeUserCreated,
+			Aggregate:       "user",
+			AggregateNodeID: broadcast.NodeID,
+			AggregateID:     broadcast.ID,
+			HLC:             now,
+			OriginNodeID:    testNodeID(9),
+			Body:            userCreatedProtoFromUser(broadcast),
+		})); err != nil {
+			t.Fatalf("seed broadcast user for pebble test: %v", err)
+		}
+	}
+	if _, _, err := st.CreateMessage(ctx, CreateMessageParams{
+		UserKey: broadcastKey,
+		Sender:  testSenderKey(9, 1),
+		Body:    []byte("broadcast message"),
+	}); err != nil {
+		t.Fatalf("create broadcast message: %v", err)
+	}
+
+	aliceMessages, err := st.ListMessagesByUser(ctx, alice.Key(), 10)
+	if err != nil {
+		t.Fatalf("list alice messages: %v", err)
+	}
+	if !messagesContainBody(aliceMessages, "after subscription") || !messagesContainBody(aliceMessages, "broadcast message") {
+		t.Fatalf("expected alice to see channel and broadcast messages: %+v", aliceMessages)
+	}
+	if messagesContainBody(aliceMessages, "before subscription") {
+		t.Fatalf("alice should not see channel history before subscription: %+v", aliceMessages)
+	}
+
+	bobMessages, err := st.ListMessagesByUser(ctx, bob.Key(), 10)
+	if err != nil {
+		t.Fatalf("list bob messages: %v", err)
+	}
+	if !messagesContainBody(bobMessages, "broadcast message") || messagesContainBody(bobMessages, "after subscription") {
+		t.Fatalf("unexpected bob messages: %+v", bobMessages)
+	}
+
+	charlie, _, err := st.CreateUser(ctx, CreateUserParams{
+		Username:     "charlie",
+		PasswordHash: "hash-charlie",
+		Role:         RoleUser,
+	})
+	if err != nil {
+		t.Fatalf("create charlie: %v", err)
+	}
+	charlieMessages, err := st.ListMessagesByUser(ctx, charlie.Key(), 10)
+	if err != nil {
+		t.Fatalf("list charlie messages: %v", err)
+	}
+	if !messagesContainBody(charlieMessages, "broadcast message") {
+		t.Fatalf("future user should see retained broadcast messages: %+v", charlieMessages)
+	}
+
+	if _, _, err := st.UnsubscribeChannel(ctx, ChannelSubscriptionParams{
+		Subscriber: alice.Key(),
+		Channel:    channel.Key(),
+	}); err != nil {
+		t.Fatalf("unsubscribe alice: %v", err)
+	}
+	aliceMessages, err = st.ListMessagesByUser(ctx, alice.Key(), 10)
+	if err != nil {
+		t.Fatalf("list alice messages after unsubscribe: %v", err)
+	}
+	if messagesContainBody(aliceMessages, "after subscription") {
+		t.Fatalf("alice should not see channel messages after unsubscribe: %+v", aliceMessages)
+	}
+}
+
+func TestPebbleChannelTrimDeletesSubscriberInboxEntries(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	st := openPebbleTestStore(t, "channel-inbox-trim", 1, 1)
+
+	alice, _, err := st.CreateUser(ctx, CreateUserParams{
+		Username:     "alice",
+		PasswordHash: "hash-alice",
+		Role:         RoleUser,
+	})
+	if err != nil {
+		t.Fatalf("create alice: %v", err)
+	}
+	channel, _, err := st.CreateUser(ctx, CreateUserParams{
+		Username: "alerts",
+		Role:     RoleChannel,
+	})
+	if err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+	if _, _, err := st.SubscribeChannel(ctx, ChannelSubscriptionParams{
+		Subscriber: alice.Key(),
+		Channel:    channel.Key(),
+	}); err != nil {
+		t.Fatalf("subscribe alice: %v", err)
+	}
+
+	if _, _, err := st.CreateMessage(ctx, CreateMessageParams{
+		UserKey: channel.Key(),
+		Sender:  testSenderKey(9, 1),
+		Body:    []byte("first"),
+	}); err != nil {
+		t.Fatalf("create first channel message: %v", err)
+	}
+	if _, _, err := st.CreateMessage(ctx, CreateMessageParams{
+		UserKey: channel.Key(),
+		Sender:  testSenderKey(9, 1),
+		Body:    []byte("second"),
+	}); err != nil {
+		t.Fatalf("create second channel message: %v", err)
+	}
+
+	messages, err := st.ListMessagesByUser(ctx, alice.Key(), 10)
+	if err != nil {
+		t.Fatalf("list alice messages: %v", err)
+	}
+	if len(messages) != 1 || string(messages[0].Body) != "second" {
+		t.Fatalf("expected trimmed subscriber inbox to keep only latest channel message, got %+v", messages)
 	}
 }
 
@@ -636,6 +832,123 @@ func TestPebblePruneEventLogKeepsLatestEventsPerOrigin(t *testing.T) {
 	}
 	if stats.TrimmedTotal != 2 || stats.LastTrimmedAt == nil {
 		t.Fatalf("unexpected event log trim stats: %+v", stats)
+	}
+}
+
+func TestPebblePeerAndOriginCursorsBypassSQLite(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	st := openPebbleTestStore(t, "pebble-cursors", 1, DefaultMessageWindowSize)
+
+	if err := st.RecordPeerAck(ctx, testNodeID(2), testNodeID(3), 7); err != nil {
+		t.Fatalf("record peer ack: %v", err)
+	}
+	if err := st.RecordPeerAck(ctx, testNodeID(2), testNodeID(3), 5); err != nil {
+		t.Fatalf("record peer ack monotonic update: %v", err)
+	}
+	ackCursor, err := st.GetPeerAckCursor(ctx, testNodeID(2), testNodeID(3))
+	if err != nil {
+		t.Fatalf("get peer ack cursor: %v", err)
+	}
+	if ackCursor.AckedEventID != 7 {
+		t.Fatalf("expected monotonic peer ack cursor, got %+v", ackCursor)
+	}
+
+	if err := st.RecordOriginApplied(ctx, testNodeID(3), 11); err != nil {
+		t.Fatalf("record origin applied: %v", err)
+	}
+	if err := st.RecordOriginApplied(ctx, testNodeID(3), 9); err != nil {
+		t.Fatalf("record origin applied monotonic update: %v", err)
+	}
+	originCursor, err := st.GetOriginCursor(ctx, testNodeID(3))
+	if err != nil {
+		t.Fatalf("get origin cursor: %v", err)
+	}
+	if originCursor.AppliedEventID != 11 {
+		t.Fatalf("expected monotonic origin cursor, got %+v", originCursor)
+	}
+
+	var peerAckRows int
+	if err := st.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM peer_ack_cursors`).Scan(&peerAckRows); err != nil {
+		t.Fatalf("count sqlite peer ack rows: %v", err)
+	}
+	if peerAckRows != 0 {
+		t.Fatalf("expected pebble peer ack cursor writes to bypass SQLite, found %d rows", peerAckRows)
+	}
+
+	var originRows int
+	if err := st.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM origin_cursors`).Scan(&originRows); err != nil {
+		t.Fatalf("count sqlite origin cursor rows: %v", err)
+	}
+	if originRows != 0 {
+		t.Fatalf("expected pebble origin cursor writes to bypass SQLite, found %d rows", originRows)
+	}
+}
+
+func TestPebblePendingProjectionsBypassSQLite(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	st := openPebbleTestStore(t, "pebble-pending-projections", 1, DefaultMessageWindowSize)
+
+	user, _, err := st.CreateUser(ctx, CreateUserParams{
+		Username:     "pending-user",
+		PasswordHash: "hash-pending-user",
+		Role:         RoleUser,
+	})
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	_, event, err := st.CreateMessage(ctx, CreateMessageParams{
+		UserKey: user.Key(),
+		Sender:  user.Key(),
+		Body:    []byte("pending"),
+	})
+	if err != nil {
+		t.Fatalf("create message: %v", err)
+	}
+
+	if err := st.recordPendingProjection(ctx, event, errors.New("projection failed once")); err != nil {
+		t.Fatalf("record pending projection first time: %v", err)
+	}
+	if err := st.recordPendingProjection(ctx, event, errors.New("projection failed twice")); err != nil {
+		t.Fatalf("record pending projection second time: %v", err)
+	}
+
+	stats, err := st.projectionStats(ctx)
+	if err != nil {
+		t.Fatalf("projection stats: %v", err)
+	}
+	if stats.PendingTotal != 1 || stats.LastFailedAt == nil {
+		t.Fatalf("unexpected pebble pending projection stats: %+v", stats)
+	}
+
+	events, err := st.listPendingProjectionEvents(ctx, 10)
+	if err != nil {
+		t.Fatalf("list pending projection events: %v", err)
+	}
+	if len(events) != 1 || events[0].OriginNodeID != event.OriginNodeID || events[0].EventID != event.EventID {
+		t.Fatalf("unexpected pending projection events: %+v", events)
+	}
+
+	var sqliteRows int
+	if err := st.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM pending_projections`).Scan(&sqliteRows); err != nil {
+		t.Fatalf("count sqlite pending projections: %v", err)
+	}
+	if sqliteRows != 0 {
+		t.Fatalf("expected pebble pending projections to bypass SQLite, found %d rows", sqliteRows)
+	}
+
+	if err := st.clearPendingProjection(ctx, event.OriginNodeID, event.EventID); err != nil {
+		t.Fatalf("clear pending projection: %v", err)
+	}
+	stats, err = st.projectionStats(ctx)
+	if err != nil {
+		t.Fatalf("projection stats after clear: %v", err)
+	}
+	if stats.PendingTotal != 0 {
+		t.Fatalf("expected pending projections to be cleared, got %+v", stats)
 	}
 }
 

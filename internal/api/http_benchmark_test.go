@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"strconv"
 	"testing"
@@ -14,26 +13,39 @@ import (
 
 	"github.com/tursom/turntf/internal/auth"
 	"github.com/tursom/turntf/internal/store"
+	"github.com/tursom/turntf/internal/testutil/benchroot"
 )
 
+const apiBenchmarkWarmupPasses = 1
+
 func BenchmarkHTTPCreateMessageAuthenticated(b *testing.B) {
-	for _, engine := range []string{store.EngineSQLite, store.EnginePebble} {
-		b.Run(engine, func(b *testing.B) {
-			benchmarkHTTPCreateMessageAuthenticated(b, engine)
+	for _, mode := range benchroot.Modes(b) {
+		mode := mode
+		b.Run(mode.Name(), func(b *testing.B) {
+			for _, engine := range []string{store.EngineSQLite, store.EnginePebble} {
+				b.Run(engine, func(b *testing.B) {
+					benchmarkHTTPCreateMessageAuthenticated(b, mode, engine)
+				})
+			}
 		})
 	}
 }
 
 func BenchmarkHTTPListMessagesByUserAuthenticated(b *testing.B) {
-	for _, engine := range []string{store.EngineSQLite, store.EnginePebble} {
-		b.Run(engine, func(b *testing.B) {
-			benchmarkHTTPListMessagesByUserAuthenticated(b, engine)
+	for _, mode := range benchroot.Modes(b) {
+		mode := mode
+		b.Run(mode.Name(), func(b *testing.B) {
+			for _, engine := range []string{store.EngineSQLite, store.EnginePebble} {
+				b.Run(engine, func(b *testing.B) {
+					benchmarkHTTPListMessagesByUserAuthenticated(b, mode, engine)
+				})
+			}
 		})
 	}
 }
 
-func benchmarkHTTPCreateMessageAuthenticated(b *testing.B, engine string) {
-	testAPI, closeAPI := openBenchmarkAuthenticatedTestAPI(b, engine)
+func benchmarkHTTPCreateMessageAuthenticated(b *testing.B, mode benchroot.Mode, engine string) {
+	testAPI, closeAPI := openBenchmarkAuthenticatedTestAPI(b, mode, engine)
 	b.Cleanup(closeAPI)
 
 	adminKey := store.UserKey{NodeID: testNodeID(1), UserID: store.BootstrapAdminUserID}
@@ -42,30 +54,23 @@ func benchmarkHTTPCreateMessageAuthenticated(b *testing.B, engine string) {
 	headers := map[string]string{"Authorization": "Bearer " + adminToken}
 	payload := bytes.Repeat([]byte("m"), 256)
 
+	runAPIBenchmarkWarmup(b, func() {
+		mustBenchmarkHTTPCreateMessageAuthenticatedOnce(b, testAPI.handler, headers, userKey, payload)
+	})
 	b.SetBytes(int64(len(payload)))
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
-		var response struct {
-			Recipient store.UserKey `json:"recipient"`
-			NodeID    int64         `json:"node_id"`
-			Seq       int64         `json:"seq"`
-		}
-		benchmarkMustJSON(b, benchmarkDoJSONWithHeaders(b, testAPI.handler, http.MethodPost, userMessagesPath(userKey.NodeID, userKey.UserID), map[string]any{
-			"body": payload,
-		}, headers, http.StatusCreated), &response)
-		if response.Recipient != userKey || response.NodeID != testNodeID(1) || response.Seq <= 0 {
-			b.Fatalf("unexpected create message response: %+v", response)
-		}
+		mustBenchmarkHTTPCreateMessageAuthenticatedOnce(b, testAPI.handler, headers, userKey, payload)
 	}
 }
 
-func benchmarkHTTPListMessagesByUserAuthenticated(b *testing.B, engine string) {
+func benchmarkHTTPListMessagesByUserAuthenticated(b *testing.B, mode benchroot.Mode, engine string) {
 	const history = 100
 	const limit = 50
 
 	ctx := context.Background()
-	testAPI, closeAPI := openBenchmarkAuthenticatedTestAPI(b, engine)
+	testAPI, closeAPI := openBenchmarkAuthenticatedTestAPI(b, mode, engine)
 	b.Cleanup(closeAPI)
 
 	adminKey := store.UserKey{NodeID: testNodeID(1), UserID: store.BootstrapAdminUserID}
@@ -88,43 +93,31 @@ func benchmarkHTTPListMessagesByUserAuthenticated(b *testing.B, engine string) {
 	wantFirst := expectedBodies[len(expectedBodies)-1]
 	wantLast := expectedBodies[len(expectedBodies)-limit]
 
+	runAPIBenchmarkWarmup(b, func() {
+		mustBenchmarkHTTPListMessagesByUserAuthenticatedOnce(b, testAPI.handler, headers, userKey, limit, wantFirst, wantLast)
+	})
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		var response struct {
-			Count int `json:"count"`
-			Items []struct {
-				Body []byte `json:"body"`
-			} `json:"items"`
-		}
-		benchmarkMustJSON(b, benchmarkDoJSONWithHeaders(b, testAPI.handler, http.MethodGet, userMessagesPath(userKey.NodeID, userKey.UserID)+"?limit=50", nil, headers, http.StatusOK), &response)
-		if response.Count != limit || len(response.Items) != limit {
-			b.Fatalf("unexpected list message count: %+v", response)
-		}
-		if !bytes.Equal(response.Items[0].Body, wantFirst) || !bytes.Equal(response.Items[len(response.Items)-1].Body, wantLast) {
-			b.Fatalf("unexpected list message ordering: first=%q last=%q", response.Items[0].Body, response.Items[len(response.Items)-1].Body)
-		}
+		mustBenchmarkHTTPListMessagesByUserAuthenticatedOnce(b, testAPI.handler, headers, userKey, limit, wantFirst, wantLast)
 	}
 }
 
-func openBenchmarkAuthenticatedTestAPI(tb testing.TB, engine string) (authenticatedTestAPI, func()) {
+func openBenchmarkAuthenticatedTestAPI(tb testing.TB, mode benchroot.Mode, engine string) (authenticatedTestAPI, func()) {
 	tb.Helper()
 
-	dir, err := os.MkdirTemp("", "turntf-api-bench-*")
-	if err != nil {
-		tb.Fatalf("create benchmark api temp dir: %v", err)
-	}
+	dir, cleanupDir := mode.MkdirTemp(tb, "turntf-api-bench-*")
 	opts := store.Options{NodeID: testNodeID(1), Engine: engine}
 	if engine == store.EnginePebble {
 		opts.PebblePath = filepath.Join(dir, "api.pebble")
 	}
 	st, err := store.Open(filepath.Join(dir, "api.db"), opts)
 	if err != nil {
-		_ = os.RemoveAll(dir)
+		cleanupDir()
 		tb.Fatalf("open benchmark api store: %v", err)
 	}
 	if err := st.Init(context.Background()); err != nil {
 		_ = st.Close()
-		_ = os.RemoveAll(dir)
+		cleanupDir()
 		tb.Fatalf("init benchmark api store: %v", err)
 	}
 	if err := st.EnsureBootstrapAdmin(context.Background(), store.BootstrapAdminConfig{
@@ -132,14 +125,14 @@ func openBenchmarkAuthenticatedTestAPI(tb testing.TB, engine string) (authentica
 		PasswordHash: benchmarkMustHashPassword(tb, "root-password"),
 	}); err != nil {
 		_ = st.Close()
-		_ = os.RemoveAll(dir)
+		cleanupDir()
 		tb.Fatalf("ensure bootstrap admin: %v", err)
 	}
 
 	signer, err := auth.NewSigner("token-secret")
 	if err != nil {
 		_ = st.Close()
-		_ = os.RemoveAll(dir)
+		cleanupDir()
 		tb.Fatalf("new signer: %v", err)
 	}
 
@@ -153,7 +146,7 @@ func openBenchmarkAuthenticatedTestAPI(tb testing.TB, engine string) (authentica
 			http:    httpAPI,
 		}, func() {
 			_ = st.Close()
-			_ = os.RemoveAll(dir)
+			cleanupDir()
 		}
 }
 
@@ -239,4 +232,45 @@ func benchmarkMustHashPassword(tb testing.TB, password string) string {
 		tb.Fatalf("hash password: %v", err)
 	}
 	return hash
+}
+
+func runAPIBenchmarkWarmup(tb testing.TB, fn func()) {
+	tb.Helper()
+	for i := 0; i < apiBenchmarkWarmupPasses; i++ {
+		fn()
+	}
+}
+
+func mustBenchmarkHTTPCreateMessageAuthenticatedOnce(tb testing.TB, handler http.Handler, headers map[string]string, userKey store.UserKey, payload []byte) {
+	tb.Helper()
+
+	var response struct {
+		Recipient store.UserKey `json:"recipient"`
+		NodeID    int64         `json:"node_id"`
+		Seq       int64         `json:"seq"`
+	}
+	benchmarkMustJSON(tb, benchmarkDoJSONWithHeaders(tb, handler, http.MethodPost, userMessagesPath(userKey.NodeID, userKey.UserID), map[string]any{
+		"body": payload,
+	}, headers, http.StatusCreated), &response)
+	if response.Recipient != userKey || response.NodeID != testNodeID(1) || response.Seq <= 0 {
+		tb.Fatalf("unexpected create message response: %+v", response)
+	}
+}
+
+func mustBenchmarkHTTPListMessagesByUserAuthenticatedOnce(tb testing.TB, handler http.Handler, headers map[string]string, userKey store.UserKey, limit int, wantFirst, wantLast []byte) {
+	tb.Helper()
+
+	var response struct {
+		Count int `json:"count"`
+		Items []struct {
+			Body []byte `json:"body"`
+		} `json:"items"`
+	}
+	benchmarkMustJSON(tb, benchmarkDoJSONWithHeaders(tb, handler, http.MethodGet, userMessagesPath(userKey.NodeID, userKey.UserID)+"?limit="+strconv.Itoa(limit), nil, headers, http.StatusOK), &response)
+	if response.Count != limit || len(response.Items) != limit {
+		tb.Fatalf("unexpected list message count: %+v", response)
+	}
+	if !bytes.Equal(response.Items[0].Body, wantFirst) || !bytes.Equal(response.Items[len(response.Items)-1].Body, wantLast) {
+		tb.Fatalf("unexpected list message ordering: first=%q last=%q", response.Items[0].Body, response.Items[len(response.Items)-1].Body)
+	}
 }

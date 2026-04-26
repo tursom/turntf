@@ -65,6 +65,7 @@
 分布式测试框架增强计划见 [docs/distributed-test-framework-enhancement.md](/root/dev/sys/turntf/docs/distributed-test-framework-enhancement.md)。
 分布式测试框架增强执行结果见 [docs/distributed-test-framework-enhancement-results.md](/root/dev/sys/turntf/docs/distributed-test-framework-enhancement-results.md)。
 性能基线见 [docs/performance-baseline.md](/root/dev/sys/turntf/docs/performance-baseline.md)。
+当前 benchmark 会始终输出 `tmp` 子场景；如果默认临时目录位于内存文件系统，还会自动补跑仓库根目录 `./.benchdata` 下的 `disk` 子场景，性能结论优先看首个非内存文件系统结果。
 吞吐优化方案见 [docs/throughput-optimization-plan.md](/root/dev/sys/turntf/docs/throughput-optimization-plan.md)。
 复制语义规范见 [docs/replication-semantics.md](/root/dev/sys/turntf/docs/replication-semantics.md)。
 时钟保护算法见 [docs/clock-protection.md](/root/dev/sys/turntf/docs/clock-protection.md)。

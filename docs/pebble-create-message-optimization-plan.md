@@ -90,8 +90,8 @@
 
 本轮优化目标：
 
-- 把 `BenchmarkStoreCreateMessage/pebble/256B` 压到接近 `0.6ms/op` 量级。
-- 把 `BenchmarkStoreCreateMessage/pebble/4KiB` 压到接近 `1.2ms/op` 量级。
+- 把 `BenchmarkStoreCreateMessage/*/pebble/256B` 压到接近 `0.6ms/op` 量级。
+- 把 `BenchmarkStoreCreateMessage/*/pebble/4KiB` 压到接近 `1.2ms/op` 量级。
 - 不改变外部 API。
 - 不改变“成功返回后消息已本地可见”的语义。
 
@@ -173,7 +173,7 @@
 ### 预期收益
 
 - 降低 `256B` 小消息场景里事件日志 append 的固定成本。
-- 对 `BenchmarkStoreCreateMessage/pebble/256B` 收益更明显。
+- 对 `BenchmarkStoreCreateMessage/*/pebble/256B` 收益更明显。
 
 ### 风险
 
@@ -273,10 +273,10 @@ go test ./internal/store -run '^$' -bench 'BenchmarkStore(CreateMessage|ListMess
 
 重点关注：
 
-- `BenchmarkStoreCreateMessage/pebble/256B`
-- `BenchmarkStoreCreateMessage/pebble/4KiB`
-- `BenchmarkStoreListMessagesByUser/pebble`
-- `BenchmarkStorePruneEventLogOnce/pebble`
+- `BenchmarkStoreCreateMessage/*/pebble/256B`
+- `BenchmarkStoreCreateMessage/*/pebble/4KiB`
+- `BenchmarkStoreListMessagesByUser/*/pebble`
+- `BenchmarkStorePruneEventLogOnce/*/pebble`
 
 通过标准：
 

@@ -10,56 +10,74 @@ import (
 	"github.com/tursom/turntf/internal/app"
 	"github.com/tursom/turntf/internal/mesh"
 	"github.com/tursom/turntf/internal/store"
+	"github.com/tursom/turntf/internal/testutil/benchroot"
 )
 
+const clusterBenchmarkWarmupPasses = 1
+
 func BenchmarkMeshReplicationPebbleLinear3Nodes(b *testing.B) {
-	for _, tc := range []struct {
-		name        string
-		payloadSize int
-	}{
-		{name: "256B", payloadSize: 256},
-		{name: "4KiB", payloadSize: 4 << 10},
-		{name: "16KiB", payloadSize: 16 << 10},
-	} {
-		b.Run(tc.name, func(b *testing.B) {
-			benchmarkMeshReplicationPebbleLinear(b, tc.payloadSize)
+	for _, mode := range benchroot.Modes(b) {
+		mode := mode
+		b.Run(mode.Name(), func(b *testing.B) {
+			for _, tc := range []struct {
+				name        string
+				payloadSize int
+			}{
+				{name: "256B", payloadSize: 256},
+				{name: "4KiB", payloadSize: 4 << 10},
+				{name: "16KiB", payloadSize: 16 << 10},
+			} {
+				b.Run(tc.name, func(b *testing.B) {
+					benchmarkMeshReplicationPebbleLinear(b, mode, tc.payloadSize)
+				})
+			}
 		})
 	}
 }
 
 func BenchmarkMeshQueryLoggedInUsersPebbleLinear(b *testing.B) {
-	for _, nodeCount := range []int{3, 7} {
-		for _, userCount := range []int{1, 100} {
-			b.Run(fmt.Sprintf("%d-nodes/%d-users", nodeCount, userCount), func(b *testing.B) {
-				benchmarkMeshQueryLoggedInUsersPebbleLinear(b, nodeCount, userCount)
-			})
-		}
+	for _, mode := range benchroot.Modes(b) {
+		mode := mode
+		b.Run(mode.Name(), func(b *testing.B) {
+			for _, nodeCount := range []int{3, 7} {
+				for _, userCount := range []int{1, 100} {
+					b.Run(fmt.Sprintf("%d-nodes/%d-users", nodeCount, userCount), func(b *testing.B) {
+						benchmarkMeshQueryLoggedInUsersPebbleLinear(b, mode, nodeCount, userCount)
+					})
+				}
+			}
+		})
 	}
 }
 
 func BenchmarkMeshTransientRoutePebbleLinear(b *testing.B) {
-	for _, nodeCount := range []int{3, 7} {
-		for _, tc := range []struct {
-			name        string
-			payloadSize int
-		}{
-			{name: "256B", payloadSize: 256},
-			{name: "4KiB", payloadSize: 4 << 10},
-		} {
-			b.Run(fmt.Sprintf("%d-nodes/%s", nodeCount, tc.name), func(b *testing.B) {
-				benchmarkMeshTransientRoutePebbleLinear(b, nodeCount, tc.payloadSize)
-			})
-		}
+	for _, mode := range benchroot.Modes(b) {
+		mode := mode
+		b.Run(mode.Name(), func(b *testing.B) {
+			for _, nodeCount := range []int{3, 7} {
+				for _, tc := range []struct {
+					name        string
+					payloadSize int
+				}{
+					{name: "256B", payloadSize: 256},
+					{name: "4KiB", payloadSize: 4 << 10},
+				} {
+					b.Run(fmt.Sprintf("%d-nodes/%s", nodeCount, tc.name), func(b *testing.B) {
+						benchmarkMeshTransientRoutePebbleLinear(b, mode, nodeCount, tc.payloadSize)
+					})
+				}
+			}
+		})
 	}
 }
 
-func benchmarkMeshReplicationPebbleLinear(b *testing.B, payloadSize int) {
-	const ackTimeout = 5 * time.Second
+func benchmarkMeshReplicationPebbleLinear(b *testing.B, mode benchroot.Mode, payloadSize int) {
+	ackTimeout := benchmarkTimeout(mode, 5*time.Second, 30*time.Second)
 
 	ctx := context.Background()
 	b.StopTimer()
 	silenceClusterLogs(b)
-	managers := startLinearWebSocketManagersWithStoreFactory(b, 3, pebbleLinearStoreFactory)
+	managers := startLinearWebSocketManagersWithStoreFactory(b, 3, newBenchmarkPebbleLinearStoreFactory(mode))
 	source := managers[0]
 	target := managers[2]
 	targetNodeID := testNodeID(3)
@@ -86,37 +104,16 @@ func benchmarkMeshReplicationPebbleLinear(b *testing.B, payloadSize int) {
 	})
 
 	payload := bytes.Repeat([]byte("m"), payloadSize)
+	runClusterBenchmarkWarmup(b, func() {
+		_ = mustBenchmarkMeshReplicationOnce(b, ctx, source, target, recipient.Key(), targetNodeID, payload, ackTimeout)
+	})
 	b.SetBytes(int64(payloadSize))
 	b.ResetTimer()
 	b.StartTimer()
 
 	var totalAck time.Duration
 	for i := 0; i < b.N; i++ {
-		start := time.Now()
-		message, event, err := source.store.CreateMessage(ctx, store.CreateMessageParams{
-			UserKey: recipient.Key(),
-			Sender:  recipient.Key(),
-			Body:    payload,
-		})
-		if err != nil {
-			b.Fatalf("create benchmark message: %v", err)
-		}
-		source.Publish(event)
-
-		waitForBenchmark(b, ackTimeout, func() bool {
-			messages, err := target.store.ListMessagesByUser(ctx, recipient.Key(), 1)
-			return err == nil &&
-				len(messages) == 1 &&
-				messages[0].Recipient == recipient.Key() &&
-				messages[0].NodeID == message.NodeID &&
-				messages[0].Seq == message.Seq &&
-				bytes.Equal(messages[0].Body, payload)
-		})
-		waitForBenchmark(b, ackTimeout, func() bool {
-			cursor, err := source.store.GetPeerAckCursor(ctx, targetNodeID, testNodeID(1))
-			return err == nil && cursor.AckedEventID >= event.EventID
-		})
-		totalAck += time.Since(start)
+		totalAck += mustBenchmarkMeshReplicationOnce(b, ctx, source, target, recipient.Key(), targetNodeID, payload, ackTimeout)
 	}
 
 	b.StopTimer()
@@ -124,13 +121,13 @@ func benchmarkMeshReplicationPebbleLinear(b *testing.B, payloadSize int) {
 	b.ReportMetric(float64(payloadSize), "bytes/op")
 }
 
-func benchmarkMeshQueryLoggedInUsersPebbleLinear(b *testing.B, nodeCount, userCount int) {
+func benchmarkMeshQueryLoggedInUsersPebbleLinear(b *testing.B, mode benchroot.Mode, nodeCount, userCount int) {
 	ctx := context.Background()
 	targetNodeID := testNodeID(uint16(nodeCount))
 
 	b.StopTimer()
 	silenceClusterLogs(b)
-	managers := startLinearWebSocketManagersWithStoreFactory(b, nodeCount, pebbleLinearStoreFactory)
+	managers := startLinearWebSocketManagersWithStoreFactory(b, nodeCount, newBenchmarkPebbleLinearStoreFactory(mode))
 	source := managers[0]
 	target := managers[nodeCount-1]
 	expected := benchmarkLoggedInUsers(targetNodeID, userCount)
@@ -141,33 +138,23 @@ func benchmarkMeshQueryLoggedInUsersPebbleLinear(b *testing.B, nodeCount, userCo
 	waitForMeshRouteDecision(b, source, targetNodeID, mesh.TrafficControlQuery, testNodeID(2), mesh.TransportWebSocket)
 	waitForMeshRouteDecision(b, target, testNodeID(1), mesh.TrafficControlQuery, testNodeID(uint16(nodeCount-1)), mesh.TransportWebSocket)
 
+	runClusterBenchmarkWarmup(b, func() {
+		_ = mustBenchmarkMeshQueryLoggedInUsersOnce(b, ctx, source, targetNodeID, expected, userCount)
+	})
 	b.ResetTimer()
 	b.StartTimer()
 
 	var totalQuery time.Duration
 	for i := 0; i < b.N; i++ {
-		start := time.Now()
-		users, err := source.QueryLoggedInUsers(ctx, targetNodeID)
-		if err != nil {
-			b.Fatalf("query logged-in users: %v", err)
-		}
-		if len(users) != userCount {
-			b.Fatalf("unexpected logged-in user count: got=%d want=%d", len(users), userCount)
-		}
-		if len(users) > 0 {
-			if users[0] != expected[0] || users[len(users)-1] != expected[len(expected)-1] {
-				b.Fatalf("unexpected logged-in users payload: first=%+v last=%+v", users[0], users[len(users)-1])
-			}
-		}
-		totalQuery += time.Since(start)
+		totalQuery += mustBenchmarkMeshQueryLoggedInUsersOnce(b, ctx, source, targetNodeID, expected, userCount)
 	}
 
 	b.StopTimer()
 	reportAverageLatencyMetric(b, totalQuery, "query_ms/op")
 }
 
-func benchmarkMeshTransientRoutePebbleLinear(b *testing.B, nodeCount, payloadSize int) {
-	const deliveryTimeout = 5 * time.Second
+func benchmarkMeshTransientRoutePebbleLinear(b *testing.B, mode benchroot.Mode, nodeCount, payloadSize int) {
+	deliveryTimeout := benchmarkTimeout(mode, 5*time.Second, 30*time.Second)
 
 	ctx := context.Background()
 	targetNodeID := testNodeID(uint16(nodeCount))
@@ -175,7 +162,7 @@ func benchmarkMeshTransientRoutePebbleLinear(b *testing.B, nodeCount, payloadSiz
 
 	b.StopTimer()
 	silenceClusterLogs(b)
-	managers := startLinearWebSocketManagersWithStoreFactory(b, nodeCount, pebbleLinearStoreFactory)
+	managers := startLinearWebSocketManagersWithStoreFactory(b, nodeCount, newBenchmarkPebbleLinearStoreFactory(mode))
 	source := managers[0]
 	target := managers[nodeCount-1]
 	delivered := make(chan store.TransientPacket, 1)
@@ -187,6 +174,19 @@ func benchmarkMeshTransientRoutePebbleLinear(b *testing.B, nodeCount, payloadSiz
 	waitForMeshRouteDecision(b, source, targetNodeID, mesh.TrafficTransientInteractive, testNodeID(2), mesh.TransportWebSocket)
 
 	payload := bytes.Repeat([]byte("t"), payloadSize)
+	runClusterBenchmarkWarmup(b, func() {
+		warmupPacket := store.TransientPacket{
+			PacketID:     0,
+			SourceNodeID: testNodeID(1),
+			TargetNodeID: targetNodeID,
+			Recipient:    store.UserKey{NodeID: targetNodeID, UserID: 99},
+			Sender:       store.UserKey{NodeID: testNodeID(1), UserID: 100},
+			Body:         payload,
+			DeliveryMode: store.DeliveryModeBestEffort,
+			TTLHops:      defaultPacketTTLHops,
+		}
+		_ = mustBenchmarkMeshTransientRouteOnce(b, ctx, source, delivered, warmupPacket, payload, expectedTTL, deliveryTimeout)
+	})
 	b.SetBytes(int64(payloadSize))
 	b.ResetTimer()
 	b.StartTimer()
@@ -204,26 +204,7 @@ func benchmarkMeshTransientRoutePebbleLinear(b *testing.B, nodeCount, payloadSiz
 			TTLHops:      defaultPacketTTLHops,
 		}
 
-		start := time.Now()
-		if err := source.RouteTransientPacket(ctx, packet); err != nil {
-			b.Fatalf("route transient packet: %v", err)
-		}
-
-		select {
-		case got := <-delivered:
-			if got.PacketID != packet.PacketID ||
-				got.SourceNodeID != packet.SourceNodeID ||
-				got.TargetNodeID != packet.TargetNodeID ||
-				got.Recipient != packet.Recipient ||
-				got.Sender != packet.Sender ||
-				got.TTLHops != expectedTTL ||
-				!bytes.Equal(got.Body, payload) {
-				b.Fatalf("unexpected delivered transient packet: %+v", got)
-			}
-		case <-time.After(deliveryTimeout):
-			b.Fatalf("timed out waiting for transient delivery")
-		}
-		totalDelivery += time.Since(start)
+		totalDelivery += mustBenchmarkMeshTransientRouteOnce(b, ctx, source, delivered, packet, payload, expectedTTL, deliveryTimeout)
 	}
 
 	b.StopTimer()
@@ -231,9 +212,102 @@ func benchmarkMeshTransientRoutePebbleLinear(b *testing.B, nodeCount, payloadSiz
 	b.ReportMetric(float64(payloadSize), "bytes/op")
 }
 
-func pebbleLinearStoreFactory(tb testing.TB, nodeID string, slot uint16) *store.Store {
+func newBenchmarkPebbleLinearStoreFactory(mode benchroot.Mode) linearWebSocketStoreFactory {
+	return func(tb testing.TB, nodeID string, slot uint16) *store.Store {
+		tb.Helper()
+
+		st, closeStore := openBenchmarkClusterStore(tb, mode, nodeID, slot, store.DefaultMessageWindowSize, store.DefaultEventLogMaxEventsPerOrigin)
+		tb.Cleanup(closeStore)
+		return st
+	}
+}
+
+func benchmarkTimeout(mode benchroot.Mode, tmpTimeout, diskTimeout time.Duration) time.Duration {
+	if mode.Name() == benchroot.ModeDisk {
+		return diskTimeout
+	}
+	return tmpTimeout
+}
+
+func runClusterBenchmarkWarmup(tb testing.TB, fn func()) {
 	tb.Helper()
-	return newPebbleReplicationTestStore(tb, nodeID, slot)
+	for i := 0; i < clusterBenchmarkWarmupPasses; i++ {
+		fn()
+	}
+}
+
+func mustBenchmarkMeshReplicationOnce(tb testing.TB, ctx context.Context, source, target *Manager, recipient store.UserKey, targetNodeID int64, payload []byte, ackTimeout time.Duration) time.Duration {
+	tb.Helper()
+
+	start := time.Now()
+	message, event, err := source.store.CreateMessage(ctx, store.CreateMessageParams{
+		UserKey: recipient,
+		Sender:  recipient,
+		Body:    payload,
+	})
+	if err != nil {
+		tb.Fatalf("create benchmark message: %v", err)
+	}
+	source.Publish(event)
+
+	waitForBenchmark(tb, ackTimeout, func() bool {
+		messages, err := target.store.ListMessagesByUser(ctx, recipient, 1)
+		return err == nil &&
+			len(messages) == 1 &&
+			messages[0].Recipient == recipient &&
+			messages[0].NodeID == message.NodeID &&
+			messages[0].Seq == message.Seq &&
+			bytes.Equal(messages[0].Body, payload)
+	})
+	waitForBenchmark(tb, ackTimeout, func() bool {
+		cursor, err := source.store.GetPeerAckCursor(ctx, targetNodeID, testNodeID(1))
+		return err == nil && cursor.AckedEventID >= event.EventID
+	})
+	return time.Since(start)
+}
+
+func mustBenchmarkMeshQueryLoggedInUsersOnce(tb testing.TB, ctx context.Context, source *Manager, targetNodeID int64, expected []app.LoggedInUserSummary, userCount int) time.Duration {
+	tb.Helper()
+
+	start := time.Now()
+	users, err := source.QueryLoggedInUsers(ctx, targetNodeID)
+	if err != nil {
+		tb.Fatalf("query logged-in users: %v", err)
+	}
+	if len(users) != userCount {
+		tb.Fatalf("unexpected logged-in user count: got=%d want=%d", len(users), userCount)
+	}
+	if len(users) > 0 {
+		if users[0] != expected[0] || users[len(users)-1] != expected[len(expected)-1] {
+			tb.Fatalf("unexpected logged-in users payload: first=%+v last=%+v", users[0], users[len(users)-1])
+		}
+	}
+	return time.Since(start)
+}
+
+func mustBenchmarkMeshTransientRouteOnce(tb testing.TB, ctx context.Context, source *Manager, delivered <-chan store.TransientPacket, packet store.TransientPacket, payload []byte, expectedTTL int32, deliveryTimeout time.Duration) time.Duration {
+	tb.Helper()
+
+	start := time.Now()
+	if err := source.RouteTransientPacket(ctx, packet); err != nil {
+		tb.Fatalf("route transient packet: %v", err)
+	}
+
+	select {
+	case got := <-delivered:
+		if got.PacketID != packet.PacketID ||
+			got.SourceNodeID != packet.SourceNodeID ||
+			got.TargetNodeID != packet.TargetNodeID ||
+			got.Recipient != packet.Recipient ||
+			got.Sender != packet.Sender ||
+			got.TTLHops != expectedTTL ||
+			!bytes.Equal(got.Body, payload) {
+			tb.Fatalf("unexpected delivered transient packet: %+v", got)
+		}
+	case <-time.After(deliveryTimeout):
+		tb.Fatalf("timed out waiting for transient delivery")
+	}
+	return time.Since(start)
 }
 
 func benchmarkLoggedInUsers(nodeID int64, count int) []app.LoggedInUserSummary {

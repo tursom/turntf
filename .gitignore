@@ -1,4 +1,5 @@
 /data/
+.benchdata/
 /notifier
 /turntf
 /config.toml

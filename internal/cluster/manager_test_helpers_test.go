@@ -281,8 +281,11 @@ func mustListen(tb testing.TB) net.Listener {
 
 func newClusterHTTPTestServer(tb testing.TB, handler http.Handler) *httptest.Server {
 	tb.Helper()
-	server := httptest.NewUnstartedServer(handler)
-	server.Listener = mustListen(tb)
+
+	server := &httptest.Server{
+		Listener: mustListen(tb),
+		Config:   &http.Server{Handler: handler},
+	}
 	server.Start()
 	tb.Cleanup(server.Close)
 	return server

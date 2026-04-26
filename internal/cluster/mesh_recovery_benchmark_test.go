@@ -3,8 +3,8 @@ package cluster
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -12,164 +12,79 @@ import (
 	"github.com/tursom/turntf/internal/mesh"
 	internalproto "github.com/tursom/turntf/internal/proto"
 	"github.com/tursom/turntf/internal/store"
+	"github.com/tursom/turntf/internal/testutil/benchroot"
 )
 
 func BenchmarkMeshSnapshotRepairPebbleLinear3Nodes(b *testing.B) {
-	for _, tc := range []struct {
-		name      string
-		userCount int
-		msgCount  int
-	}{
-		{name: "users/100", userCount: 100},
-		{name: "messages/500", msgCount: 500},
-	} {
-		b.Run(tc.name, func(b *testing.B) {
-			benchmarkMeshSnapshotRepairPebbleLinear(b, tc.userCount, tc.msgCount)
+	for _, mode := range benchroot.Modes(b) {
+		mode := mode
+		b.Run(mode.Name(), func(b *testing.B) {
+			for _, tc := range []struct {
+				name      string
+				userCount int
+				msgCount  int
+			}{
+				{name: "users/100", userCount: 100},
+				{name: "messages/500", msgCount: 500},
+			} {
+				b.Run(tc.name, func(b *testing.B) {
+					benchmarkMeshSnapshotRepairPebbleLinear(b, mode, tc.userCount, tc.msgCount)
+				})
+			}
 		})
 	}
 }
 
 func BenchmarkMeshTruncatedCatchupRepairPebble(b *testing.B) {
-	for _, tc := range []struct {
-		name             string
-		retain           int
-		generateMessages int
-	}{
-		{name: "retain-2/generate-32", retain: 2, generateMessages: 32},
-		{name: "retain-8/generate-256", retain: 8, generateMessages: 256},
-	} {
-		b.Run(tc.name, func(b *testing.B) {
-			benchmarkMeshTruncatedCatchupRepairPebble(b, tc.retain, tc.generateMessages)
+	for _, mode := range benchroot.Modes(b) {
+		mode := mode
+		b.Run(mode.Name(), func(b *testing.B) {
+			for _, tc := range []struct {
+				name             string
+				retain           int
+				generateMessages int
+			}{
+				{name: "retain-2/generate-32", retain: 2, generateMessages: 32},
+				{name: "retain-8/generate-256", retain: 8, generateMessages: 256},
+			} {
+				b.Run(tc.name, func(b *testing.B) {
+					benchmarkMeshTruncatedCatchupRepairPebble(b, mode, tc.retain, tc.generateMessages)
+				})
+			}
 		})
 	}
 }
 
-func benchmarkMeshSnapshotRepairPebbleLinear(b *testing.B, userCount, messageCount int) {
-	const snapshotTimeout = 5 * time.Second
-
+func benchmarkMeshSnapshotRepairPebbleLinear(b *testing.B, mode benchroot.Mode, userCount, messageCount int) {
+	snapshotTimeout := benchmarkTimeout(mode, 5*time.Second, 30*time.Second)
 	ctx := context.Background()
 	silenceClusterLogs(b)
 
+	b.StopTimer()
+	warmupUsers, warmupMessages := benchmarkSnapshotWarmupWorkload(userCount, messageCount)
+	runClusterBenchmarkWarmup(b, func() {
+		_ = runBenchmarkMeshSnapshotRepairOnce(b, ctx, mode, warmupUsers, warmupMessages, snapshotTimeout, false)
+	})
 	var totalSnapshot time.Duration
 	for i := 0; i < b.N; i++ {
-		b.StopTimer()
-		cluster := openBenchmarkPebbleLinearCluster(b, 3, store.DefaultMessageWindowSize, store.DefaultEventLogMaxEventsPerOrigin)
-		source := cluster.managers[0]
-		target := cluster.managers[2]
-		targetNodeID := testNodeID(3)
-
-		waitForMeshRoute(b, source, targetNodeID, mesh.TrafficSnapshotBulk)
-		waitForMeshRoute(b, target, testNodeID(1), mesh.TrafficSnapshotBulk)
-
-		var userKeys []store.UserKey
-		var latestBody []byte
-		if userCount > 0 {
-			userKeys = seedSnapshotUsersForBenchmark(b, source.store, userCount)
-		}
-		if messageCount > 0 {
-			var messageUser store.User
-			messageUser, latestBody = seedSnapshotMessagesForBenchmark(b, source.store, messageCount)
-			userKeys = append(userKeys, messageUser.Key())
-		}
-
-		b.StartTimer()
-		start := time.Now()
-
-		envelope, err := source.buildSnapshotDigestEnvelope()
-		if err != nil {
-			b.Fatalf("build snapshot digest: %v", err)
-		}
-		if err := source.routeMeshSnapshotManifest(ctx, targetNodeID, envelope.GetSnapshotDigest()); err != nil {
-			b.Fatalf("route snapshot manifest: %v", err)
-		}
-
-		waitForBenchmark(b, snapshotTimeout, func() bool {
-			return benchmarkSnapshotRepairConverged(ctx, target.store, userKeys, messageCount, latestBody)
-		})
-
-		totalSnapshot += time.Since(start)
-		b.StopTimer()
-		cluster.Close()
+		totalSnapshot += runBenchmarkMeshSnapshotRepairOnce(b, ctx, mode, userCount, messageCount, snapshotTimeout, true)
 	}
 
 	reportAverageLatencyMetric(b, totalSnapshot, "snapshot_ms/op")
 }
 
-func benchmarkMeshTruncatedCatchupRepairPebble(b *testing.B, retain, generateMessages int) {
-	const repairTimeout = 5 * time.Second
-
+func benchmarkMeshTruncatedCatchupRepairPebble(b *testing.B, mode benchroot.Mode, retain, generateMessages int) {
+	repairTimeout := benchmarkTimeout(mode, 5*time.Second, 30*time.Second)
 	ctx := context.Background()
 	silenceClusterLogs(b)
 
+	b.StopTimer()
+	runClusterBenchmarkWarmup(b, func() {
+		_ = runBenchmarkMeshTruncatedCatchupRepairOnce(b, ctx, mode, retain, benchmarkTruncatedCatchupWarmupMessages(generateMessages), repairTimeout, false)
+	})
 	var totalRepair time.Duration
 	for i := 0; i < b.N; i++ {
-		b.StopTimer()
-		sourceStore, closeSource := openBenchmarkClusterStore(b, "source", 1, store.DefaultMessageWindowSize, retain)
-		targetStore, closeTarget := openBenchmarkClusterStore(b, "target", 2, store.DefaultMessageWindowSize, store.DefaultEventLogMaxEventsPerOrigin)
-		targetMgr, closeManager := openBenchmarkReplicationManager(b, 2, targetStore, store.DefaultMessageWindowSize)
-
-		user, latestBody := seedRetainedMessagesForBenchmark(b, sourceStore, generateMessages)
-		if _, err := sourceStore.PruneEventLogOnce(ctx); err != nil {
-			b.Fatalf("prune source event log: %v", err)
-		}
-		truncatedBefore, err := sourceStore.EventLogTruncatedBefore(ctx, sourceStore.NodeID())
-		if err != nil {
-			b.Fatalf("read truncated boundary: %v", err)
-		}
-		if truncatedBefore == 0 {
-			b.Fatalf("expected non-zero truncation boundary")
-		}
-
-		sess := readySnapshotTestSession(targetMgr, testNodeID(1), store.DefaultMessageWindowSize)
-		requestID, ok := sess.beginPendingPull(testNodeID(1), 0)
-		if !ok {
-			b.Fatalf("expected pending pull to start")
-		}
-		envelope := &internalproto.Envelope{
-			NodeId: testNodeID(1),
-			Body: &internalproto.Envelope_EventBatch{
-				EventBatch: &internalproto.EventBatch{
-					PullRequestId:          requestID,
-					OriginNodeId:           testNodeID(1),
-					TruncatedBeforeEventId: uint64(truncatedBefore),
-				},
-			},
-		}
-
-		b.StartTimer()
-		start := time.Now()
-
-		if err := targetMgr.handleEventBatch(sess, envelope); err != nil {
-			b.Fatalf("handle truncated event batch: %v", err)
-		}
-		if sess.hasPendingPull(testNodeID(1)) {
-			b.Fatalf("expected pending pull to be cleared")
-		}
-
-		expectedPartitions := map[string]struct{}{
-			store.SnapshotUsersPartition:                  {},
-			store.SnapshotSubscriptionsPartition:          {},
-			store.SnapshotBlacklistsPartition:             {},
-			store.MessageSnapshotPartition(testNodeID(1)): {},
-		}
-		handleSnapshotRepairRequests(b, sourceStore, targetMgr, sess, expectedPartitions)
-
-		waitForBenchmark(b, repairTimeout, func() bool {
-			if cursor, err := targetStore.GetOriginCursor(ctx, testNodeID(1)); err != nil || cursor.AppliedEventID != truncatedBefore {
-				return false
-			}
-			messages, err := targetStore.ListMessagesByUser(ctx, user.Key(), generateMessages)
-			return err == nil &&
-				len(messages) == generateMessages &&
-				string(messages[0].Body) == string(latestBody)
-		})
-
-		totalRepair += time.Since(start)
-		b.StopTimer()
-
-		closeManager()
-		closeTarget()
-		closeSource()
+		totalRepair += runBenchmarkMeshTruncatedCatchupRepairOnce(b, ctx, mode, retain, generateMessages, repairTimeout, true)
 	}
 
 	reportAverageLatencyMetric(b, totalRepair, "truncated_repair_ms/op")
@@ -262,7 +177,7 @@ func seedRetainedMessagesForBenchmark(tb testing.TB, st *store.Store, count int)
 	return user, latestBody
 }
 
-func handleSnapshotRepairRequests(tb testing.TB, source *store.Store, targetMgr *Manager, sess *session, expected map[string]struct{}) {
+func handleSnapshotRepairRequests(tb testing.TB, source *store.Store, targetMgr *Manager, sess *session, expected map[string]struct{}, requestTimeout time.Duration) {
 	tb.Helper()
 
 	for len(expected) > 0 {
@@ -290,10 +205,163 @@ func handleSnapshotRepairRequests(tb testing.TB, source *store.Store, targetMgr 
 			}); err != nil {
 				tb.Fatalf("apply snapshot chunk %q: %v", chunk.Partition, err)
 			}
-		case <-time.After(5 * time.Second):
+		case <-time.After(requestTimeout):
 			tb.Fatalf("timed out waiting for snapshot repair requests; remaining=%d", len(expected))
 		}
 	}
+}
+
+func benchmarkSnapshotWarmupWorkload(userCount, messageCount int) (int, int) {
+	if userCount > 0 {
+		return min(userCount, 16), 0
+	}
+	return 0, min(messageCount, 32)
+}
+
+func benchmarkTruncatedCatchupWarmupMessages(generateMessages int) int {
+	return min(generateMessages, 16)
+}
+
+func runBenchmarkMeshSnapshotRepairOnce(tb *testing.B, ctx context.Context, mode benchroot.Mode, userCount, messageCount int, snapshotTimeout time.Duration, measure bool) time.Duration {
+	tb.Helper()
+
+	cluster := openBenchmarkPebbleLinearCluster(tb, mode, 3, store.DefaultMessageWindowSize, store.DefaultEventLogMaxEventsPerOrigin)
+	source := cluster.managers[0]
+	target := cluster.managers[2]
+	targetNodeID := testNodeID(3)
+
+	waitForMeshRoute(tb, source, targetNodeID, mesh.TrafficSnapshotBulk)
+	waitForMeshRoute(tb, target, testNodeID(1), mesh.TrafficSnapshotBulk)
+
+	var userKeys []store.UserKey
+	var latestBody []byte
+	if userCount > 0 {
+		userKeys = seedSnapshotUsersForBenchmark(tb, source.store, userCount)
+	}
+	if messageCount > 0 {
+		var messageUser store.User
+		messageUser, latestBody = seedSnapshotMessagesForBenchmark(tb, source.store, messageCount)
+		userKeys = append(userKeys, messageUser.Key())
+	}
+
+	if measure {
+		tb.StartTimer()
+	}
+	start := time.Now()
+
+	envelope, err := source.buildSnapshotDigestEnvelope()
+	if err != nil {
+		cluster.Close()
+		tb.Fatalf("build snapshot digest: %v", err)
+	}
+	if err := source.routeMeshSnapshotManifest(ctx, targetNodeID, envelope.GetSnapshotDigest()); err != nil {
+		cluster.Close()
+		tb.Fatalf("route snapshot manifest: %v", err)
+	}
+
+	waitForBenchmark(tb, snapshotTimeout, func() bool {
+		return benchmarkSnapshotRepairConverged(ctx, target.store, userKeys, messageCount, latestBody)
+	})
+
+	elapsed := time.Since(start)
+	if measure {
+		tb.StopTimer()
+	}
+	cluster.Close()
+	return elapsed
+}
+
+func runBenchmarkMeshTruncatedCatchupRepairOnce(tb *testing.B, ctx context.Context, mode benchroot.Mode, retain, generateMessages int, repairTimeout time.Duration, measure bool) time.Duration {
+	tb.Helper()
+
+	sourceStore, closeSource := openBenchmarkClusterStore(tb, mode, "source", 1, store.DefaultMessageWindowSize, retain)
+	targetStore, closeTarget := openBenchmarkClusterStore(tb, mode, "target", 2, store.DefaultMessageWindowSize, store.DefaultEventLogMaxEventsPerOrigin)
+	targetMgr, closeManager := openBenchmarkReplicationManager(tb, 2, targetStore, store.DefaultMessageWindowSize)
+
+	user, latestBody := seedRetainedMessagesForBenchmark(tb, sourceStore, generateMessages)
+	if _, err := sourceStore.PruneEventLogOnce(ctx); err != nil {
+		closeManager()
+		closeTarget()
+		closeSource()
+		tb.Fatalf("prune source event log: %v", err)
+	}
+	truncatedBefore, err := sourceStore.EventLogTruncatedBefore(ctx, sourceStore.NodeID())
+	if err != nil {
+		closeManager()
+		closeTarget()
+		closeSource()
+		tb.Fatalf("read truncated boundary: %v", err)
+	}
+	if truncatedBefore == 0 {
+		closeManager()
+		closeTarget()
+		closeSource()
+		tb.Fatalf("expected non-zero truncation boundary")
+	}
+
+	sess := readySnapshotTestSession(targetMgr, testNodeID(1), store.DefaultMessageWindowSize)
+	requestID, ok := sess.beginPendingPull(testNodeID(1), 0)
+	if !ok {
+		closeManager()
+		closeTarget()
+		closeSource()
+		tb.Fatalf("expected pending pull to start")
+	}
+	envelope := &internalproto.Envelope{
+		NodeId: testNodeID(1),
+		Body: &internalproto.Envelope_EventBatch{
+			EventBatch: &internalproto.EventBatch{
+				PullRequestId:          requestID,
+				OriginNodeId:           testNodeID(1),
+				TruncatedBeforeEventId: uint64(truncatedBefore),
+			},
+		},
+	}
+
+	if measure {
+		tb.StartTimer()
+	}
+	start := time.Now()
+
+	if err := targetMgr.handleEventBatch(sess, envelope); err != nil {
+		closeManager()
+		closeTarget()
+		closeSource()
+		tb.Fatalf("handle truncated event batch: %v", err)
+	}
+	if sess.hasPendingPull(testNodeID(1)) {
+		closeManager()
+		closeTarget()
+		closeSource()
+		tb.Fatalf("expected pending pull to be cleared")
+	}
+
+	expectedPartitions := map[string]struct{}{
+		store.SnapshotUsersPartition:                  {},
+		store.SnapshotSubscriptionsPartition:          {},
+		store.SnapshotBlacklistsPartition:             {},
+		store.MessageSnapshotPartition(testNodeID(1)): {},
+	}
+	handleSnapshotRepairRequests(tb, sourceStore, targetMgr, sess, expectedPartitions, repairTimeout)
+
+	waitForBenchmark(tb, repairTimeout, func() bool {
+		if cursor, err := targetStore.GetOriginCursor(ctx, testNodeID(1)); err != nil || cursor.AppliedEventID != truncatedBefore {
+			return false
+		}
+		messages, err := targetStore.ListMessagesByUser(ctx, user.Key(), generateMessages)
+		return err == nil &&
+			len(messages) == generateMessages &&
+			string(messages[0].Body) == string(latestBody)
+	})
+
+	elapsed := time.Since(start)
+	if measure {
+		tb.StopTimer()
+	}
+	closeManager()
+	closeTarget()
+	closeSource()
+	return elapsed
 }
 
 type benchmarkLinearCluster struct {
@@ -301,7 +369,7 @@ type benchmarkLinearCluster struct {
 	closeFns []func()
 }
 
-func openBenchmarkPebbleLinearCluster(tb testing.TB, nodeCount int, messageWindowSize int, maxEventsPerOrigin int) *benchmarkLinearCluster {
+func openBenchmarkPebbleLinearCluster(tb testing.TB, mode benchroot.Mode, nodeCount int, messageWindowSize int, maxEventsPerOrigin int) *benchmarkLinearCluster {
 	tb.Helper()
 
 	cluster := &benchmarkLinearCluster{
@@ -310,7 +378,7 @@ func openBenchmarkPebbleLinearCluster(tb testing.TB, nodeCount int, messageWindo
 	serverURLs := make([]string, 0, nodeCount)
 	for idx := 0; idx < nodeCount; idx++ {
 		nodeSlot := uint16(idx + 1)
-		st, closeStore := openBenchmarkClusterStore(tb, fmt.Sprintf("bench-node-%d", idx+1), nodeSlot, messageWindowSize, maxEventsPerOrigin)
+		st, closeStore := openBenchmarkClusterStore(tb, mode, fmt.Sprintf("bench-node-%d", idx+1), nodeSlot, messageWindowSize, maxEventsPerOrigin)
 		cluster.closeFns = append(cluster.closeFns, closeStore)
 
 		cfg := mixedTransportBaseConfig(nodeSlot)
@@ -333,13 +401,10 @@ func (c *benchmarkLinearCluster) Close() {
 	}
 }
 
-func openBenchmarkClusterStore(tb testing.TB, nodeID string, slot uint16, messageWindowSize int, maxEventsPerOrigin int) (*store.Store, func()) {
+func openBenchmarkClusterStore(tb testing.TB, mode benchroot.Mode, nodeID string, slot uint16, messageWindowSize int, maxEventsPerOrigin int) (*store.Store, func()) {
 	tb.Helper()
 
-	dir, err := os.MkdirTemp("", "turntf-cluster-bench-*")
-	if err != nil {
-		tb.Fatalf("create benchmark temp dir: %v", err)
-	}
+	dir, cleanupDir := mode.MkdirTemp(tb, "turntf-cluster-bench-*")
 	dbPath := filepath.Join(dir, nodeID+".db")
 	st, err := store.Open(dbPath, store.Options{
 		NodeID:                     testNodeID(slot),
@@ -349,14 +414,17 @@ func openBenchmarkClusterStore(tb testing.TB, nodeID string, slot uint16, messag
 		EventLogMaxEventsPerOrigin: maxEventsPerOrigin,
 	})
 	if err != nil {
+		cleanupDir()
 		tb.Fatalf("open benchmark cluster store: %v", err)
 	}
 	if err := st.Init(context.Background()); err != nil {
+		_ = st.Close()
+		cleanupDir()
 		tb.Fatalf("init benchmark cluster store: %v", err)
 	}
 	return st, func() {
 		_ = st.Close()
-		_ = os.RemoveAll(dir)
+		cleanupDir()
 	}
 }
 
@@ -367,8 +435,10 @@ func openBenchmarkMixedTransportManager(tb testing.TB, cfg Config, st *store.Sto
 	if err != nil {
 		tb.Fatalf("new benchmark manager: %v", err)
 	}
-	server := httptest.NewUnstartedServer(mgr.Handler())
-	server.Listener = mustListen(tb)
+	server := &httptest.Server{
+		Listener: mustListen(tb),
+		Config:   &http.Server{Handler: mgr.Handler()},
+	}
 	server.Start()
 	if err := mgr.Start(context.Background()); err != nil {
 		server.Close()

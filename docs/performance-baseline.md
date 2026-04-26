@@ -30,6 +30,17 @@
 - `BenchmarkHTTPCreateMessageAuthenticated`：带鉴权的 `POST /nodes/{node_id}/users/{user_id}/messages`。
 - `BenchmarkHTTPListMessagesByUserAuthenticated`：带鉴权的 `GET /nodes/{node_id}/users/{user_id}/messages?limit=50`。
 
+## 采集策略
+
+- benchmark 名称现在会显式带上介质 mode：`/tmp/...` 或 `/disk/...`。
+- `tmp` 子场景始终运行，继续使用默认临时目录语义。
+- 如果默认临时目录所在文件系统是内存文件系统，例如当前机器的 `/tmp` 是 `tmpfs`，同一条 `go test` 命令会自动补跑 `disk` 子场景。
+- `disk` 子场景固定写入仓库根目录下的 `./.benchdata`。
+- 常规 benchmark 会在正式计时前做一轮不计时 warmup；恢复类 benchmark 也会先做一轮缩小版 dry-run，避免 `-benchtime=1x` 时把首轮控制路径冷启动完全混进结果。
+- 读取结论时，优先看本次采集中第一个非内存文件系统结果：
+  - 出现 `disk` 时，以 `disk` 为主。
+  - 未出现 `disk` 时，说明 `tmp` 本身已经跑在非内存文件系统上。
+
 ## 运行方式
 
 `cluster` benchmark：
@@ -51,6 +62,8 @@ go test ./internal/store -run '^$' -bench 'BenchmarkDegradationStore(ListMessage
 ```
 
 这组 benchmark 主要用来看“规模增长时慢了多少”，默认不并入上面的常规 `store/api` 基线命令。
+
+以上命令保持不变；是否额外出现 `/disk/...` 子场景，由 benchmark 在运行时按文件系统类型自动决定。
 
 回归命令：
 
@@ -82,7 +95,8 @@ go test ./internal/store ./internal/api -run '^$' -bench 'Benchmark(Store|HTTP)'
 
 ## 基线环境
 
-以下结果来自 **2026-04-25** 的一次本地基线采集：
+以下结果来自 **2026-04-25** 的一次本地基线采集。
+这批数据发生在“自适应 `tmp` / `disk` 基线”引入之前，应按当前语义视为一组 **`tmp` 历史样本**，不能直接代表今天文档里所说的“官方非内存文件系统结果”。
 
 - `cluster` 命令：`go test ./internal/cluster -run '^$' -bench 'BenchmarkMesh(Replication|QueryLoggedInUsers|TransientRoute|SnapshotRepair|TruncatedCatchup)' -benchmem -count=1`
 - `cluster` 总耗时：`103.271s`
@@ -95,7 +109,9 @@ go test ./internal/store ./internal/api -run '^$' -bench 'Benchmark(Store|HTTP)'
 
 这些数字主要用于同机型、同环境、同命令下的前后对比。跨机器、跨内核版本或不同负载条件下的绝对值不应直接横向比较。
 
-## 基线结果
+## 历史 tmp 样本
+
+以下表格均对应上面的 `tmp` 历史样本。后续重新采集时，如果命令输出同时出现 `/tmp/...` 和 `/disk/...`，文档主结论应优先采用 `/disk/...`。
 
 ### 复制
 
@@ -173,6 +189,7 @@ go test ./internal/store ./internal/api -run '^$' -bench 'Benchmark(Store|HTTP)'
 ## 如何使用这份基线
 
 - 做性能回归时，优先比较同一子场景在同一机器上的变化幅度，而不是只看单个绝对值。
+- 现在的 benchmark 输出会带 mode；同一轮结果里应优先比较首个非内存文件系统子场景，再把 `tmp` 结果作为开发期快速回归参考。
 - `cluster`、`store`、`api` 三层的 benchmark 不应直接混合比较；它们回答的是不同层级的问题。
 - 如果后续新增混合传输、auth 专项或更重的断链重连场景，建议继续按章节追加，而不是混写进现有表格。
 - 如果未来决定引入性能门禁，建议先连续采集多轮结果，确认波动区间后再为少数关键场景设置宽松阈值。

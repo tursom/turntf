@@ -1,25 +1,36 @@
 package store
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"testing"
 	"time"
+
+	"github.com/tursom/turntf/internal/testutil/benchroot"
 )
 
 func BenchmarkDegradationStoreListMessagesByUser(b *testing.B) {
-	for _, engine := range []string{EngineSQLite, EnginePebble} {
-		b.Run(engine, func(b *testing.B) {
-			benchmarkStoreListMessagesByUserDegradation(b, engine, []int{64, 256, 1000})
+	for _, mode := range benchroot.Modes(b) {
+		mode := mode
+		b.Run(mode.Name(), func(b *testing.B) {
+			for _, engine := range []string{EngineSQLite, EnginePebble} {
+				b.Run(engine, func(b *testing.B) {
+					benchmarkStoreListMessagesByUserDegradation(b, mode, engine, []int{64, 256, 1000})
+				})
+			}
 		})
 	}
 }
 
 func BenchmarkDegradationStorePruneEventLogOnce(b *testing.B) {
-	for _, engine := range []string{EngineSQLite, EnginePebble} {
-		b.Run(engine, func(b *testing.B) {
-			benchmarkStorePruneEventLogOnceDegradation(b, engine, 128, []int{256, 1024, 4096})
+	for _, mode := range benchroot.Modes(b) {
+		mode := mode
+		b.Run(mode.Name(), func(b *testing.B) {
+			for _, engine := range []string{EngineSQLite, EnginePebble} {
+				b.Run(engine, func(b *testing.B) {
+					benchmarkStorePruneEventLogOnceDegradation(b, mode, engine, 128, []int{256, 1024, 4096})
+				})
+			}
 		})
 	}
 }
@@ -33,13 +44,13 @@ type listMessagesDegradationProfile struct {
 	wantLast  []byte
 }
 
-func benchmarkStoreListMessagesByUserDegradation(b *testing.B, engine string, histories []int) {
+func benchmarkStoreListMessagesByUserDegradation(b *testing.B, mode benchroot.Mode, engine string, histories []int) {
 	b.Helper()
 
 	ctx := context.Background()
 	profiles := make([]listMessagesDegradationProfile, 0, len(histories))
 	for _, history := range histories {
-		st, closeStore := openBenchmarkStore(b, engine, fmt.Sprintf("list-messages-degradation-%d", history), 1, history, DefaultEventLogMaxEventsPerOrigin)
+		st, closeStore := openBenchmarkStore(b, mode, engine, fmt.Sprintf("list-messages-degradation-%d", history), 1, history, DefaultEventLogMaxEventsPerOrigin)
 		user, _, err := st.CreateUser(ctx, CreateUserParams{
 			Username:     fmt.Sprintf("bench-list-messages-degradation-%d", history),
 			PasswordHash: "bench-hash",
@@ -82,22 +93,18 @@ func benchmarkStoreListMessagesByUserDegradation(b *testing.B, engine string, hi
 	}
 
 	totals := make([]time.Duration, len(profiles))
+	runStoreBenchmarkWarmup(b, func() {
+		for _, profile := range profiles {
+			mustListBenchmarkMessages(b, profile.st, ctx, profile.userKey, profile.history, profile.wantFirst, profile.wantLast)
+		}
+	})
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
 		for idx, profile := range profiles {
 			start := time.Now()
-			messages, err := profile.st.ListMessagesByUser(ctx, profile.userKey, profile.history)
+			mustListBenchmarkMessages(b, profile.st, ctx, profile.userKey, profile.history, profile.wantFirst, profile.wantLast)
 			totals[idx] += time.Since(start)
-			if err != nil {
-				b.Fatalf("list messages for history %d: %v", profile.history, err)
-			}
-			if len(messages) != profile.history {
-				b.Fatalf("unexpected message count for history %d: got=%d want=%d", profile.history, len(messages), profile.history)
-			}
-			if !bytes.Equal(messages[0].Body, profile.wantFirst) || !bytes.Equal(messages[len(messages)-1].Body, profile.wantLast) {
-				b.Fatalf("unexpected message order for history %d: first=%q last=%q", profile.history, messages[0].Body, messages[len(messages)-1].Body)
-			}
 		}
 	}
 	b.StopTimer()
@@ -105,16 +112,31 @@ func benchmarkStoreListMessagesByUserDegradation(b *testing.B, engine string, hi
 	reportDegradationMetrics(b, "history", histories, totals)
 }
 
-func benchmarkStorePruneEventLogOnceDegradation(b *testing.B, engine string, retain int, eventCounts []int) {
+func benchmarkStorePruneEventLogOnceDegradation(b *testing.B, mode benchroot.Mode, engine string, retain int, eventCounts []int) {
 	b.Helper()
 
 	ctx := context.Background()
 	totals := make([]time.Duration, len(eventCounts))
 
+	b.StopTimer()
+	runStoreBenchmarkWarmup(b, func() {
+		for _, eventCount := range eventCounts {
+			st, closeStore := openBenchmarkStore(b, mode, engine, fmt.Sprintf("prune-event-log-degradation-warmup-%d", eventCount), 1, DefaultMessageWindowSize, retain)
+			appendBenchmarkUserEvents(b, st, eventCount)
+
+			result, err := st.PruneEventLogOnce(ctx)
+			if err != nil {
+				closeStore()
+				b.Fatalf("warmup prune event log for event count %d: %v", eventCount, err)
+			}
+			mustVerifyBenchmarkPruneResult(b, st, ctx, result, retain, eventCount)
+			closeStore()
+		}
+	})
 	for i := 0; i < b.N; i++ {
 		for idx, eventCount := range eventCounts {
 			b.StopTimer()
-			st, closeStore := openBenchmarkStore(b, engine, fmt.Sprintf("prune-event-log-degradation-%d", eventCount), 1, DefaultMessageWindowSize, retain)
+			st, closeStore := openBenchmarkStore(b, mode, engine, fmt.Sprintf("prune-event-log-degradation-%d", eventCount), 1, DefaultMessageWindowSize, retain)
 			appendBenchmarkUserEvents(b, st, eventCount)
 
 			b.StartTimer()
@@ -127,22 +149,7 @@ func benchmarkStorePruneEventLogOnceDegradation(b *testing.B, engine string, ret
 				closeStore()
 				b.Fatalf("prune event log for event count %d: %v", eventCount, err)
 			}
-
-			wantTrimmed := int64(eventCount - retain)
-			if result.TrimmedEvents != wantTrimmed || result.OriginsAffected != 1 || result.MaxEventsPerOrigin != retain {
-				closeStore()
-				b.Fatalf("unexpected prune result for event count %d: %+v", eventCount, result)
-			}
-			retained, err := st.ListEventsByOrigin(ctx, st.NodeID(), 0, retain+1)
-			if err != nil {
-				closeStore()
-				b.Fatalf("list retained events for event count %d: %v", eventCount, err)
-			}
-			if len(retained) != retain {
-				closeStore()
-				b.Fatalf("unexpected retained event count for event count %d: got=%d want=%d", eventCount, len(retained), retain)
-			}
-
+			mustVerifyBenchmarkPruneResult(b, st, ctx, result, retain, eventCount)
 			closeStore()
 		}
 	}

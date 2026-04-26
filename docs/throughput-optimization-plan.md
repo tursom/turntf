@@ -182,8 +182,8 @@
 
 ### 验收标准
 
-- `BenchmarkStoreCreateMessage/pebble` 吞吐显著提升。
-- `BenchmarkStorePruneEventLogOnce/pebble` 不出现异常回退。
+- `BenchmarkStoreCreateMessage/*/pebble` 吞吐显著提升。
+- `BenchmarkStorePruneEventLogOnce/*/pebble` 不出现异常回退。
 - 崩溃恢复语义仍符合当前 durable event log 承诺。
 
 ### 风险与回滚
@@ -219,7 +219,7 @@
 
 ### 验收标准
 
-- `BenchmarkStoreCreateMessage/pebble` 的 `ns/op` 和 `allocs/op` 下降。
+- `BenchmarkStoreCreateMessage/*/pebble` 的 `ns/op` 和 `allocs/op` 下降。
 - 多用户并发写入压测时，不再被单个全局锁卡死。
 - `message_window_size` 语义保持不变。
 
@@ -263,7 +263,7 @@
 
 ### 验收标准
 
-- `BenchmarkStoreCreateMessage/pebble` 继续下降。
+- `BenchmarkStoreCreateMessage/*/pebble` 继续下降。
 - `cluster` 复制 benchmark 不因 cursor/ack 路径重复跨 SQLite 而被卡住。
 - 现有 `store`、`cluster` 回归测试通过。
 

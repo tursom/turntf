@@ -16,14 +16,17 @@ const storeBenchmarkWarmupPasses = 1
 type storeBenchmarkEngineScenario struct {
 	name                  string
 	engine                string
+	pebbleProfile         PebbleProfile
 	pebbleMessageSyncMode PebbleMessageSyncMode
 }
 
 func storeBenchmarkEngineScenarios() []storeBenchmarkEngineScenario {
 	return []storeBenchmarkEngineScenario{
 		{name: EngineSQLite, engine: EngineSQLite},
-		{name: EnginePebble + "/" + string(PebbleMessageSyncModeNoSync), engine: EnginePebble, pebbleMessageSyncMode: PebbleMessageSyncModeNoSync},
-		{name: EnginePebble + "/" + string(PebbleMessageSyncModeForceSync), engine: EnginePebble, pebbleMessageSyncMode: PebbleMessageSyncModeForceSync},
+		{name: EnginePebble + "/" + string(PebbleProfileBalanced) + "/" + string(PebbleMessageSyncModeNoSync), engine: EnginePebble, pebbleProfile: PebbleProfileBalanced, pebbleMessageSyncMode: PebbleMessageSyncModeNoSync},
+		{name: EnginePebble + "/" + string(PebbleProfileThroughput) + "/" + string(PebbleMessageSyncModeNoSync), engine: EnginePebble, pebbleProfile: PebbleProfileThroughput, pebbleMessageSyncMode: PebbleMessageSyncModeNoSync},
+		{name: EnginePebble + "/" + string(PebbleProfileBalanced) + "/" + string(PebbleMessageSyncModeForceSync), engine: EnginePebble, pebbleProfile: PebbleProfileBalanced, pebbleMessageSyncMode: PebbleMessageSyncModeForceSync},
+		{name: EnginePebble + "/" + string(PebbleProfileThroughput) + "/" + string(PebbleMessageSyncModeForceSync), engine: EnginePebble, pebbleProfile: PebbleProfileThroughput, pebbleMessageSyncMode: PebbleMessageSyncModeForceSync},
 	}
 }
 
@@ -290,6 +293,7 @@ func openBenchmarkStore(tb testing.TB, mode benchroot.Mode, scenario storeBenchm
 	opts := Options{
 		NodeID:                     testNodeID(nodeSlot),
 		Engine:                     scenario.engine,
+		PebbleProfile:              scenario.pebbleProfile,
 		PebbleMessageSyncMode:      scenario.pebbleMessageSyncMode,
 		MessageWindowSize:          messageWindowSize,
 		EventLogMaxEventsPerOrigin: maxEventsPerOrigin,

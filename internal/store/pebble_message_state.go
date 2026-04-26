@@ -272,23 +272,22 @@ func (r *pebbleMessageProjectionRepository) seedMessageUserStateLocked(ctx conte
 	}, nil
 }
 
-func (r *pebbleMessageProjectionRepository) prepareMessageWrite(batch *pebble.Batch, message Message, state pebbleMessageUserState) (pebbleMessageUserState, error) {
+func (r *pebbleMessageProjectionRepository) prepareMessageWrite(batch *pebble.Batch, message Message, state pebbleMessageUserState) (pebbleMessageUserState, []byte, error) {
 	if batch == nil {
-		return pebbleMessageUserState{}, fmt.Errorf("%w: pebble batch cannot be nil", ErrInvalidInput)
+		return pebbleMessageUserState{}, nil, fmt.Errorf("%w: pebble batch cannot be nil", ErrInvalidInput)
 	}
 	value, err := pebbleMessageValue(message)
 	if err != nil {
-		return pebbleMessageUserState{}, err
+		return pebbleMessageUserState{}, nil, err
 	}
-	refValue := pebbleMessageIndexValue(pebbleMessageRefFromMessage(message))
 	if err := batch.Set(pebbleMessageIDKey(message), value, nil); err != nil {
-		return pebbleMessageUserState{}, fmt.Errorf("write message primary projection: %w", err)
+		return pebbleMessageUserState{}, nil, fmt.Errorf("write message primary projection: %w", err)
 	}
-	if err := batch.Set(pebbleMessageUserKey(message), refValue, nil); err != nil {
-		return pebbleMessageUserState{}, fmt.Errorf("write message user index: %w", err)
+	if err := batch.Set(pebbleMessageUserKey(message), r.userIndexValue(value, message), nil); err != nil {
+		return pebbleMessageUserState{}, nil, fmt.Errorf("write message user index: %w", err)
 	}
-	if err := batch.Set(pebbleMessageProducerKey(message), refValue, nil); err != nil {
-		return pebbleMessageUserState{}, fmt.Errorf("write message producer index: %w", err)
+	if err := batch.Set(pebbleMessageProducerKey(message), r.producerIndexValue(value, message), nil); err != nil {
+		return pebbleMessageUserState{}, nil, fmt.Errorf("write message producer index: %w", err)
 	}
 
 	state.StoredCount++
@@ -299,19 +298,19 @@ func (r *pebbleMessageProjectionRepository) prepareMessageWrite(batch *pebble.Ba
 		state.TrimNeeded = true
 	}
 	if err := batch.Set(pebbleMessageUserStateKey(message.UserKey()), encodePebbleMessageUserState(state), nil); err != nil {
-		return pebbleMessageUserState{}, fmt.Errorf("write message user state: %w", err)
+		return pebbleMessageUserState{}, nil, fmt.Errorf("write message user state: %w", err)
 	}
-	return state, nil
+	return state, value, nil
 }
 
-func (r *pebbleMessageProjectionRepository) prepareInboxWrites(ctx context.Context, batch *pebble.Batch, message Message, recipient User) error {
+func (r *pebbleMessageProjectionRepository) prepareInboxWrites(ctx context.Context, batch *pebble.Batch, message Message, recipient User, primaryValue []byte) error {
 	if batch == nil {
 		return fmt.Errorf("%w: pebble batch cannot be nil", ErrInvalidInput)
 	}
 
 	switch {
 	case recipient.CanLogin():
-		return r.writeInboxEntry(batch, recipient.Key(), message, false)
+		return r.writeInboxEntry(batch, recipient.Key(), message, false, primaryValue)
 	case recipient.Role == RoleChannel:
 		subscribers, err := r.subscriptions.ListChannelSubscribers(ctx, recipient.Key())
 		if err != nil {
@@ -321,7 +320,7 @@ func (r *pebbleMessageProjectionRepository) prepareInboxWrites(ctx context.Conte
 			if message.CreatedAt.Compare(subscription.SubscribedAt) < 0 {
 				continue
 			}
-			if err := r.writeInboxEntry(batch, subscription.Subscriber, message, true); err != nil {
+			if err := r.writeInboxEntry(batch, subscription.Subscriber, message, true, primaryValue); err != nil {
 				return err
 			}
 		}
@@ -329,13 +328,13 @@ func (r *pebbleMessageProjectionRepository) prepareInboxWrites(ctx context.Conte
 	return nil
 }
 
-func (r *pebbleMessageProjectionRepository) writeInboxEntry(batch *pebble.Batch, owner UserKey, message Message, trackSource bool) error {
+func (r *pebbleMessageProjectionRepository) writeInboxEntry(batch *pebble.Batch, owner UserKey, message Message, trackSource bool, primaryValue []byte) error {
 	if err := owner.Validate(); err != nil {
 		return err
 	}
 
 	inboxKey := pebbleInboxUserKey(owner, message)
-	if err := batch.Set(inboxKey, pebbleMessageIndexValue(pebbleMessageRefFromMessage(message)), nil); err != nil {
+	if err := batch.Set(inboxKey, r.inboxIndexValue(primaryValue, message, trackSource), nil); err != nil {
 		return fmt.Errorf("write inbox index: %w", err)
 	}
 	if !trackSource {

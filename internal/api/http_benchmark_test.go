@@ -21,14 +21,17 @@ const apiBenchmarkWarmupPasses = 1
 type apiBenchmarkEngineScenario struct {
 	name                  string
 	engine                string
+	pebbleProfile         store.PebbleProfile
 	pebbleMessageSyncMode store.PebbleMessageSyncMode
 }
 
 func apiBenchmarkEngineScenarios() []apiBenchmarkEngineScenario {
 	return []apiBenchmarkEngineScenario{
 		{name: store.EngineSQLite, engine: store.EngineSQLite},
-		{name: store.EnginePebble + "/" + string(store.PebbleMessageSyncModeNoSync), engine: store.EnginePebble, pebbleMessageSyncMode: store.PebbleMessageSyncModeNoSync},
-		{name: store.EnginePebble + "/" + string(store.PebbleMessageSyncModeForceSync), engine: store.EnginePebble, pebbleMessageSyncMode: store.PebbleMessageSyncModeForceSync},
+		{name: store.EnginePebble + "/" + string(store.PebbleProfileBalanced) + "/" + string(store.PebbleMessageSyncModeNoSync), engine: store.EnginePebble, pebbleProfile: store.PebbleProfileBalanced, pebbleMessageSyncMode: store.PebbleMessageSyncModeNoSync},
+		{name: store.EnginePebble + "/" + string(store.PebbleProfileThroughput) + "/" + string(store.PebbleMessageSyncModeNoSync), engine: store.EnginePebble, pebbleProfile: store.PebbleProfileThroughput, pebbleMessageSyncMode: store.PebbleMessageSyncModeNoSync},
+		{name: store.EnginePebble + "/" + string(store.PebbleProfileBalanced) + "/" + string(store.PebbleMessageSyncModeForceSync), engine: store.EnginePebble, pebbleProfile: store.PebbleProfileBalanced, pebbleMessageSyncMode: store.PebbleMessageSyncModeForceSync},
+		{name: store.EnginePebble + "/" + string(store.PebbleProfileThroughput) + "/" + string(store.PebbleMessageSyncModeForceSync), engine: store.EnginePebble, pebbleProfile: store.PebbleProfileThroughput, pebbleMessageSyncMode: store.PebbleMessageSyncModeForceSync},
 	}
 }
 
@@ -123,6 +126,7 @@ func openBenchmarkAuthenticatedTestAPI(tb testing.TB, mode benchroot.Mode, scena
 	opts := store.Options{
 		NodeID:                testNodeID(1),
 		Engine:                scenario.engine,
+		PebbleProfile:         scenario.pebbleProfile,
 		PebbleMessageSyncMode: scenario.pebbleMessageSyncMode,
 	}
 	if scenario.engine == store.EnginePebble {

@@ -21,7 +21,7 @@ var pebbleEventSequenceKey = []byte("meta/event_sequence")
 
 const (
 	pebbleMessageIndexRefMarker byte = 0
-	pebbleMessageTrimSlack           = 32
+	pebbleMessageTrimSlack      int  = 32
 )
 
 type pebbleEventLogRepository struct {
@@ -38,6 +38,7 @@ type pebbleEventLogRepository struct {
 
 type pebbleMessageProjectionRepository struct {
 	db                *pebble.DB
+	profile           PebbleProfile
 	writes            *pebbleWriteCoordinator
 	messageWindowSize int
 	userRepository    UserRepository
@@ -756,12 +757,12 @@ func (r *pebbleMessageProjectionRepository) putMessage(ctx context.Context, mess
 		return pebbleMessageUserState{}, err
 	}
 	batch := r.db.NewBatch()
-	state, err = r.prepareMessageWrite(batch, message, state)
+	state, value, err := r.prepareMessageWrite(batch, message, state)
 	if err != nil {
 		_ = batch.Close()
 		return pebbleMessageUserState{}, err
 	}
-	if err := r.prepareInboxWrites(ctx, batch, message, recipient); err != nil {
+	if err := r.prepareInboxWrites(ctx, batch, message, recipient, value); err != nil {
 		_ = batch.Close()
 		return pebbleMessageUserState{}, err
 	}
@@ -911,6 +912,25 @@ func (r *pebbleMessageProjectionRepository) messageByRef(ref pebbleMessageRef) (
 	}
 	defer closer.Close()
 	return messageFromPebbleValue(value)
+}
+
+func (r *pebbleMessageProjectionRepository) userIndexValue(primaryValue []byte, message Message) []byte {
+	return r.messageIndexValueForProfile(primaryValue, message, true)
+}
+
+func (r *pebbleMessageProjectionRepository) producerIndexValue(primaryValue []byte, message Message) []byte {
+	return r.messageIndexValueForProfile(primaryValue, message, false)
+}
+
+func (r *pebbleMessageProjectionRepository) inboxIndexValue(primaryValue []byte, message Message, trackSource bool) []byte {
+	return r.messageIndexValueForProfile(primaryValue, message, !trackSource)
+}
+
+func (r *pebbleMessageProjectionRepository) messageIndexValueForProfile(primaryValue []byte, message Message, inlineAllowed bool) []byte {
+	if inlineAllowed && r != nil && r.profile == PebbleProfileThroughput && len(primaryValue) > 0 && len(primaryValue) <= pebbleThroughputInlineValueMaxBytes {
+		return primaryValue
+	}
+	return pebbleMessageIndexValue(pebbleMessageRefFromMessage(message))
 }
 
 func messageFromPebbleValue(value []byte) (Message, error) {

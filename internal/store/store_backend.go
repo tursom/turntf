@@ -45,7 +45,7 @@ type storeBackendBindings struct {
 	MessageTrim       MessageTrimRepository
 }
 
-func newStoreBackend(engine string, db *sql.DB, pebbleDB *pebble.DB) (storeBackend, error) {
+func newStoreBackend(engine string, db *sql.DB, pebbleDB *pebble.DB, pebbleProfile PebbleProfile) (storeBackend, error) {
 	switch engine {
 	case EngineSQLite:
 		return &sqliteStoreBackend{db: db}, nil
@@ -54,9 +54,10 @@ func newStoreBackend(engine string, db *sql.DB, pebbleDB *pebble.DB) (storeBacke
 			return nil, fmt.Errorf("pebble backend requires pebble db")
 		}
 		return &pebbleStoreBackend{
-			db:     pebbleDB,
-			sqlDB:  db,
-			writes: newPebbleWriteCoordinator(pebbleDB),
+			db:      pebbleDB,
+			sqlDB:   db,
+			profile: pebbleProfile,
+			writes:  newPebbleWriteCoordinator(pebbleDB),
 		}, nil
 	default:
 		return nil, fmt.Errorf("%w: unsupported store engine %q", ErrInvalidInput, engine)
@@ -441,6 +442,7 @@ func (b *sqliteStoreBackend) Close() error {
 type pebbleStoreBackend struct {
 	db                    *pebble.DB
 	sqlDB                 *sql.DB
+	profile               PebbleProfile
 	writes                *pebbleWriteCoordinator
 	eventLog              *pebbleEventLogRepository
 	messageProjection     MessageProjectionRepository
@@ -464,6 +466,7 @@ func (b *pebbleStoreBackend) Name() string {
 func (b *pebbleStoreBackend) Bind(bindings storeBackendBindings) error {
 	b.messageProjectionRepo = &pebbleMessageProjectionRepository{
 		db:                b.db,
+		profile:           b.profile,
 		writes:            b.writes,
 		messageWindowSize: bindings.MessageWindowSize,
 		userRepository:    bindings.UserRepository,

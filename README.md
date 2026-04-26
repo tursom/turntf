@@ -261,6 +261,7 @@ db_path = "./data/turntf.db"
 
 [store.pebble]
 path = "./data/turntf.pebble"
+profile = "balanced"
 message_sync_mode = "no_sync"
 
 [auth]
@@ -316,6 +317,7 @@ zeromq = { curve_server_public_key = "" }
 - `store.engine`：事件日志和消息投影 repository 引擎，可选 `sqlite` 或 `pebble`，默认 `sqlite`
 - `store.sqlite.db_path`：本地 SQLite 数据库路径，默认 `./data/turntf.db`。即使 `store.engine = "pebble"`，用户、订阅、游标、pending projection 和运维统计等状态仍保存在 SQLite
 - `store.pebble.path`：Pebble 数据目录，默认 `./data/turntf.pebble`。仅在 `store.engine = "pebble"` 时用于事件日志和消息投影
+- `store.pebble.profile`：Pebble profile，可选 `balanced` 或 `throughput`，默认 `balanced`。`throughput` 会开启更激进的 block cache / memtable / compaction 参数，并把小消息的热点索引布局改成更适合顺序扫描的内联值格式，以换取更高吞吐和更高磁盘占用
 - `store.pebble.message_sync_mode`：Pebble 模式下本地持久消息的默认提交方式，可选 `no_sync` 或 `force_sync`，默认 `no_sync`
 - `store.message_window_size`：每节点每用户本地保留的消息窗口，默认 `500`。超过窗口的旧消息会在本地写入或复制应用时被裁剪
 - `store.event_log.enabled`：是否启用事件日志定期裁剪，默认 `true`

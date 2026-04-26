@@ -294,6 +294,9 @@ listen_addr = ":8080"
 	if cfg.StoreOptions.PebbleMessageSyncMode != store.PebbleMessageSyncModeNoSync {
 		t.Fatalf("unexpected default pebble message sync mode: %q", cfg.StoreOptions.PebbleMessageSyncMode)
 	}
+	if cfg.StoreOptions.PebbleProfile != store.PebbleProfileBalanced {
+		t.Fatalf("unexpected default pebble profile: %q", cfg.StoreOptions.PebbleProfile)
+	}
 }
 
 func TestLoadServeRuntimeConfigReadsEventLogPruneConfig(t *testing.T) {
@@ -345,6 +348,7 @@ db_path = "./data/state.db"
 
 [store.pebble]
 path = "./data/projections.pebble"
+profile = "throughput"
 message_sync_mode = "force_sync"
 `)
 
@@ -366,6 +370,9 @@ message_sync_mode = "force_sync"
 	}
 	if cfg.StoreOptions.PebbleMessageSyncMode != store.PebbleMessageSyncModeForceSync {
 		t.Fatalf("unexpected pebble message sync mode: %q", cfg.StoreOptions.PebbleMessageSyncMode)
+	}
+	if cfg.StoreOptions.PebbleProfile != store.PebbleProfileThroughput {
+		t.Fatalf("unexpected pebble profile: %q", cfg.StoreOptions.PebbleProfile)
 	}
 }
 
@@ -390,6 +397,9 @@ message_sync_mode = "no_sync"
 	}
 	if cfg.StoreOptions.PebbleMessageSyncMode != store.PebbleMessageSyncModeNoSync {
 		t.Fatalf("unexpected pebble message sync mode: %q", cfg.StoreOptions.PebbleMessageSyncMode)
+	}
+	if cfg.StoreOptions.PebbleProfile != store.PebbleProfileBalanced {
+		t.Fatalf("unexpected pebble profile: %q", cfg.StoreOptions.PebbleProfile)
 	}
 }
 
@@ -428,6 +438,27 @@ message_sync_mode = "later"
 
 	_, err := loadServeRuntimeConfig(configPath)
 	if err == nil || !strings.Contains(err.Error(), "store.pebble.message_sync_mode") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestLoadServeRuntimeConfigRejectsInvalidPebbleProfile(t *testing.T) {
+	t.Parallel()
+
+	configPath := filepath.Join(t.TempDir(), "bad-pebble-profile.toml")
+	writeTestConfig(t, configPath, `
+[services.http]
+listen_addr = ":8080"
+
+[store]
+engine = "pebble"
+
+[store.pebble]
+profile = "turbo"
+`)
+
+	_, err := loadServeRuntimeConfig(configPath)
+	if err == nil || !strings.Contains(err.Error(), "store.pebble.profile") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

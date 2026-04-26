@@ -22,12 +22,12 @@
 - `BenchmarkMeshTransientRoutePebbleLinear`：3 节点 / 7 节点线性拓扑下的瞬时包多跳转发，校验 `packet_id`、payload 和最终 TTL。
 - `BenchmarkMeshSnapshotRepairPebbleLinear3Nodes`：3 节点线性拓扑下的 snapshot repair，校验目标节点通过快照修复收敛。
 - `BenchmarkMeshTruncatedCatchupRepairPebble`：retention 截断后的 truncated pull + snapshot repair 恢复路径。
-- `BenchmarkStoreCreateMessage`：`SQLite` / `Pebble` 下直接消息写入；`Pebble` 子场景会继续细分 `no_sync` / `force_sync`。
+- `BenchmarkStoreCreateMessage`：`SQLite` / `Pebble` 下直接消息写入；`Pebble` 子场景会继续细分 `balanced/throughput` 与 `no_sync/force_sync`。
 - `BenchmarkStoreListMessagesByUser`：`SQLite` / `Pebble` 下典型读路径。
 - `BenchmarkStorePruneEventLogOnce`：`SQLite` / `Pebble` 下 retention 截断成本。
 - `BenchmarkDegradationStoreListMessagesByUser`：按历史消息量分层，观察 `SQLite` / `Pebble` 读路径的退化倍数和单位规模增量成本。
 - `BenchmarkDegradationStorePruneEventLogOnce`：按 event log 规模分层，观察 `SQLite` / `Pebble` 截断路径的退化倍数和单位规模增量成本。
-- `BenchmarkHTTPCreateMessageAuthenticated`：带鉴权的 `POST /nodes/{node_id}/users/{user_id}/messages`；`Pebble` 子场景会继续细分 `no_sync` / `force_sync`。
+- `BenchmarkHTTPCreateMessageAuthenticated`：带鉴权的 `POST /nodes/{node_id}/users/{user_id}/messages`；`Pebble` 子场景会继续细分 `balanced/throughput` 与 `no_sync/force_sync`。
 - `BenchmarkHTTPListMessagesByUserAuthenticated`：带鉴权的 `GET /nodes/{node_id}/users/{user_id}/messages?limit=50`。
 
 ## 采集策略
@@ -182,7 +182,7 @@ go test ./internal/store ./internal/api -run '^$' -bench 'Benchmark(Store|HTTP)'
 | 场景 | ns/op | 说明 | B/op | allocs/op |
 | --- | ---: | ---: | ---: | ---: |
 | create message / sqlite | 285,606 | `POST /nodes/{node_id}/users/{user_id}/messages` 256B payload | 31,587 | 591 |
-| create message / pebble | 884,864 | `POST /nodes/{node_id}/users/{user_id}/messages` 256B payload；新版 benchmark 会拆成 `pebble/no_sync` 与 `pebble/force_sync` | 477,979 | 4,340 |
+| create message / pebble | 884,864 | `POST /nodes/{node_id}/users/{user_id}/messages` 256B payload；新版 benchmark 会拆成 `pebble/balanced|throughput/no_sync|force_sync` | 477,979 | 4,340 |
 | list messages / sqlite | 381,376 | `GET /nodes/{node_id}/users/{user_id}/messages?limit=50` | 144,555 | 2,219 |
 | list messages / pebble | 257,638 | `GET /nodes/{node_id}/users/{user_id}/messages?limit=50` | 140,814 | 1,561 |
 

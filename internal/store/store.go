@@ -54,6 +54,14 @@ const (
 	PebbleMessageSyncModeForceSync PebbleMessageSyncMode = "force_sync"
 )
 
+type PebbleProfile string
+
+const (
+	PebbleProfileDefault    PebbleProfile = ""
+	PebbleProfileBalanced   PebbleProfile = "balanced"
+	PebbleProfileThroughput PebbleProfile = "throughput"
+)
+
 const (
 	RoleSuperAdmin                      = "super_admin"
 	RoleAdmin                           = "admin"
@@ -81,6 +89,7 @@ type Options struct {
 	NodeID                     int64
 	Engine                     string
 	PebblePath                 string
+	PebbleProfile              PebbleProfile
 	PebbleMessageSyncMode      PebbleMessageSyncMode
 	MessageWindowSize          int
 	EventLogMaxEventsPerOrigin int
@@ -268,6 +277,19 @@ func NormalizePebbleMessageSyncMode(raw string) (PebbleMessageSyncMode, error) {
 	}
 }
 
+func NormalizePebbleProfile(raw string) (PebbleProfile, error) {
+	switch PebbleProfile(strings.ToLower(strings.TrimSpace(raw))) {
+	case PebbleProfileDefault:
+		return PebbleProfileDefault, nil
+	case PebbleProfileBalanced:
+		return PebbleProfileBalanced, nil
+	case PebbleProfileThroughput:
+		return PebbleProfileThroughput, nil
+	default:
+		return "", fmt.Errorf("%w: unsupported pebble profile %q", ErrInvalidInput, raw)
+	}
+}
+
 type ChannelSubscriptionParams struct {
 	Subscriber UserKey
 	Channel    UserKey
@@ -288,6 +310,10 @@ func Open(dbPath string, opts Options) (*Store, error) {
 	if engine == "" {
 		return nil, fmt.Errorf("%w: unsupported store engine %q", ErrInvalidInput, opts.Engine)
 	}
+	if _, err := NormalizePebbleProfile(string(opts.PebbleProfile)); err != nil {
+		return nil, err
+	}
+	pebbleProfile := normalizePebbleProfileOption(opts.PebbleProfile)
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
 		return nil, fmt.Errorf("create db dir: %w", err)
 	}
@@ -311,14 +337,14 @@ func Open(dbPath string, opts Options) (*Store, error) {
 			return nil, fmt.Errorf("create pebble dir: %w", err)
 		}
 		var err error
-		pebbleDB, err = pebble.Open(pebblePath, &pebble.Options{})
+		pebbleDB, err = openPebbleDB(pebblePath, pebbleProfile)
 		if err != nil {
 			_ = db.Close()
 			return nil, fmt.Errorf("open pebble: %w", err)
 		}
 	}
 
-	backend, err := newStoreBackend(engine, db, pebbleDB)
+	backend, err := newStoreBackend(engine, db, pebbleDB, pebbleProfile)
 	if err != nil {
 		if pebbleDB != nil {
 			_ = pebbleDB.Close()
@@ -416,6 +442,17 @@ func normalizePebbleMessageSyncModeOption(mode PebbleMessageSyncMode) PebbleMess
 		return PebbleMessageSyncModeNoSync
 	default:
 		return PebbleMessageSyncModeNoSync
+	}
+}
+
+func normalizePebbleProfileOption(profile PebbleProfile) PebbleProfile {
+	switch profile {
+	case PebbleProfileThroughput:
+		return PebbleProfileThroughput
+	case PebbleProfileDefault, PebbleProfileBalanced:
+		return PebbleProfileBalanced
+	default:
+		return PebbleProfileBalanced
 	}
 }
 

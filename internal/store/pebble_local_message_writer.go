@@ -188,7 +188,12 @@ func (b *pebbleStoreBackend) processLocalMessageBatch(requests []pebbleLocalMess
 	results := make([]pebbleLocalMessageWriteResult, len(requests))
 
 	batch := b.db.NewBatch()
-	defer batch.Close()
+	batchOwned := true
+	defer func() {
+		if batchOwned {
+			_ = batch.Close()
+		}
+	}()
 
 	b.eventLog.mu.Lock()
 	defer b.eventLog.mu.Unlock()
@@ -268,7 +273,7 @@ func (b *pebbleStoreBackend) processLocalMessageBatch(requests []pebbleLocalMess
 			return
 		}
 
-		state, err = projection.prepareMessageWrite(batch, message, state)
+		state, _, err = projection.prepareMessageWrite(batch, message, state)
 		if err != nil {
 			respondLocalMessageBatchError(requests, err)
 			return
@@ -305,13 +310,13 @@ func (b *pebbleStoreBackend) processLocalMessageBatch(requests []pebbleLocalMess
 		}
 	}
 
-	commitOptions := pebble.NoSync
-	if forceSync {
-		commitOptions = pebble.Sync
-	}
-	if err := batch.Commit(commitOptions); err != nil {
+	closedByCommit, err := b.commitLocalMessageBatch(batch, forceSync)
+	if err != nil {
 		respondLocalMessageBatchError(requests, fmt.Errorf("commit local pebble message batch: %w", err))
 		return
+	}
+	if closedByCommit {
+		batchOwned = false
 	}
 	b.localMessageStats.record(syncMode)
 
@@ -334,6 +339,17 @@ func (b *pebbleStoreBackend) processLocalMessageBatch(requests []pebbleLocalMess
 	for i, request := range requests {
 		request.response <- results[i]
 	}
+}
+
+func (b *pebbleStoreBackend) commitLocalMessageBatch(batch *pebble.Batch, forceSync bool) (bool, error) {
+	if batch == nil {
+		return false, fmt.Errorf("%w: pebble batch cannot be nil", ErrInvalidInput)
+	}
+	commitOptions := pebble.NoSync
+	if forceSync {
+		commitOptions = pebble.Sync
+	}
+	return false, batch.Commit(commitOptions)
 }
 
 func respondLocalMessageBatchError(requests []pebbleLocalMessageWriteRequest, err error) {

@@ -55,6 +55,7 @@ type sqliteStoreConfig struct {
 
 type pebbleStoreConfig struct {
 	Path            string `toml:"path"`
+	Profile         string `toml:"profile"`
 	MessageSyncMode string `toml:"message_sync_mode"`
 }
 
@@ -284,6 +285,13 @@ func (c serveConfig) runtimeConfig(configPath string) (runtimeServeConfig, error
 	if pebbleMessageSyncMode == store.PebbleMessageSyncModeDefault {
 		pebbleMessageSyncMode = store.PebbleMessageSyncModeNoSync
 	}
+	pebbleProfile, err := store.NormalizePebbleProfile(c.Store.Pebble.Profile)
+	if err != nil {
+		return runtimeServeConfig{}, fmt.Errorf("store.pebble.profile: %w", err)
+	}
+	if pebbleProfile == store.PebbleProfileDefault {
+		pebbleProfile = store.PebbleProfileBalanced
+	}
 	tokenTTLMinutes := c.Auth.TokenTTLMinutes
 	if tokenTTLMinutes == 0 {
 		tokenTTLMinutes = 1440
@@ -393,6 +401,7 @@ func (c serveConfig) runtimeConfig(configPath string) (runtimeServeConfig, error
 		StoreOptions: store.Options{
 			Engine:                     engine,
 			PebblePath:                 filepath.Clean(pebblePath),
+			PebbleProfile:              pebbleProfile,
 			PebbleMessageSyncMode:      pebbleMessageSyncMode,
 			MessageWindowSize:          messageWindowSize,
 			EventLogMaxEventsPerOrigin: eventLogMaxEventsPerOrigin,

@@ -65,6 +65,8 @@ db_path = "./data/turntf.db"
 # Pebble 仅在 engine = "pebble" 时用于事件日志和消息投影。
 [store.pebble]
 path = "./data/turntf.pebble"
+# 可选 balanced 或 throughput；throughput 会启用更激进的内存/LSM 参数和热读布局。
+profile = "balanced"
 # 本地持久消息默认提交方式，可选 no_sync 或 force_sync。
 message_sync_mode = "no_sync"
 

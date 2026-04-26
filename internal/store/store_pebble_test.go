@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/cockroachdb/pebble"
 )
 
 func TestPebbleStoreEventLogAndMessageProjection(t *testing.T) {
@@ -503,6 +505,100 @@ func TestPebbleCreateMessageRequestSyncModeOverridesDefault(t *testing.T) {
 	}
 }
 
+func TestPebbleThroughputProfileInlinesSmallHotIndexes(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	st := openPebbleThroughputTestStore(t, "throughput-inline-small", 1, DefaultMessageWindowSize)
+
+	user, _, err := st.CreateUser(ctx, CreateUserParams{
+		Username:     "inline-small",
+		PasswordHash: "hash-inline-small",
+		Role:         RoleUser,
+	})
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	message, _, err := st.CreateMessage(ctx, CreateMessageParams{
+		UserKey: user.Key(),
+		Sender:  user.Key(),
+		Body:    []byte("small-inline-payload"),
+	})
+	if err != nil {
+		t.Fatalf("create message: %v", err)
+	}
+
+	backend := requirePebbleBackend(t, st)
+	for _, tc := range []struct {
+		name string
+		key  []byte
+	}{
+		{name: "user", key: pebbleMessageUserKey(message)},
+	} {
+		value := readPebbleValueForTest(t, backend.db, tc.key)
+		if _, ok, err := pebbleMessageRefFromValue(value); err != nil {
+			t.Fatalf("decode %s index ref: %v", tc.name, err)
+		} else if ok {
+			t.Fatalf("expected %s index to inline small message value", tc.name)
+		}
+		if decoded, err := messageFromPebbleValue(value); err != nil {
+			t.Fatalf("decode inline %s message: %v", tc.name, err)
+		} else if decoded.Seq != message.Seq || string(decoded.Body) != string(message.Body) {
+			t.Fatalf("unexpected inline %s message: %+v", tc.name, decoded)
+		}
+	}
+}
+
+func TestPebbleThroughputProfileKeepsLargeHotIndexesReferenced(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	st := openPebbleThroughputTestStore(t, "throughput-inline-large", 1, DefaultMessageWindowSize)
+
+	user, _, err := st.CreateUser(ctx, CreateUserParams{
+		Username:     "inline-large",
+		PasswordHash: "hash-inline-large",
+		Role:         RoleUser,
+	})
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	body := make([]byte, pebbleThroughputInlineValueMaxBytes+256)
+	for i := range body {
+		body[i] = 'a' + byte(i%26)
+	}
+	message, _, err := st.CreateMessage(ctx, CreateMessageParams{
+		UserKey: user.Key(),
+		Sender:  user.Key(),
+		Body:    body,
+	})
+	if err != nil {
+		t.Fatalf("create message: %v", err)
+	}
+
+	backend := requirePebbleBackend(t, st)
+	for _, tc := range []struct {
+		name string
+		key  []byte
+	}{
+		{name: "user", key: pebbleMessageUserKey(message)},
+	} {
+		value := readPebbleValueForTest(t, backend.db, tc.key)
+		ref, ok, err := pebbleMessageRefFromValue(value)
+		if err != nil {
+			t.Fatalf("decode %s index ref: %v", tc.name, err)
+		}
+		if !ok {
+			t.Fatalf("expected %s index to keep large message by reference", tc.name)
+		}
+		if ref.Seq != message.Seq || ref.NodeID != message.NodeID || ref.Recipient != message.Recipient {
+			t.Fatalf("unexpected %s index ref: %+v", tc.name, ref)
+		}
+	}
+}
+
 func TestPebbleLocalMessageSyncModeSegmentsPreserveOrder(t *testing.T) {
 	t.Parallel()
 
@@ -957,17 +1053,27 @@ func openPebbleTestStore(t *testing.T, name string, nodeSlot uint16, messageWind
 	return openPebbleTestStoreWithOptions(t, name, nodeSlot, messageWindowSize, DefaultEventLogMaxEventsPerOrigin, PebbleMessageSyncModeNoSync)
 }
 
+func openPebbleThroughputTestStore(t *testing.T, name string, nodeSlot uint16, messageWindowSize int) *Store {
+	t.Helper()
+	return openPebbleTestStoreWithSettings(t, name, nodeSlot, messageWindowSize, DefaultEventLogMaxEventsPerOrigin, PebbleMessageSyncModeNoSync, PebbleProfileThroughput)
+}
+
 func openPebbleTestStoreWithRetention(t *testing.T, name string, nodeSlot uint16, messageWindowSize int, maxEventsPerOrigin int) *Store {
 	t.Helper()
-	return openPebbleTestStoreWithOptions(t, name, nodeSlot, messageWindowSize, maxEventsPerOrigin, PebbleMessageSyncModeNoSync)
+	return openPebbleTestStoreWithSettings(t, name, nodeSlot, messageWindowSize, maxEventsPerOrigin, PebbleMessageSyncModeNoSync, PebbleProfileBalanced)
 }
 
 func openPebbleTestStoreWithSyncMode(t *testing.T, name string, nodeSlot uint16, messageWindowSize int, syncMode PebbleMessageSyncMode) *Store {
 	t.Helper()
-	return openPebbleTestStoreWithOptions(t, name, nodeSlot, messageWindowSize, DefaultEventLogMaxEventsPerOrigin, syncMode)
+	return openPebbleTestStoreWithSettings(t, name, nodeSlot, messageWindowSize, DefaultEventLogMaxEventsPerOrigin, syncMode, PebbleProfileBalanced)
 }
 
 func openPebbleTestStoreWithOptions(t *testing.T, name string, nodeSlot uint16, messageWindowSize int, maxEventsPerOrigin int, syncMode PebbleMessageSyncMode) *Store {
+	t.Helper()
+	return openPebbleTestStoreWithSettings(t, name, nodeSlot, messageWindowSize, maxEventsPerOrigin, syncMode, PebbleProfileBalanced)
+}
+
+func openPebbleTestStoreWithSettings(t *testing.T, name string, nodeSlot uint16, messageWindowSize int, maxEventsPerOrigin int, syncMode PebbleMessageSyncMode, profile PebbleProfile) *Store {
 	t.Helper()
 
 	dir := t.TempDir()
@@ -975,6 +1081,7 @@ func openPebbleTestStoreWithOptions(t *testing.T, name string, nodeSlot uint16, 
 		NodeID:                     testNodeID(nodeSlot),
 		Engine:                     EnginePebble,
 		PebblePath:                 filepath.Join(dir, name+".pebble"),
+		PebbleProfile:              profile,
 		PebbleMessageSyncMode:      syncMode,
 		MessageWindowSize:          messageWindowSize,
 		EventLogMaxEventsPerOrigin: maxEventsPerOrigin,
@@ -1000,6 +1107,7 @@ func openPersistentPebbleTestStore(t *testing.T, dir, name string, nodeSlot uint
 		NodeID:                     testNodeID(nodeSlot),
 		Engine:                     EnginePebble,
 		PebblePath:                 filepath.Join(dir, name+".pebble"),
+		PebbleProfile:              PebbleProfileBalanced,
 		PebbleMessageSyncMode:      PebbleMessageSyncModeNoSync,
 		MessageWindowSize:          messageWindowSize,
 		EventLogMaxEventsPerOrigin: DefaultEventLogMaxEventsPerOrigin,
@@ -1044,4 +1152,15 @@ func waitForPebbleCondition(t *testing.T, timeout time.Duration, check func() bo
 func pebbleLocalMessageBatchStatsForTest(tb testing.TB, st *Store) pebbleLocalMessageBatchStatsSnapshot {
 	tb.Helper()
 	return requirePebbleBackend(tb, st).localMessageStats.snapshot()
+}
+
+func readPebbleValueForTest(tb testing.TB, db *pebble.DB, key []byte) []byte {
+	tb.Helper()
+
+	value, closer, err := db.Get(key)
+	if err != nil {
+		tb.Fatalf("read pebble value %q: %v", key, err)
+	}
+	defer closer.Close()
+	return append([]byte(nil), value...)
 }

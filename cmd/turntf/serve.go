@@ -129,7 +129,12 @@ func serveRuntime(ctx context.Context, configPath string, logOutput io.Writer) e
 	log.Info().Str("component", "turntf").Str("event", "store_engine").Str("engine", cfg.StoreOptions.Engine).Msg("store engine")
 	log.Info().Str("component", "turntf").Str("event", "sqlite_database").Str("path", cfg.SQLitePath).Msg("sqlite database")
 	if cfg.StoreOptions.Engine == store.EnginePebble {
-		log.Info().Str("component", "turntf").Str("event", "pebble_database").Str("path", cfg.PebblePath).Msg("pebble database")
+		log.Info().
+			Str("component", "turntf").
+			Str("event", "pebble_database").
+			Str("path", cfg.PebblePath).
+			Str("profile", string(cfg.StoreOptions.PebbleProfile)).
+			Msg("pebble database")
 	}
 	if manager != nil {
 		log.Info().Str("component", "cluster").Str("event", "websocket_listening").Str("addr", cfg.Services.HTTP.ListenAddr).Str("path", cluster.WebSocketPath).Msg("websocket listening")

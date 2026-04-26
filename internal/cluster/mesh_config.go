@@ -162,8 +162,9 @@ func boolValue(value *bool, fallback bool) bool {
 	return *value
 }
 
+//go:fix inline
 func boolPtr(value bool) *bool {
-	return &value
+	return new(value)
 }
 
 func isValidDisposition(disposition mesh.ForwardingDisposition) bool {

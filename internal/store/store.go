@@ -35,6 +35,7 @@ const (
 	sqliteBusyTimeoutMillis   = "5000"
 	sqliteJournalMode         = "WAL"
 	sqliteSynchronousMode     = "NORMAL"
+	sqliteTransactionLockMode = "immediate"
 	sqliteTempStoreMemoryPrag = "PRAGMA temp_store = MEMORY;"
 )
 
@@ -340,6 +341,7 @@ func sqliteDSN(dbPath string) string {
 	values.Set("_foreign_keys", "1")
 	values.Set("_journal_mode", sqliteJournalMode)
 	values.Set("_synchronous", sqliteSynchronousMode)
+	values.Set("_txlock", sqliteTransactionLockMode)
 	return "file:" + dbPath + "?" + values.Encode()
 }
 

@@ -36,6 +36,8 @@ type noopEventSink struct{}
 
 func (noopEventSink) Publish(store.Event) {}
 
+const transientPacketIDNamespace = uint64(1) << 63
+
 type WriteGate interface {
 	AllowWrite(context.Context) error
 }
@@ -174,7 +176,10 @@ func (s *Service) DispatchTransientPacket(ctx context.Context, recipient store.U
 		return store.TransientPacket{}, store.ErrBlockedByBlacklist
 	}
 	packet := store.TransientPacket{
-		PacketID:     s.nextTransientID.Add(1),
+		// Keep client/API transient packets in a separate packet-id space from
+		// mesh runtime control/data packets so forwarding deduplication does not
+		// treat them as duplicates on multi-node paths.
+		PacketID:     s.nextTransientPacketID(),
 		SourceNodeID: s.store.NodeID(),
 		TargetNodeID: recipient.NodeID,
 		Recipient:    recipient,
@@ -294,4 +299,8 @@ func (s *Service) allowWrite(ctx context.Context) error {
 
 func (s *Service) recordBlacklistHit() {
 	s.blacklistHits.Add(1)
+}
+
+func (s *Service) nextTransientPacketID() uint64 {
+	return transientPacketIDNamespace | s.nextTransientID.Add(1)
 }

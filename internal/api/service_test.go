@@ -166,6 +166,44 @@ func TestServiceDispatchTransientPacketDoesNotPublishEvents(t *testing.T) {
 	}
 }
 
+func TestServiceDispatchTransientPacketUsesDedicatedPacketIDNamespace(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "service-transient-packet-id.db")
+	st, err := store.Open(dbPath, store.Options{
+		NodeID: testNodeID(1),
+	})
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	if err := st.Init(context.Background()); err != nil {
+		t.Fatalf("init store: %v", err)
+	}
+
+	svc := New(st, &recordingSink{})
+	receiver := &recordingTransientReceiver{}
+	svc.SetTransientPacketReceiver(receiver)
+
+	user, _, err := svc.CreateUser(context.Background(), store.CreateUserParams{
+		Username:     "alice",
+		PasswordHash: "hash-1",
+		Role:         store.RoleUser,
+	})
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	packet, err := svc.DispatchTransientPacket(context.Background(), user.Key(), user.Key(), []byte("ephemeral"), store.DeliveryModeBestEffort)
+	if err != nil {
+		t.Fatalf("dispatch transient packet: %v", err)
+	}
+	if packet.PacketID < transientPacketIDNamespace {
+		t.Fatalf("expected transient packet id to use dedicated namespace, got %d", packet.PacketID)
+	}
+}
+
 func TestServiceDispatchTransientPacketRespectsBlacklist(t *testing.T) {
 	t.Parallel()
 

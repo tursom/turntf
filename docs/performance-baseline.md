@@ -14,6 +14,7 @@
   - [internal/store/store_benchmark_test.go](/root/dev/sys/turntf/turntf/internal/store/store_benchmark_test.go)
   - [internal/store/store_degradation_benchmark_test.go](/root/dev/sys/turntf/turntf/internal/store/store_degradation_benchmark_test.go)
   - [internal/api/http_benchmark_test.go](/root/dev/sys/turntf/turntf/internal/api/http_benchmark_test.go)
+  - [internal/api/client_benchmark_test.go](/root/dev/sys/turntf/turntf/internal/api/client_benchmark_test.go)
 
 当前基线覆盖以下场景：
 
@@ -29,6 +30,9 @@
 - `BenchmarkDegradationStorePruneEventLogOnce`：按 event log 规模分层，观察 `SQLite` / `Pebble` 截断路径的退化倍数和单位规模增量成本。
 - `BenchmarkHTTPCreateMessageAuthenticated`：带鉴权的 `POST /nodes/{node_id}/users/{user_id}/messages`；`Pebble` 子场景会继续细分 `balanced/throughput` 与 `no_sync/force_sync`。
 - `BenchmarkHTTPListMessagesByUserAuthenticated`：带鉴权的 `GET /nodes/{node_id}/users/{user_id}/messages?limit=50`。
+- `BenchmarkClientWebSocketTransientSendMessageAuthenticated`：带鉴权的 `WS /ws/client` transient `SendMessage` RPC，发送端校验 `TransientAccepted`，接收端校验 `PacketPushed`，并确认消息未落盘。
+- `BenchmarkClientWebSocketTransientSendMessageAuthenticatedLinearMesh`：3 节点 / 7 节点线性拓扑下的带鉴权 `WS /ws/client` transient `SendMessage` RPC，发送端连接源节点 API，接收端连接目标节点 API，校验多跳 mesh 后的 `TransientAccepted` / `PacketPushed` 端到端路径。
+- `BenchmarkClientWebSocketTransientSendMessageAuthenticatedLinearMeshWithOnlineUsers`：在 3 节点 / 7 节点线性拓扑下先建立大批已登录 WebSocket 会话，再测一条跨节点 transient `SendMessage`，用于观察更贴近稳态在线连接负载下的端到端延迟。
 
 ## 采集策略
 
@@ -52,7 +56,7 @@ go test ./internal/cluster -run '^$' -bench 'BenchmarkMesh(Replication|QueryLogg
 `store/api` benchmark：
 
 ```bash
-go test ./internal/store ./internal/api -run '^$' -bench 'Benchmark(Store|HTTP)' -benchmem -count=1
+go test ./internal/store ./internal/api -run '^$' -bench 'Benchmark(Store|HTTP|ClientWebSocket)' -benchmem -count=1
 ```
 
 退化曲线 benchmark：
@@ -75,7 +79,7 @@ go test ./internal/cluster ./internal/store ./internal/api -count=1
 
 ```bash
 go test ./internal/cluster -run '^$' -bench 'BenchmarkMesh(Replication|QueryLoggedInUsers|TransientRoute|SnapshotRepair|TruncatedCatchup)' -benchmem -count=1 -benchtime=1x
-go test ./internal/store ./internal/api -run '^$' -bench 'Benchmark(Store|HTTP)' -benchmem -count=1 -benchtime=1x
+go test ./internal/store ./internal/api -run '^$' -bench 'Benchmark(Store|HTTP|ClientWebSocket)' -benchmem -count=1 -benchtime=1x
 ```
 
 ## 指标说明
@@ -85,6 +89,8 @@ go test ./internal/store ./internal/api -run '^$' -bench 'Benchmark(Store|HTTP)'
 - `allocs/op`：每次操作平均分配次数。
 - `bytes/op`：场景里单次操作的业务 payload 大小，便于横向对比不同消息体。
 - `ack_ms/op`：复制场景从本地创建消息并广播，到最远端应用完成且源节点看到 `Ack` 推进的平均耗时。
+- `accept_ms/op`：客户端 WebSocket transient 场景中，从发送请求到发送端收到 `TransientAccepted` 的平均耗时。
+- `push_ms/op`：客户端 WebSocket transient 场景中，从发送请求到接收端收到 `PacketPushed` 的平均耗时。
 - `query_ms/op`：查询场景单次多跳 `QueryLoggedInUsers` 的平均耗时。
 - `delivery_ms/op`：瞬时包场景从源节点发起路由到目标节点本地 handler 收到包的平均耗时。
 - `snapshot_ms/op`：snapshot repair 场景从发送 digest 到目标节点收敛的平均耗时。
@@ -97,6 +103,8 @@ go test ./internal/store ./internal/api -run '^$' -bench 'Benchmark(Store|HTTP)'
 
 以下结果来自 **2026-04-25** 的一次本地基线采集。
 这批数据发生在“自适应 `tmp` / `disk` 基线”引入之前，应按当前语义视为一组 **`tmp` 历史样本**，不能直接代表今天文档里所说的“官方非内存文件系统结果”。
+
+`BenchmarkClientWebSocketTransientSendMessageAuthenticated`、`BenchmarkClientWebSocketTransientSendMessageAuthenticatedLinearMesh` 和 `BenchmarkClientWebSocketTransientSendMessageAuthenticatedLinearMeshWithOnlineUsers` 是在 **2026-04-26** 之后加入的，因此不包含在下面这组历史命令和耗时统计里；后续重新采集时再补充它们的 `tmp` / `disk` 样本。
 
 - `cluster` 命令：`go test ./internal/cluster -run '^$' -bench 'BenchmarkMesh(Replication|QueryLoggedInUsers|TransientRoute|SnapshotRepair|TruncatedCatchup)' -benchmem -count=1`
 - `cluster` 总耗时：`103.271s`
@@ -185,6 +193,17 @@ go test ./internal/store ./internal/api -run '^$' -bench 'Benchmark(Store|HTTP)'
 | create message / pebble | 884,864 | `POST /nodes/{node_id}/users/{user_id}/messages` 256B payload；新版 benchmark 会拆成 `pebble/balanced|throughput/no_sync|force_sync` | 477,979 | 4,340 |
 | list messages / sqlite | 381,376 | `GET /nodes/{node_id}/users/{user_id}/messages?limit=50` | 144,555 | 2,219 |
 | list messages / pebble | 257,638 | `GET /nodes/{node_id}/users/{user_id}/messages?limit=50` | 140,814 | 1,561 |
+
+### Client WebSocket 热点
+
+`BenchmarkClientWebSocketTransientSendMessageAuthenticated` 已加入当前 benchmark 集合，但这份 **2026-04-25** 的历史 `tmp` 样本还没有它的结果。
+后续重新采集时，应补录发送端 `TransientAccepted` 的 `accept_ms/op` 和接收端 `PacketPushed` 的 `push_ms/op`，并继续按 `tmp` / `disk` 语义记录。
+
+`BenchmarkClientWebSocketTransientSendMessageAuthenticatedLinearMesh` 也已加入当前 benchmark 集合，但同样还没有这份历史样本里的结果。
+后续重新采集时，应按 `3-nodes` / `7-nodes` 和 payload 分层补录多跳 mesh 下的 `accept_ms/op`、`push_ms/op`、`ns/op`、`B/op` 和 `allocs/op`。
+
+`BenchmarkClientWebSocketTransientSendMessageAuthenticatedLinearMeshWithOnlineUsers` 则用于观察“很多真实已登录会话在后台轮询时”的前台跨节点 transient 延迟。
+后续重新采集时，应至少按总在线用户数、节点数和 `256B` payload 记录它的 `accept_ms/op`、`push_ms/op` 与是否能在设定时间内进入稳态。
 
 ## 如何使用这份基线
 

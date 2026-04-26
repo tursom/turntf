@@ -16,21 +16,24 @@ import (
 const pebbleCursorValueVersion = byte(1)
 
 type pebblePeerAckCursorRepository struct {
-	db    *pebble.DB
-	clock *clock.Clock
-	mu    sync.Mutex
+	db     *pebble.DB
+	writes *pebbleWriteCoordinator
+	clock  *clock.Clock
+	mu     sync.Mutex
 }
 
 type pebbleOriginCursorRepository struct {
-	db    *pebble.DB
-	clock *clock.Clock
-	mu    sync.Mutex
+	db     *pebble.DB
+	writes *pebbleWriteCoordinator
+	clock  *clock.Clock
+	mu     sync.Mutex
 }
 
 type pebblePendingProjectionRepository struct {
-	db    *pebble.DB
-	clock *clock.Clock
-	mu    sync.Mutex
+	db     *pebble.DB
+	writes *pebbleWriteCoordinator
+	clock  *clock.Clock
+	mu     sync.Mutex
 }
 
 type pebblePendingProjectionRecord struct {
@@ -134,7 +137,7 @@ func (r *pebblePeerAckCursorRepository) Upsert(ctx context.Context, peerNodeID, 
 	if ok && ackedEventID < current {
 		ackedEventID = current
 	}
-	return setPebbleCursorValue(r.db, key, ackedEventID, r.clock.Now())
+	return setPebbleCursorValue(r.db, r.writes, key, ackedEventID, r.clock.Now())
 }
 
 func (r *pebbleOriginCursorRepository) Get(ctx context.Context, originNodeID int64) (OriginCursor, error) {
@@ -219,7 +222,7 @@ func (r *pebbleOriginCursorRepository) Upsert(ctx context.Context, originNodeID,
 	if ok && appliedEventID < current {
 		appliedEventID = current
 	}
-	return setPebbleCursorValue(r.db, key, appliedEventID, r.clock.Now())
+	return setPebbleCursorValue(r.db, r.writes, key, appliedEventID, r.clock.Now())
 }
 
 func (r *pebblePendingProjectionRepository) Record(ctx context.Context, event Event, reason error) error {
@@ -266,7 +269,7 @@ func (r *pebblePendingProjectionRepository) Record(ctx context.Context, event Ev
 	if err != nil {
 		return err
 	}
-	return r.db.Set(key, value, pebble.Sync)
+	return applyPebbleValueSet(r.db, r.writes, key, value, false)
 }
 
 func (r *pebblePendingProjectionRepository) Clear(ctx context.Context, originNodeID, eventID int64) error {
@@ -276,7 +279,7 @@ func (r *pebblePendingProjectionRepository) Clear(ctx context.Context, originNod
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := r.db.Delete(pebblePendingProjectionKey(originNodeID, eventID), pebble.Sync); err != nil && !errors.Is(err, pebble.ErrNotFound) {
+	if err := applyPebbleValueDelete(r.db, r.writes, pebblePendingProjectionKey(originNodeID, eventID), false); err != nil && !errors.Is(err, pebble.ErrNotFound) {
 		return fmt.Errorf("clear pebble pending projection: %w", err)
 	}
 	return nil
@@ -311,10 +314,10 @@ func (r *pebblePendingProjectionRepository) List(ctx context.Context, limit int)
 			return nil, fmt.Errorf("parse pebble pending projection last_failed_at: %w", err)
 		}
 		items = append(items, pendingProjectionEnvelope{
-			OriginNodeID:  originNodeID,
-			EventID:       eventID,
-			Record:        record,
-			LastFailedAt:  lastFailedAt,
+			OriginNodeID: originNodeID,
+			EventID:      eventID,
+			Record:       record,
+			LastFailedAt: lastFailedAt,
 		})
 	}
 	if err := iter.Error(); err != nil {
@@ -345,8 +348,8 @@ func (r *pebblePendingProjectionRepository) Stats(ctx context.Context) (Projecti
 	defer iter.Close()
 
 	var (
-		total       int64
-		lastFailed  *clock.Timestamp
+		total      int64
+		lastFailed *clock.Timestamp
 	)
 	for valid := iter.First(); valid; valid = iter.Next() {
 		if err := ctx.Err(); err != nil {
@@ -435,8 +438,32 @@ func readPebbleCursorValue(db *pebble.DB, key []byte) (int64, bool, error) {
 	return id, true, nil
 }
 
-func setPebbleCursorValue(db *pebble.DB, key []byte, id int64, updatedAt clock.Timestamp) error {
-	return db.Set(key, encodePebbleCursorValue(id, updatedAt.String()), pebble.Sync)
+func setPebbleCursorValue(db *pebble.DB, writes *pebbleWriteCoordinator, key []byte, id int64, updatedAt clock.Timestamp) error {
+	return applyPebbleValueSet(db, writes, key, encodePebbleCursorValue(id, updatedAt.String()), false)
+}
+
+func applyPebbleValueSet(db *pebble.DB, writes *pebbleWriteCoordinator, key, value []byte, forceSync bool) error {
+	if db == nil {
+		return fmt.Errorf("pebble db is not initialized")
+	}
+	batch := db.NewBatch()
+	if err := batch.Set(key, value, nil); err != nil {
+		_ = batch.Close()
+		return err
+	}
+	return applyPebbleBatch(batch, writes, forceSync)
+}
+
+func applyPebbleValueDelete(db *pebble.DB, writes *pebbleWriteCoordinator, key []byte, forceSync bool) error {
+	if db == nil {
+		return fmt.Errorf("pebble db is not initialized")
+	}
+	batch := db.NewBatch()
+	if err := batch.Delete(key, nil); err != nil {
+		_ = batch.Close()
+		return err
+	}
+	return applyPebbleBatch(batch, writes, forceSync)
 }
 
 func encodePebbleCursorValue(id int64, updatedAt string) []byte {

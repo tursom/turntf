@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -43,6 +44,53 @@ func TestPebbleWriteCoordinatorSeparatesRelaxedAndForceSyncPaths(t *testing.T) {
 	afterMessage := backend.writes.statsSnapshot()
 	if afterMessage != afterUser {
 		t.Fatalf("expected local message path to bypass write coordinator: user=%+v message=%+v", afterUser, afterMessage)
+	}
+}
+
+func TestPebbleMetadataWritesUseRelaxedCoordinatorPath(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	st := openPebbleTestStore(t, "metadata-relaxed", 1, DefaultMessageWindowSize)
+	backend := requirePebbleBackend(t, st)
+
+	user, _, err := st.CreateUser(ctx, CreateUserParams{
+		Username:     "pending-user",
+		PasswordHash: "hash-pending",
+		Role:         RoleUser,
+	})
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	_, event, err := st.CreateMessage(ctx, CreateMessageParams{
+		UserKey: user.Key(),
+		Sender:  user.Key(),
+		Body:    []byte("pending"),
+	})
+	if err != nil {
+		t.Fatalf("create message: %v", err)
+	}
+
+	before := backend.writes.statsSnapshot()
+	if err := st.RecordPeerAck(ctx, testNodeID(2), testNodeID(3), 7); err != nil {
+		t.Fatalf("record peer ack: %v", err)
+	}
+	if err := st.RecordOriginApplied(ctx, testNodeID(3), 11); err != nil {
+		t.Fatalf("record origin applied: %v", err)
+	}
+	if err := st.recordPendingProjection(ctx, event, errors.New("projection failed")); err != nil {
+		t.Fatalf("record pending projection: %v", err)
+	}
+	if err := st.clearPendingProjection(ctx, event.OriginNodeID, event.EventID); err != nil {
+		t.Fatalf("clear pending projection: %v", err)
+	}
+
+	after := backend.writes.statsSnapshot()
+	if after.RelaxedBatches <= before.RelaxedBatches {
+		t.Fatalf("expected metadata writes to use relaxed coordinator path: before=%+v after=%+v", before, after)
+	}
+	if after.ForceSyncBatches != before.ForceSyncBatches {
+		t.Fatalf("expected metadata writes to avoid force-sync coordinator path: before=%+v after=%+v", before, after)
 	}
 }
 

@@ -479,16 +479,19 @@ func (b *pebbleStoreBackend) Bind(bindings storeBackendBindings) error {
 		writes: b.writes,
 	}
 	b.peerAckCursors = &pebblePeerAckCursorRepository{
-		db:    b.db,
-		clock: bindings.Clock,
+		db:     b.db,
+		writes: b.writes,
+		clock:  bindings.Clock,
 	}
 	b.originCursors = &pebbleOriginCursorRepository{
-		db:    b.db,
-		clock: bindings.Clock,
+		db:     b.db,
+		writes: b.writes,
+		clock:  bindings.Clock,
 	}
 	b.pendingProjections = &pebblePendingProjectionRepository{
-		db:    b.db,
-		clock: bindings.Clock,
+		db:     b.db,
+		writes: b.writes,
+		clock:  bindings.Clock,
 	}
 	b.eventLog = &pebbleEventLogRepository{
 		db:     b.db,

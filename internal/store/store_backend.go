@@ -3,7 +3,9 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
+	"sync"
 
 	"github.com/cockroachdb/pebble"
 	gproto "google.golang.org/protobuf/proto"
@@ -15,6 +17,7 @@ import (
 type storeBackend interface {
 	Name() string
 	Bind(storeBackendBindings) error
+	CreateMessage(context.Context, *Store, CreateMessageParams) (Message, Event, error)
 	EventLog() EventLogRepository
 	MessageProjection() MessageProjectionRepository
 	NextMessageSeqTx(context.Context, *sql.Tx, UserKey, int64) (int64, error)
@@ -48,6 +51,7 @@ func newStoreBackend(engine string, db *sql.DB, pebbleDB *pebble.DB) (storeBacke
 		}
 		return &pebbleStoreBackend{
 			db:     pebbleDB,
+			sqlDB:  db,
 			writes: newPebbleWriteCoordinator(pebbleDB),
 		}, nil
 	default:
@@ -98,8 +102,73 @@ func (b *sqliteStoreBackend) MessageProjection() MessageProjectionRepository {
 	return b.messageProjection
 }
 
+func (b *sqliteStoreBackend) CreateMessage(ctx context.Context, s *Store, params CreateMessageParams) (Message, Event, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Message{}, Event{}, fmt.Errorf("begin create message: %w", err)
+	}
+	defer tx.Rollback()
+
+	recipient, err := s.getUserTx(ctx, tx, params.UserKey, false)
+	if err != nil {
+		return Message{}, Event{}, err
+	}
+	sender, err := s.getUserTx(ctx, tx, params.Sender, false)
+	switch {
+	case err == nil:
+		if recipient.CanLogin() && sender.Role == RoleUser {
+			blocked, err := s.isBlockedByRecipientTx(ctx, tx, recipient.Key(), sender.Key(), nil)
+			if err != nil {
+				return Message{}, Event{}, err
+			}
+			if blocked {
+				return Message{}, Event{}, ErrBlockedByBlacklist
+			}
+		}
+	case !errors.Is(err, ErrNotFound):
+		return Message{}, Event{}, err
+	}
+
+	now := s.clock.Now()
+	seq, err := s.nextMessageSeqTx(ctx, tx, params.UserKey, s.nodeID)
+	if err != nil {
+		return Message{}, Event{}, err
+	}
+	message := Message{
+		Recipient: params.UserKey,
+		NodeID:    s.nodeID,
+		Seq:       seq,
+		Sender:    params.Sender,
+		Body:      append([]byte(nil), params.Body...),
+		CreatedAt: now,
+	}
+
+	event, err := s.insertEvent(ctx, tx, Event{
+		EventType:       EventTypeMessageCreated,
+		Aggregate:       "message",
+		AggregateNodeID: message.NodeID,
+		AggregateID:     message.Seq,
+		HLC:             now,
+		Body:            messageCreatedProtoFromMessage(message),
+	})
+	if err != nil {
+		return Message{}, Event{}, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return Message{}, Event{}, fmt.Errorf("commit create message: %w", err)
+	}
+	if err := s.projectMessageEvent(ctx, event); err != nil {
+		if recordErr := s.recordPendingProjection(ctx, event, err); recordErr != nil {
+			return Message{}, Event{}, fmt.Errorf("record deferred message projection: %w", recordErr)
+		}
+		return message, event, fmt.Errorf("%w: %v", ErrProjectionDeferred, err)
+	}
+	return message, event, nil
+}
+
 func (b *sqliteStoreBackend) NextMessageSeqTx(ctx context.Context, tx *sql.Tx, key UserKey, nodeID int64) (int64, error) {
-	return nextSQLiteMessageSeqTx(ctx, tx, key, nodeID)
+	return nextSQLiteMessageSeq(ctx, tx, key, nodeID)
 }
 
 func (b *sqliteStoreBackend) InsertLocalEventTx(ctx context.Context, tx *sql.Tx, event Event) (Event, error) {
@@ -299,11 +368,18 @@ func (b *sqliteStoreBackend) Close() error {
 }
 
 type pebbleStoreBackend struct {
-	db                *pebble.DB
-	writes            *pebbleWriteCoordinator
-	eventLog          *pebbleEventLogRepository
-	messageProjection MessageProjectionRepository
-	messageSequences  *pebbleMessageSequenceRepository
+	db                    *pebble.DB
+	sqlDB                 *sql.DB
+	writes                *pebbleWriteCoordinator
+	eventLog              *pebbleEventLogRepository
+	messageProjection     MessageProjectionRepository
+	messageProjectionRepo *pebbleMessageProjectionRepository
+	messageSequences      *pebbleMessageSequenceRepository
+	localMessageRequests  chan pebbleLocalMessageWriteRequest
+	localMessageCloseCh   chan chan error
+	localMessageDone      chan struct{}
+	localMessageMu        sync.Mutex
+	localMessageClosed    bool
 }
 
 func (b *pebbleStoreBackend) Name() string {
@@ -311,7 +387,7 @@ func (b *pebbleStoreBackend) Name() string {
 }
 
 func (b *pebbleStoreBackend) Bind(bindings storeBackendBindings) error {
-	b.messageProjection = &pebbleMessageProjectionRepository{
+	b.messageProjectionRepo = &pebbleMessageProjectionRepository{
 		db:                b.db,
 		writes:            b.writes,
 		messageWindowSize: bindings.MessageWindowSize,
@@ -320,8 +396,11 @@ func (b *pebbleStoreBackend) Bind(bindings storeBackendBindings) error {
 		blacklists:        bindings.Blacklists,
 		messageTrim:       bindings.MessageTrim,
 	}
+	b.messageProjectionRepo.startTrimWorker()
+	b.messageProjection = b.messageProjectionRepo
 	b.messageSequences = &pebbleMessageSequenceRepository{
 		db:     b.db,
+		sqlDB:  b.sqlDB,
 		writes: b.writes,
 	}
 	b.eventLog = &pebbleEventLogRepository{
@@ -331,6 +410,7 @@ func (b *pebbleStoreBackend) Bind(bindings storeBackendBindings) error {
 		nodeID: bindings.NodeID,
 		clock:  bindings.Clock,
 	}
+	b.startLocalMessageLoop()
 	return nil
 }
 
@@ -340,6 +420,40 @@ func (b *pebbleStoreBackend) EventLog() EventLogRepository {
 
 func (b *pebbleStoreBackend) MessageProjection() MessageProjectionRepository {
 	return b.messageProjection
+}
+
+func (b *pebbleStoreBackend) CreateMessage(ctx context.Context, s *Store, params CreateMessageParams) (Message, Event, error) {
+	recipient, err := s.getUser(ctx, params.UserKey, false)
+	if err != nil {
+		return Message{}, Event{}, err
+	}
+
+	sender := User{}
+	senderExists := false
+	if params.Sender == params.UserKey {
+		sender = recipient
+		senderExists = true
+	} else {
+		sender, err = s.getUser(ctx, params.Sender, false)
+		switch {
+		case err == nil:
+			senderExists = true
+		case errors.Is(err, ErrNotFound):
+		default:
+			return Message{}, Event{}, err
+		}
+	}
+
+	if recipient.CanLogin() && senderExists && sender.Role == RoleUser && sender.Key() != recipient.Key() {
+		blocked, err := s.blacklists.HasActiveBlock(ctx, recipient.Key(), sender.Key(), nil)
+		if err != nil {
+			return Message{}, Event{}, err
+		}
+		if blocked {
+			return Message{}, Event{}, ErrBlockedByBlacklist
+		}
+	}
+	return b.submitLocalMessage(ctx, params)
 }
 
 func (b *pebbleStoreBackend) NextMessageSeqTx(ctx context.Context, tx *sql.Tx, key UserKey, nodeID int64) (int64, error) {
@@ -459,8 +573,18 @@ func (b *pebbleStoreBackend) PruneEventLogOrigin(ctx context.Context, db *sql.DB
 
 func (b *pebbleStoreBackend) Close() error {
 	var err error
+	if closeErr := b.closeLocalMessageLoop(); err == nil {
+		err = closeErr
+	}
+	if b.messageProjectionRepo != nil {
+		if closeErr := b.messageProjectionRepo.close(); err == nil {
+			err = closeErr
+		}
+	}
 	if b.writes != nil {
-		err = b.writes.Close()
+		if closeErr := b.writes.Close(); err == nil {
+			err = closeErr
+		}
 	}
 	if b.db != nil {
 		if closeErr := b.db.Close(); err == nil {

@@ -41,8 +41,8 @@ func TestPebbleWriteCoordinatorSeparatesRelaxedAndForceSyncPaths(t *testing.T) {
 		t.Fatalf("create message: %v", err)
 	}
 	afterMessage := backend.writes.statsSnapshot()
-	if afterMessage.RelaxedBatches <= afterUser.RelaxedBatches {
-		t.Fatalf("expected message event/projection to use relaxed path: user=%+v message=%+v", afterUser, afterMessage)
+	if afterMessage != afterUser {
+		t.Fatalf("expected local message path to bypass write coordinator: user=%+v message=%+v", afterUser, afterMessage)
 	}
 }
 

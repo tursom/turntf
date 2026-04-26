@@ -17,80 +17,21 @@ func (s *Store) CreateMessage(ctx context.Context, params CreateMessageParams) (
 	if len(params.Body) == 0 {
 		return Message{}, Event{}, fmt.Errorf("%w: body cannot be empty", ErrInvalidInput)
 	}
-
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return Message{}, Event{}, fmt.Errorf("begin create message: %w", err)
-	}
-	defer tx.Rollback()
-
-	recipient, err := s.getUserTx(ctx, tx, params.UserKey, false)
-	if err != nil {
+	if err := ctx.Err(); err != nil {
 		return Message{}, Event{}, err
 	}
-	sender, err := s.getUserTx(ctx, tx, params.Sender, false)
-	switch {
-	case err == nil:
-		if recipient.CanLogin() && sender.Role == RoleUser {
-			blocked, err := s.isBlockedByRecipientTx(ctx, tx, recipient.Key(), sender.Key(), nil)
-			if err != nil {
-				return Message{}, Event{}, err
-			}
-			if blocked {
-				return Message{}, Event{}, ErrBlockedByBlacklist
-			}
-		}
-	case !errors.Is(err, ErrNotFound):
-		return Message{}, Event{}, err
-	}
-
-	now := s.clock.Now()
-	seq, err := s.nextMessageSeqTx(ctx, tx, params.UserKey, s.nodeID)
-	if err != nil {
-		return Message{}, Event{}, err
-	}
-	message := Message{
-		Recipient: params.UserKey,
-		NodeID:    s.nodeID,
-		Seq:       seq,
-		Sender:    params.Sender,
-		Body:      append([]byte(nil), params.Body...),
-		CreatedAt: now,
-	}
-
-	event, err := s.insertEvent(ctx, tx, Event{
-		EventType:       EventTypeMessageCreated,
-		Aggregate:       "message",
-		AggregateNodeID: message.NodeID,
-		AggregateID:     message.Seq,
-		HLC:             now,
-		Body:            messageCreatedProtoFromMessage(message),
-	})
-	if err != nil {
-		return Message{}, Event{}, err
-	}
-
-	if err := tx.Commit(); err != nil {
-		return Message{}, Event{}, fmt.Errorf("commit create message: %w", err)
-	}
-	if err := s.projectMessageEvent(ctx, event); err != nil {
-		if recordErr := s.recordPendingProjection(ctx, event, err); recordErr != nil {
-			return Message{}, Event{}, fmt.Errorf("record deferred message projection: %w", recordErr)
-		}
-		return message, event, fmt.Errorf("%w: %v", ErrProjectionDeferred, err)
-	}
-	return message, event, nil
-}
-
-func (s *Store) ListMessagesByUser(ctx context.Context, key UserKey, limit int) ([]Message, error) {
-	return s.backend.MessageProjection().ListMessagesByUser(ctx, key, limit)
+	return s.backend.CreateMessage(ctx, s, params)
 }
 
 func (s *Store) nextMessageSeqTx(ctx context.Context, tx *sql.Tx, key UserKey, nodeID int64) (int64, error) {
 	return s.backend.NextMessageSeqTx(ctx, tx, key, nodeID)
 }
 
-func nextSQLiteMessageSeqTx(ctx context.Context, tx *sql.Tx, key UserKey, nodeID int64) (int64, error) {
+func (s *Store) ListMessagesByUser(ctx context.Context, key UserKey, limit int) ([]Message, error) {
+	return s.backend.MessageProjection().ListMessagesByUser(ctx, key, limit)
+}
+
+func nextSQLiteMessageSeq(ctx context.Context, tx *sql.Tx, key UserKey, nodeID int64) (int64, error) {
 	if err := key.Validate(); err != nil {
 		return 0, err
 	}
@@ -98,12 +39,12 @@ func nextSQLiteMessageSeqTx(ctx context.Context, tx *sql.Tx, key UserKey, nodeID
 		return 0, fmt.Errorf("%w: user id and node id are required for message sequence", ErrInvalidInput)
 	}
 
-	seq, ok, err := readStoredMessageCounterNextSeqTx(ctx, tx, key, nodeID)
+	seq, ok, err := readStoredMessageCounterNextSeq(ctx, tx, key, nodeID)
 	if err != nil {
 		return 0, err
 	}
 	if !ok {
-		seq, err = readProjectedMessageNextSeqTx(ctx, tx, key, nodeID)
+		seq, err = readProjectedMessageNextSeq(ctx, tx, key, nodeID)
 		if err != nil {
 			return 0, err
 		}
@@ -119,9 +60,13 @@ ON CONFLICT(user_node_id, user_id, node_id) DO UPDATE SET next_seq = excluded.ne
 	return seq, nil
 }
 
-func readStoredMessageCounterNextSeqTx(ctx context.Context, tx *sql.Tx, key UserKey, nodeID int64) (int64, bool, error) {
+type sqlQueryRowContext interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
+func readStoredMessageCounterNextSeq(ctx context.Context, querier sqlQueryRowContext, key UserKey, nodeID int64) (int64, bool, error) {
 	var seq int64
-	err := tx.QueryRowContext(ctx, `
+	err := querier.QueryRowContext(ctx, `
 SELECT next_seq
 FROM message_sequence_counters
 WHERE user_node_id = ? AND user_id = ? AND node_id = ?
@@ -136,9 +81,9 @@ WHERE user_node_id = ? AND user_id = ? AND node_id = ?
 	}
 }
 
-func readProjectedMessageNextSeqTx(ctx context.Context, tx *sql.Tx, key UserKey, nodeID int64) (int64, error) {
+func readProjectedMessageNextSeq(ctx context.Context, querier sqlQueryRowContext, key UserKey, nodeID int64) (int64, error) {
 	var seq int64
-	if err := tx.QueryRowContext(ctx, `
+	if err := querier.QueryRowContext(ctx, `
 SELECT COALESCE(MAX(seq), 0) + 1
 FROM messages
 WHERE user_node_id = ? AND user_id = ? AND node_id = ?

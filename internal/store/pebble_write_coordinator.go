@@ -10,8 +10,8 @@ import (
 )
 
 const (
-	groupCommitMaxOps   = 64
-	groupCommitMaxDelay = 2 * time.Millisecond
+	groupCommitMaxOps   = 128
+	groupCommitMaxDelay = 5 * time.Millisecond
 )
 
 type pebbleWriteCoordinator struct {

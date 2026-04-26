@@ -44,7 +44,13 @@ type pebbleMessageProjectionRepository struct {
 	subscriptions     SubscriptionRepository
 	blacklists        BlacklistRepository
 	messageTrim       MessageTrimRepository
-	mu                sync.Mutex
+	shardLocks        [pebbleProjectionLockShards]sync.Mutex
+	trimMu            sync.Mutex
+	dirtyUsers        map[UserKey]struct{}
+	trimWake          chan struct{}
+	trimClose         chan chan error
+	trimDone          chan struct{}
+	trimClosed        bool
 }
 
 func (r *pebbleEventLogRepository) Append(ctx context.Context, event Event) (Event, error) {
@@ -121,14 +127,10 @@ func (r *pebbleEventLogRepository) appendReplicated(ctx context.Context, event E
 }
 
 func (r *pebbleEventLogRepository) writeStoredEvent(event Event, value []byte) error {
-	originKey := pebbleEventOriginKey(event.OriginNodeID, event.EventID)
-
 	batch := r.db.NewBatch()
-	if err := batch.Set(pebbleEventSeqKey(event.Sequence), value, nil); err != nil {
-		return fmt.Errorf("write event sequence index: %w", err)
-	}
-	if err := batch.Set(originKey, encodeInt64(event.Sequence), nil); err != nil {
-		return fmt.Errorf("write event origin index: %w", err)
+	if err := r.writeStoredEventToBatch(batch, event, value); err != nil {
+		_ = batch.Close()
+		return err
 	}
 	if err := batch.Set(pebbleEventSequenceKey, encodeInt64(event.Sequence), nil); err != nil {
 		return fmt.Errorf("write event sequence meta: %w", err)
@@ -138,6 +140,20 @@ func (r *pebbleEventLogRepository) writeStoredEvent(event Event, value []byte) e
 	}
 	r.lastSequence = event.Sequence
 	r.sequenceLoaded = true
+	return nil
+}
+
+func (r *pebbleEventLogRepository) writeStoredEventToBatch(batch *pebble.Batch, event Event, value []byte) error {
+	if batch == nil {
+		return fmt.Errorf("%w: pebble batch cannot be nil", ErrInvalidInput)
+	}
+	originKey := pebbleEventOriginKey(event.OriginNodeID, event.EventID)
+	if err := batch.Set(pebbleEventSeqKey(event.Sequence), value, nil); err != nil {
+		return fmt.Errorf("write event sequence index: %w", err)
+	}
+	if err := batch.Set(originKey, encodeInt64(event.Sequence), nil); err != nil {
+		return fmt.Errorf("write event origin index: %w", err)
+	}
 	return nil
 }
 
@@ -333,18 +349,29 @@ func (r *pebbleMessageProjectionRepository) ApplyMessageCreated(ctx context.Cont
 		return err
 	}
 
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	unlock := r.lockUsers([]UserKey{key})
+	defer unlock()
 
 	if ok, err := r.messageExists(message); err != nil {
 		return err
 	} else if ok {
 		return nil
 	}
-	if err := r.putMessage(message, false); err != nil {
+	state, err := r.putMessage(ctx, message, false)
+	if err != nil {
 		return err
 	}
-	return r.trimMessagesForUser(ctx, key, false)
+
+	windowSize := normalizeMessageWindowSize(r.messageWindowSize)
+	switch {
+	case state.StoredCount > int64(pebbleMessageTrimHardThreshold(windowSize)):
+		if err := r.trimMessagesForUserLocked(ctx, key, false); err != nil {
+			r.scheduleTrim(key)
+		}
+	case state.StoredCount > int64(pebbleMessageTrimThreshold(windowSize)):
+		r.scheduleTrim(key)
+	}
+	return nil
 }
 
 func (r *pebbleMessageProjectionRepository) ListMessagesByUser(ctx context.Context, key UserKey, limit int) ([]Message, error) {
@@ -458,9 +485,6 @@ func (r *pebbleMessageProjectionRepository) BuildMessageSnapshotRows(ctx context
 }
 
 func (r *pebbleMessageProjectionRepository) ApplyMessageSnapshotRows(ctx context.Context, producer int64, rows []*clusterproto.SnapshotRow) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
 	affectedUsers := make(map[UserKey]struct{})
 	for _, row := range rows {
 		key, err := r.applyMessageSnapshotRow(ctx, producer, row)
@@ -519,12 +543,14 @@ func (r *pebbleMessageProjectionRepository) applyMessageSnapshotRow(ctx context.
 		Body:      messageRow.Body,
 		CreatedAt: createdAt,
 	}
+	unlock := r.lockUsers([]UserKey{key})
+	defer unlock()
 	if ok, err := r.messageExists(message); err != nil {
 		return UserKey{}, err
 	} else if ok {
 		return key, nil
 	}
-	if err := r.putMessage(message, true); err != nil {
+	if _, err := r.putMessage(ctx, message, true); err != nil {
 		return UserKey{}, err
 	}
 	return key, nil
@@ -541,26 +567,21 @@ func (r *pebbleMessageProjectionRepository) messageExists(message Message) (bool
 	return true, closer.Close()
 }
 
-func (r *pebbleMessageProjectionRepository) putMessage(message Message, forceSync bool) error {
-	value, err := pebbleMessageValue(message)
+func (r *pebbleMessageProjectionRepository) putMessage(ctx context.Context, message Message, forceSync bool) (pebbleMessageUserState, error) {
+	state, err := r.messageUserStateLocked(ctx, message.UserKey())
 	if err != nil {
-		return err
+		return pebbleMessageUserState{}, err
 	}
-	refValue := pebbleMessageIndexValue(pebbleMessageRefFromMessage(message))
 	batch := r.db.NewBatch()
-	if err := batch.Set(pebbleMessageIDKey(message), value, nil); err != nil {
-		return fmt.Errorf("write message primary projection: %w", err)
-	}
-	if err := batch.Set(pebbleMessageUserKey(message), refValue, nil); err != nil {
-		return fmt.Errorf("write message user index: %w", err)
-	}
-	if err := batch.Set(pebbleMessageProducerKey(message), refValue, nil); err != nil {
-		return fmt.Errorf("write message producer index: %w", err)
+	state, err = r.prepareMessageWrite(batch, message, state)
+	if err != nil {
+		_ = batch.Close()
+		return pebbleMessageUserState{}, err
 	}
 	if err := applyPebbleBatch(batch, r.writes, forceSync); err != nil {
-		return fmt.Errorf("commit message projection: %w", err)
+		return pebbleMessageUserState{}, fmt.Errorf("commit message projection: %w", err)
 	}
-	return nil
+	return state, nil
 }
 
 func (r *pebbleMessageProjectionRepository) listRawMessagesByUser(ctx context.Context, key UserKey, limit int, since *clock.Timestamp) ([]Message, error) {
@@ -609,67 +630,6 @@ func (r *pebbleMessageProjectionRepository) listMessagesByUserIndex(ctx context.
 		return nil, fmt.Errorf("iterate user messages: %w", err)
 	}
 	return messages, nil
-}
-
-func (r *pebbleMessageProjectionRepository) trimMessagesForUser(ctx context.Context, key UserKey, forceSync bool) error {
-	windowSize := normalizeMessageWindowSize(r.messageWindowSize)
-	if !forceSync {
-		shouldTrim, err := r.userExceedsTrimThreshold(ctx, key, windowSize)
-		if err != nil {
-			return err
-		}
-		if !shouldTrim {
-			return nil
-		}
-	}
-	messages, err := r.listStoredMessagesByUser(ctx, key, nil)
-	if err != nil {
-		return err
-	}
-	if len(messages) <= windowSize {
-		return nil
-	}
-
-	batch := r.db.NewBatch()
-	for _, message := range messages[windowSize:] {
-		for _, key := range pebbleMessageKeys(message) {
-			if err := batch.Delete(key, nil); err != nil {
-				return fmt.Errorf("delete trimmed message: %w", err)
-			}
-		}
-	}
-	if err := applyPebbleBatch(batch, r.writes, forceSync); err != nil {
-		return fmt.Errorf("commit message trim: %w", err)
-	}
-	return r.messageTrim.RecordMessageTrim(ctx, int64(len(messages)-windowSize))
-}
-
-func (r *pebbleMessageProjectionRepository) userExceedsTrimThreshold(ctx context.Context, key UserKey, windowSize int) (bool, error) {
-	if err := key.Validate(); err != nil {
-		return false, err
-	}
-	threshold := pebbleMessageTrimThreshold(windowSize)
-	prefix := []byte(fmt.Sprintf("message/user/%020d/%020d/", key.NodeID, key.UserID))
-	iter, err := r.db.NewIter(&pebble.IterOptions{LowerBound: prefix, UpperBound: prefixUpperBound(prefix)})
-	if err != nil {
-		return false, fmt.Errorf("open user trim threshold iterator: %w", err)
-	}
-	defer iter.Close()
-
-	count := 0
-	for valid := iter.First(); valid; valid = iter.Next() {
-		if err := ctx.Err(); err != nil {
-			return false, err
-		}
-		count++
-		if count > threshold {
-			return true, nil
-		}
-	}
-	if err := iter.Error(); err != nil {
-		return false, fmt.Errorf("iterate user trim threshold: %w", err)
-	}
-	return false, nil
 }
 
 func pebbleEventRequiresForceSync(event Event) bool {

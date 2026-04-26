@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestPebbleStoreEventLogAndMessageProjection(t *testing.T) {
@@ -169,6 +170,126 @@ func TestPebbleDeferredTrimKeepsVisibleWindowBounded(t *testing.T) {
 	}
 	if stats.MessageTrim.TrimmedTotal != 0 {
 		t.Fatalf("expected trim to remain deferred below threshold, got %+v", stats.MessageTrim)
+	}
+}
+
+func TestPebbleCreateMessageRejectsBlockedSender(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	st := openPebbleTestStore(t, "blocked-sender", 1, DefaultMessageWindowSize)
+
+	recipient, _, err := st.CreateUser(ctx, CreateUserParams{
+		Username:     "recipient",
+		PasswordHash: "hash-recipient",
+		Role:         RoleUser,
+	})
+	if err != nil {
+		t.Fatalf("create recipient: %v", err)
+	}
+	sender, _, err := st.CreateUser(ctx, CreateUserParams{
+		Username:     "sender",
+		PasswordHash: "hash-sender",
+		Role:         RoleUser,
+	})
+	if err != nil {
+		t.Fatalf("create sender: %v", err)
+	}
+	if _, _, err := st.BlockUser(ctx, BlacklistParams{
+		Owner:   recipient.Key(),
+		Blocked: sender.Key(),
+	}); err != nil {
+		t.Fatalf("block sender: %v", err)
+	}
+
+	if _, _, err := st.CreateMessage(ctx, CreateMessageParams{
+		UserKey: recipient.Key(),
+		Sender:  sender.Key(),
+		Body:    []byte("blocked"),
+	}); err != ErrBlockedByBlacklist {
+		t.Fatalf("expected blacklist rejection, got %v", err)
+	}
+}
+
+func TestPebbleBackgroundTrimEventuallyUpdatesMessageUserState(t *testing.T) {
+	t.Parallel()
+
+	const windowSize = 64
+
+	ctx := context.Background()
+	st := openPebbleTestStore(t, "background-trim", 1, windowSize)
+
+	user, _, err := st.CreateUser(ctx, CreateUserParams{
+		Username:     "background-trim-user",
+		PasswordHash: "hash-background-trim",
+		Role:         RoleUser,
+	})
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	for i := 1; i <= 110; i++ {
+		if _, _, err := st.CreateMessage(ctx, CreateMessageParams{
+			UserKey: user.Key(),
+			Sender:  testSenderKey(9, 1),
+			Body:    []byte(fmt.Sprintf("message-%03d", i)),
+		}); err != nil {
+			t.Fatalf("create message %d: %v", i, err)
+		}
+	}
+
+	waitForPebbleCondition(t, time.Second, func() bool {
+		state := readPebbleMessageUserStateForTest(t, st, user.Key())
+		stats, err := st.OperationsStats(ctx, nil)
+		if err != nil {
+			return false
+		}
+		return state.StoredCount == int64(windowSize) && !state.TrimNeeded && stats.MessageTrim.TrimmedTotal > 0
+	})
+}
+
+func TestPebbleSnapshotApplyRepairsMessageUserState(t *testing.T) {
+	t.Parallel()
+
+	const windowSize = 4
+
+	ctx := context.Background()
+	source := openPebbleTestStore(t, "snapshot-state-source", 1, windowSize)
+	target := openPebbleTestStore(t, "snapshot-state-target", 2, windowSize)
+
+	user, userEvent, err := source.CreateUser(ctx, CreateUserParams{
+		Username:     "snapshot-state-user",
+		PasswordHash: "hash-snapshot-state",
+		Role:         RoleUser,
+	})
+	if err != nil {
+		t.Fatalf("create source user: %v", err)
+	}
+	if err := target.ApplyReplicatedEvent(ctx, ToReplicatedEvent(userEvent)); err != nil {
+		t.Fatalf("apply user event: %v", err)
+	}
+
+	for i := 1; i <= 8; i++ {
+		if _, _, err := source.CreateMessage(ctx, CreateMessageParams{
+			UserKey: user.Key(),
+			Sender:  testSenderKey(9, 1),
+			Body:    []byte(fmt.Sprintf("snapshot-state-%02d", i)),
+		}); err != nil {
+			t.Fatalf("create message %d: %v", i, err)
+		}
+	}
+
+	chunk, err := source.BuildSnapshotChunk(ctx, MessageSnapshotPartition(source.NodeID()))
+	if err != nil {
+		t.Fatalf("build snapshot chunk: %v", err)
+	}
+	if err := target.ApplySnapshotChunk(ctx, chunk); err != nil {
+		t.Fatalf("apply snapshot chunk: %v", err)
+	}
+
+	state := readPebbleMessageUserStateForTest(t, target, user.Key())
+	if state.StoredCount != int64(windowSize) || state.TrimNeeded {
+		t.Fatalf("unexpected repaired message user state: %+v", state)
 	}
 }
 
@@ -392,4 +513,31 @@ func openPersistentPebbleTestStore(t *testing.T, dir, name string, nodeSlot uint
 		t.Fatalf("init persistent pebble store: %v", err)
 	}
 	return st
+}
+
+func readPebbleMessageUserStateForTest(tb testing.TB, st *Store, key UserKey) pebbleMessageUserState {
+	tb.Helper()
+
+	backend := requirePebbleBackend(tb, st)
+	state, ok, err := backend.messageProjectionRepo.readMessageUserStateLocked(key)
+	if err != nil {
+		tb.Fatalf("read pebble message user state: %v", err)
+	}
+	if !ok {
+		tb.Fatalf("expected pebble message user state for %+v", key)
+	}
+	return state
+}
+
+func waitForPebbleCondition(t *testing.T, timeout time.Duration, check func() bool) {
+	t.Helper()
+
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if check() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("condition not satisfied within %s", timeout)
 }

@@ -12,6 +12,7 @@ import (
 
 type pebbleMessageSequenceRepository struct {
 	db     *pebble.DB
+	sqlDB  *sql.DB
 	writes *pebbleWriteCoordinator
 	mu     sync.Mutex
 	next   map[string]int64
@@ -31,12 +32,11 @@ func (r *pebbleMessageSequenceRepository) NextSequenceTx(ctx context.Context, tx
 		return 0, err
 	}
 
-	sequenceKey := pebbleMessageSequenceKey(key, nodeID)
-	cacheKey := string(sequenceKey)
-
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	sequenceKey := pebbleMessageSequenceKey(key, nodeID)
+	cacheKey := string(sequenceKey)
 	next, ok, err := r.loadNextSequenceLocked(ctx, tx, key, nodeID, sequenceKey)
 	if err != nil {
 		return 0, err
@@ -53,11 +53,50 @@ func (r *pebbleMessageSequenceRepository) NextSequenceTx(ctx context.Context, tx
 		return 0, fmt.Errorf("commit pebble message sequence: %w", err)
 	}
 
-	if r.next == nil {
-		r.next = make(map[string]int64)
-	}
-	r.next[cacheKey] = next + 1
+	r.storeCommittedNextLocked(cacheKey, next+1)
 	return next, nil
+}
+
+func (r *pebbleMessageSequenceRepository) LoadNextSequence(ctx context.Context, key UserKey, nodeID int64) (string, []byte, int64, error) {
+	if err := key.Validate(); err != nil {
+		return "", nil, 0, err
+	}
+	if nodeID <= 0 {
+		return "", nil, 0, fmt.Errorf("%w: user id and node id are required for message sequence", ErrInvalidInput)
+	}
+	if r == nil || r.db == nil {
+		return "", nil, 0, fmt.Errorf("pebble message sequence repository is not initialized")
+	}
+	if err := ctx.Err(); err != nil {
+		return "", nil, 0, err
+	}
+
+	sequenceKey := pebbleMessageSequenceKey(key, nodeID)
+	cacheKey := string(sequenceKey)
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	next, ok, err := r.loadNextSequenceLocked(ctx, nil, key, nodeID, sequenceKey)
+	if err != nil {
+		return "", nil, 0, err
+	}
+	if !ok {
+		next = 1
+	}
+	return cacheKey, sequenceKey, next, nil
+}
+
+func (r *pebbleMessageSequenceRepository) StoreCommittedNextByCacheKey(nextByCacheKey map[string]int64) {
+	if len(nextByCacheKey) == 0 {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	for cacheKey, next := range nextByCacheKey {
+		r.storeCommittedNextLocked(cacheKey, next)
+	}
 }
 
 func (r *pebbleMessageSequenceRepository) loadNextSequenceLocked(ctx context.Context, tx *sql.Tx, key UserKey, nodeID int64, sequenceKey []byte) (int64, bool, error) {
@@ -81,6 +120,13 @@ func (r *pebbleMessageSequenceRepository) loadNextSequenceLocked(ctx context.Con
 		return 0, false, err
 	}
 	return next, true, nil
+}
+
+func (r *pebbleMessageSequenceRepository) storeCommittedNextLocked(cacheKey string, next int64) {
+	if r.next == nil {
+		r.next = make(map[string]int64)
+	}
+	r.next[cacheKey] = next
 }
 
 func (r *pebbleMessageSequenceRepository) readStoredNextSequenceLocked(sequenceKey []byte) (int64, bool, error) {
@@ -109,13 +155,23 @@ func (r *pebbleMessageSequenceRepository) seedNextSequenceLocked(ctx context.Con
 		next = pebbleNext
 	}
 
-	if legacyCounterNext, ok, err := readStoredMessageCounterNextSeqTx(ctx, tx, key, nodeID); err != nil {
+	var querier sqlQueryRowContext
+	if tx != nil {
+		querier = tx
+	} else {
+		querier = r.sqlDB
+	}
+	if querier == nil {
+		return next, nil
+	}
+
+	if legacyCounterNext, ok, err := readStoredMessageCounterNextSeq(ctx, querier, key, nodeID); err != nil {
 		return 0, err
 	} else if ok && legacyCounterNext > next {
 		next = legacyCounterNext
 	}
 
-	sqlNext, err := readProjectedMessageNextSeqTx(ctx, tx, key, nodeID)
+	sqlNext, err := readProjectedMessageNextSeq(ctx, querier, key, nodeID)
 	if err != nil {
 		return 0, err
 	}

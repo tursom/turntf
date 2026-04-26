@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 )
 
@@ -14,6 +15,32 @@ func BenchmarkStoreCreateMessage(b *testing.B) {
 		for _, payloadSize := range []int{256, 4 << 10} {
 			b.Run(fmt.Sprintf("%s/%dB", engine, payloadSize), func(b *testing.B) {
 				benchmarkStoreCreateMessage(b, engine, payloadSize)
+			})
+		}
+	}
+}
+
+func BenchmarkStoreCreateMessageSteadyState(b *testing.B) {
+	for _, engine := range []string{EngineSQLite, EnginePebble} {
+		for _, payloadSize := range []int{256, 4 << 10} {
+			b.Run(fmt.Sprintf("%s/%dB", engine, payloadSize), func(b *testing.B) {
+				benchmarkStoreCreateMessageSteadyState(b, engine, payloadSize)
+			})
+		}
+	}
+}
+
+func BenchmarkStoreCreateMessageParallel(b *testing.B) {
+	for _, engine := range []string{EngineSQLite, EnginePebble} {
+		for _, tc := range []struct {
+			name      string
+			userCount int
+		}{
+			{name: "hotspot", userCount: 1},
+			{name: "uniform-1000", userCount: 1000},
+		} {
+			b.Run(fmt.Sprintf("%s/%s", engine, tc.name), func(b *testing.B) {
+				benchmarkStoreCreateMessageParallel(b, engine, tc.userCount)
 			})
 		}
 	}
@@ -80,6 +107,84 @@ func benchmarkStoreCreateMessage(b *testing.B, engine string, payloadSize int) {
 			b.Fatalf("unexpected create message payload/event: message=%+v event=%+v", message, event)
 		}
 	}
+}
+
+func benchmarkStoreCreateMessageSteadyState(b *testing.B, engine string, payloadSize int) {
+	ctx := context.Background()
+	st, closeStore := openBenchmarkStore(b, engine, "create-message-steady-state", 1, DefaultMessageWindowSize, DefaultEventLogMaxEventsPerOrigin)
+	b.Cleanup(closeStore)
+
+	user, _, err := st.CreateUser(ctx, CreateUserParams{
+		Username:     "bench-create-message-steady-state",
+		PasswordHash: "bench-hash",
+		Role:         RoleUser,
+	})
+	if err != nil {
+		b.Fatalf("create benchmark user: %v", err)
+	}
+
+	payload := bytes.Repeat([]byte("s"), payloadSize)
+	for i := 0; i < 2*DefaultMessageWindowSize; i++ {
+		if _, _, err := st.CreateMessage(ctx, CreateMessageParams{
+			UserKey: user.Key(),
+			Sender:  user.Key(),
+			Body:    payload,
+		}); err != nil {
+			b.Fatalf("seed steady-state message %d: %v", i, err)
+		}
+	}
+
+	b.SetBytes(int64(payloadSize))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, _, err := st.CreateMessage(ctx, CreateMessageParams{
+			UserKey: user.Key(),
+			Sender:  user.Key(),
+			Body:    payload,
+		}); err != nil {
+			b.Fatalf("create steady-state message: %v", err)
+		}
+	}
+}
+
+func benchmarkStoreCreateMessageParallel(b *testing.B, engine string, userCount int) {
+	ctx := context.Background()
+	st, closeStore := openBenchmarkStore(b, engine, fmt.Sprintf("create-message-parallel-%d", userCount), 1, DefaultMessageWindowSize, DefaultEventLogMaxEventsPerOrigin)
+	b.Cleanup(closeStore)
+
+	users := make([]User, 0, userCount)
+	for i := 0; i < userCount; i++ {
+		user, _, err := st.CreateUser(ctx, CreateUserParams{
+			Username:     fmt.Sprintf("bench-create-message-parallel-%04d", i),
+			PasswordHash: "bench-hash",
+			Role:         RoleUser,
+		})
+		if err != nil {
+			b.Fatalf("create benchmark user %d: %v", i, err)
+		}
+		users = append(users, user)
+	}
+
+	payload := bytes.Repeat([]byte("p"), 256)
+	var counter atomic.Uint64
+	b.SetBytes(int64(len(payload)))
+	b.ResetTimer()
+
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			index := 0
+			if len(users) > 1 {
+				index = int(counter.Add(1)-1) % len(users)
+			}
+			if _, _, err := st.CreateMessage(ctx, CreateMessageParams{
+				UserKey: users[index].Key(),
+				Sender:  users[index].Key(),
+				Body:    payload,
+			}); err != nil {
+				b.Fatalf("parallel create message: %v", err)
+			}
+		}
+	})
 }
 
 func benchmarkStoreListMessagesByUser(b *testing.B, engine string, history int) {

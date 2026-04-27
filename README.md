@@ -217,6 +217,17 @@ docker compose up --build
 
 工作流使用仓库自带的 `GITHUB_TOKEN` 登录 GHCR，因此仓库需要允许 GitHub Actions 写入 packages。
 
+## 本地验证
+
+提交前可以先运行：
+
+```bash
+go test ./... -count=1
+./scripts/smoke.sh
+```
+
+`scripts/smoke.sh` 会编译临时二进制，启动单节点服务，并验证 `GET /healthz`、root 登录、`GET /ops/status`、`GET /metrics`、创建用户、普通用户登录、自收消息和事件列表这些最小可用路径。
+
 ## 配置文件示例
 
 ```bash

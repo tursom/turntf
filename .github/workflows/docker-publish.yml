@@ -17,7 +17,28 @@ env:
   IMAGE_NAME: tursom/turntf
 
 jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run Go tests
+        run: go test ./... -count=1
+
+      - name: Run smoke flow
+        run: ./scripts/smoke.sh
+
   docker:
+    needs: verify
     runs-on: ubuntu-latest
 
     steps:
@@ -57,4 +78,3 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-

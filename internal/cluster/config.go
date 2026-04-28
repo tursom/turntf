@@ -44,6 +44,7 @@ type Config struct {
 	NodeID                          int64
 	AdvertisePath                   string
 	ClusterSecret                   string
+	DisconnectSuspicionGraceMs      int64
 	Forwarding                      ForwardingConfig
 	ZeroMQ                          ZeroMQConfig
 	LibP2P                          LibP2PConfig
@@ -67,6 +68,7 @@ const DefaultClockCredibleRTTMs int64 = 4000
 const DefaultClockTrustedFreshMs int64 = 60_000
 const DefaultClockObserveGraceMs int64 = 180_000
 const DefaultClockWriteGateGraceMs int64 = 300_000
+const DefaultDisconnectSuspicionGraceMs int64 = 120_000
 const DefaultClockRejectAfterFailures = 3
 const DefaultClockRejectAfterSkewSamples = 3
 const DefaultClockRecoverAfterHealthySamples = 2
@@ -106,6 +108,9 @@ func (c Config) WithDefaults() Config {
 	}
 	if c.ClockWriteGateGraceMs == 0 {
 		c.ClockWriteGateGraceMs = DefaultClockWriteGateGraceMs
+	}
+	if c.DisconnectSuspicionGraceMs == 0 {
+		c.DisconnectSuspicionGraceMs = DefaultDisconnectSuspicionGraceMs
 	}
 	if c.ClockRejectAfterFailures == 0 {
 		c.ClockRejectAfterFailures = DefaultClockRejectAfterFailures
@@ -148,6 +153,9 @@ func (c *Config) Validate() error {
 	}
 	if c.ClockWriteGateGraceMs < 0 {
 		return fmt.Errorf("cluster clock write gate grace must be non-negative")
+	}
+	if c.DisconnectSuspicionGraceMs < 0 {
+		return fmt.Errorf("cluster disconnect suspicion grace must be non-negative")
 	}
 	if c.ClockRejectAfterFailures < 0 {
 		return fmt.Errorf("cluster clock reject-after-failures must be non-negative")

@@ -54,6 +54,13 @@ func TestDefaultTrafficClassifier(t *testing.T) {
 			want: TrafficControlCritical,
 		},
 		{
+			name: "connectivity rumor",
+			env: &ClusterEnvelope{Body: &ClusterEnvelope_ConnectivityRumor{
+				ConnectivityRumor: &MeshConnectivityRumor{},
+			}},
+			want: TrafficControlCritical,
+		},
+		{
 			name: "snapshot",
 			env: &ClusterEnvelope{Body: &ClusterEnvelope_SnapshotChunk{
 				SnapshotChunk: &SnapshotChunk{},

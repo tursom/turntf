@@ -110,6 +110,7 @@ func (noopVerifier) Verify(_ *ClusterEnvelope, _ []byte) error { return nil }
 // required; other fields fall back to sensible defaults.
 type RuntimeOptions struct {
 	LocalNodeID            int64
+	LocalRuntimeEpoch      uint64
 	Adapters               []TransportAdapter
 	LocalPolicy            *ForwardingPolicy
 	TopologyStore          TopologyStore
@@ -135,6 +136,7 @@ type RuntimeOptions struct {
 // Runtime owns transport adapters and the set of established adjacencies.
 type Runtime struct {
 	localNodeID            int64
+	localRuntimeEpoch      uint64
 	policy                 *ForwardingPolicy
 	store                  TopologyStore
 	codec                  EnvelopeCodec
@@ -316,6 +318,7 @@ func NewRuntime(opts RuntimeOptions) (*Runtime, error) {
 
 	runtime := &Runtime{
 		localNodeID:            opts.LocalNodeID,
+		localRuntimeEpoch:      opts.LocalRuntimeEpoch,
 		policy:                 policy,
 		store:                  store,
 		codec:                  codec,
@@ -343,6 +346,12 @@ func NewRuntime(opts RuntimeOptions) (*Runtime, error) {
 		lastUpdate:             make(map[int64]*TopologyUpdate),
 		dialSeeds:              dialSeeds,
 		generation:             initialGeneration,
+	}
+	if runtime.localRuntimeEpoch == 0 {
+		runtime.localRuntimeEpoch = uint64(now().UnixNano())
+		if runtime.localRuntimeEpoch == 0 {
+			runtime.localRuntimeEpoch = 1
+		}
 	}
 	runtime.planner = NewPlanner(opts.LocalNodeID)
 	runtime.engine = NewEngine(opts.LocalNodeID, store.Snapshot, runtime.planner, runtime, runtime.handleLocalForwardedPacket, opts.ForwardingObserver)
@@ -887,6 +896,7 @@ func (r *Runtime) localHello(kind TransportKind) *NodeHello {
 		ProtocolVersion:  ProtocolVersion,
 		Transports:       ordered,
 		ForwardingPolicy: ClonePolicy(r.policy),
+		RuntimeEpoch:     r.localRuntimeEpoch,
 	}
 }
 

@@ -76,10 +76,11 @@ type loggingConfig struct {
 }
 
 type clusterFileConfig struct {
-	Secret     string                      `toml:"secret"`
-	Forwarding clusterForwardingFileConfig `toml:"forwarding"`
-	Clock      clockFileConfig             `toml:"clock"`
-	Peers      []peerFileConfig            `toml:"peers"`
+	Secret                     string                      `toml:"secret"`
+	DisconnectSuspicionGraceMs *int64                      `toml:"disconnect_suspicion_grace_ms"`
+	Forwarding                 clusterForwardingFileConfig `toml:"forwarding"`
+	Clock                      clockFileConfig             `toml:"clock"`
+	Peers                      []peerFileConfig            `toml:"peers"`
 }
 
 type clusterForwardingFileConfig struct {
@@ -345,6 +346,10 @@ func (c serveConfig) runtimeConfig(configPath string) (runtimeServeConfig, error
 	if c.Cluster.Clock.RecoverAfterHealthySamples != nil {
 		clockRecoverAfterHealthySamples = *c.Cluster.Clock.RecoverAfterHealthySamples
 	}
+	disconnectSuspicionGraceMs := cluster.DefaultDisconnectSuspicionGraceMs
+	if c.Cluster.DisconnectSuspicionGraceMs != nil {
+		disconnectSuspicionGraceMs = *c.Cluster.DisconnectSuspicionGraceMs
+	}
 	zeroMQCfg := cluster.ZeroMQConfig{
 		Enabled:           c.Services.ZeroMQ.Enabled,
 		BindURL:           strings.TrimSpace(c.Services.ZeroMQ.BindURL),
@@ -362,6 +367,7 @@ func (c serveConfig) runtimeConfig(configPath string) (runtimeServeConfig, error
 	clusterCfg := cluster.Config{
 		AdvertisePath:                   cluster.WebSocketPath,
 		ClusterSecret:                   strings.TrimSpace(c.Cluster.Secret),
+		DisconnectSuspicionGraceMs:      disconnectSuspicionGraceMs,
 		Forwarding:                      forwardingCfg,
 		ZeroMQ:                          zeroMQCfg,
 		LibP2P:                          libP2PCfg,

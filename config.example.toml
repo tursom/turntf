@@ -97,6 +97,8 @@ file_path = "./data/turntf.log"
 [cluster]
 # 集群内部 Envelope HMAC 共享密钥；生产环境必须替换，且不能与 auth.token_secret 相同。
 secret = "secret"
+# 邻接全部断开后的疑似窗口；窗口内若目标节点发来 authoritative 在线快照，则不清理其临时状态。
+disconnect_suspicion_grace_ms = 120000
 
 # forwarding 是集群默认能力，适合广域网单集群拓扑。
 [cluster.forwarding]

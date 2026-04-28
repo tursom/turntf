@@ -360,6 +360,7 @@ type Hello struct {
 	SmoothedRttMs      uint32                 `protobuf:"varint,9,opt,name=smoothed_rtt_ms,json=smoothedRttMs,proto3" json:"smoothed_rtt_ms,omitempty"`
 	JitterPenaltyMs    uint32                 `protobuf:"varint,10,opt,name=jitter_penalty_ms,json=jitterPenaltyMs,proto3" json:"jitter_penalty_ms,omitempty"`
 	SupportsMembership bool                   `protobuf:"varint,11,opt,name=supports_membership,json=supportsMembership,proto3" json:"supports_membership,omitempty"`
+	RuntimeEpoch       uint64                 `protobuf:"varint,12,opt,name=runtime_epoch,json=runtimeEpoch,proto3" json:"runtime_epoch,omitempty"`
 	unknownFields      protoimpl.UnknownFields
 	sizeCache          protoimpl.SizeCache
 }
@@ -462,6 +463,13 @@ func (x *Hello) GetSupportsMembership() bool {
 		return x.SupportsMembership
 	}
 	return false
+}
+
+func (x *Hello) GetRuntimeEpoch() uint64 {
+	if x != nil {
+		return x.RuntimeEpoch
+	}
+	return 0
 }
 
 type OriginProgress struct {
@@ -2596,6 +2604,182 @@ func (x *QueryLoggedInUsersResponse) GetRemainingHops() int32 {
 	return 0
 }
 
+type QueryResolveUserSessionsRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	RequestId     uint64                 `protobuf:"varint,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
+	TargetNodeId  int64                  `protobuf:"varint,2,opt,name=target_node_id,json=targetNodeId,proto3" json:"target_node_id,omitempty"`
+	OriginNodeId  int64                  `protobuf:"varint,3,opt,name=origin_node_id,json=originNodeId,proto3" json:"origin_node_id,omitempty"`
+	RemainingHops int32                  `protobuf:"varint,4,opt,name=remaining_hops,json=remainingHops,proto3" json:"remaining_hops,omitempty"`
+	User          *ClusterUserRef        `protobuf:"bytes,5,opt,name=user,proto3" json:"user,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *QueryResolveUserSessionsRequest) Reset() {
+	*x = QueryResolveUserSessionsRequest{}
+	mi := &file_cluster_proto_msgTypes[26]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *QueryResolveUserSessionsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*QueryResolveUserSessionsRequest) ProtoMessage() {}
+
+func (x *QueryResolveUserSessionsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_cluster_proto_msgTypes[26]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use QueryResolveUserSessionsRequest.ProtoReflect.Descriptor instead.
+func (*QueryResolveUserSessionsRequest) Descriptor() ([]byte, []int) {
+	return file_cluster_proto_rawDescGZIP(), []int{26}
+}
+
+func (x *QueryResolveUserSessionsRequest) GetRequestId() uint64 {
+	if x != nil {
+		return x.RequestId
+	}
+	return 0
+}
+
+func (x *QueryResolveUserSessionsRequest) GetTargetNodeId() int64 {
+	if x != nil {
+		return x.TargetNodeId
+	}
+	return 0
+}
+
+func (x *QueryResolveUserSessionsRequest) GetOriginNodeId() int64 {
+	if x != nil {
+		return x.OriginNodeId
+	}
+	return 0
+}
+
+func (x *QueryResolveUserSessionsRequest) GetRemainingHops() int32 {
+	if x != nil {
+		return x.RemainingHops
+	}
+	return 0
+}
+
+func (x *QueryResolveUserSessionsRequest) GetUser() *ClusterUserRef {
+	if x != nil {
+		return x.User
+	}
+	return nil
+}
+
+type QueryResolveUserSessionsResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	RequestId     uint64                 `protobuf:"varint,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
+	TargetNodeId  int64                  `protobuf:"varint,2,opt,name=target_node_id,json=targetNodeId,proto3" json:"target_node_id,omitempty"`
+	Items         []*ClusterSessionRef   `protobuf:"bytes,3,rep,name=items,proto3" json:"items,omitempty"`
+	ErrorCode     string                 `protobuf:"bytes,4,opt,name=error_code,json=errorCode,proto3" json:"error_code,omitempty"`
+	ErrorMessage  string                 `protobuf:"bytes,5,opt,name=error_message,json=errorMessage,proto3" json:"error_message,omitempty"`
+	OriginNodeId  int64                  `protobuf:"varint,6,opt,name=origin_node_id,json=originNodeId,proto3" json:"origin_node_id,omitempty"`
+	RemainingHops int32                  `protobuf:"varint,7,opt,name=remaining_hops,json=remainingHops,proto3" json:"remaining_hops,omitempty"`
+	User          *ClusterUserRef        `protobuf:"bytes,8,opt,name=user,proto3" json:"user,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *QueryResolveUserSessionsResponse) Reset() {
+	*x = QueryResolveUserSessionsResponse{}
+	mi := &file_cluster_proto_msgTypes[27]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *QueryResolveUserSessionsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*QueryResolveUserSessionsResponse) ProtoMessage() {}
+
+func (x *QueryResolveUserSessionsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_cluster_proto_msgTypes[27]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use QueryResolveUserSessionsResponse.ProtoReflect.Descriptor instead.
+func (*QueryResolveUserSessionsResponse) Descriptor() ([]byte, []int) {
+	return file_cluster_proto_rawDescGZIP(), []int{27}
+}
+
+func (x *QueryResolveUserSessionsResponse) GetRequestId() uint64 {
+	if x != nil {
+		return x.RequestId
+	}
+	return 0
+}
+
+func (x *QueryResolveUserSessionsResponse) GetTargetNodeId() int64 {
+	if x != nil {
+		return x.TargetNodeId
+	}
+	return 0
+}
+
+func (x *QueryResolveUserSessionsResponse) GetItems() []*ClusterSessionRef {
+	if x != nil {
+		return x.Items
+	}
+	return nil
+}
+
+func (x *QueryResolveUserSessionsResponse) GetErrorCode() string {
+	if x != nil {
+		return x.ErrorCode
+	}
+	return ""
+}
+
+func (x *QueryResolveUserSessionsResponse) GetErrorMessage() string {
+	if x != nil {
+		return x.ErrorMessage
+	}
+	return ""
+}
+
+func (x *QueryResolveUserSessionsResponse) GetOriginNodeId() int64 {
+	if x != nil {
+		return x.OriginNodeId
+	}
+	return 0
+}
+
+func (x *QueryResolveUserSessionsResponse) GetRemainingHops() int32 {
+	if x != nil {
+		return x.RemainingHops
+	}
+	return 0
+}
+
+func (x *QueryResolveUserSessionsResponse) GetUser() *ClusterUserRef {
+	if x != nil {
+		return x.User
+	}
+	return nil
+}
+
 type ClusterLoggedInUser struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	NodeId        int64                  `protobuf:"varint,1,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
@@ -2607,7 +2791,7 @@ type ClusterLoggedInUser struct {
 
 func (x *ClusterLoggedInUser) Reset() {
 	*x = ClusterLoggedInUser{}
-	mi := &file_cluster_proto_msgTypes[26]
+	mi := &file_cluster_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2619,7 +2803,7 @@ func (x *ClusterLoggedInUser) String() string {
 func (*ClusterLoggedInUser) ProtoMessage() {}
 
 func (x *ClusterLoggedInUser) ProtoReflect() protoreflect.Message {
-	mi := &file_cluster_proto_msgTypes[26]
+	mi := &file_cluster_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2632,7 +2816,7 @@ func (x *ClusterLoggedInUser) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ClusterLoggedInUser.ProtoReflect.Descriptor instead.
 func (*ClusterLoggedInUser) Descriptor() ([]byte, []int) {
-	return file_cluster_proto_rawDescGZIP(), []int{26}
+	return file_cluster_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *ClusterLoggedInUser) GetNodeId() int64 {
@@ -2656,6 +2840,302 @@ func (x *ClusterLoggedInUser) GetUsername() string {
 	return ""
 }
 
+type ClusterSessionRef struct {
+	state            protoimpl.MessageState `protogen:"open.v1"`
+	ServingNodeId    int64                  `protobuf:"varint,1,opt,name=serving_node_id,json=servingNodeId,proto3" json:"serving_node_id,omitempty"`
+	SessionId        string                 `protobuf:"bytes,2,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	Transport        string                 `protobuf:"bytes,3,opt,name=transport,proto3" json:"transport,omitempty"`
+	TransientCapable bool                   `protobuf:"varint,4,opt,name=transient_capable,json=transientCapable,proto3" json:"transient_capable,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
+}
+
+func (x *ClusterSessionRef) Reset() {
+	*x = ClusterSessionRef{}
+	mi := &file_cluster_proto_msgTypes[29]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ClusterSessionRef) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ClusterSessionRef) ProtoMessage() {}
+
+func (x *ClusterSessionRef) ProtoReflect() protoreflect.Message {
+	mi := &file_cluster_proto_msgTypes[29]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ClusterSessionRef.ProtoReflect.Descriptor instead.
+func (*ClusterSessionRef) Descriptor() ([]byte, []int) {
+	return file_cluster_proto_rawDescGZIP(), []int{29}
+}
+
+func (x *ClusterSessionRef) GetServingNodeId() int64 {
+	if x != nil {
+		return x.ServingNodeId
+	}
+	return 0
+}
+
+func (x *ClusterSessionRef) GetSessionId() string {
+	if x != nil {
+		return x.SessionId
+	}
+	return ""
+}
+
+func (x *ClusterSessionRef) GetTransport() string {
+	if x != nil {
+		return x.Transport
+	}
+	return ""
+}
+
+func (x *ClusterSessionRef) GetTransientCapable() bool {
+	if x != nil {
+		return x.TransientCapable
+	}
+	return false
+}
+
+type ClusterOnlineNodePresence struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	User          *ClusterUserRef        `protobuf:"bytes,1,opt,name=user,proto3" json:"user,omitempty"`
+	ServingNodeId int64                  `protobuf:"varint,2,opt,name=serving_node_id,json=servingNodeId,proto3" json:"serving_node_id,omitempty"`
+	SessionCount  int32                  `protobuf:"varint,3,opt,name=session_count,json=sessionCount,proto3" json:"session_count,omitempty"`
+	TransportHint string                 `protobuf:"bytes,4,opt,name=transport_hint,json=transportHint,proto3" json:"transport_hint,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ClusterOnlineNodePresence) Reset() {
+	*x = ClusterOnlineNodePresence{}
+	mi := &file_cluster_proto_msgTypes[30]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ClusterOnlineNodePresence) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ClusterOnlineNodePresence) ProtoMessage() {}
+
+func (x *ClusterOnlineNodePresence) ProtoReflect() protoreflect.Message {
+	mi := &file_cluster_proto_msgTypes[30]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ClusterOnlineNodePresence.ProtoReflect.Descriptor instead.
+func (*ClusterOnlineNodePresence) Descriptor() ([]byte, []int) {
+	return file_cluster_proto_rawDescGZIP(), []int{30}
+}
+
+func (x *ClusterOnlineNodePresence) GetUser() *ClusterUserRef {
+	if x != nil {
+		return x.User
+	}
+	return nil
+}
+
+func (x *ClusterOnlineNodePresence) GetServingNodeId() int64 {
+	if x != nil {
+		return x.ServingNodeId
+	}
+	return 0
+}
+
+func (x *ClusterOnlineNodePresence) GetSessionCount() int32 {
+	if x != nil {
+		return x.SessionCount
+	}
+	return 0
+}
+
+func (x *ClusterOnlineNodePresence) GetTransportHint() string {
+	if x != nil {
+		return x.TransportHint
+	}
+	return ""
+}
+
+type OnlinePresenceSnapshot struct {
+	state         protoimpl.MessageState       `protogen:"open.v1"`
+	OriginNodeId  int64                        `protobuf:"varint,1,opt,name=origin_node_id,json=originNodeId,proto3" json:"origin_node_id,omitempty"`
+	Generation    uint64                       `protobuf:"varint,2,opt,name=generation,proto3" json:"generation,omitempty"`
+	Items         []*ClusterOnlineNodePresence `protobuf:"bytes,3,rep,name=items,proto3" json:"items,omitempty"`
+	RuntimeEpoch  uint64                       `protobuf:"varint,4,opt,name=runtime_epoch,json=runtimeEpoch,proto3" json:"runtime_epoch,omitempty"`
+	LoggedInUsers []*ClusterLoggedInUser       `protobuf:"bytes,5,rep,name=logged_in_users,json=loggedInUsers,proto3" json:"logged_in_users,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *OnlinePresenceSnapshot) Reset() {
+	*x = OnlinePresenceSnapshot{}
+	mi := &file_cluster_proto_msgTypes[31]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *OnlinePresenceSnapshot) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*OnlinePresenceSnapshot) ProtoMessage() {}
+
+func (x *OnlinePresenceSnapshot) ProtoReflect() protoreflect.Message {
+	mi := &file_cluster_proto_msgTypes[31]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use OnlinePresenceSnapshot.ProtoReflect.Descriptor instead.
+func (*OnlinePresenceSnapshot) Descriptor() ([]byte, []int) {
+	return file_cluster_proto_rawDescGZIP(), []int{31}
+}
+
+func (x *OnlinePresenceSnapshot) GetOriginNodeId() int64 {
+	if x != nil {
+		return x.OriginNodeId
+	}
+	return 0
+}
+
+func (x *OnlinePresenceSnapshot) GetGeneration() uint64 {
+	if x != nil {
+		return x.Generation
+	}
+	return 0
+}
+
+func (x *OnlinePresenceSnapshot) GetItems() []*ClusterOnlineNodePresence {
+	if x != nil {
+		return x.Items
+	}
+	return nil
+}
+
+func (x *OnlinePresenceSnapshot) GetRuntimeEpoch() uint64 {
+	if x != nil {
+		return x.RuntimeEpoch
+	}
+	return 0
+}
+
+func (x *OnlinePresenceSnapshot) GetLoggedInUsers() []*ClusterLoggedInUser {
+	if x != nil {
+		return x.LoggedInUsers
+	}
+	return nil
+}
+
+type NodeConnectivityRumor struct {
+	state                protoimpl.MessageState `protogen:"open.v1"`
+	TargetNodeId         int64                  `protobuf:"varint,1,opt,name=target_node_id,json=targetNodeId,proto3" json:"target_node_id,omitempty"`
+	TargetRuntimeEpoch   uint64                 `protobuf:"varint,2,opt,name=target_runtime_epoch,json=targetRuntimeEpoch,proto3" json:"target_runtime_epoch,omitempty"`
+	ReporterNodeId       int64                  `protobuf:"varint,3,opt,name=reporter_node_id,json=reporterNodeId,proto3" json:"reporter_node_id,omitempty"`
+	ReporterRuntimeEpoch uint64                 `protobuf:"varint,4,opt,name=reporter_runtime_epoch,json=reporterRuntimeEpoch,proto3" json:"reporter_runtime_epoch,omitempty"`
+	ObservedAtMs         int64                  `protobuf:"varint,5,opt,name=observed_at_ms,json=observedAtMs,proto3" json:"observed_at_ms,omitempty"`
+	Reason               string                 `protobuf:"bytes,6,opt,name=reason,proto3" json:"reason,omitempty"`
+	unknownFields        protoimpl.UnknownFields
+	sizeCache            protoimpl.SizeCache
+}
+
+func (x *NodeConnectivityRumor) Reset() {
+	*x = NodeConnectivityRumor{}
+	mi := &file_cluster_proto_msgTypes[32]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *NodeConnectivityRumor) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*NodeConnectivityRumor) ProtoMessage() {}
+
+func (x *NodeConnectivityRumor) ProtoReflect() protoreflect.Message {
+	mi := &file_cluster_proto_msgTypes[32]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use NodeConnectivityRumor.ProtoReflect.Descriptor instead.
+func (*NodeConnectivityRumor) Descriptor() ([]byte, []int) {
+	return file_cluster_proto_rawDescGZIP(), []int{32}
+}
+
+func (x *NodeConnectivityRumor) GetTargetNodeId() int64 {
+	if x != nil {
+		return x.TargetNodeId
+	}
+	return 0
+}
+
+func (x *NodeConnectivityRumor) GetTargetRuntimeEpoch() uint64 {
+	if x != nil {
+		return x.TargetRuntimeEpoch
+	}
+	return 0
+}
+
+func (x *NodeConnectivityRumor) GetReporterNodeId() int64 {
+	if x != nil {
+		return x.ReporterNodeId
+	}
+	return 0
+}
+
+func (x *NodeConnectivityRumor) GetReporterRuntimeEpoch() uint64 {
+	if x != nil {
+		return x.ReporterRuntimeEpoch
+	}
+	return 0
+}
+
+func (x *NodeConnectivityRumor) GetObservedAtMs() int64 {
+	if x != nil {
+		return x.ObservedAtMs
+	}
+	return 0
+}
+
+func (x *NodeConnectivityRumor) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
 type MembershipUpdate struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	OriginNodeId  int64                  `protobuf:"varint,1,opt,name=origin_node_id,json=originNodeId,proto3" json:"origin_node_id,omitempty"`
@@ -2667,7 +3147,7 @@ type MembershipUpdate struct {
 
 func (x *MembershipUpdate) Reset() {
 	*x = MembershipUpdate{}
-	mi := &file_cluster_proto_msgTypes[27]
+	mi := &file_cluster_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2679,7 +3159,7 @@ func (x *MembershipUpdate) String() string {
 func (*MembershipUpdate) ProtoMessage() {}
 
 func (x *MembershipUpdate) ProtoReflect() protoreflect.Message {
-	mi := &file_cluster_proto_msgTypes[27]
+	mi := &file_cluster_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2692,7 +3172,7 @@ func (x *MembershipUpdate) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MembershipUpdate.ProtoReflect.Descriptor instead.
 func (*MembershipUpdate) Descriptor() ([]byte, []int) {
-	return file_cluster_proto_rawDescGZIP(), []int{27}
+	return file_cluster_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *MembershipUpdate) GetOriginNodeId() int64 {
@@ -2729,7 +3209,7 @@ type PeerAdvertisement struct {
 
 func (x *PeerAdvertisement) Reset() {
 	*x = PeerAdvertisement{}
-	mi := &file_cluster_proto_msgTypes[28]
+	mi := &file_cluster_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2741,7 +3221,7 @@ func (x *PeerAdvertisement) String() string {
 func (*PeerAdvertisement) ProtoMessage() {}
 
 func (x *PeerAdvertisement) ProtoReflect() protoreflect.Message {
-	mi := &file_cluster_proto_msgTypes[28]
+	mi := &file_cluster_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2754,7 +3234,7 @@ func (x *PeerAdvertisement) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PeerAdvertisement.ProtoReflect.Descriptor instead.
 func (*PeerAdvertisement) Descriptor() ([]byte, []int) {
-	return file_cluster_proto_rawDescGZIP(), []int{28}
+	return file_cluster_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *PeerAdvertisement) GetNodeId() int64 {
@@ -2802,13 +3282,14 @@ type TransientPacket struct {
 	Body          []byte                 `protobuf:"bytes,7,opt,name=body,proto3" json:"body,omitempty"`
 	DeliveryMode  ClusterDeliveryMode    `protobuf:"varint,8,opt,name=delivery_mode,json=deliveryMode,proto3,enum=notifier.cluster.v1.ClusterDeliveryMode" json:"delivery_mode,omitempty"`
 	TtlHops       uint32                 `protobuf:"varint,9,opt,name=ttl_hops,json=ttlHops,proto3" json:"ttl_hops,omitempty"`
+	TargetSession *ClusterSessionRef     `protobuf:"bytes,10,opt,name=target_session,json=targetSession,proto3" json:"target_session,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *TransientPacket) Reset() {
 	*x = TransientPacket{}
-	mi := &file_cluster_proto_msgTypes[29]
+	mi := &file_cluster_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2820,7 +3301,7 @@ func (x *TransientPacket) String() string {
 func (*TransientPacket) ProtoMessage() {}
 
 func (x *TransientPacket) ProtoReflect() protoreflect.Message {
-	mi := &file_cluster_proto_msgTypes[29]
+	mi := &file_cluster_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2833,7 +3314,7 @@ func (x *TransientPacket) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TransientPacket.ProtoReflect.Descriptor instead.
 func (*TransientPacket) Descriptor() ([]byte, []int) {
-	return file_cluster_proto_rawDescGZIP(), []int{29}
+	return file_cluster_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *TransientPacket) GetPacketId() uint64 {
@@ -2892,6 +3373,13 @@ func (x *TransientPacket) GetTtlHops() uint32 {
 	return 0
 }
 
+func (x *TransientPacket) GetTargetSession() *ClusterSessionRef {
+	if x != nil {
+		return x.TargetSession
+	}
+	return nil
+}
+
 var File_cluster_proto protoreflect.FileDescriptor
 
 const file_cluster_proto_rawDesc = "" +
@@ -2914,7 +3402,7 @@ const file_cluster_proto_rawDesc = "" +
 	"\x12time_sync_response\x18\v \x01(\v2%.notifier.cluster.v1.TimeSyncResponseH\x00R\x10timeSyncResponse\x12T\n" +
 	"\x11membership_update\x18\x11 \x01(\v2%.notifier.cluster.v1.MembershipUpdateH\x00R\x10membershipUpdate\x12\x12\n" +
 	"\x04hmac\x18\f \x01(\fR\x04hmacB\x06\n" +
-	"\x04body\"\xc5\x03\n" +
+	"\x04body\"\xea\x03\n" +
 	"\x05Hello\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\x03R\x06nodeId\x12%\n" +
 	"\x0eadvertise_addr\x18\x02 \x01(\tR\radvertiseAddr\x12)\n" +
@@ -2926,7 +3414,8 @@ const file_cluster_proto_rawDesc = "" +
 	"\x0fsmoothed_rtt_ms\x18\t \x01(\rR\rsmoothedRttMs\x12*\n" +
 	"\x11jitter_penalty_ms\x18\n" +
 	" \x01(\rR\x0fjitterPenaltyMs\x12/\n" +
-	"\x13supports_membership\x18\v \x01(\bR\x12supportsMembership\"Z\n" +
+	"\x13supports_membership\x18\v \x01(\bR\x12supportsMembership\x12#\n" +
+	"\rruntime_epoch\x18\f \x01(\x04R\fruntimeEpoch\"Z\n" +
 	"\x0eOriginProgress\x12$\n" +
 	"\x0eorigin_node_id\x18\x01 \x01(\x03R\foriginNodeId\x12\"\n" +
 	"\rlast_event_id\x18\x02 \x01(\x04R\vlastEventId\"j\n" +
@@ -3117,11 +3606,55 @@ const file_cluster_proto_rawDesc = "" +
 	"error_code\x18\x04 \x01(\tR\terrorCode\x12#\n" +
 	"\rerror_message\x18\x05 \x01(\tR\ferrorMessage\x12$\n" +
 	"\x0eorigin_node_id\x18\x06 \x01(\x03R\foriginNodeId\x12%\n" +
-	"\x0eremaining_hops\x18\a \x01(\x05R\rremainingHops\"c\n" +
+	"\x0eremaining_hops\x18\a \x01(\x05R\rremainingHops\"\xec\x01\n" +
+	"\x1fQueryResolveUserSessionsRequest\x12\x1d\n" +
+	"\n" +
+	"request_id\x18\x01 \x01(\x04R\trequestId\x12$\n" +
+	"\x0etarget_node_id\x18\x02 \x01(\x03R\ftargetNodeId\x12$\n" +
+	"\x0eorigin_node_id\x18\x03 \x01(\x03R\foriginNodeId\x12%\n" +
+	"\x0eremaining_hops\x18\x04 \x01(\x05R\rremainingHops\x127\n" +
+	"\x04user\x18\x05 \x01(\v2#.notifier.cluster.v1.ClusterUserRefR\x04user\"\xef\x02\n" +
+	" QueryResolveUserSessionsResponse\x12\x1d\n" +
+	"\n" +
+	"request_id\x18\x01 \x01(\x04R\trequestId\x12$\n" +
+	"\x0etarget_node_id\x18\x02 \x01(\x03R\ftargetNodeId\x12<\n" +
+	"\x05items\x18\x03 \x03(\v2&.notifier.cluster.v1.ClusterSessionRefR\x05items\x12\x1d\n" +
+	"\n" +
+	"error_code\x18\x04 \x01(\tR\terrorCode\x12#\n" +
+	"\rerror_message\x18\x05 \x01(\tR\ferrorMessage\x12$\n" +
+	"\x0eorigin_node_id\x18\x06 \x01(\x03R\foriginNodeId\x12%\n" +
+	"\x0eremaining_hops\x18\a \x01(\x05R\rremainingHops\x127\n" +
+	"\x04user\x18\b \x01(\v2#.notifier.cluster.v1.ClusterUserRefR\x04user\"c\n" +
 	"\x13ClusterLoggedInUser\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\x03R\x06nodeId\x12\x17\n" +
 	"\auser_id\x18\x02 \x01(\x03R\x06userId\x12\x1a\n" +
-	"\busername\x18\x03 \x01(\tR\busername\"\x96\x01\n" +
+	"\busername\x18\x03 \x01(\tR\busername\"\xa5\x01\n" +
+	"\x11ClusterSessionRef\x12&\n" +
+	"\x0fserving_node_id\x18\x01 \x01(\x03R\rservingNodeId\x12\x1d\n" +
+	"\n" +
+	"session_id\x18\x02 \x01(\tR\tsessionId\x12\x1c\n" +
+	"\ttransport\x18\x03 \x01(\tR\ttransport\x12+\n" +
+	"\x11transient_capable\x18\x04 \x01(\bR\x10transientCapable\"\xc8\x01\n" +
+	"\x19ClusterOnlineNodePresence\x127\n" +
+	"\x04user\x18\x01 \x01(\v2#.notifier.cluster.v1.ClusterUserRefR\x04user\x12&\n" +
+	"\x0fserving_node_id\x18\x02 \x01(\x03R\rservingNodeId\x12#\n" +
+	"\rsession_count\x18\x03 \x01(\x05R\fsessionCount\x12%\n" +
+	"\x0etransport_hint\x18\x04 \x01(\tR\rtransportHint\"\x9b\x02\n" +
+	"\x16OnlinePresenceSnapshot\x12$\n" +
+	"\x0eorigin_node_id\x18\x01 \x01(\x03R\foriginNodeId\x12\x1e\n" +
+	"\n" +
+	"generation\x18\x02 \x01(\x04R\n" +
+	"generation\x12D\n" +
+	"\x05items\x18\x03 \x03(\v2..notifier.cluster.v1.ClusterOnlineNodePresenceR\x05items\x12#\n" +
+	"\rruntime_epoch\x18\x04 \x01(\x04R\fruntimeEpoch\x12P\n" +
+	"\x0flogged_in_users\x18\x05 \x03(\v2(.notifier.cluster.v1.ClusterLoggedInUserR\rloggedInUsers\"\x8d\x02\n" +
+	"\x15NodeConnectivityRumor\x12$\n" +
+	"\x0etarget_node_id\x18\x01 \x01(\x03R\ftargetNodeId\x120\n" +
+	"\x14target_runtime_epoch\x18\x02 \x01(\x04R\x12targetRuntimeEpoch\x12(\n" +
+	"\x10reporter_node_id\x18\x03 \x01(\x03R\x0ereporterNodeId\x124\n" +
+	"\x16reporter_runtime_epoch\x18\x04 \x01(\x04R\x14reporterRuntimeEpoch\x12$\n" +
+	"\x0eobserved_at_ms\x18\x05 \x01(\x03R\fobservedAtMs\x12\x16\n" +
+	"\x06reason\x18\x06 \x01(\tR\x06reason\"\x96\x01\n" +
 	"\x10MembershipUpdate\x12$\n" +
 	"\x0eorigin_node_id\x18\x01 \x01(\x03R\foriginNodeId\x12\x1e\n" +
 	"\n" +
@@ -3135,7 +3668,7 @@ const file_cluster_proto_rawDesc = "" +
 	"generation\x18\x03 \x01(\x04R\n" +
 	"generation\x12-\n" +
 	"\x13observed_at_unix_ms\x18\x04 \x01(\x03R\x10observedAtUnixMs\x12B\n" +
-	"\x1ezeromq_curve_server_public_key\x18\x05 \x01(\tR\x1azeromqCurveServerPublicKey\"\xf8\x02\n" +
+	"\x1ezeromq_curve_server_public_key\x18\x05 \x01(\tR\x1azeromqCurveServerPublicKey\"\xc7\x03\n" +
 	"\x0fTransientPacket\x12\x1b\n" +
 	"\tpacket_id\x18\x01 \x01(\x04R\bpacketId\x12$\n" +
 	"\x0esource_node_id\x18\x02 \x01(\x03R\fsourceNodeId\x12$\n" +
@@ -3144,7 +3677,9 @@ const file_cluster_proto_rawDesc = "" +
 	"\x06sender\x18\x06 \x01(\v2#.notifier.cluster.v1.ClusterUserRefR\x06sender\x12\x12\n" +
 	"\x04body\x18\a \x01(\fR\x04body\x12M\n" +
 	"\rdelivery_mode\x18\b \x01(\x0e2(.notifier.cluster.v1.ClusterDeliveryModeR\fdeliveryMode\x12\x19\n" +
-	"\bttl_hops\x18\t \x01(\rR\attlHops*\xb2\x01\n" +
+	"\bttl_hops\x18\t \x01(\rR\attlHops\x12M\n" +
+	"\x0etarget_session\x18\n" +
+	" \x01(\v2&.notifier.cluster.v1.ClusterSessionRefR\rtargetSession*\xb2\x01\n" +
 	"\x15SnapshotPartitionKind\x12'\n" +
 	"#SNAPSHOT_PARTITION_KIND_UNSPECIFIED\x10\x00\x12!\n" +
 	"\x1dSNAPSHOT_PARTITION_KIND_USERS\x10\x01\x12$\n" +
@@ -3168,40 +3703,46 @@ func file_cluster_proto_rawDescGZIP() []byte {
 }
 
 var file_cluster_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_cluster_proto_msgTypes = make([]protoimpl.MessageInfo, 30)
+var file_cluster_proto_msgTypes = make([]protoimpl.MessageInfo, 36)
 var file_cluster_proto_goTypes = []any{
-	(SnapshotPartitionKind)(0),          // 0: notifier.cluster.v1.SnapshotPartitionKind
-	(ClusterDeliveryMode)(0),            // 1: notifier.cluster.v1.ClusterDeliveryMode
-	(*Envelope)(nil),                    // 2: notifier.cluster.v1.Envelope
-	(*Hello)(nil),                       // 3: notifier.cluster.v1.Hello
-	(*OriginProgress)(nil),              // 4: notifier.cluster.v1.OriginProgress
-	(*Ack)(nil),                         // 5: notifier.cluster.v1.Ack
-	(*EventBatch)(nil),                  // 6: notifier.cluster.v1.EventBatch
-	(*ReplicatedEvent)(nil),             // 7: notifier.cluster.v1.ReplicatedEvent
-	(*UserCreatedEvent)(nil),            // 8: notifier.cluster.v1.UserCreatedEvent
-	(*UserUpdatedEvent)(nil),            // 9: notifier.cluster.v1.UserUpdatedEvent
-	(*UserDeletedEvent)(nil),            // 10: notifier.cluster.v1.UserDeletedEvent
-	(*ClusterUserRef)(nil),              // 11: notifier.cluster.v1.ClusterUserRef
-	(*MessageCreatedEvent)(nil),         // 12: notifier.cluster.v1.MessageCreatedEvent
-	(*UserAttachmentUpsertedEvent)(nil), // 13: notifier.cluster.v1.UserAttachmentUpsertedEvent
-	(*UserAttachmentDeletedEvent)(nil),  // 14: notifier.cluster.v1.UserAttachmentDeletedEvent
-	(*PullEvents)(nil),                  // 15: notifier.cluster.v1.PullEvents
-	(*SnapshotDigest)(nil),              // 16: notifier.cluster.v1.SnapshotDigest
-	(*SnapshotChunk)(nil),               // 17: notifier.cluster.v1.SnapshotChunk
-	(*SnapshotPartitionDigest)(nil),     // 18: notifier.cluster.v1.SnapshotPartitionDigest
-	(*SnapshotRow)(nil),                 // 19: notifier.cluster.v1.SnapshotRow
-	(*SnapshotUserRow)(nil),             // 20: notifier.cluster.v1.SnapshotUserRow
-	(*SnapshotTombstoneRow)(nil),        // 21: notifier.cluster.v1.SnapshotTombstoneRow
-	(*SnapshotMessageRow)(nil),          // 22: notifier.cluster.v1.SnapshotMessageRow
-	(*SnapshotAttachmentRow)(nil),       // 23: notifier.cluster.v1.SnapshotAttachmentRow
-	(*TimeSyncRequest)(nil),             // 24: notifier.cluster.v1.TimeSyncRequest
-	(*TimeSyncResponse)(nil),            // 25: notifier.cluster.v1.TimeSyncResponse
-	(*QueryLoggedInUsersRequest)(nil),   // 26: notifier.cluster.v1.QueryLoggedInUsersRequest
-	(*QueryLoggedInUsersResponse)(nil),  // 27: notifier.cluster.v1.QueryLoggedInUsersResponse
-	(*ClusterLoggedInUser)(nil),         // 28: notifier.cluster.v1.ClusterLoggedInUser
-	(*MembershipUpdate)(nil),            // 29: notifier.cluster.v1.MembershipUpdate
-	(*PeerAdvertisement)(nil),           // 30: notifier.cluster.v1.PeerAdvertisement
-	(*TransientPacket)(nil),             // 31: notifier.cluster.v1.TransientPacket
+	(SnapshotPartitionKind)(0),               // 0: notifier.cluster.v1.SnapshotPartitionKind
+	(ClusterDeliveryMode)(0),                 // 1: notifier.cluster.v1.ClusterDeliveryMode
+	(*Envelope)(nil),                         // 2: notifier.cluster.v1.Envelope
+	(*Hello)(nil),                            // 3: notifier.cluster.v1.Hello
+	(*OriginProgress)(nil),                   // 4: notifier.cluster.v1.OriginProgress
+	(*Ack)(nil),                              // 5: notifier.cluster.v1.Ack
+	(*EventBatch)(nil),                       // 6: notifier.cluster.v1.EventBatch
+	(*ReplicatedEvent)(nil),                  // 7: notifier.cluster.v1.ReplicatedEvent
+	(*UserCreatedEvent)(nil),                 // 8: notifier.cluster.v1.UserCreatedEvent
+	(*UserUpdatedEvent)(nil),                 // 9: notifier.cluster.v1.UserUpdatedEvent
+	(*UserDeletedEvent)(nil),                 // 10: notifier.cluster.v1.UserDeletedEvent
+	(*ClusterUserRef)(nil),                   // 11: notifier.cluster.v1.ClusterUserRef
+	(*MessageCreatedEvent)(nil),              // 12: notifier.cluster.v1.MessageCreatedEvent
+	(*UserAttachmentUpsertedEvent)(nil),      // 13: notifier.cluster.v1.UserAttachmentUpsertedEvent
+	(*UserAttachmentDeletedEvent)(nil),       // 14: notifier.cluster.v1.UserAttachmentDeletedEvent
+	(*PullEvents)(nil),                       // 15: notifier.cluster.v1.PullEvents
+	(*SnapshotDigest)(nil),                   // 16: notifier.cluster.v1.SnapshotDigest
+	(*SnapshotChunk)(nil),                    // 17: notifier.cluster.v1.SnapshotChunk
+	(*SnapshotPartitionDigest)(nil),          // 18: notifier.cluster.v1.SnapshotPartitionDigest
+	(*SnapshotRow)(nil),                      // 19: notifier.cluster.v1.SnapshotRow
+	(*SnapshotUserRow)(nil),                  // 20: notifier.cluster.v1.SnapshotUserRow
+	(*SnapshotTombstoneRow)(nil),             // 21: notifier.cluster.v1.SnapshotTombstoneRow
+	(*SnapshotMessageRow)(nil),               // 22: notifier.cluster.v1.SnapshotMessageRow
+	(*SnapshotAttachmentRow)(nil),            // 23: notifier.cluster.v1.SnapshotAttachmentRow
+	(*TimeSyncRequest)(nil),                  // 24: notifier.cluster.v1.TimeSyncRequest
+	(*TimeSyncResponse)(nil),                 // 25: notifier.cluster.v1.TimeSyncResponse
+	(*QueryLoggedInUsersRequest)(nil),        // 26: notifier.cluster.v1.QueryLoggedInUsersRequest
+	(*QueryLoggedInUsersResponse)(nil),       // 27: notifier.cluster.v1.QueryLoggedInUsersResponse
+	(*QueryResolveUserSessionsRequest)(nil),  // 28: notifier.cluster.v1.QueryResolveUserSessionsRequest
+	(*QueryResolveUserSessionsResponse)(nil), // 29: notifier.cluster.v1.QueryResolveUserSessionsResponse
+	(*ClusterLoggedInUser)(nil),              // 30: notifier.cluster.v1.ClusterLoggedInUser
+	(*ClusterSessionRef)(nil),                // 31: notifier.cluster.v1.ClusterSessionRef
+	(*ClusterOnlineNodePresence)(nil),        // 32: notifier.cluster.v1.ClusterOnlineNodePresence
+	(*OnlinePresenceSnapshot)(nil),           // 33: notifier.cluster.v1.OnlinePresenceSnapshot
+	(*NodeConnectivityRumor)(nil),            // 34: notifier.cluster.v1.NodeConnectivityRumor
+	(*MembershipUpdate)(nil),                 // 35: notifier.cluster.v1.MembershipUpdate
+	(*PeerAdvertisement)(nil),                // 36: notifier.cluster.v1.PeerAdvertisement
+	(*TransientPacket)(nil),                  // 37: notifier.cluster.v1.TransientPacket
 }
 var file_cluster_proto_depIdxs = []int32{
 	3,  // 0: notifier.cluster.v1.Envelope.hello:type_name -> notifier.cluster.v1.Hello
@@ -3212,7 +3753,7 @@ var file_cluster_proto_depIdxs = []int32{
 	17, // 5: notifier.cluster.v1.Envelope.snapshot_chunk:type_name -> notifier.cluster.v1.SnapshotChunk
 	24, // 6: notifier.cluster.v1.Envelope.time_sync_request:type_name -> notifier.cluster.v1.TimeSyncRequest
 	25, // 7: notifier.cluster.v1.Envelope.time_sync_response:type_name -> notifier.cluster.v1.TimeSyncResponse
-	29, // 8: notifier.cluster.v1.Envelope.membership_update:type_name -> notifier.cluster.v1.MembershipUpdate
+	35, // 8: notifier.cluster.v1.Envelope.membership_update:type_name -> notifier.cluster.v1.MembershipUpdate
 	4,  // 9: notifier.cluster.v1.Hello.origin_progress:type_name -> notifier.cluster.v1.OriginProgress
 	7,  // 10: notifier.cluster.v1.EventBatch.events:type_name -> notifier.cluster.v1.ReplicatedEvent
 	8,  // 11: notifier.cluster.v1.ReplicatedEvent.user_created:type_name -> notifier.cluster.v1.UserCreatedEvent
@@ -3239,16 +3780,23 @@ var file_cluster_proto_depIdxs = []int32{
 	11, // 32: notifier.cluster.v1.SnapshotMessageRow.sender:type_name -> notifier.cluster.v1.ClusterUserRef
 	11, // 33: notifier.cluster.v1.SnapshotAttachmentRow.owner:type_name -> notifier.cluster.v1.ClusterUserRef
 	11, // 34: notifier.cluster.v1.SnapshotAttachmentRow.subject:type_name -> notifier.cluster.v1.ClusterUserRef
-	28, // 35: notifier.cluster.v1.QueryLoggedInUsersResponse.items:type_name -> notifier.cluster.v1.ClusterLoggedInUser
-	30, // 36: notifier.cluster.v1.MembershipUpdate.peers:type_name -> notifier.cluster.v1.PeerAdvertisement
-	11, // 37: notifier.cluster.v1.TransientPacket.recipient:type_name -> notifier.cluster.v1.ClusterUserRef
-	11, // 38: notifier.cluster.v1.TransientPacket.sender:type_name -> notifier.cluster.v1.ClusterUserRef
-	1,  // 39: notifier.cluster.v1.TransientPacket.delivery_mode:type_name -> notifier.cluster.v1.ClusterDeliveryMode
-	40, // [40:40] is the sub-list for method output_type
-	40, // [40:40] is the sub-list for method input_type
-	40, // [40:40] is the sub-list for extension type_name
-	40, // [40:40] is the sub-list for extension extendee
-	0,  // [0:40] is the sub-list for field type_name
+	30, // 35: notifier.cluster.v1.QueryLoggedInUsersResponse.items:type_name -> notifier.cluster.v1.ClusterLoggedInUser
+	11, // 36: notifier.cluster.v1.QueryResolveUserSessionsRequest.user:type_name -> notifier.cluster.v1.ClusterUserRef
+	31, // 37: notifier.cluster.v1.QueryResolveUserSessionsResponse.items:type_name -> notifier.cluster.v1.ClusterSessionRef
+	11, // 38: notifier.cluster.v1.QueryResolveUserSessionsResponse.user:type_name -> notifier.cluster.v1.ClusterUserRef
+	11, // 39: notifier.cluster.v1.ClusterOnlineNodePresence.user:type_name -> notifier.cluster.v1.ClusterUserRef
+	32, // 40: notifier.cluster.v1.OnlinePresenceSnapshot.items:type_name -> notifier.cluster.v1.ClusterOnlineNodePresence
+	30, // 41: notifier.cluster.v1.OnlinePresenceSnapshot.logged_in_users:type_name -> notifier.cluster.v1.ClusterLoggedInUser
+	36, // 42: notifier.cluster.v1.MembershipUpdate.peers:type_name -> notifier.cluster.v1.PeerAdvertisement
+	11, // 43: notifier.cluster.v1.TransientPacket.recipient:type_name -> notifier.cluster.v1.ClusterUserRef
+	11, // 44: notifier.cluster.v1.TransientPacket.sender:type_name -> notifier.cluster.v1.ClusterUserRef
+	1,  // 45: notifier.cluster.v1.TransientPacket.delivery_mode:type_name -> notifier.cluster.v1.ClusterDeliveryMode
+	31, // 46: notifier.cluster.v1.TransientPacket.target_session:type_name -> notifier.cluster.v1.ClusterSessionRef
+	47, // [47:47] is the sub-list for method output_type
+	47, // [47:47] is the sub-list for method input_type
+	47, // [47:47] is the sub-list for extension type_name
+	47, // [47:47] is the sub-list for extension extendee
+	0,  // [0:47] is the sub-list for field type_name
 }
 
 func init() { file_cluster_proto_init() }
@@ -3287,7 +3835,7 @@ func file_cluster_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_cluster_proto_rawDesc), len(file_cluster_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   30,
+			NumMessages:   36,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

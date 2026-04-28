@@ -23,6 +23,7 @@ message ClientEnvelope {
     MetricsRequest metrics = 15;
     ListClusterNodesRequest list_cluster_nodes = 16;
     ListNodeLoggedInUsersRequest list_node_logged_in_users = 17;
+    ResolveUserSessionsRequest resolve_user_sessions = 18;
   }
 }
 
@@ -47,6 +48,7 @@ message ServerEnvelope {
     MetricsResponse metrics_response = 17;
     ListClusterNodesResponse list_cluster_nodes_response = 18;
     ListNodeLoggedInUsersResponse list_node_logged_in_users_response = 19;
+    ResolveUserSessionsResponse resolve_user_sessions_response = 20;
   }
 }
 
@@ -60,6 +62,7 @@ message LoginRequest {
 message LoginResponse {
   User user = 1;
   string protocol_version = 2;
+  SessionRef session_ref = 3;
 }
 
 message SendMessageRequest {
@@ -69,6 +72,7 @@ message SendMessageRequest {
   ClientDeliveryKind delivery_kind = 4;
   ClientDeliveryMode delivery_mode = 5;
   ClientMessageSyncMode sync_mode = 6;
+  SessionRef target_session = 7;
 }
 
 message SendMessageResponse {
@@ -93,6 +97,7 @@ message TransientAccepted {
   int64 target_node_id = 3;
   UserRef recipient = 4;
   ClientDeliveryMode delivery_mode = 5;
+  SessionRef target_session = 6;
 }
 
 message AckMessage {
@@ -262,6 +267,19 @@ message ListNodeLoggedInUsersResponse {
   int32 count = 4;
 }
 
+message ResolveUserSessionsRequest {
+  uint64 request_id = 1;
+  UserRef user = 2;
+}
+
+message ResolveUserSessionsResponse {
+  uint64 request_id = 1;
+  UserRef user = 2;
+  repeated OnlineNodePresence presence = 3;
+  repeated ResolvedSession items = 4;
+  int32 count = 5;
+}
+
 message ClusterNode {
   int64 node_id = 1;
   bool is_local = 2;
@@ -273,6 +291,23 @@ message LoggedInUser {
   int64 node_id = 1;
   int64 user_id = 2;
   string username = 3;
+}
+
+message SessionRef {
+  int64 serving_node_id = 1;
+  string session_id = 2;
+}
+
+message OnlineNodePresence {
+  int64 serving_node_id = 1;
+  int32 session_count = 2;
+  string transport_hint = 3;
+}
+
+message ResolvedSession {
+  SessionRef session = 1;
+  string transport = 2;
+  bool transient_capable = 3;
 }
 
 message StringField {
@@ -340,6 +375,7 @@ message Packet {
   UserRef sender = 5;
   bytes body = 6;
   ClientDeliveryMode delivery_mode = 7;
+  SessionRef target_session = 8;
 }
 
 enum AttachmentType {

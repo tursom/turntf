@@ -24,14 +24,47 @@ func TestManagerQueryLoggedInUsersUsesMeshMultiHop(t *testing.T) {
 		}}, nil
 	})
 
-	waitForMeshRoute(t, mgrA, testNodeID(3), mesh.TrafficControlQuery)
+	waitForMeshRoute(t, mgrA, testNodeID(3), mesh.TrafficControlCritical)
 
-	users, err := mgrA.QueryLoggedInUsers(context.Background(), testNodeID(3))
-	if err != nil {
-		t.Fatalf("query logged-in users via mesh: %v", err)
-	}
+	var users []app.LoggedInUserSummary
+	waitFor(t, 5*time.Second, func() bool {
+		var err error
+		users, err = mgrA.QueryLoggedInUsers(context.Background(), testNodeID(3))
+		return err == nil && len(users) == 1
+	})
 	if len(users) != 1 || users[0].NodeID != testNodeID(3) || users[0].UserID != 2048 || users[0].Username != "mesh-user" {
 		t.Fatalf("unexpected users: %+v", users)
+	}
+}
+
+func TestManagerPresencePropagationAndResolveUserSessionsUsesMeshMultiHop(t *testing.T) {
+	t.Parallel()
+
+	mgrA, _, mgrC := startLinearMeshManagers(t)
+	user := store.UserKey{NodeID: testNodeID(3), UserID: 4097}
+	session := store.OnlineSession{
+		User:             user,
+		SessionRef:       store.SessionRef{ServingNodeID: testNodeID(3), SessionID: "sess-c-1"},
+		Transport:        "ws",
+		TransientCapable: true,
+	}
+
+	waitForMeshRoute(t, mgrA, testNodeID(3), mesh.TrafficControlCritical)
+	waitForMeshRoute(t, mgrC, testNodeID(1), mesh.TrafficControlCritical)
+
+	mgrC.RegisterLocalSession(session)
+
+	waitFor(t, 5*time.Second, func() bool {
+		presence, err := mgrA.QueryOnlineUserPresence(context.Background(), user)
+		return err == nil && len(presence) == 1 && presence[0].ServingNodeID == testNodeID(3) && presence[0].SessionCount == 1
+	})
+
+	sessions, err := mgrA.ResolveUserSessions(context.Background(), user)
+	if err != nil {
+		t.Fatalf("resolve user sessions via mesh: %v", err)
+	}
+	if len(sessions) != 1 || sessions[0].SessionRef != session.SessionRef || sessions[0].Transport != "ws" {
+		t.Fatalf("unexpected resolved user sessions: %+v", sessions)
 	}
 }
 
@@ -108,6 +141,44 @@ func TestManagerRoutesTransientPacketPreservesMeshTTL(t *testing.T) {
 	}
 }
 
+func TestManagerRoutesTargetedTransientPacketViaMeshMultiHop(t *testing.T) {
+	t.Parallel()
+
+	mgrA, _, mgrC := startLinearMeshManagers(t)
+	delivered := make(chan store.TransientPacket, 1)
+	targetSession := store.SessionRef{ServingNodeID: testNodeID(3), SessionID: "sess-c-2"}
+	mgrC.SetTransientHandler(func(packet store.TransientPacket) bool {
+		delivered <- packet
+		return true
+	})
+
+	waitForMeshRoute(t, mgrA, testNodeID(3), mesh.TrafficTransientInteractive)
+
+	packet := store.TransientPacket{
+		PacketID:      288,
+		SourceNodeID:  testNodeID(1),
+		TargetNodeID:  testNodeID(3),
+		Recipient:     store.UserKey{NodeID: testNodeID(3), UserID: 99},
+		Sender:        store.UserKey{NodeID: testNodeID(1), UserID: 100},
+		Body:          []byte("mesh-targeted"),
+		DeliveryMode:  store.DeliveryModeBestEffort,
+		TTLHops:       defaultPacketTTLHops,
+		TargetSession: targetSession,
+	}
+	if err := mgrA.RouteTransientPacket(context.Background(), packet); err != nil {
+		t.Fatalf("route targeted transient packet via mesh: %v", err)
+	}
+
+	select {
+	case got := <-delivered:
+		if got.TargetSession != targetSession || string(got.Body) != "mesh-targeted" {
+			t.Fatalf("unexpected delivered targeted packet: %+v", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("timed out waiting for targeted transient delivery")
+	}
+}
+
 func TestManagerRetryQueueClearsAfterSuccessfulMeshForward(t *testing.T) {
 	t.Parallel()
 
@@ -158,33 +229,23 @@ func TestManagerRetryQueueClearsAfterSuccessfulMeshForward(t *testing.T) {
 	})
 }
 
-func TestManagerQueryLoggedInUsersMeshTimeoutClearsPending(t *testing.T) {
+func TestManagerQueryLoggedInUsersEmptyPresenceMirrorReturnsEmptyList(t *testing.T) {
 	t.Parallel()
 
 	mgrA, _, mgrC := startLinearMeshManagers(t)
-	release := make(chan struct{})
 	mgrC.SetLoggedInUsersProvider(func(context.Context) ([]app.LoggedInUserSummary, error) {
-		<-release
 		return []app.LoggedInUserSummary{}, nil
 	})
-	t.Cleanup(func() { close(release) })
 
-	waitForMeshRoute(t, mgrA, testNodeID(3), mesh.TrafficControlQuery)
+	waitForMeshRoute(t, mgrA, testNodeID(3), mesh.TrafficControlCritical)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
-	defer cancel()
-	if _, err := mgrA.QueryLoggedInUsers(ctx, testNodeID(3)); err == nil {
-		t.Fatalf("expected mesh query timeout")
-	}
-
-	waitFor(t, time.Second, func() bool {
-		mgrA.mu.Lock()
-		defer mgrA.mu.Unlock()
-		return len(mgrA.pendingLoggedInUsers) == 0
+	waitFor(t, 5*time.Second, func() bool {
+		users, err := mgrA.QueryLoggedInUsers(context.Background(), testNodeID(3))
+		return err == nil && len(users) == 0
 	})
 }
 
-func TestManagerQueryLoggedInUsersUsesShortTTLCache(t *testing.T) {
+func TestManagerQueryLoggedInUsersUsesSnapshotMirrorWithoutRemoteRPC(t *testing.T) {
 	t.Parallel()
 
 	mgrA, _, mgrC := startLinearMeshManagers(t)
@@ -198,79 +259,63 @@ func TestManagerQueryLoggedInUsersUsesShortTTLCache(t *testing.T) {
 		}}, nil
 	})
 
-	waitForMeshRoute(t, mgrA, testNodeID(3), mesh.TrafficControlQuery)
+	waitForMeshRoute(t, mgrA, testNodeID(3), mesh.TrafficControlCritical)
 
-	first, err := mgrA.QueryLoggedInUsers(context.Background(), testNodeID(3))
-	if err != nil {
-		t.Fatalf("first query logged-in users via mesh: %v", err)
-	}
+	var first []app.LoggedInUserSummary
+	waitFor(t, 5*time.Second, func() bool {
+		var err error
+		first, err = mgrA.QueryLoggedInUsers(context.Background(), testNodeID(3))
+		return err == nil && len(first) == 1
+	})
+	callsAfterMirror := calls.Load()
+
 	second, err := mgrA.QueryLoggedInUsers(context.Background(), testNodeID(3))
 	if err != nil {
-		t.Fatalf("second query logged-in users via mesh: %v", err)
+		t.Fatalf("second query logged-in users via mirror: %v", err)
 	}
 	if len(first) != 1 || len(second) != 1 || first[0] != second[0] {
-		t.Fatalf("unexpected cached query results: first=%+v second=%+v", first, second)
+		t.Fatalf("unexpected mirrored query results: first=%+v second=%+v", first, second)
 	}
-	if got := calls.Load(); got != 1 {
-		t.Fatalf("expected cached second query to skip remote provider, got %d provider calls", got)
-	}
-}
-
-func TestManagerQueryLoggedInUsersCacheExpires(t *testing.T) {
-	t.Parallel()
-
-	mgrA, _, mgrC := startLinearMeshManagers(t)
-	var calls atomic.Int64
-	mgrC.SetLoggedInUsersProvider(func(context.Context) ([]app.LoggedInUserSummary, error) {
-		call := calls.Add(1)
-		return []app.LoggedInUserSummary{{
-			NodeID:   testNodeID(3),
-			UserID:   4000 + call,
-			Username: "expiring-user",
-		}}, nil
-	})
-
-	waitForMeshRoute(t, mgrA, testNodeID(3), mesh.TrafficControlQuery)
-
-	first, err := mgrA.QueryLoggedInUsers(context.Background(), testNodeID(3))
-	if err != nil {
-		t.Fatalf("first query logged-in users via mesh: %v", err)
-	}
-	time.Sleep(loggedInUsersCacheTTL + 25*time.Millisecond)
-	second, err := mgrA.QueryLoggedInUsers(context.Background(), testNodeID(3))
-	if err != nil {
-		t.Fatalf("second query logged-in users via mesh: %v", err)
-	}
-	if len(first) != 1 || len(second) != 1 {
-		t.Fatalf("unexpected logged-in users results: first=%+v second=%+v", first, second)
-	}
-	if first[0].UserID == second[0].UserID {
-		t.Fatalf("expected cache expiry to refresh provider result, got first=%+v second=%+v", first, second)
-	}
-	if got := calls.Load(); got != 2 {
-		t.Fatalf("expected cache expiry to trigger a second provider call, got %d", got)
+	if got := calls.Load(); got != callsAfterMirror {
+		t.Fatalf("expected remote query to read only local mirror, calls before=%d after=%d", callsAfterMirror, got)
 	}
 }
 
-func TestManagerQueryLoggedInUsersCachesShortFailures(t *testing.T) {
+func TestManagerQueryLoggedInUsersProviderFailureSkipsSnapshotBroadcast(t *testing.T) {
 	t.Parallel()
 
 	mgrA, _, mgrC := startLinearMeshManagers(t)
-	var calls atomic.Int64
 	mgrC.SetLoggedInUsersProvider(func(context.Context) ([]app.LoggedInUserSummary, error) {
-		calls.Add(1)
 		return nil, errors.New("upstream overloaded")
 	})
 
-	waitForMeshRoute(t, mgrA, testNodeID(3), mesh.TrafficControlQuery)
+	waitForMeshRoute(t, mgrA, testNodeID(3), mesh.TrafficControlCritical)
 
-	for i := 0; i < 2; i++ {
-		if _, err := mgrA.QueryLoggedInUsers(context.Background(), testNodeID(3)); err == nil {
-			t.Fatalf("expected query %d to fail", i+1)
-		}
+	mgrA.clearEphemeralStateForNode(testNodeID(3), 0, "test_reset")
+	waitFor(t, time.Second, func() bool {
+		_, err := mgrA.QueryLoggedInUsers(context.Background(), testNodeID(3))
+		return err != nil
+	})
+
+	user := store.UserKey{NodeID: testNodeID(3), UserID: 6001}
+	mgrC.RegisterLocalSession(store.OnlineSession{
+		User:             user,
+		SessionRef:       store.SessionRef{ServingNodeID: testNodeID(3), SessionID: "sess-provider-fail"},
+		Transport:        "ws",
+		TransientCapable: true,
+	})
+
+	time.Sleep(100 * time.Millisecond)
+	if _, err := mgrA.QueryLoggedInUsers(context.Background(), testNodeID(3)); err == nil {
+		t.Fatalf("expected query to remain unavailable when provider failure skips snapshot broadcast")
 	}
-	if got := calls.Load(); got != 1 {
-		t.Fatalf("expected negative cache to suppress repeated provider calls, got %d", got)
+
+	presence, err := mgrA.QueryOnlineUserPresence(context.Background(), user)
+	if err != nil {
+		t.Fatalf("query presence: %v", err)
+	}
+	if len(presence) != 0 {
+		t.Fatalf("expected no partial presence update when authoritative snapshot broadcast was skipped, got %+v", presence)
 	}
 }
 
@@ -278,18 +323,19 @@ func TestManagerTransitNodeRecordsForwardingMetrics(t *testing.T) {
 	t.Parallel()
 
 	mgrA, mgrB, mgrC := startLinearMeshManagers(t)
-	mgrC.SetLoggedInUsersProvider(func(context.Context) ([]app.LoggedInUserSummary, error) {
-		return []app.LoggedInUserSummary{{
-			NodeID:   testNodeID(3),
-			UserID:   4097,
-			Username: "metrics-user",
-		}}, nil
+	user := store.UserKey{NodeID: testNodeID(3), UserID: 4097}
+	mgrC.RegisterLocalSession(store.OnlineSession{
+		User:             user,
+		SessionRef:       store.SessionRef{ServingNodeID: testNodeID(3), SessionID: "sess-metrics"},
+		Transport:        "ws",
+		TransientCapable: true,
 	})
 
 	waitForMeshRoute(t, mgrA, testNodeID(3), mesh.TrafficControlQuery)
-	if _, err := mgrA.QueryLoggedInUsers(context.Background(), testNodeID(3)); err != nil {
-		t.Fatalf("query logged-in users via mesh: %v", err)
-	}
+	waitFor(t, 5*time.Second, func() bool {
+		sessions, err := mgrA.ResolveUserSessions(context.Background(), user)
+		return err == nil && len(sessions) == 1
+	})
 
 	waitFor(t, 5*time.Second, func() bool {
 		metrics := mgrB.meshMetricsSnapshot()

@@ -24,6 +24,7 @@ type clientWSSession struct {
 	conn              clientTransportConn
 	protocol          string
 	remoteAddr        string
+	sessionRef        store.SessionRef
 	principal         *requestPrincipal
 	realtimeOnly      bool
 	transientOnly     bool
@@ -134,6 +135,7 @@ func (s *clientWSSession) login(ctx context.Context) error {
 		}
 		s.afterSequence = afterSequence
 	}
+	s.sessionRef = s.http.newSessionRef()
 	s.principal = &requestPrincipal{User: user}
 	s.http.registerClientSession(s.principal.User.Key(), s)
 	s.logInfo("client_authenticated").
@@ -145,6 +147,7 @@ func (s *clientWSSession) login(ctx context.Context) error {
 			LoginResponse: &internalproto.LoginResponse{
 				User:            clientProtoUser(user),
 				ProtocolVersion: internalproto.ClientProtocolVersion,
+				SessionRef:      clientProtoSessionRef(s.sessionRef),
 			},
 		},
 	}); err != nil {
@@ -250,5 +253,18 @@ func clientWSError(code, message string, requestID uint64) *internalproto.Error 
 		Code:      code,
 		Message:   message,
 		RequestId: requestID,
+	}
+}
+
+func (s *clientWSSession) onlineSession() store.OnlineSession {
+	user := store.UserKey{}
+	if s != nil && s.principal != nil {
+		user = s.principal.User.Key()
+	}
+	return store.OnlineSession{
+		User:             user,
+		SessionRef:       s.sessionRef,
+		Transport:        s.protocol,
+		TransientCapable: true,
 	}
 }

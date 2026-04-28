@@ -22,6 +22,16 @@ func clientProtoUser(user store.User) *internalproto.User {
 	}
 }
 
+func clientProtoSessionRef(ref store.SessionRef) *internalproto.SessionRef {
+	if !ref.Valid() {
+		return nil
+	}
+	return &internalproto.SessionRef{
+		ServingNodeId: ref.ServingNodeID,
+		SessionId:     ref.SessionID,
+	}
+}
+
 func clientProtoMessage(message store.Message) *internalproto.Message {
 	return &internalproto.Message{
 		Recipient:    &internalproto.UserRef{NodeId: message.Recipient.NodeID, UserId: message.Recipient.UserID},
@@ -35,23 +45,41 @@ func clientProtoMessage(message store.Message) *internalproto.Message {
 
 func clientProtoPacket(packet store.TransientPacket) *internalproto.Packet {
 	return &internalproto.Packet{
-		PacketId:     packet.PacketID,
-		SourceNodeId: packet.SourceNodeID,
-		TargetNodeId: packet.TargetNodeID,
-		Recipient:    &internalproto.UserRef{NodeId: packet.Recipient.NodeID, UserId: packet.Recipient.UserID},
-		Sender:       &internalproto.UserRef{NodeId: packet.Sender.NodeID, UserId: packet.Sender.UserID},
-		Body:         append([]byte(nil), packet.Body...),
-		DeliveryMode: clientDeliveryModeProto(packet.DeliveryMode),
+		PacketId:      packet.PacketID,
+		SourceNodeId:  packet.SourceNodeID,
+		TargetNodeId:  packet.TargetNodeID,
+		Recipient:     &internalproto.UserRef{NodeId: packet.Recipient.NodeID, UserId: packet.Recipient.UserID},
+		Sender:        &internalproto.UserRef{NodeId: packet.Sender.NodeID, UserId: packet.Sender.UserID},
+		Body:          append([]byte(nil), packet.Body...),
+		DeliveryMode:  clientDeliveryModeProto(packet.DeliveryMode),
+		TargetSession: clientProtoSessionRef(packet.TargetSession),
 	}
 }
 
 func clientProtoTransientAccepted(packet store.TransientPacket) *internalproto.TransientAccepted {
 	return &internalproto.TransientAccepted{
-		PacketId:     packet.PacketID,
-		SourceNodeId: packet.SourceNodeID,
-		TargetNodeId: packet.TargetNodeID,
-		Recipient:    &internalproto.UserRef{NodeId: packet.Recipient.NodeID, UserId: packet.Recipient.UserID},
-		DeliveryMode: clientDeliveryModeProto(packet.DeliveryMode),
+		PacketId:      packet.PacketID,
+		SourceNodeId:  packet.SourceNodeID,
+		TargetNodeId:  packet.TargetNodeID,
+		Recipient:     &internalproto.UserRef{NodeId: packet.Recipient.NodeID, UserId: packet.Recipient.UserID},
+		DeliveryMode:  clientDeliveryModeProto(packet.DeliveryMode),
+		TargetSession: clientProtoSessionRef(packet.TargetSession),
+	}
+}
+
+func clientProtoOnlineNodePresence(presence store.OnlineNodePresence) *internalproto.OnlineNodePresence {
+	return &internalproto.OnlineNodePresence{
+		ServingNodeId: presence.ServingNodeID,
+		SessionCount:  presence.SessionCount,
+		TransportHint: presence.TransportHint,
+	}
+}
+
+func clientProtoResolvedSession(session store.OnlineSession) *internalproto.ResolvedSession {
+	return &internalproto.ResolvedSession{
+		Session:          clientProtoSessionRef(session.SessionRef),
+		Transport:        session.Transport,
+		TransientCapable: session.TransientCapable,
 	}
 }
 
@@ -116,6 +144,20 @@ func clientDeliveryModeString(mode internalproto.ClientDeliveryMode) string {
 	default:
 		return ""
 	}
+}
+
+func sessionRefFromProto(ref *internalproto.SessionRef) (store.SessionRef, error) {
+	if ref == nil {
+		return store.SessionRef{}, nil
+	}
+	sessionRef := store.SessionRef{
+		ServingNodeID: ref.GetServingNodeId(),
+		SessionID:     ref.GetSessionId(),
+	}
+	if !sessionRef.Valid() {
+		return store.SessionRef{}, fmt.Errorf("%w: target_session is invalid", store.ErrInvalidInput)
+	}
+	return sessionRef, nil
 }
 
 func clientMessageSyncModeFromProto(mode internalproto.ClientMessageSyncMode) (store.PebbleMessageSyncMode, error) {

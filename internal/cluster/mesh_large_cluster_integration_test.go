@@ -29,10 +29,12 @@ func TestManagerLargeWebSocketClusterRoutesAcrossLinearTopology(t *testing.T) {
 	waitForMeshRouteDecision(t, source, testNodeID(nodeCount), mesh.TrafficControlQuery, testNodeID(2), mesh.TransportWebSocket)
 	waitForMeshRouteDecision(t, target, testNodeID(1), mesh.TrafficControlQuery, testNodeID(nodeCount-1), mesh.TransportWebSocket)
 
-	users, err := source.QueryLoggedInUsers(context.Background(), testNodeID(nodeCount))
-	if err != nil {
-		t.Fatalf("query logged-in users across %d-node websocket cluster: %v", nodeCount, err)
-	}
+	var users []app.LoggedInUserSummary
+	waitFor(t, 5*time.Second, func() bool {
+		var err error
+		users, err = source.QueryLoggedInUsers(context.Background(), testNodeID(nodeCount))
+		return err == nil && len(users) == 1
+	})
 	if len(users) != 1 || users[0].NodeID != testNodeID(nodeCount) || users[0].UserID != 12288 || users[0].Username != "large-cluster-user" {
 		t.Fatalf("unexpected users: %+v", users)
 	}
@@ -71,7 +73,7 @@ func TestManagerLargeWebSocketClusterRoutesAcrossLinearTopology(t *testing.T) {
 	}
 
 	waitFor(t, 5*time.Second, func() bool {
-		return countManagersWithForwardedMetric(managers[1:nodeCount-1], "control_query") == nodeCount-2
+		return countManagersWithForwardedMetric(managers[1:nodeCount-1], "control_critical") == nodeCount-2
 	})
 	waitFor(t, 5*time.Second, func() bool {
 		return countManagersWithForwardedMetric(managers[1:nodeCount-1], "transient_interactive") == nodeCount-2
@@ -94,10 +96,12 @@ func TestManagerLargeMixedTransportClusterRoutesAcrossAlternatingBridges(t *test
 	waitForMeshRouteDecision(t, source, targetNodeID, mesh.TrafficControlQuery, testNodeID(2), mesh.TransportWebSocket)
 	waitForMeshRouteDecision(t, target, testNodeID(1), mesh.TrafficControlQuery, testNodeID(4), mesh.TransportLibP2P)
 
-	users, err := source.QueryLoggedInUsers(context.Background(), targetNodeID)
-	if err != nil {
-		t.Fatalf("query logged-in users across alternating transport cluster: %v", err)
-	}
+	var users []app.LoggedInUserSummary
+	waitFor(t, 5*time.Second, func() bool {
+		var err error
+		users, err = source.QueryLoggedInUsers(context.Background(), targetNodeID)
+		return err == nil && len(users) == 1
+	})
 	if len(users) != 1 || users[0].NodeID != targetNodeID || users[0].UserID != 16384 || users[0].Username != "large-mixed-user" {
 		t.Fatalf("unexpected users: %+v", users)
 	}
@@ -148,7 +152,7 @@ func TestManagerLargeMixedTransportClusterRoutesAcrossAlternatingBridges(t *test
 	}
 
 	waitFor(t, 5*time.Second, func() bool {
-		return countManagersWithBridgeMetric(managers[1:len(managers)-1], "control_query") >= 1
+		return countManagersWithBridgeMetric(managers[1:len(managers)-1], "control_critical") >= 1
 	})
 	waitFor(t, 5*time.Second, func() bool {
 		return countManagersWithBridgeMetric(managers[1:len(managers)-1], "transient_interactive") >= 1

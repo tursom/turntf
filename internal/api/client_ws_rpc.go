@@ -36,11 +36,15 @@ func (s *clientWSSession) handleSendMessage(ctx context.Context, req *internalpr
 		if req.SyncMode != internalproto.ClientMessageSyncMode_CLIENT_MESSAGE_SYNC_MODE_UNSPECIFIED {
 			return s.writeStoreOrRequestError(req.RequestId, fmt.Errorf("%w: sync_mode is only allowed for persistent messages", store.ErrInvalidInput))
 		}
+		targetSession, err := sessionRefFromProto(req.TargetSession)
+		if err != nil {
+			return s.writeStoreOrRequestError(req.RequestId, err)
+		}
 		mode, err := store.NormalizeDeliveryMode(clientDeliveryModeString(req.DeliveryMode))
 		if err != nil {
 			return s.writeStoreOrRequestError(req.RequestId, err)
 		}
-		packet, err := s.http.service.DispatchTransientPacket(ctx, target, sender, req.Body, mode)
+		packet, err := s.http.service.DispatchTransientPacketTo(ctx, target, sender, req.Body, mode, targetSession)
 		if err != nil {
 			return s.writeStoreOrRequestError(req.RequestId, err)
 		}
@@ -57,6 +61,9 @@ func (s *clientWSSession) handleSendMessage(ctx context.Context, req *internalpr
 	}
 	if req.DeliveryMode != internalproto.ClientDeliveryMode_CLIENT_DELIVERY_MODE_UNSPECIFIED {
 		return s.writeStoreOrRequestError(req.RequestId, fmt.Errorf("%w: delivery_mode is only allowed for transient messages", store.ErrInvalidInput))
+	}
+	if req.TargetSession != nil {
+		return s.writeStoreOrRequestError(req.RequestId, fmt.Errorf("%w: target_session is only allowed for transient messages", store.ErrInvalidInput))
 	}
 	syncMode, err := clientMessageSyncModeFromProto(req.SyncMode)
 	if err != nil {
@@ -493,6 +500,73 @@ func (s *clientWSSession) handleListNodeLoggedInUsers(ctx context.Context, req *
 			},
 		},
 	})
+}
+
+func (s *clientWSSession) handleResolveUserSessions(ctx context.Context, req *internalproto.ResolveUserSessionsRequest) error {
+	if req == nil {
+		return s.writeError("invalid_request", "resolve_user_sessions cannot be empty", 0)
+	}
+	user, err := userKeyFromProto(req.User)
+	if err != nil {
+		return s.writeStoreOrRequestError(req.RequestId, err)
+	}
+	if err := s.http.authorizeCreateMessage(ctx, s.principal, user); err != nil {
+		return s.writeStoreOrRequestError(req.RequestId, err)
+	}
+	presence, err := s.http.service.QueryOnlineUserPresence(ctx, user)
+	if err != nil {
+		return s.writeStoreOrRequestError(req.RequestId, err)
+	}
+	sessions, err := s.http.service.ResolveUserSessions(ctx, user)
+	if err != nil {
+		return s.writeStoreOrRequestError(req.RequestId, err)
+	}
+	if len(sessions) == 0 && user.NodeID == s.http.nodeID {
+		sessions, err = s.http.ListLocalUserSessions(ctx, user)
+		if err != nil {
+			return s.writeStoreOrRequestError(req.RequestId, err)
+		}
+		if len(presence) == 0 && len(sessions) > 0 {
+			presence = []store.OnlineNodePresence{{
+				User:          user,
+				ServingNodeID: s.http.nodeID,
+				SessionCount:  int32(len(sessions)),
+				TransportHint: localSessionTransportHint(sessions),
+			}}
+		}
+	}
+	presenceItems := make([]*internalproto.OnlineNodePresence, 0, len(presence))
+	for _, item := range presence {
+		presenceItems = append(presenceItems, clientProtoOnlineNodePresence(item))
+	}
+	sessionItems := make([]*internalproto.ResolvedSession, 0, len(sessions))
+	for _, item := range sessions {
+		sessionItems = append(sessionItems, clientProtoResolvedSession(item))
+	}
+	return s.writeEnvelope(&internalproto.ServerEnvelope{
+		Body: &internalproto.ServerEnvelope_ResolveUserSessionsResponse{
+			ResolveUserSessionsResponse: &internalproto.ResolveUserSessionsResponse{
+				RequestId: req.RequestId,
+				User:      &internalproto.UserRef{NodeId: user.NodeID, UserId: user.UserID},
+				Presence:  presenceItems,
+				Items:     sessionItems,
+				Count:     int32(len(sessionItems)),
+			},
+		},
+	})
+}
+
+func localSessionTransportHint(items []store.OnlineSession) string {
+	if len(items) == 0 {
+		return ""
+	}
+	hint := items[0].Transport
+	for _, item := range items[1:] {
+		if item.Transport != hint {
+			return "mixed"
+		}
+	}
+	return hint
 }
 
 func (s *clientWSSession) handleMetrics(ctx context.Context, req *internalproto.MetricsRequest) error {

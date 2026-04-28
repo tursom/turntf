@@ -212,6 +212,14 @@ func (s *clientWSSession) readLoop(ctx context.Context) error {
 			if err := s.handleListNodeLoggedInUsers(ctx, body.ListNodeLoggedInUsers); err != nil {
 				return err
 			}
+		case *internalproto.ClientEnvelope_ResolveUserSessions:
+			s.logRequest("resolve_user_sessions", requestIDForClientEnvelopeBody(body)).
+				Int64("target_node_id", body.ResolveUserSessions.GetUser().GetNodeId()).
+				Int64("target_user_id", body.ResolveUserSessions.GetUser().GetUserId()).
+				Msg("client transport request")
+			if err := s.handleResolveUserSessions(ctx, body.ResolveUserSessions); err != nil {
+				return err
+			}
 		case *internalproto.ClientEnvelope_Metrics:
 			if s.realtimeOnly {
 				if err := s.writeError("invalid_request", "realtime stream does not support metrics", requestIDForClientEnvelopeBody(body)); err != nil {
@@ -289,6 +297,8 @@ func requestIDForClientEnvelopeBody(body any) uint64 {
 		return req.ListClusterNodes.GetRequestId()
 	case *internalproto.ClientEnvelope_ListNodeLoggedInUsers:
 		return req.ListNodeLoggedInUsers.GetRequestId()
+	case *internalproto.ClientEnvelope_ResolveUserSessions:
+		return req.ResolveUserSessions.GetRequestId()
 	case *internalproto.ClientEnvelope_Metrics:
 		return req.Metrics.GetRequestId()
 	case *internalproto.ClientEnvelope_AckMessage:

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/tursom/turntf/internal/mesh"
+	internalproto "github.com/tursom/turntf/internal/proto"
 )
 
 // MeshRuntimeBinding owns a mesh.Runtime that reuses the Manager's
@@ -82,6 +83,7 @@ func (m *Manager) BuildMeshRuntime() (*MeshRuntimeBinding, error) {
 	}
 	runtime, err := mesh.NewRuntime(mesh.RuntimeOptions{
 		LocalNodeID:            m.cfg.NodeID,
+		LocalRuntimeEpoch:      m.localRuntimeEpoch,
 		Adapters:               adapterList,
 		LocalPolicy:            m.cfg.MeshForwardingPolicy(),
 		TopologyStore:          store,
@@ -267,7 +269,12 @@ func (m *Manager) observeMeshAdjacency(observation mesh.AdjacencyObservation) {
 	now := time.Now().UTC()
 	connectedSnapshots := make([]discoveredPeerState, 0)
 	failedSnapshots := make([]discoveredPeerState, 0)
+	var rumor *internalproto.NodeConnectivityRumor
+	shouldBroadcastPresence := false
 	m.mu.Lock()
+	if observation.Hello != nil {
+		m.rememberRemoteRuntimeEpochLocked(observation.RemoteNodeID, observation.Hello.GetRuntimeEpoch())
+	}
 	for _, peer := range m.configuredPeers {
 		if configuredPeerMatchesMeshObservation(peer, observation) {
 			peer.nodeID = observation.RemoteNodeID
@@ -317,6 +324,31 @@ func (m *Manager) observeMeshAdjacency(observation mesh.AdjacencyObservation) {
 		discovered.lastError = "mesh adjacency lost"
 		failedSnapshots = append(failedSnapshots, *discovered)
 	}
+	prevDirectAdjacencyCount := m.directAdjacencyCounts[observation.RemoteNodeID]
+	if observation.Established {
+		m.directAdjacencyCounts[observation.RemoteNodeID] = prevDirectAdjacencyCount + 1
+		shouldBroadcastPresence = true
+	} else if prevDirectAdjacencyCount > 0 {
+		nextDirectAdjacencyCount := prevDirectAdjacencyCount - 1
+		if nextDirectAdjacencyCount == 0 {
+			delete(m.directAdjacencyCounts, observation.RemoteNodeID)
+			targetRuntimeEpoch := m.currentRuntimeEpochForNodeLocked(observation.RemoteNodeID)
+			if targetRuntimeEpoch > 0 {
+				rumor = &internalproto.NodeConnectivityRumor{
+					TargetNodeId:         observation.RemoteNodeID,
+					TargetRuntimeEpoch:   targetRuntimeEpoch,
+					ReporterNodeId:       m.cfg.NodeID,
+					ReporterRuntimeEpoch: m.localRuntimeEpoch,
+					ObservedAtMs:         now.UnixMilli(),
+					Reason:               "all_direct_adjacencies_lost",
+				}
+				m.markConnectivityRumorSeenLocked(rumor, now)
+				m.noteDisconnectSuspicionLocked(rumor, now)
+			}
+		} else {
+			m.directAdjacencyCounts[observation.RemoteNodeID] = nextDirectAdjacencyCount
+		}
+	}
 	m.mu.Unlock()
 	if observation.Established {
 		m.meshPeerSession(observation.RemoteNodeID)
@@ -326,6 +358,12 @@ func (m *Manager) observeMeshAdjacency(observation mesh.AdjacencyObservation) {
 	}
 	for _, snapshot := range failedSnapshots {
 		m.persistDiscoveredPeer(snapshot, false)
+	}
+	if shouldBroadcastPresence {
+		m.broadcastOnlinePresence()
+	}
+	if rumor != nil {
+		m.broadcastConnectivityRumor(rumor)
 	}
 }
 

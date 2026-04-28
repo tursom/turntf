@@ -53,6 +53,8 @@ message ClusterEnvelope {
     MeshRouteDiagnostic route_diagnostic = 12;
     MeshReplicationAck replication_ack = 13;
     MeshMembershipUpdate membership_update = 15;
+    MeshPresenceUpdate presence_update = 16;
+    MeshConnectivityRumor connectivity_rumor = 17;
   }
   bytes hmac = 14;
 }
@@ -62,6 +64,7 @@ message MeshNodeHello {
   string protocol_version = 2;
   repeated MeshTransportCapability transports = 3;
   MeshForwardingPolicy forwarding_policy = 4;
+  uint64 runtime_epoch = 5;
 }
 
 message MeshTransportCapability {
@@ -162,10 +165,19 @@ message MeshQueryResponse {
   string error_code = 2;
   string error_message = 3;
   bytes payload = 4;
+  string kind = 5;
 }
 
 message MeshMembershipUpdate {
   notifier.cluster.v1.MembershipUpdate membership_update = 1;
+}
+
+message MeshPresenceUpdate {
+  notifier.cluster.v1.OnlinePresenceSnapshot presence_update = 1;
+}
+
+message MeshConnectivityRumor {
+  notifier.cluster.v1.NodeConnectivityRumor connectivity_rumor = 1;
 }
 
 message MeshRouteDiagnostic {

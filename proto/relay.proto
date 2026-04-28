@@ -1,0 +1,29 @@
+syntax = "proto3";
+
+package notifier.relay.v1;
+
+import "client.proto";
+
+option go_package = "github.com/tursom/turntf/internal/proto;proto";
+
+message RelayEnvelope {
+  string relay_id = 1;
+  RelayKind kind = 2;
+  notifier.client.v1.SessionRef sender_session = 3;
+  notifier.client.v1.SessionRef target_session = 4;
+  uint64 seq = 5;
+  uint64 ack_seq = 6;
+  bytes payload = 7;
+  int64 sent_at_ms = 8;
+}
+
+enum RelayKind {
+  RELAY_KIND_UNSPECIFIED = 0;
+  RELAY_KIND_OPEN = 1;
+  RELAY_KIND_OPEN_ACK = 2;
+  RELAY_KIND_DATA = 3;
+  RELAY_KIND_ACK = 4;
+  RELAY_KIND_CLOSE = 5;
+  RELAY_KIND_PING = 6;
+  RELAY_KIND_ERROR = 7;
+}

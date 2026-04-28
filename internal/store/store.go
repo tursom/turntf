@@ -254,6 +254,29 @@ type CreateMessageParams struct {
 	PebbleMessageSyncMode PebbleMessageSyncMode
 }
 
+type SessionRef struct {
+	ServingNodeID int64  `json:"serving_node_id"`
+	SessionID     string `json:"session_id"`
+}
+
+func (r SessionRef) Valid() bool {
+	return r.ServingNodeID > 0 && strings.TrimSpace(r.SessionID) != ""
+}
+
+type OnlineNodePresence struct {
+	User          UserKey `json:"user"`
+	ServingNodeID int64   `json:"serving_node_id"`
+	SessionCount  int32   `json:"session_count"`
+	TransportHint string  `json:"transport_hint,omitempty"`
+}
+
+type OnlineSession struct {
+	User             UserKey    `json:"user"`
+	SessionRef       SessionRef `json:"session_ref"`
+	Transport        string     `json:"transport,omitempty"`
+	TransientCapable bool       `json:"transient_capable"`
+}
+
 type DeliveryMode string
 
 const (
@@ -271,6 +294,7 @@ type TransientPacket struct {
 	DeliveryMode  DeliveryMode `json:"delivery_mode"`
 	TTLHops       int32        `json:"ttl_hops"`
 	RouteRetryTTL int64        `json:"route_retry_ttl_ms,omitempty"`
+	TargetSession SessionRef   `json:"target_session,omitempty"`
 }
 
 func NormalizeDeliveryMode(raw string) (DeliveryMode, error) {

@@ -23,6 +23,8 @@ type ClusterEnvelope_SnapshotManifest = internalproto.ClusterEnvelope_SnapshotMa
 type ClusterEnvelope_SnapshotChunk = internalproto.ClusterEnvelope_SnapshotChunk
 type ClusterEnvelope_RouteDiagnostic = internalproto.ClusterEnvelope_RouteDiagnostic
 type ClusterEnvelope_MembershipUpdate = internalproto.ClusterEnvelope_MembershipUpdate
+type ClusterEnvelope_PresenceUpdate = internalproto.ClusterEnvelope_PresenceUpdate
+type ClusterEnvelope_ConnectivityRumor = internalproto.ClusterEnvelope_ConnectivityRumor
 type NodeHello = internalproto.MeshNodeHello
 type TransportCapability = internalproto.MeshTransportCapability
 type ForwardingPolicy = internalproto.MeshForwardingPolicy
@@ -40,6 +42,8 @@ type TimeSyncResponse = internalproto.MeshTimeSyncResponse
 type QueryRequest = internalproto.MeshQueryRequest
 type QueryResponse = internalproto.MeshQueryResponse
 type MembershipUpdate = internalproto.MeshMembershipUpdate
+type MeshPresenceUpdate = internalproto.MeshPresenceUpdate
+type MeshConnectivityRumor = internalproto.MeshConnectivityRumor
 type RouteDiagnostic = internalproto.MeshRouteDiagnostic
 
 type PathClass = internalproto.PathClass

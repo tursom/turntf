@@ -256,6 +256,8 @@ type ClusterEnvelope struct {
 	//	*ClusterEnvelope_RouteDiagnostic
 	//	*ClusterEnvelope_ReplicationAck
 	//	*ClusterEnvelope_MembershipUpdate
+	//	*ClusterEnvelope_PresenceUpdate
+	//	*ClusterEnvelope_ConnectivityRumor
 	Body          isClusterEnvelope_Body `protobuf_oneof:"body"`
 	Hmac          []byte                 `protobuf:"bytes,14,opt,name=hmac,proto3" json:"hmac,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -425,6 +427,24 @@ func (x *ClusterEnvelope) GetMembershipUpdate() *MeshMembershipUpdate {
 	return nil
 }
 
+func (x *ClusterEnvelope) GetPresenceUpdate() *MeshPresenceUpdate {
+	if x != nil {
+		if x, ok := x.Body.(*ClusterEnvelope_PresenceUpdate); ok {
+			return x.PresenceUpdate
+		}
+	}
+	return nil
+}
+
+func (x *ClusterEnvelope) GetConnectivityRumor() *MeshConnectivityRumor {
+	if x != nil {
+		if x, ok := x.Body.(*ClusterEnvelope_ConnectivityRumor); ok {
+			return x.ConnectivityRumor
+		}
+	}
+	return nil
+}
+
 func (x *ClusterEnvelope) GetHmac() []byte {
 	if x != nil {
 		return x.Hmac
@@ -492,6 +512,14 @@ type ClusterEnvelope_MembershipUpdate struct {
 	MembershipUpdate *MeshMembershipUpdate `protobuf:"bytes,15,opt,name=membership_update,json=membershipUpdate,proto3,oneof"`
 }
 
+type ClusterEnvelope_PresenceUpdate struct {
+	PresenceUpdate *MeshPresenceUpdate `protobuf:"bytes,16,opt,name=presence_update,json=presenceUpdate,proto3,oneof"`
+}
+
+type ClusterEnvelope_ConnectivityRumor struct {
+	ConnectivityRumor *MeshConnectivityRumor `protobuf:"bytes,17,opt,name=connectivity_rumor,json=connectivityRumor,proto3,oneof"`
+}
+
 func (*ClusterEnvelope_NodeHello) isClusterEnvelope_Body() {}
 
 func (*ClusterEnvelope_TimeSyncRequest) isClusterEnvelope_Body() {}
@@ -520,12 +548,17 @@ func (*ClusterEnvelope_ReplicationAck) isClusterEnvelope_Body() {}
 
 func (*ClusterEnvelope_MembershipUpdate) isClusterEnvelope_Body() {}
 
+func (*ClusterEnvelope_PresenceUpdate) isClusterEnvelope_Body() {}
+
+func (*ClusterEnvelope_ConnectivityRumor) isClusterEnvelope_Body() {}
+
 type MeshNodeHello struct {
 	state            protoimpl.MessageState     `protogen:"open.v1"`
 	NodeId           int64                      `protobuf:"varint,1,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
 	ProtocolVersion  string                     `protobuf:"bytes,2,opt,name=protocol_version,json=protocolVersion,proto3" json:"protocol_version,omitempty"`
 	Transports       []*MeshTransportCapability `protobuf:"bytes,3,rep,name=transports,proto3" json:"transports,omitempty"`
 	ForwardingPolicy *MeshForwardingPolicy      `protobuf:"bytes,4,opt,name=forwarding_policy,json=forwardingPolicy,proto3" json:"forwarding_policy,omitempty"`
+	RuntimeEpoch     uint64                     `protobuf:"varint,5,opt,name=runtime_epoch,json=runtimeEpoch,proto3" json:"runtime_epoch,omitempty"`
 	unknownFields    protoimpl.UnknownFields
 	sizeCache        protoimpl.SizeCache
 }
@@ -586,6 +619,13 @@ func (x *MeshNodeHello) GetForwardingPolicy() *MeshForwardingPolicy {
 		return x.ForwardingPolicy
 	}
 	return nil
+}
+
+func (x *MeshNodeHello) GetRuntimeEpoch() uint64 {
+	if x != nil {
+		return x.RuntimeEpoch
+	}
+	return 0
 }
 
 type MeshTransportCapability struct {
@@ -1506,6 +1546,7 @@ type MeshQueryResponse struct {
 	ErrorCode     string                 `protobuf:"bytes,2,opt,name=error_code,json=errorCode,proto3" json:"error_code,omitempty"`
 	ErrorMessage  string                 `protobuf:"bytes,3,opt,name=error_message,json=errorMessage,proto3" json:"error_message,omitempty"`
 	Payload       []byte                 `protobuf:"bytes,4,opt,name=payload,proto3" json:"payload,omitempty"`
+	Kind          string                 `protobuf:"bytes,5,opt,name=kind,proto3" json:"kind,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1568,6 +1609,13 @@ func (x *MeshQueryResponse) GetPayload() []byte {
 	return nil
 }
 
+func (x *MeshQueryResponse) GetKind() string {
+	if x != nil {
+		return x.Kind
+	}
+	return ""
+}
+
 type MeshMembershipUpdate struct {
 	state            protoimpl.MessageState `protogen:"open.v1"`
 	MembershipUpdate *MembershipUpdate      `protobuf:"bytes,1,opt,name=membership_update,json=membershipUpdate,proto3" json:"membership_update,omitempty"`
@@ -1612,6 +1660,94 @@ func (x *MeshMembershipUpdate) GetMembershipUpdate() *MembershipUpdate {
 	return nil
 }
 
+type MeshPresenceUpdate struct {
+	state          protoimpl.MessageState  `protogen:"open.v1"`
+	PresenceUpdate *OnlinePresenceSnapshot `protobuf:"bytes,1,opt,name=presence_update,json=presenceUpdate,proto3" json:"presence_update,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *MeshPresenceUpdate) Reset() {
+	*x = MeshPresenceUpdate{}
+	mi := &file_mesh_proto_msgTypes[18]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *MeshPresenceUpdate) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*MeshPresenceUpdate) ProtoMessage() {}
+
+func (x *MeshPresenceUpdate) ProtoReflect() protoreflect.Message {
+	mi := &file_mesh_proto_msgTypes[18]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use MeshPresenceUpdate.ProtoReflect.Descriptor instead.
+func (*MeshPresenceUpdate) Descriptor() ([]byte, []int) {
+	return file_mesh_proto_rawDescGZIP(), []int{18}
+}
+
+func (x *MeshPresenceUpdate) GetPresenceUpdate() *OnlinePresenceSnapshot {
+	if x != nil {
+		return x.PresenceUpdate
+	}
+	return nil
+}
+
+type MeshConnectivityRumor struct {
+	state             protoimpl.MessageState `protogen:"open.v1"`
+	ConnectivityRumor *NodeConnectivityRumor `protobuf:"bytes,1,opt,name=connectivity_rumor,json=connectivityRumor,proto3" json:"connectivity_rumor,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *MeshConnectivityRumor) Reset() {
+	*x = MeshConnectivityRumor{}
+	mi := &file_mesh_proto_msgTypes[19]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *MeshConnectivityRumor) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*MeshConnectivityRumor) ProtoMessage() {}
+
+func (x *MeshConnectivityRumor) ProtoReflect() protoreflect.Message {
+	mi := &file_mesh_proto_msgTypes[19]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use MeshConnectivityRumor.ProtoReflect.Descriptor instead.
+func (*MeshConnectivityRumor) Descriptor() ([]byte, []int) {
+	return file_mesh_proto_rawDescGZIP(), []int{19}
+}
+
+func (x *MeshConnectivityRumor) GetConnectivityRumor() *NodeConnectivityRumor {
+	if x != nil {
+		return x.ConnectivityRumor
+	}
+	return nil
+}
+
 type MeshRouteDiagnostic struct {
 	state             protoimpl.MessageState `protogen:"open.v1"`
 	DestinationNodeId int64                  `protobuf:"varint,1,opt,name=destination_node_id,json=destinationNodeId,proto3" json:"destination_node_id,omitempty"`
@@ -1624,7 +1760,7 @@ type MeshRouteDiagnostic struct {
 
 func (x *MeshRouteDiagnostic) Reset() {
 	*x = MeshRouteDiagnostic{}
-	mi := &file_mesh_proto_msgTypes[18]
+	mi := &file_mesh_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1636,7 +1772,7 @@ func (x *MeshRouteDiagnostic) String() string {
 func (*MeshRouteDiagnostic) ProtoMessage() {}
 
 func (x *MeshRouteDiagnostic) ProtoReflect() protoreflect.Message {
-	mi := &file_mesh_proto_msgTypes[18]
+	mi := &file_mesh_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1649,7 +1785,7 @@ func (x *MeshRouteDiagnostic) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MeshRouteDiagnostic.ProtoReflect.Descriptor instead.
 func (*MeshRouteDiagnostic) Descriptor() ([]byte, []int) {
-	return file_mesh_proto_rawDescGZIP(), []int{18}
+	return file_mesh_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *MeshRouteDiagnostic) GetDestinationNodeId() int64 {
@@ -1685,7 +1821,8 @@ var File_mesh_proto protoreflect.FileDescriptor
 const file_mesh_proto_rawDesc = "" +
 	"\n" +
 	"\n" +
-	"mesh.proto\x12\x10notifier.mesh.v1\x1a\rcluster.proto\"\x9a\t\n" +
+	"mesh.proto\x12\x10notifier.mesh.v1\x1a\rcluster.proto\"\xc5\n" +
+	"\n" +
 	"\x0fClusterEnvelope\x12@\n" +
 	"\n" +
 	"node_hello\x18\x01 \x01(\v2\x1f.notifier.mesh.v1.MeshNodeHelloH\x00R\tnodeHello\x12S\n" +
@@ -1702,16 +1839,19 @@ const file_mesh_proto_rawDesc = "" +
 	"\x0esnapshot_chunk\x18\v \x01(\v2#.notifier.mesh.v1.MeshSnapshotChunkH\x00R\rsnapshotChunk\x12R\n" +
 	"\x10route_diagnostic\x18\f \x01(\v2%.notifier.mesh.v1.MeshRouteDiagnosticH\x00R\x0frouteDiagnostic\x12O\n" +
 	"\x0freplication_ack\x18\r \x01(\v2$.notifier.mesh.v1.MeshReplicationAckH\x00R\x0ereplicationAck\x12U\n" +
-	"\x11membership_update\x18\x0f \x01(\v2&.notifier.mesh.v1.MeshMembershipUpdateH\x00R\x10membershipUpdate\x12\x12\n" +
+	"\x11membership_update\x18\x0f \x01(\v2&.notifier.mesh.v1.MeshMembershipUpdateH\x00R\x10membershipUpdate\x12O\n" +
+	"\x0fpresence_update\x18\x10 \x01(\v2$.notifier.mesh.v1.MeshPresenceUpdateH\x00R\x0epresenceUpdate\x12X\n" +
+	"\x12connectivity_rumor\x18\x11 \x01(\v2'.notifier.mesh.v1.MeshConnectivityRumorH\x00R\x11connectivityRumor\x12\x12\n" +
 	"\x04hmac\x18\x0e \x01(\fR\x04hmacB\x06\n" +
-	"\x04body\"\xf3\x01\n" +
+	"\x04body\"\x98\x02\n" +
 	"\rMeshNodeHello\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\x03R\x06nodeId\x12)\n" +
 	"\x10protocol_version\x18\x02 \x01(\tR\x0fprotocolVersion\x12I\n" +
 	"\n" +
 	"transports\x18\x03 \x03(\v2).notifier.mesh.v1.MeshTransportCapabilityR\n" +
 	"transports\x12S\n" +
-	"\x11forwarding_policy\x18\x04 \x01(\v2&.notifier.mesh.v1.MeshForwardingPolicyR\x10forwardingPolicy\"\xdf\x02\n" +
+	"\x11forwarding_policy\x18\x04 \x01(\v2&.notifier.mesh.v1.MeshForwardingPolicyR\x10forwardingPolicy\x12#\n" +
+	"\rruntime_epoch\x18\x05 \x01(\x04R\fruntimeEpoch\"\xdf\x02\n" +
 	"\x17MeshTransportCapability\x12=\n" +
 	"\ttransport\x18\x01 \x01(\x0e2\x1f.notifier.mesh.v1.TransportKindR\ttransport\x12'\n" +
 	"\x0finbound_enabled\x18\x02 \x01(\bR\x0einboundEnabled\x12)\n" +
@@ -1788,16 +1928,21 @@ const file_mesh_proto_rawDesc = "" +
 	"\n" +
 	"request_id\x18\x01 \x01(\x04R\trequestId\x12\x12\n" +
 	"\x04kind\x18\x02 \x01(\tR\x04kind\x12\x18\n" +
-	"\apayload\x18\x03 \x01(\fR\apayload\"\x90\x01\n" +
+	"\apayload\x18\x03 \x01(\fR\apayload\"\xa4\x01\n" +
 	"\x11MeshQueryResponse\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\x04R\trequestId\x12\x1d\n" +
 	"\n" +
 	"error_code\x18\x02 \x01(\tR\terrorCode\x12#\n" +
 	"\rerror_message\x18\x03 \x01(\tR\ferrorMessage\x12\x18\n" +
-	"\apayload\x18\x04 \x01(\fR\apayload\"j\n" +
+	"\apayload\x18\x04 \x01(\fR\apayload\x12\x12\n" +
+	"\x04kind\x18\x05 \x01(\tR\x04kind\"j\n" +
 	"\x14MeshMembershipUpdate\x12R\n" +
-	"\x11membership_update\x18\x01 \x01(\v2%.notifier.cluster.v1.MembershipUpdateR\x10membershipUpdate\"\xf2\x01\n" +
+	"\x11membership_update\x18\x01 \x01(\v2%.notifier.cluster.v1.MembershipUpdateR\x10membershipUpdate\"j\n" +
+	"\x12MeshPresenceUpdate\x12T\n" +
+	"\x0fpresence_update\x18\x01 \x01(\v2+.notifier.cluster.v1.OnlinePresenceSnapshotR\x0epresenceUpdate\"r\n" +
+	"\x15MeshConnectivityRumor\x12Y\n" +
+	"\x12connectivity_rumor\x18\x01 \x01(\v2*.notifier.cluster.v1.NodeConnectivityRumorR\x11connectivityRumor\"\xf2\x01\n" +
 	"\x13MeshRouteDiagnostic\x12.\n" +
 	"\x13destination_node_id\x18\x01 \x01(\x03R\x11destinationNodeId\x12C\n" +
 	"\rtraffic_class\x18\x02 \x01(\x0e2\x1e.notifier.mesh.v1.TrafficClassR\ftrafficClass\x12L\n" +
@@ -1840,7 +1985,7 @@ func file_mesh_proto_rawDescGZIP() []byte {
 }
 
 var file_mesh_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
-var file_mesh_proto_msgTypes = make([]protoimpl.MessageInfo, 19)
+var file_mesh_proto_msgTypes = make([]protoimpl.MessageInfo, 21)
 var file_mesh_proto_goTypes = []any{
 	(TransportKind)(0),              // 0: notifier.mesh.v1.TransportKind
 	(TrafficClass)(0),               // 1: notifier.mesh.v1.TrafficClass
@@ -1864,13 +2009,17 @@ var file_mesh_proto_goTypes = []any{
 	(*MeshQueryRequest)(nil),        // 19: notifier.mesh.v1.MeshQueryRequest
 	(*MeshQueryResponse)(nil),       // 20: notifier.mesh.v1.MeshQueryResponse
 	(*MeshMembershipUpdate)(nil),    // 21: notifier.mesh.v1.MeshMembershipUpdate
-	(*MeshRouteDiagnostic)(nil),     // 22: notifier.mesh.v1.MeshRouteDiagnostic
-	(*EventBatch)(nil),              // 23: notifier.cluster.v1.EventBatch
-	(*PullEvents)(nil),              // 24: notifier.cluster.v1.PullEvents
-	(*Ack)(nil),                     // 25: notifier.cluster.v1.Ack
-	(*SnapshotDigest)(nil),          // 26: notifier.cluster.v1.SnapshotDigest
-	(*SnapshotChunk)(nil),           // 27: notifier.cluster.v1.SnapshotChunk
-	(*MembershipUpdate)(nil),        // 28: notifier.cluster.v1.MembershipUpdate
+	(*MeshPresenceUpdate)(nil),      // 22: notifier.mesh.v1.MeshPresenceUpdate
+	(*MeshConnectivityRumor)(nil),   // 23: notifier.mesh.v1.MeshConnectivityRumor
+	(*MeshRouteDiagnostic)(nil),     // 24: notifier.mesh.v1.MeshRouteDiagnostic
+	(*EventBatch)(nil),              // 25: notifier.cluster.v1.EventBatch
+	(*PullEvents)(nil),              // 26: notifier.cluster.v1.PullEvents
+	(*Ack)(nil),                     // 27: notifier.cluster.v1.Ack
+	(*SnapshotDigest)(nil),          // 28: notifier.cluster.v1.SnapshotDigest
+	(*SnapshotChunk)(nil),           // 29: notifier.cluster.v1.SnapshotChunk
+	(*MembershipUpdate)(nil),        // 30: notifier.cluster.v1.MembershipUpdate
+	(*OnlinePresenceSnapshot)(nil),  // 31: notifier.cluster.v1.OnlinePresenceSnapshot
+	(*NodeConnectivityRumor)(nil),   // 32: notifier.cluster.v1.NodeConnectivityRumor
 }
 var file_mesh_proto_depIdxs = []int32{
 	5,  // 0: notifier.mesh.v1.ClusterEnvelope.node_hello:type_name -> notifier.mesh.v1.MeshNodeHello
@@ -1884,35 +2033,39 @@ var file_mesh_proto_depIdxs = []int32{
 	13, // 8: notifier.mesh.v1.ClusterEnvelope.pull_request:type_name -> notifier.mesh.v1.MeshPullRequest
 	15, // 9: notifier.mesh.v1.ClusterEnvelope.snapshot_manifest:type_name -> notifier.mesh.v1.MeshSnapshotManifest
 	16, // 10: notifier.mesh.v1.ClusterEnvelope.snapshot_chunk:type_name -> notifier.mesh.v1.MeshSnapshotChunk
-	22, // 11: notifier.mesh.v1.ClusterEnvelope.route_diagnostic:type_name -> notifier.mesh.v1.MeshRouteDiagnostic
+	24, // 11: notifier.mesh.v1.ClusterEnvelope.route_diagnostic:type_name -> notifier.mesh.v1.MeshRouteDiagnostic
 	14, // 12: notifier.mesh.v1.ClusterEnvelope.replication_ack:type_name -> notifier.mesh.v1.MeshReplicationAck
 	21, // 13: notifier.mesh.v1.ClusterEnvelope.membership_update:type_name -> notifier.mesh.v1.MeshMembershipUpdate
-	6,  // 14: notifier.mesh.v1.MeshNodeHello.transports:type_name -> notifier.mesh.v1.MeshTransportCapability
-	7,  // 15: notifier.mesh.v1.MeshNodeHello.forwarding_policy:type_name -> notifier.mesh.v1.MeshForwardingPolicy
-	0,  // 16: notifier.mesh.v1.MeshTransportCapability.transport:type_name -> notifier.mesh.v1.TransportKind
-	8,  // 17: notifier.mesh.v1.MeshForwardingPolicy.traffic_rules:type_name -> notifier.mesh.v1.MeshTrafficRule
-	1,  // 18: notifier.mesh.v1.MeshTrafficRule.traffic_class:type_name -> notifier.mesh.v1.TrafficClass
-	2,  // 19: notifier.mesh.v1.MeshTrafficRule.disposition:type_name -> notifier.mesh.v1.ForwardingDisposition
-	10, // 20: notifier.mesh.v1.MeshTopologyUpdate.links:type_name -> notifier.mesh.v1.MeshLinkAdvertisement
-	7,  // 21: notifier.mesh.v1.MeshTopologyUpdate.forwarding_policy:type_name -> notifier.mesh.v1.MeshForwardingPolicy
-	6,  // 22: notifier.mesh.v1.MeshTopologyUpdate.transports:type_name -> notifier.mesh.v1.MeshTransportCapability
-	0,  // 23: notifier.mesh.v1.MeshLinkAdvertisement.transport:type_name -> notifier.mesh.v1.TransportKind
-	3,  // 24: notifier.mesh.v1.MeshLinkAdvertisement.path_class:type_name -> notifier.mesh.v1.PathClass
-	1,  // 25: notifier.mesh.v1.MeshForwardedPacket.traffic_class:type_name -> notifier.mesh.v1.TrafficClass
-	0,  // 26: notifier.mesh.v1.MeshForwardedPacket.ingress_transport:type_name -> notifier.mesh.v1.TransportKind
-	23, // 27: notifier.mesh.v1.MeshReplicationBatch.event_batch:type_name -> notifier.cluster.v1.EventBatch
-	24, // 28: notifier.mesh.v1.MeshPullRequest.pull_events:type_name -> notifier.cluster.v1.PullEvents
-	25, // 29: notifier.mesh.v1.MeshReplicationAck.ack:type_name -> notifier.cluster.v1.Ack
-	26, // 30: notifier.mesh.v1.MeshSnapshotManifest.snapshot_digest:type_name -> notifier.cluster.v1.SnapshotDigest
-	27, // 31: notifier.mesh.v1.MeshSnapshotChunk.snapshot_chunk:type_name -> notifier.cluster.v1.SnapshotChunk
-	28, // 32: notifier.mesh.v1.MeshMembershipUpdate.membership_update:type_name -> notifier.cluster.v1.MembershipUpdate
-	1,  // 33: notifier.mesh.v1.MeshRouteDiagnostic.traffic_class:type_name -> notifier.mesh.v1.TrafficClass
-	0,  // 34: notifier.mesh.v1.MeshRouteDiagnostic.ingress_transport:type_name -> notifier.mesh.v1.TransportKind
-	35, // [35:35] is the sub-list for method output_type
-	35, // [35:35] is the sub-list for method input_type
-	35, // [35:35] is the sub-list for extension type_name
-	35, // [35:35] is the sub-list for extension extendee
-	0,  // [0:35] is the sub-list for field type_name
+	22, // 14: notifier.mesh.v1.ClusterEnvelope.presence_update:type_name -> notifier.mesh.v1.MeshPresenceUpdate
+	23, // 15: notifier.mesh.v1.ClusterEnvelope.connectivity_rumor:type_name -> notifier.mesh.v1.MeshConnectivityRumor
+	6,  // 16: notifier.mesh.v1.MeshNodeHello.transports:type_name -> notifier.mesh.v1.MeshTransportCapability
+	7,  // 17: notifier.mesh.v1.MeshNodeHello.forwarding_policy:type_name -> notifier.mesh.v1.MeshForwardingPolicy
+	0,  // 18: notifier.mesh.v1.MeshTransportCapability.transport:type_name -> notifier.mesh.v1.TransportKind
+	8,  // 19: notifier.mesh.v1.MeshForwardingPolicy.traffic_rules:type_name -> notifier.mesh.v1.MeshTrafficRule
+	1,  // 20: notifier.mesh.v1.MeshTrafficRule.traffic_class:type_name -> notifier.mesh.v1.TrafficClass
+	2,  // 21: notifier.mesh.v1.MeshTrafficRule.disposition:type_name -> notifier.mesh.v1.ForwardingDisposition
+	10, // 22: notifier.mesh.v1.MeshTopologyUpdate.links:type_name -> notifier.mesh.v1.MeshLinkAdvertisement
+	7,  // 23: notifier.mesh.v1.MeshTopologyUpdate.forwarding_policy:type_name -> notifier.mesh.v1.MeshForwardingPolicy
+	6,  // 24: notifier.mesh.v1.MeshTopologyUpdate.transports:type_name -> notifier.mesh.v1.MeshTransportCapability
+	0,  // 25: notifier.mesh.v1.MeshLinkAdvertisement.transport:type_name -> notifier.mesh.v1.TransportKind
+	3,  // 26: notifier.mesh.v1.MeshLinkAdvertisement.path_class:type_name -> notifier.mesh.v1.PathClass
+	1,  // 27: notifier.mesh.v1.MeshForwardedPacket.traffic_class:type_name -> notifier.mesh.v1.TrafficClass
+	0,  // 28: notifier.mesh.v1.MeshForwardedPacket.ingress_transport:type_name -> notifier.mesh.v1.TransportKind
+	25, // 29: notifier.mesh.v1.MeshReplicationBatch.event_batch:type_name -> notifier.cluster.v1.EventBatch
+	26, // 30: notifier.mesh.v1.MeshPullRequest.pull_events:type_name -> notifier.cluster.v1.PullEvents
+	27, // 31: notifier.mesh.v1.MeshReplicationAck.ack:type_name -> notifier.cluster.v1.Ack
+	28, // 32: notifier.mesh.v1.MeshSnapshotManifest.snapshot_digest:type_name -> notifier.cluster.v1.SnapshotDigest
+	29, // 33: notifier.mesh.v1.MeshSnapshotChunk.snapshot_chunk:type_name -> notifier.cluster.v1.SnapshotChunk
+	30, // 34: notifier.mesh.v1.MeshMembershipUpdate.membership_update:type_name -> notifier.cluster.v1.MembershipUpdate
+	31, // 35: notifier.mesh.v1.MeshPresenceUpdate.presence_update:type_name -> notifier.cluster.v1.OnlinePresenceSnapshot
+	32, // 36: notifier.mesh.v1.MeshConnectivityRumor.connectivity_rumor:type_name -> notifier.cluster.v1.NodeConnectivityRumor
+	1,  // 37: notifier.mesh.v1.MeshRouteDiagnostic.traffic_class:type_name -> notifier.mesh.v1.TrafficClass
+	0,  // 38: notifier.mesh.v1.MeshRouteDiagnostic.ingress_transport:type_name -> notifier.mesh.v1.TransportKind
+	39, // [39:39] is the sub-list for method output_type
+	39, // [39:39] is the sub-list for method input_type
+	39, // [39:39] is the sub-list for extension type_name
+	39, // [39:39] is the sub-list for extension extendee
+	0,  // [0:39] is the sub-list for field type_name
 }
 
 func init() { file_mesh_proto_init() }
@@ -1936,6 +2089,8 @@ func file_mesh_proto_init() {
 		(*ClusterEnvelope_RouteDiagnostic)(nil),
 		(*ClusterEnvelope_ReplicationAck)(nil),
 		(*ClusterEnvelope_MembershipUpdate)(nil),
+		(*ClusterEnvelope_PresenceUpdate)(nil),
+		(*ClusterEnvelope_ConnectivityRumor)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
@@ -1943,7 +2098,7 @@ func file_mesh_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_mesh_proto_rawDesc), len(file_mesh_proto_rawDesc)),
 			NumEnums:      4,
-			NumMessages:   19,
+			NumMessages:   21,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

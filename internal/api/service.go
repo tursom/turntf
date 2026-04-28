@@ -32,6 +32,19 @@ type LoggedInUserQuerier interface {
 	QueryLoggedInUsers(context.Context, int64) ([]app.LoggedInUserSummary, error)
 }
 
+type OnlineSessionRegistry interface {
+	RegisterLocalSession(store.OnlineSession)
+	UnregisterLocalSession(store.UserKey, store.SessionRef)
+}
+
+type OnlinePresenceResolver interface {
+	QueryOnlineUserPresence(context.Context, store.UserKey) ([]store.OnlineNodePresence, error)
+}
+
+type OnlineSessionResolver interface {
+	ResolveUserSessions(context.Context, store.UserKey) ([]store.OnlineSession, error)
+}
+
 type noopEventSink struct{}
 
 func (noopEventSink) Publish(store.Event) {}
@@ -49,6 +62,9 @@ type Service struct {
 	transientRouter TransientPacketRouter
 	localUsers      LoggedInUserProvider
 	remoteUsers     LoggedInUserQuerier
+	sessionRegistry OnlineSessionRegistry
+	presence        OnlinePresenceResolver
+	sessions        OnlineSessionResolver
 	transientRecvMu sync.RWMutex
 	transientRecv   TransientPacketReceiver
 	nextTransientID atomic.Uint64
@@ -72,12 +88,27 @@ func New(st *store.Store, eventSink EventSink) *Service {
 	if querier, ok := eventSink.(LoggedInUserQuerier); ok {
 		remoteUsers = querier
 	}
+	var sessionRegistry OnlineSessionRegistry
+	if registry, ok := eventSink.(OnlineSessionRegistry); ok {
+		sessionRegistry = registry
+	}
+	var presence OnlinePresenceResolver
+	if resolver, ok := eventSink.(OnlinePresenceResolver); ok {
+		presence = resolver
+	}
+	var sessions OnlineSessionResolver
+	if resolver, ok := eventSink.(OnlineSessionResolver); ok {
+		sessions = resolver
+	}
 	return &Service{
 		store:           st,
 		eventSink:       eventSink,
 		writeGate:       writeGate,
 		transientRouter: transientRouter,
 		remoteUsers:     remoteUsers,
+		sessionRegistry: sessionRegistry,
+		presence:        presence,
+		sessions:        sessions,
 	}
 }
 
@@ -170,7 +201,25 @@ func (s *Service) SetLoggedInUserProvider(provider LoggedInUserProvider) {
 	s.localUsers = provider
 }
 
+func (s *Service) RegisterLocalSession(session store.OnlineSession) {
+	if s == nil || !session.SessionRef.Valid() || s.sessionRegistry == nil {
+		return
+	}
+	s.sessionRegistry.RegisterLocalSession(session)
+}
+
+func (s *Service) UnregisterLocalSession(user store.UserKey, sessionRef store.SessionRef) {
+	if s == nil || !sessionRef.Valid() || s.sessionRegistry == nil {
+		return
+	}
+	s.sessionRegistry.UnregisterLocalSession(user, sessionRef)
+}
+
 func (s *Service) DispatchTransientPacket(ctx context.Context, recipient store.UserKey, sender store.UserKey, body []byte, mode store.DeliveryMode) (store.TransientPacket, error) {
+	return s.DispatchTransientPacketTo(ctx, recipient, sender, body, mode, store.SessionRef{})
+}
+
+func (s *Service) DispatchTransientPacketTo(ctx context.Context, recipient store.UserKey, sender store.UserKey, body []byte, mode store.DeliveryMode, targetSession store.SessionRef) (store.TransientPacket, error) {
 	if err := s.allowWrite(ctx); err != nil {
 		return store.TransientPacket{}, err
 	}
@@ -195,29 +244,56 @@ func (s *Service) DispatchTransientPacket(ctx context.Context, recipient store.U
 		s.recordBlacklistHit()
 		return store.TransientPacket{}, store.ErrBlockedByBlacklist
 	}
-	packet := store.TransientPacket{
-		// Keep client/API transient packets in a separate packet-id space from
-		// mesh runtime control/data packets so forwarding deduplication does not
-		// treat them as duplicates on multi-node paths.
-		PacketID:     s.nextTransientPacketID(),
-		SourceNodeID: s.store.NodeID(),
-		TargetNodeID: recipient.NodeID,
-		Recipient:    recipient,
-		Sender:       sender,
-		Body:         append([]byte(nil), body...),
-		DeliveryMode: mode,
-		TTLHops:      8,
-	}
-	if packet.TargetNodeID == s.store.NodeID() {
-		s.deliverTransientPacket(packet)
-		return packet, nil
-	}
-	if s.transientRouter != nil {
-		if err := s.transientRouter.RouteTransientPacket(ctx, packet); err != nil {
+	if targetSession.Valid() {
+		if s.sessions != nil {
+			sessions, err := s.sessions.ResolveUserSessions(ctx, recipient)
+			if err != nil {
+				return store.TransientPacket{}, err
+			}
+			if !containsTargetSession(sessions, targetSession) {
+				return store.TransientPacket{}, store.ErrNotFound
+			}
+		}
+		packet := s.newTransientPacket(recipient, sender, body, mode, targetSession.ServingNodeID, targetSession)
+		if err := s.dispatchTransientPackets(ctx, []store.TransientPacket{packet}); err != nil {
 			return store.TransientPacket{}, err
 		}
+		return packet, nil
 	}
-	return packet, nil
+
+	targetNodeIDs := []int64{recipient.NodeID}
+	if s.presence != nil {
+		presence, err := s.presence.QueryOnlineUserPresence(ctx, recipient)
+		if err != nil {
+			return store.TransientPacket{}, err
+		}
+		targetNodeIDs = uniqueServingNodeIDs(presence)
+	}
+	if len(targetNodeIDs) == 0 && s.sessions != nil {
+		sessions, err := s.sessions.ResolveUserSessions(ctx, recipient)
+		if err != nil {
+			return store.TransientPacket{}, err
+		}
+		targetNodeIDs = uniqueServingNodeIDsFromSessions(sessions)
+	}
+	if len(targetNodeIDs) == 0 {
+		return store.TransientPacket{}, store.ErrNotFound
+	}
+
+	packets := make([]store.TransientPacket, 0, len(targetNodeIDs))
+	for _, targetNodeID := range targetNodeIDs {
+		if targetNodeID <= 0 {
+			continue
+		}
+		packets = append(packets, s.newTransientPacket(recipient, sender, body, mode, targetNodeID, store.SessionRef{}))
+	}
+	if len(packets) == 0 {
+		return store.TransientPacket{}, store.ErrNotFound
+	}
+	if err := s.dispatchTransientPackets(ctx, packets); err != nil {
+		return store.TransientPacket{}, err
+	}
+	return packets[0], nil
 }
 
 func (s *Service) deliverTransientPacket(packet store.TransientPacket) bool {
@@ -228,6 +304,112 @@ func (s *Service) deliverTransientPacket(packet store.TransientPacket) bool {
 		return false
 	}
 	return receiver.ReceiveTransientPacket(packet)
+}
+
+func (s *Service) QueryOnlineUserPresence(ctx context.Context, user store.UserKey) ([]store.OnlineNodePresence, error) {
+	if s == nil {
+		return nil, nil
+	}
+	if err := user.Validate(); err != nil {
+		return nil, err
+	}
+	if s.presence == nil {
+		return nil, nil
+	}
+	return s.presence.QueryOnlineUserPresence(ctx, user)
+}
+
+func (s *Service) ResolveUserSessions(ctx context.Context, user store.UserKey) ([]store.OnlineSession, error) {
+	if s == nil {
+		return nil, nil
+	}
+	if err := user.Validate(); err != nil {
+		return nil, err
+	}
+	if s.sessions == nil {
+		return nil, nil
+	}
+	return s.sessions.ResolveUserSessions(ctx, user)
+}
+
+func (s *Service) newTransientPacket(recipient store.UserKey, sender store.UserKey, body []byte, mode store.DeliveryMode, targetNodeID int64, targetSession store.SessionRef) store.TransientPacket {
+	return store.TransientPacket{
+		// Keep client/API transient packets in a separate packet-id space from
+		// mesh runtime control/data packets so forwarding deduplication does not
+		// treat them as duplicates on multi-node paths.
+		PacketID:      s.nextTransientPacketID(),
+		SourceNodeID:  s.store.NodeID(),
+		TargetNodeID:  targetNodeID,
+		Recipient:     recipient,
+		Sender:        sender,
+		Body:          append([]byte(nil), body...),
+		DeliveryMode:  mode,
+		TTLHops:       8,
+		TargetSession: targetSession,
+	}
+}
+
+func (s *Service) dispatchTransientPackets(ctx context.Context, packets []store.TransientPacket) error {
+	for _, packet := range packets {
+		if packet.TargetNodeID == s.store.NodeID() {
+			s.deliverTransientPacket(packet)
+			continue
+		}
+		if s.transientRouter == nil {
+			continue
+		}
+		if err := s.transientRouter.RouteTransientPacket(ctx, packet); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func uniqueServingNodeIDs(items []store.OnlineNodePresence) []int64 {
+	if len(items) == 0 {
+		return nil
+	}
+	seen := make(map[int64]struct{}, len(items))
+	out := make([]int64, 0, len(items))
+	for _, item := range items {
+		if item.ServingNodeID <= 0 {
+			continue
+		}
+		if _, ok := seen[item.ServingNodeID]; ok {
+			continue
+		}
+		seen[item.ServingNodeID] = struct{}{}
+		out = append(out, item.ServingNodeID)
+	}
+	return out
+}
+
+func uniqueServingNodeIDsFromSessions(items []store.OnlineSession) []int64 {
+	if len(items) == 0 {
+		return nil
+	}
+	seen := make(map[int64]struct{}, len(items))
+	out := make([]int64, 0, len(items))
+	for _, item := range items {
+		if item.SessionRef.ServingNodeID <= 0 {
+			continue
+		}
+		if _, ok := seen[item.SessionRef.ServingNodeID]; ok {
+			continue
+		}
+		seen[item.SessionRef.ServingNodeID] = struct{}{}
+		out = append(out, item.SessionRef.ServingNodeID)
+	}
+	return out
+}
+
+func containsTargetSession(items []store.OnlineSession, target store.SessionRef) bool {
+	for _, item := range items {
+		if item.SessionRef == target {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Service) ListMessagesByUser(ctx context.Context, key store.UserKey, limit int) ([]store.Message, error) {

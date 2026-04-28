@@ -143,6 +143,8 @@ func (m *Manager) Start(parent context.Context) error {
 		go m.transientRetryLoop()
 		m.wg.Add(1)
 		go m.meshReplicationLoop()
+		m.wg.Add(1)
+		go m.presenceLoop()
 		if !m.cfg.DiscoveryDisabled {
 			m.wg.Add(1)
 			go m.discoveryLoop()

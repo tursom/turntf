@@ -29,10 +29,12 @@ func TestManagerQueryLoggedInUsersUsesWebSocketLibP2PBridge(t *testing.T) {
 	waitForMeshRouteDecision(t, mgrA, testNodeID(3), mesh.TrafficControlQuery, testNodeID(2), mesh.TransportWebSocket)
 	waitForMeshRouteDecision(t, mgrC, testNodeID(1), mesh.TrafficControlQuery, testNodeID(2), mesh.TransportLibP2P)
 
-	users, err := mgrA.QueryLoggedInUsers(context.Background(), testNodeID(3))
-	if err != nil {
-		t.Fatalf("query logged-in users over websocket/libp2p bridge: %v", err)
-	}
+	var users []app.LoggedInUserSummary
+	waitFor(t, 5*time.Second, func() bool {
+		var err error
+		users, err = mgrA.QueryLoggedInUsers(context.Background(), testNodeID(3))
+		return err == nil && len(users) == 1
+	})
 	if len(users) != 1 || users[0].NodeID != testNodeID(3) || users[0].UserID != 4096 || users[0].Username != "mixed-transport-user" {
 		t.Fatalf("unexpected users: %+v", users)
 	}

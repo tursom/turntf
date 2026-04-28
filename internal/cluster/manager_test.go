@@ -90,13 +90,6 @@ func TestQueryLoggedInUsersWithoutMeshReturnsUnavailable(t *testing.T) {
 	if !errors.Is(err, app.ErrServiceUnavailable) || !strings.Contains(err.Error(), "not reachable") {
 		t.Fatalf("unexpected query logged-in users error: %v", err)
 	}
-
-	mgr.mu.Lock()
-	pendingCount := len(mgr.pendingLoggedInUsers)
-	mgr.mu.Unlock()
-	if pendingCount != 0 {
-		t.Fatalf("expected pending logged-in users query to be cleared, got %d", pendingCount)
-	}
 }
 
 func TestActivateSessionLogsPeerReconnectForKnownPeer(t *testing.T) {

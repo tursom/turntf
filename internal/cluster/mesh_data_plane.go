@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"google.golang.org/protobuf/proto"
 
@@ -13,13 +14,13 @@ import (
 )
 
 const (
-	meshQueryLoggedInUsersRequestKind  = "logged_in_users.request"
-	meshQueryLoggedInUsersResponseKind = "logged_in_users.response"
+	meshQueryResolveUserSessionsRequestKind  = "resolve_user_sessions.request"
+	meshQueryResolveUserSessionsResponseKind = "resolve_user_sessions.response"
 )
 
-func (m *Manager) routeMeshLoggedInUsersRequest(ctx context.Context, req *internalproto.QueryLoggedInUsersRequest) error {
+func (m *Manager) routeMeshResolveUserSessionsRequest(ctx context.Context, req *internalproto.QueryResolveUserSessionsRequest) error {
 	if req == nil {
-		return errors.New("query logged-in users request cannot be empty")
+		return errors.New("query resolve user sessions request cannot be empty")
 	}
 	payload, err := proto.Marshal(req)
 	if err != nil {
@@ -29,7 +30,7 @@ func (m *Manager) routeMeshLoggedInUsersRequest(ctx context.Context, req *intern
 		Body: &mesh.ClusterEnvelope_QueryRequest{
 			QueryRequest: &mesh.QueryRequest{
 				RequestId: req.RequestId,
-				Kind:      meshQueryLoggedInUsersRequestKind,
+				Kind:      meshQueryResolveUserSessionsRequestKind,
 				Payload:   payload,
 			},
 		},
@@ -37,9 +38,9 @@ func (m *Manager) routeMeshLoggedInUsersRequest(ctx context.Context, req *intern
 	return m.routeMeshEnvelope(ctx, req.TargetNodeId, mesh.TrafficControlQuery, envelope)
 }
 
-func (m *Manager) routeMeshLoggedInUsersResponse(ctx context.Context, resp *internalproto.QueryLoggedInUsersResponse) error {
+func (m *Manager) routeMeshResolveUserSessionsResponse(ctx context.Context, resp *internalproto.QueryResolveUserSessionsResponse) error {
 	if resp == nil {
-		return errors.New("query logged-in users response cannot be empty")
+		return errors.New("query resolve user sessions response cannot be empty")
 	}
 	payload, err := proto.Marshal(resp)
 	if err != nil {
@@ -50,6 +51,7 @@ func (m *Manager) routeMeshLoggedInUsersResponse(ctx context.Context, resp *inte
 			QueryResponse: &mesh.QueryResponse{
 				RequestId: resp.RequestId,
 				Payload:   payload,
+				Kind:      meshQueryResolveUserSessionsResponseKind,
 			},
 		},
 	}
@@ -69,6 +71,58 @@ func (m *Manager) routeMeshMembershipUpdate(ctx context.Context, targetNodeID in
 	})
 }
 
+func (m *Manager) routeMeshPresenceUpdate(ctx context.Context, targetNodeID int64, snapshot *internalproto.OnlinePresenceSnapshot) error {
+	if snapshot == nil {
+		return errors.New("online presence snapshot cannot be empty")
+	}
+	return m.routeMeshEnvelope(ctx, targetNodeID, mesh.TrafficControlCritical, &mesh.ClusterEnvelope{
+		Body: &mesh.ClusterEnvelope_PresenceUpdate{
+			PresenceUpdate: &mesh.MeshPresenceUpdate{
+				PresenceUpdate: proto.Clone(snapshot).(*internalproto.OnlinePresenceSnapshot),
+			},
+		},
+	})
+}
+
+func (m *Manager) routeMeshConnectivityRumor(ctx context.Context, targetNodeID int64, rumor *internalproto.NodeConnectivityRumor) error {
+	if rumor == nil {
+		return errors.New("connectivity rumor cannot be empty")
+	}
+	return m.routeMeshEnvelope(ctx, targetNodeID, mesh.TrafficControlCritical, &mesh.ClusterEnvelope{
+		Body: &mesh.ClusterEnvelope_ConnectivityRumor{
+			ConnectivityRumor: &mesh.MeshConnectivityRumor{
+				ConnectivityRumor: proto.Clone(rumor).(*internalproto.NodeConnectivityRumor),
+			},
+		},
+	})
+}
+
+func (m *Manager) broadcastConnectivityRumor(rumor *internalproto.NodeConnectivityRumor) {
+	m.forwardConnectivityRumor(rumor, 0)
+}
+
+func (m *Manager) forwardConnectivityRumor(rumor *internalproto.NodeConnectivityRumor, excludePeerNodeID int64) {
+	if m == nil || rumor == nil {
+		return
+	}
+	for _, sess := range m.localPresenceSessions() {
+		if sess == nil || sess.peerID == excludePeerNodeID {
+			continue
+		}
+		m.sendConnectivityRumor(sess, rumor)
+	}
+}
+
+func (m *Manager) sendConnectivityRumor(sess *session, rumor *internalproto.NodeConnectivityRumor) {
+	if m == nil || sess == nil || rumor == nil || sess.isClosed() || m.MeshRuntime() == nil {
+		return
+	}
+	if err := m.routeMeshConnectivityRumor(context.Background(), sess.peerID, rumor); err != nil {
+		m.logSessionWarn("mesh_connectivity_rumor_forward_failed", sess, err).
+			Msg("failed to forward connectivity rumor over mesh")
+	}
+}
+
 func (m *Manager) handleMeshQueryEnvelope(ctx context.Context, packet *mesh.ForwardedPacket, envelope *mesh.ClusterEnvelope) error {
 	if m == nil || envelope == nil {
 		return nil
@@ -78,12 +132,12 @@ func (m *Manager) handleMeshQueryEnvelope(ctx context.Context, packet *mesh.Forw
 		if body.QueryRequest == nil {
 			return errors.New("mesh query request body cannot be empty")
 		}
-		return m.handleMeshLoggedInUsersRequest(ctx, packet, body.QueryRequest)
+		return m.handleMeshQueryRequest(ctx, packet, body.QueryRequest)
 	case *mesh.ClusterEnvelope_QueryResponse:
 		if body.QueryResponse == nil {
 			return errors.New("mesh query response body cannot be empty")
 		}
-		return m.handleMeshLoggedInUsersResponse(ctx, body.QueryResponse)
+		return m.handleMeshQueryResponse(ctx, body.QueryResponse)
 	default:
 		return fmt.Errorf("unsupported mesh query envelope %T", envelope.Body)
 	}
@@ -108,6 +162,10 @@ func (m *Manager) handleMeshEnvelope(ctx context.Context, packet *mesh.Forwarded
 		return m.handleMeshSnapshotChunkEnvelope(packet, body.SnapshotChunk)
 	case *mesh.ClusterEnvelope_MembershipUpdate:
 		return m.handleMeshMembershipUpdateEnvelope(packet, body.MembershipUpdate)
+	case *mesh.ClusterEnvelope_PresenceUpdate:
+		return m.handleMeshPresenceUpdateEnvelope(packet, body.PresenceUpdate)
+	case *mesh.ClusterEnvelope_ConnectivityRumor:
+		return m.handleMeshConnectivityRumorEnvelope(packet, body.ConnectivityRumor)
 	default:
 		return fmt.Errorf("unsupported mesh envelope %T", envelope.Body)
 	}
@@ -316,70 +374,155 @@ func sessionPeerIDForEnvelope(sess *session, fallbackPeerID int64) int64 {
 	return fallbackPeerID
 }
 
-func (m *Manager) handleMeshLoggedInUsersRequest(ctx context.Context, packet *mesh.ForwardedPacket, query *mesh.QueryRequest) error {
-	if query.Kind != meshQueryLoggedInUsersRequestKind {
+func (m *Manager) handleMeshQueryRequest(ctx context.Context, packet *mesh.ForwardedPacket, query *mesh.QueryRequest) error {
+	if query == nil {
+		return errors.New("mesh query request cannot be empty")
+	}
+	switch query.Kind {
+	case meshQueryResolveUserSessionsRequestKind:
+		return m.handleMeshResolveUserSessionsRequest(ctx, packet, query)
+	default:
 		return fmt.Errorf("unsupported mesh query request kind %q", query.Kind)
 	}
-	req := &internalproto.QueryLoggedInUsersRequest{}
+}
+
+func (m *Manager) handleMeshQueryResponse(ctx context.Context, query *mesh.QueryResponse) error {
+	if query == nil {
+		return errors.New("mesh query response cannot be empty")
+	}
+	switch query.Kind {
+	case meshQueryResolveUserSessionsResponseKind:
+		return m.handleMeshResolveUserSessionsResponse(ctx, query)
+	default:
+		return fmt.Errorf("unsupported mesh query response kind %q", query.Kind)
+	}
+}
+
+func (m *Manager) handleMeshResolveUserSessionsRequest(ctx context.Context, packet *mesh.ForwardedPacket, query *mesh.QueryRequest) error {
+	req := &internalproto.QueryResolveUserSessionsRequest{}
 	if err := proto.Unmarshal(query.Payload, req); err != nil {
 		return err
 	}
 	if req.RequestId == 0 {
-		return errors.New("query logged-in users request id cannot be empty")
+		return errors.New("query resolve user sessions request id cannot be empty")
 	}
 	if req.OriginNodeId <= 0 {
-		return errors.New("query logged-in users origin node id cannot be empty")
+		return errors.New("query resolve user sessions origin node id cannot be empty")
 	}
 	if req.TargetNodeId <= 0 {
-		return errors.New("query logged-in users target node id cannot be empty")
+		return errors.New("query resolve user sessions target node id cannot be empty")
+	}
+	if req.User == nil {
+		return errors.New("query resolve user sessions user cannot be empty")
 	}
 	if req.TargetNodeId != m.cfg.NodeID {
 		return fmt.Errorf("mesh query delivered to node %d for target %d", m.cfg.NodeID, req.TargetNodeId)
 	}
-	response := &internalproto.QueryLoggedInUsersResponse{
+	response := &internalproto.QueryResolveUserSessionsResponse{
 		RequestId:     req.RequestId,
 		TargetNodeId:  req.TargetNodeId,
 		OriginNodeId:  req.OriginNodeId,
 		RemainingHops: req.RemainingHops,
+		User:          proto.Clone(req.User).(*internalproto.ClusterUserRef),
 	}
 	if packet != nil && packet.TtlHops > 0 {
 		response.RemainingHops = int32(packet.TtlHops)
 	}
-	users, err := m.listLocalLoggedInUsers(ctx)
-	if err != nil {
-		response.ErrorCode = "service_unavailable"
-		response.ErrorMessage = err.Error()
-	} else {
-		response.Items = clusterLoggedInUsers(users)
+	user := store.UserKey{NodeID: req.User.GetNodeId(), UserID: req.User.GetUserId()}
+	if user.Validate() != nil {
+		response.ErrorCode = "invalid_request"
+		response.ErrorMessage = "target user is invalid"
+		return m.routeMeshResolveUserSessionsResponse(ctx, response)
 	}
-	return m.routeMeshLoggedInUsersResponse(ctx, response)
+	for _, session := range m.localUserSessions(user) {
+		response.Items = append(response.Items, &internalproto.ClusterSessionRef{
+			ServingNodeId:    session.SessionRef.ServingNodeID,
+			SessionId:        session.SessionRef.SessionID,
+			Transport:        session.Transport,
+			TransientCapable: session.TransientCapable,
+		})
+	}
+	return m.routeMeshResolveUserSessionsResponse(ctx, response)
 }
 
-func (m *Manager) handleMeshLoggedInUsersResponse(ctx context.Context, query *mesh.QueryResponse) error {
+func (m *Manager) handleMeshResolveUserSessionsResponse(ctx context.Context, query *mesh.QueryResponse) error {
 	_ = ctx
-	resp := &internalproto.QueryLoggedInUsersResponse{}
+	resp := &internalproto.QueryResolveUserSessionsResponse{}
 	if err := proto.Unmarshal(query.Payload, resp); err != nil {
 		return err
 	}
-	if resp.RequestId == 0 {
-		return errors.New("query logged-in users response id cannot be empty")
-	}
-	if resp.OriginNodeId <= 0 {
-		return errors.New("query logged-in users response origin node id cannot be empty")
-	}
-	if resp.TargetNodeId <= 0 {
-		return errors.New("query logged-in users response target node id cannot be empty")
+	if resp.RequestId == 0 || resp.OriginNodeId <= 0 || resp.TargetNodeId <= 0 {
+		return errors.New("query resolve user sessions response is invalid")
 	}
 	if resp.OriginNodeId != m.cfg.NodeID {
-		return m.routeMeshLoggedInUsersResponse(context.Background(), resp)
+		return m.routeMeshResolveUserSessionsResponse(context.Background(), resp)
 	}
-	if !m.resolveLoggedInUsersQuery(resp.RequestId, loggedInUsersQueryResult{response: resp}) {
-		m.logDebug("query_logged_in_users_response_ignored").
+	if !m.resolveResolveUserSessionsQuery(resp.RequestId, resolveUserSessionsQueryResult{response: resp}) {
+		m.logDebug("query_resolve_user_sessions_response_ignored").
 			Uint64("request_id", resp.RequestId).
 			Int64("origin_node_id", resp.OriginNodeId).
 			Int64("target_node_id", resp.TargetNodeId).
-			Int32("remaining_hops", resp.RemainingHops).
-			Msg("ignoring late logged-in users response without pending origin query")
+			Msg("ignoring late resolve user sessions response without pending origin query")
+	}
+	return nil
+}
+
+func (m *Manager) handleMeshPresenceUpdateEnvelope(packet *mesh.ForwardedPacket, update *mesh.MeshPresenceUpdate) error {
+	if update == nil || update.GetPresenceUpdate() == nil {
+		return errors.New("mesh online presence update body cannot be empty")
+	}
+	sourceNodeID := packetSourceNodeID(packet)
+	if sourceNodeID <= 0 {
+		return errors.New("mesh online presence update source node id cannot be empty")
+	}
+	body := update.GetPresenceUpdate()
+	if body.GetOriginNodeId() != sourceNodeID {
+		return fmt.Errorf("mesh online presence update origin mismatch: got %d want %d", body.GetOriginNodeId(), sourceNodeID)
+	}
+	if !m.applyOnlinePresenceSnapshot(body) {
+		return nil
+	}
+	m.forwardOnlinePresence(body, sourceNodeID)
+	return nil
+}
+
+func (m *Manager) handleMeshConnectivityRumorEnvelope(packet *mesh.ForwardedPacket, envelope *mesh.MeshConnectivityRumor) error {
+	if envelope == nil || envelope.GetConnectivityRumor() == nil {
+		return errors.New("mesh connectivity rumor body cannot be empty")
+	}
+	rumor := envelope.GetConnectivityRumor()
+	if rumor.GetTargetNodeId() <= 0 || rumor.GetTargetRuntimeEpoch() == 0 || rumor.GetReporterNodeId() <= 0 || rumor.GetReporterRuntimeEpoch() == 0 {
+		return errors.New("mesh connectivity rumor is invalid")
+	}
+	now := time.Now().UTC()
+
+	m.mu.Lock()
+	firstSeen := m.markConnectivityRumorSeenLocked(rumor, now)
+	shouldForward := firstSeen
+	refuteSelf := false
+	if rumor.GetTargetNodeId() == m.cfg.NodeID {
+		refuteSelf = rumor.GetTargetRuntimeEpoch() == m.localRuntimeEpoch
+		if !refuteSelf {
+			shouldForward = false
+		}
+	} else {
+		currentEpoch := m.currentRuntimeEpochForNodeLocked(rumor.GetTargetNodeId())
+		if currentEpoch > 0 && rumor.GetTargetRuntimeEpoch() < currentEpoch {
+			shouldForward = false
+		} else {
+			m.rememberRemoteRuntimeEpochLocked(rumor.GetTargetNodeId(), rumor.GetTargetRuntimeEpoch())
+			if m.directAdjacencyCounts[rumor.GetTargetNodeId()] == 0 {
+				m.noteDisconnectSuspicionLocked(rumor, now)
+			}
+		}
+	}
+	m.mu.Unlock()
+
+	if refuteSelf {
+		m.broadcastOnlinePresence()
+	}
+	if shouldForward {
+		m.forwardConnectivityRumor(rumor, packetSourceNodeID(packet))
 	}
 	return nil
 }
@@ -403,14 +546,15 @@ func (m *Manager) handleMeshForwardedPacket(ctx context.Context, packet *mesh.Fo
 		return fmt.Errorf("transient packet sender cannot be empty")
 	}
 	transient := store.TransientPacket{
-		PacketID:     packet.PacketId,
-		SourceNodeID: packet.SourceNodeId,
-		TargetNodeID: packet.TargetNodeId,
-		Recipient:    store.UserKey{NodeID: body.Recipient.NodeId, UserID: body.Recipient.UserId},
-		Sender:       store.UserKey{NodeID: body.Sender.NodeId, UserID: body.Sender.UserId},
-		Body:         append([]byte(nil), body.Body...),
-		DeliveryMode: clusterDeliveryModeToStore(body.DeliveryMode),
-		TTLHops:      int32(packet.TtlHops),
+		PacketID:      packet.PacketId,
+		SourceNodeID:  packet.SourceNodeId,
+		TargetNodeID:  packet.TargetNodeId,
+		Recipient:     store.UserKey{NodeID: body.Recipient.NodeId, UserID: body.Recipient.UserId},
+		Sender:        store.UserKey{NodeID: body.Sender.NodeId, UserID: body.Sender.UserId},
+		Body:          append([]byte(nil), body.Body...),
+		DeliveryMode:  clusterDeliveryModeToStore(body.DeliveryMode),
+		TTLHops:       int32(packet.TtlHops),
+		TargetSession: clusterSessionRefToStore(body.GetTargetSession()),
 	}
 	if transient.TargetNodeID != m.cfg.NodeID {
 		return fmt.Errorf("mesh transient delivered to node %d for target %d", m.cfg.NodeID, transient.TargetNodeID)

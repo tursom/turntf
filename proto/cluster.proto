@@ -33,6 +33,7 @@ message Hello {
   uint32 smoothed_rtt_ms = 9;
   uint32 jitter_penalty_ms = 10;
   bool supports_membership = 11;
+  uint64 runtime_epoch = 12;
 }
 
 message OriginProgress {
@@ -263,10 +264,60 @@ message QueryLoggedInUsersResponse {
   int32 remaining_hops = 7;
 }
 
+message QueryResolveUserSessionsRequest {
+  uint64 request_id = 1;
+  int64 target_node_id = 2;
+  int64 origin_node_id = 3;
+  int32 remaining_hops = 4;
+  ClusterUserRef user = 5;
+}
+
+message QueryResolveUserSessionsResponse {
+  uint64 request_id = 1;
+  int64 target_node_id = 2;
+  repeated ClusterSessionRef items = 3;
+  string error_code = 4;
+  string error_message = 5;
+  int64 origin_node_id = 6;
+  int32 remaining_hops = 7;
+  ClusterUserRef user = 8;
+}
+
 message ClusterLoggedInUser {
   int64 node_id = 1;
   int64 user_id = 2;
   string username = 3;
+}
+
+message ClusterSessionRef {
+  int64 serving_node_id = 1;
+  string session_id = 2;
+  string transport = 3;
+  bool transient_capable = 4;
+}
+
+message ClusterOnlineNodePresence {
+  ClusterUserRef user = 1;
+  int64 serving_node_id = 2;
+  int32 session_count = 3;
+  string transport_hint = 4;
+}
+
+message OnlinePresenceSnapshot {
+  int64 origin_node_id = 1;
+  uint64 generation = 2;
+  repeated ClusterOnlineNodePresence items = 3;
+  uint64 runtime_epoch = 4;
+  repeated ClusterLoggedInUser logged_in_users = 5;
+}
+
+message NodeConnectivityRumor {
+  int64 target_node_id = 1;
+  uint64 target_runtime_epoch = 2;
+  int64 reporter_node_id = 3;
+  uint64 reporter_runtime_epoch = 4;
+  int64 observed_at_ms = 5;
+  string reason = 6;
 }
 
 message MembershipUpdate {
@@ -292,6 +343,7 @@ message TransientPacket {
   bytes body = 7;
   ClusterDeliveryMode delivery_mode = 8;
   uint32 ttl_hops = 9;
+  ClusterSessionRef target_session = 10;
 }
 
 enum ClusterDeliveryMode {

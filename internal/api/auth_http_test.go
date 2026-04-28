@@ -964,6 +964,105 @@ func TestClientWebSocketTransientSendMessage(t *testing.T) {
 	}
 }
 
+func TestClientWebSocketResolveUserSessionsReturnsLocalSessionRefs(t *testing.T) {
+	t.Parallel()
+
+	testAPI := newAuthenticatedTestAPI(t)
+	server := newIPv4TestServer(t, testAPI.handler)
+	defer server.Close()
+
+	adminKey := store.UserKey{NodeID: testNodeID(1), UserID: store.BootstrapAdminUserID}
+	adminToken := loginToken(t, testAPI.handler, adminKey, "root-password")
+	aliceKey := createUserAs(t, testAPI.handler, adminToken, "alice", "alice-password", store.RoleUser)
+
+	connA := dialClientWebSocket(t, server.URL)
+	defer connA.Close()
+	loginA := loginClientWebSocketAndRead(t, connA, aliceKey, "alice-password", false)
+
+	connB := dialClientWebSocket(t, server.URL)
+	defer connB.Close()
+	loginB := loginClientWebSocketAndRead(t, connB, aliceKey, "alice-password", false)
+
+	writeClientEnvelope(t, connA, &internalproto.ClientEnvelope{
+		Body: &internalproto.ClientEnvelope_ResolveUserSessions{
+			ResolveUserSessions: &internalproto.ResolveUserSessionsRequest{
+				RequestId: 501,
+				User:      &internalproto.UserRef{NodeId: aliceKey.NodeID, UserId: aliceKey.UserID},
+			},
+		},
+	})
+	resp := readServerEnvelope(t, connA).GetResolveUserSessionsResponse()
+	if resp == nil || resp.RequestId != 501 || resp.Count != 2 {
+		t.Fatalf("unexpected resolve sessions response: %+v", resp)
+	}
+	if len(resp.Presence) != 1 || resp.Presence[0].GetServingNodeId() != aliceKey.NodeID || resp.Presence[0].GetSessionCount() != 2 {
+		t.Fatalf("unexpected resolve sessions presence: %+v", resp.GetPresence())
+	}
+	got := map[string]struct{}{}
+	for _, item := range resp.Items {
+		if item == nil || item.GetSession() == nil || item.GetSession().GetServingNodeId() != aliceKey.NodeID {
+			t.Fatalf("unexpected resolved session item: %+v", item)
+		}
+		got[item.GetSession().GetSessionId()] = struct{}{}
+	}
+	if _, ok := got[loginA.GetSessionRef().GetSessionId()]; !ok {
+		t.Fatalf("missing first session ref in response: %+v", resp)
+	}
+	if _, ok := got[loginB.GetSessionRef().GetSessionId()]; !ok {
+		t.Fatalf("missing second session ref in response: %+v", resp)
+	}
+}
+
+func TestClientWebSocketTransientTargetSessionDeliversOnlySelectedSession(t *testing.T) {
+	t.Parallel()
+
+	testAPI := newAuthenticatedTestAPI(t)
+	server := newIPv4TestServer(t, testAPI.handler)
+	defer server.Close()
+
+	adminKey := store.UserKey{NodeID: testNodeID(1), UserID: store.BootstrapAdminUserID}
+	adminToken := loginToken(t, testAPI.handler, adminKey, "root-password")
+	aliceKey := createUserAs(t, testAPI.handler, adminToken, "alice", "alice-password", store.RoleUser)
+
+	connA := dialClientWebSocket(t, server.URL)
+	defer connA.Close()
+	loginClientWebSocketAndRead(t, connA, aliceKey, "alice-password", false)
+
+	connB := dialClientWebSocket(t, server.URL)
+	defer connB.Close()
+	loginB := loginClientWebSocketAndRead(t, connB, aliceKey, "alice-password", false)
+
+	writeClientEnvelope(t, connA, &internalproto.ClientEnvelope{
+		Body: &internalproto.ClientEnvelope_SendMessage{
+			SendMessage: &internalproto.SendMessageRequest{
+				RequestId:     502,
+				Target:        &internalproto.UserRef{NodeId: aliceKey.NodeID, UserId: aliceKey.UserID},
+				Body:          []byte("targeted"),
+				DeliveryKind:  internalproto.ClientDeliveryKind_CLIENT_DELIVERY_KIND_TRANSIENT,
+				DeliveryMode:  internalproto.ClientDeliveryMode_CLIENT_DELIVERY_MODE_BEST_EFFORT,
+				TargetSession: loginB.GetSessionRef(),
+			},
+		},
+	})
+	sendResp := readServerEnvelope(t, connA).GetSendMessageResponse()
+	if sendResp == nil || sendResp.RequestId != 502 || sendResp.GetTransientAccepted() == nil {
+		t.Fatalf("unexpected targeted transient send response: %+v", sendResp)
+	}
+	if sendResp.GetTransientAccepted().GetTargetSession().GetSessionId() != loginB.GetSessionRef().GetSessionId() {
+		t.Fatalf("unexpected targeted transient accepted session: %+v", sendResp.GetTransientAccepted())
+	}
+
+	packet := readServerEnvelope(t, connB).GetPacketPushed()
+	if packet == nil || packet.Packet == nil || string(packet.Packet.GetBody()) != "targeted" {
+		t.Fatalf("unexpected targeted packet push: %+v", packet)
+	}
+	if packet.Packet.GetTargetSession().GetSessionId() != loginB.GetSessionRef().GetSessionId() {
+		t.Fatalf("unexpected targeted packet session: %+v", packet.Packet)
+	}
+
+	expectNoServerEnvelopeWithin(t, connA, 200*time.Millisecond)
+}
+
 func TestTransientHTTPAndWebSocketPacket(t *testing.T) {
 	t.Parallel()
 
@@ -1561,7 +1660,7 @@ func loginClientWebSocket(t *testing.T, conn *websocket.Conn, key store.UserKey,
 	loginClientWebSocketWithOptions(t, conn, key, password, false)
 }
 
-func loginClientWebSocketWithOptions(t *testing.T, conn *websocket.Conn, key store.UserKey, password string, transientOnly bool) {
+func loginClientWebSocketAndRead(t *testing.T, conn *websocket.Conn, key store.UserKey, password string, transientOnly bool) *internalproto.LoginResponse {
 	t.Helper()
 	writeClientEnvelope(t, conn, &internalproto.ClientEnvelope{
 		Body: &internalproto.ClientEnvelope_Login{
@@ -1573,9 +1672,15 @@ func loginClientWebSocketWithOptions(t *testing.T, conn *websocket.Conn, key sto
 		},
 	})
 	loginResp := readServerEnvelope(t, conn).GetLoginResponse()
-	if loginResp == nil || loginResp.User.GetUserId() != key.UserID {
+	if loginResp == nil || loginResp.User.GetUserId() != key.UserID || loginResp.GetSessionRef() == nil || loginResp.GetSessionRef().GetSessionId() == "" {
 		t.Fatalf("unexpected login response: %+v", loginResp)
 	}
+	return loginResp
+}
+
+func loginClientWebSocketWithOptions(t *testing.T, conn *websocket.Conn, key store.UserKey, password string, transientOnly bool) {
+	t.Helper()
+	loginClientWebSocketAndRead(t, conn, key, password, transientOnly)
 }
 
 func expectNoServerEnvelopeWithin(t *testing.T, conn *websocket.Conn, timeout time.Duration) {

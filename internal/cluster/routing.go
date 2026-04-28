@@ -114,14 +114,35 @@ func (m *Manager) ensurePeerLocked(peerID int64) *peerState {
 
 func transientPacketProto(packet store.TransientPacket) *internalproto.TransientPacket {
 	return &internalproto.TransientPacket{
-		PacketId:     packet.PacketID,
-		SourceNodeId: packet.SourceNodeID,
-		TargetNodeId: packet.TargetNodeID,
-		Recipient:    &internalproto.ClusterUserRef{NodeId: packet.Recipient.NodeID, UserId: packet.Recipient.UserID},
-		Sender:       &internalproto.ClusterUserRef{NodeId: packet.Sender.NodeID, UserId: packet.Sender.UserID},
-		Body:         append([]byte(nil), packet.Body...),
-		DeliveryMode: storeDeliveryModeToCluster(packet.DeliveryMode),
-		TtlHops:      uint32(packet.TTLHops),
+		PacketId:      packet.PacketID,
+		SourceNodeId:  packet.SourceNodeID,
+		TargetNodeId:  packet.TargetNodeID,
+		Recipient:     &internalproto.ClusterUserRef{NodeId: packet.Recipient.NodeID, UserId: packet.Recipient.UserID},
+		Sender:        &internalproto.ClusterUserRef{NodeId: packet.Sender.NodeID, UserId: packet.Sender.UserID},
+		Body:          append([]byte(nil), packet.Body...),
+		DeliveryMode:  storeDeliveryModeToCluster(packet.DeliveryMode),
+		TtlHops:       uint32(packet.TTLHops),
+		TargetSession: storeSessionRefToCluster(packet.TargetSession),
+	}
+}
+
+func storeSessionRefToCluster(ref store.SessionRef) *internalproto.ClusterSessionRef {
+	if !ref.Valid() {
+		return nil
+	}
+	return &internalproto.ClusterSessionRef{
+		ServingNodeId: ref.ServingNodeID,
+		SessionId:     ref.SessionID,
+	}
+}
+
+func clusterSessionRefToStore(ref *internalproto.ClusterSessionRef) store.SessionRef {
+	if ref == nil {
+		return store.SessionRef{}
+	}
+	return store.SessionRef{
+		ServingNodeID: ref.GetServingNodeId(),
+		SessionID:     ref.GetSessionId(),
 	}
 }
 

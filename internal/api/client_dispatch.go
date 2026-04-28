@@ -124,96 +124,53 @@ func (s *clientWSSession) readLoop(ctx context.Context) error {
 			if err := s.handleListMessages(ctx, body.ListMessages); err != nil {
 				return err
 			}
-		case *internalproto.ClientEnvelope_SubscribeChannel:
+		case *internalproto.ClientEnvelope_UpsertUserAttachment:
 			if s.realtimeOnly {
-				if err := s.writeError("invalid_request", "realtime stream does not support subscribe_channel", requestIDForClientEnvelopeBody(body)); err != nil {
+				if err := s.writeError("invalid_request", "realtime stream does not support upsert_user_attachment", requestIDForClientEnvelopeBody(body)); err != nil {
 					return err
 				}
 				continue
 			}
-			s.logRequest("subscribe_channel", requestIDForClientEnvelopeBody(body)).
-				Int64("subscriber_node_id", body.SubscribeChannel.GetSubscriber().GetNodeId()).
-				Int64("subscriber_user_id", body.SubscribeChannel.GetSubscriber().GetUserId()).
-				Int64("channel_node_id", body.SubscribeChannel.GetChannel().GetNodeId()).
-				Int64("channel_user_id", body.SubscribeChannel.GetChannel().GetUserId()).
+			s.logRequest("upsert_user_attachment", requestIDForClientEnvelopeBody(body)).
+				Int64("owner_node_id", body.UpsertUserAttachment.GetOwner().GetNodeId()).
+				Int64("owner_user_id", body.UpsertUserAttachment.GetOwner().GetUserId()).
+				Int64("subject_node_id", body.UpsertUserAttachment.GetSubject().GetNodeId()).
+				Int64("subject_user_id", body.UpsertUserAttachment.GetSubject().GetUserId()).
+				Str("attachment_type", body.UpsertUserAttachment.GetAttachmentType().String()).
 				Msg("client transport request")
-			if err := s.handleSubscribeChannel(ctx, body.SubscribeChannel); err != nil {
+			if err := s.handleUpsertUserAttachment(ctx, body.UpsertUserAttachment); err != nil {
 				return err
 			}
-		case *internalproto.ClientEnvelope_UnsubscribeChannel:
+		case *internalproto.ClientEnvelope_DeleteUserAttachment:
 			if s.realtimeOnly {
-				if err := s.writeError("invalid_request", "realtime stream does not support unsubscribe_channel", requestIDForClientEnvelopeBody(body)); err != nil {
+				if err := s.writeError("invalid_request", "realtime stream does not support delete_user_attachment", requestIDForClientEnvelopeBody(body)); err != nil {
 					return err
 				}
 				continue
 			}
-			s.logRequest("unsubscribe_channel", requestIDForClientEnvelopeBody(body)).
-				Int64("subscriber_node_id", body.UnsubscribeChannel.GetSubscriber().GetNodeId()).
-				Int64("subscriber_user_id", body.UnsubscribeChannel.GetSubscriber().GetUserId()).
-				Int64("channel_node_id", body.UnsubscribeChannel.GetChannel().GetNodeId()).
-				Int64("channel_user_id", body.UnsubscribeChannel.GetChannel().GetUserId()).
+			s.logRequest("delete_user_attachment", requestIDForClientEnvelopeBody(body)).
+				Int64("owner_node_id", body.DeleteUserAttachment.GetOwner().GetNodeId()).
+				Int64("owner_user_id", body.DeleteUserAttachment.GetOwner().GetUserId()).
+				Int64("subject_node_id", body.DeleteUserAttachment.GetSubject().GetNodeId()).
+				Int64("subject_user_id", body.DeleteUserAttachment.GetSubject().GetUserId()).
+				Str("attachment_type", body.DeleteUserAttachment.GetAttachmentType().String()).
 				Msg("client transport request")
-			if err := s.handleUnsubscribeChannel(ctx, body.UnsubscribeChannel); err != nil {
+			if err := s.handleDeleteUserAttachment(ctx, body.DeleteUserAttachment); err != nil {
 				return err
 			}
-		case *internalproto.ClientEnvelope_ListSubscriptions:
+		case *internalproto.ClientEnvelope_ListUserAttachments:
 			if s.realtimeOnly {
-				if err := s.writeError("invalid_request", "realtime stream does not support list_subscriptions", requestIDForClientEnvelopeBody(body)); err != nil {
+				if err := s.writeError("invalid_request", "realtime stream does not support list_user_attachments", requestIDForClientEnvelopeBody(body)); err != nil {
 					return err
 				}
 				continue
 			}
-			s.logRequest("list_subscriptions", requestIDForClientEnvelopeBody(body)).
-				Int64("subscriber_node_id", body.ListSubscriptions.GetSubscriber().GetNodeId()).
-				Int64("subscriber_user_id", body.ListSubscriptions.GetSubscriber().GetUserId()).
+			s.logRequest("list_user_attachments", requestIDForClientEnvelopeBody(body)).
+				Int64("owner_node_id", body.ListUserAttachments.GetOwner().GetNodeId()).
+				Int64("owner_user_id", body.ListUserAttachments.GetOwner().GetUserId()).
+				Str("attachment_type", body.ListUserAttachments.GetAttachmentType().String()).
 				Msg("client transport request")
-			if err := s.handleListSubscriptions(ctx, body.ListSubscriptions); err != nil {
-				return err
-			}
-		case *internalproto.ClientEnvelope_BlockUser:
-			if s.realtimeOnly {
-				if err := s.writeError("invalid_request", "realtime stream does not support block_user", requestIDForClientEnvelopeBody(body)); err != nil {
-					return err
-				}
-				continue
-			}
-			s.logRequest("block_user", requestIDForClientEnvelopeBody(body)).
-				Int64("owner_node_id", body.BlockUser.GetOwner().GetNodeId()).
-				Int64("owner_user_id", body.BlockUser.GetOwner().GetUserId()).
-				Int64("blocked_node_id", body.BlockUser.GetBlocked().GetNodeId()).
-				Int64("blocked_user_id", body.BlockUser.GetBlocked().GetUserId()).
-				Msg("client transport request")
-			if err := s.handleBlockUser(ctx, body.BlockUser); err != nil {
-				return err
-			}
-		case *internalproto.ClientEnvelope_UnblockUser:
-			if s.realtimeOnly {
-				if err := s.writeError("invalid_request", "realtime stream does not support unblock_user", requestIDForClientEnvelopeBody(body)); err != nil {
-					return err
-				}
-				continue
-			}
-			s.logRequest("unblock_user", requestIDForClientEnvelopeBody(body)).
-				Int64("owner_node_id", body.UnblockUser.GetOwner().GetNodeId()).
-				Int64("owner_user_id", body.UnblockUser.GetOwner().GetUserId()).
-				Int64("blocked_node_id", body.UnblockUser.GetBlocked().GetNodeId()).
-				Int64("blocked_user_id", body.UnblockUser.GetBlocked().GetUserId()).
-				Msg("client transport request")
-			if err := s.handleUnblockUser(ctx, body.UnblockUser); err != nil {
-				return err
-			}
-		case *internalproto.ClientEnvelope_ListBlockedUsers:
-			if s.realtimeOnly {
-				if err := s.writeError("invalid_request", "realtime stream does not support list_blocked_users", requestIDForClientEnvelopeBody(body)); err != nil {
-					return err
-				}
-				continue
-			}
-			s.logRequest("list_blocked_users", requestIDForClientEnvelopeBody(body)).
-				Int64("owner_node_id", body.ListBlockedUsers.GetOwner().GetNodeId()).
-				Int64("owner_user_id", body.ListBlockedUsers.GetOwner().GetUserId()).
-				Msg("client transport request")
-			if err := s.handleListBlockedUsers(ctx, body.ListBlockedUsers); err != nil {
+			if err := s.handleListUserAttachments(ctx, body.ListUserAttachments); err != nil {
 				return err
 			}
 		case *internalproto.ClientEnvelope_ListEvents:
@@ -318,12 +275,12 @@ func requestIDForClientEnvelopeBody(body any) uint64 {
 		return req.DeleteUser.GetRequestId()
 	case *internalproto.ClientEnvelope_ListMessages:
 		return req.ListMessages.GetRequestId()
-	case *internalproto.ClientEnvelope_SubscribeChannel:
-		return req.SubscribeChannel.GetRequestId()
-	case *internalproto.ClientEnvelope_UnsubscribeChannel:
-		return req.UnsubscribeChannel.GetRequestId()
-	case *internalproto.ClientEnvelope_ListSubscriptions:
-		return req.ListSubscriptions.GetRequestId()
+	case *internalproto.ClientEnvelope_UpsertUserAttachment:
+		return req.UpsertUserAttachment.GetRequestId()
+	case *internalproto.ClientEnvelope_DeleteUserAttachment:
+		return req.DeleteUserAttachment.GetRequestId()
+	case *internalproto.ClientEnvelope_ListUserAttachments:
+		return req.ListUserAttachments.GetRequestId()
 	case *internalproto.ClientEnvelope_ListEvents:
 		return req.ListEvents.GetRequestId()
 	case *internalproto.ClientEnvelope_OperationsStatus:

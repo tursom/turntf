@@ -65,10 +65,8 @@ message ReplicatedEvent {
     UserUpdatedEvent user_updated = 8;
     UserDeletedEvent user_deleted = 9;
     MessageCreatedEvent message_created = 10;
-    ChannelSubscribedEvent channel_subscribed = 11;
-    ChannelUnsubscribedEvent channel_unsubscribed = 12;
-    UserBlockedEvent user_blocked = 13;
-    UserUnblockedEvent user_unblocked = 14;
+    UserAttachmentUpsertedEvent user_attachment_upserted = 11;
+    UserAttachmentDeletedEvent user_attachment_deleted = 12;
   }
 }
 
@@ -128,32 +126,21 @@ message MessageCreatedEvent {
   string created_at_hlc = 8;
 }
 
-message ChannelSubscribedEvent {
-  ClusterUserRef subscriber = 1;
-  ClusterUserRef channel = 3;
-  string subscribed_at_hlc = 5;
+message UserAttachmentUpsertedEvent {
+  ClusterUserRef owner = 1;
+  ClusterUserRef subject = 2;
+  string attachment_type = 3;
+  string config_json = 4;
+  string attached_at_hlc = 5;
   int64 origin_node_id = 6;
 }
 
-message ChannelUnsubscribedEvent {
-  ClusterUserRef subscriber = 1;
-  ClusterUserRef channel = 3;
-  string subscribed_at_hlc = 5;
-  string deleted_at_hlc = 6;
-  int64 origin_node_id = 7;
-}
-
-message UserBlockedEvent {
+message UserAttachmentDeletedEvent {
   ClusterUserRef owner = 1;
-  ClusterUserRef blocked = 3;
-  string blocked_at_hlc = 5;
-  int64 origin_node_id = 6;
-}
-
-message UserUnblockedEvent {
-  ClusterUserRef owner = 1;
-  ClusterUserRef blocked = 3;
-  string blocked_at_hlc = 5;
+  ClusterUserRef subject = 2;
+  string attachment_type = 3;
+  string config_json = 4;
+  string attached_at_hlc = 5;
   string deleted_at_hlc = 6;
   int64 origin_node_id = 7;
 }
@@ -182,8 +169,7 @@ enum SnapshotPartitionKind {
   SNAPSHOT_PARTITION_KIND_UNSPECIFIED = 0;
   SNAPSHOT_PARTITION_KIND_USERS = 1;
   SNAPSHOT_PARTITION_KIND_MESSAGES = 2;
-  SNAPSHOT_PARTITION_KIND_SUBSCRIPTIONS = 3;
-  SNAPSHOT_PARTITION_KIND_BLACKLISTS = 4;
+  SNAPSHOT_PARTITION_KIND_ATTACHMENTS = 3;
 }
 
 message SnapshotPartitionDigest {
@@ -198,8 +184,7 @@ message SnapshotRow {
     SnapshotUserRow user = 1;
     SnapshotTombstoneRow tombstone = 2;
     SnapshotMessageRow message = 3;
-    SnapshotSubscriptionRow subscription = 4;
-    SnapshotBlacklistRow blacklist = 5;
+    SnapshotAttachmentRow attachment = 4;
   }
 }
 
@@ -239,18 +224,12 @@ message SnapshotMessageRow {
   int64 seq = 7;
 }
 
-message SnapshotSubscriptionRow {
-  ClusterUserRef subscriber = 1;
-  ClusterUserRef channel = 3;
-  string subscribed_at_hlc = 5;
-  string deleted_at_hlc = 6;
-  int64 origin_node_id = 7;
-}
-
-message SnapshotBlacklistRow {
+message SnapshotAttachmentRow {
   ClusterUserRef owner = 1;
-  ClusterUserRef blocked = 3;
-  string blocked_at_hlc = 5;
+  ClusterUserRef subject = 2;
+  string attachment_type = 3;
+  string config_json = 4;
+  string attached_at_hlc = 5;
   string deleted_at_hlc = 6;
   int64 origin_node_id = 7;
 }

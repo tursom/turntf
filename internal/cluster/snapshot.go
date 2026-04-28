@@ -131,30 +131,17 @@ func (m *Manager) handleSnapshotDigest(sess *session, envelope *internalproto.En
 		m.requestSnapshotPartition(sess, remoteUsers)
 		return nil
 	}
-	remoteSubscriptions, ok := remote[store.SnapshotSubscriptionsPartition]
+	remoteAttachments, ok := remote[store.SnapshotAttachmentsPartition]
 	if !ok {
-		return fmt.Errorf("snapshot digest missing %s partition", store.SnapshotSubscriptionsPartition)
+		return fmt.Errorf("snapshot digest missing %s partition", store.SnapshotAttachmentsPartition)
 	}
-	if !snapshotPartitionDigestEqual(local[store.SnapshotSubscriptionsPartition], remoteSubscriptions) {
+	if !snapshotPartitionDigestEqual(local[store.SnapshotAttachmentsPartition], remoteAttachments) {
 		m.logSessionEvent("snapshot_partition_mismatch", sess).
-			Str("partition", remoteSubscriptions.Partition).
-			Stringer("kind", remoteSubscriptions.Kind).
-			Uint64("row_count", remoteSubscriptions.RowCount).
+			Str("partition", remoteAttachments.Partition).
+			Stringer("kind", remoteAttachments.Kind).
+			Uint64("row_count", remoteAttachments.RowCount).
 			Msg("snapshot partition mismatch detected")
-		m.requestSnapshotPartition(sess, remoteSubscriptions)
-		return nil
-	}
-	remoteBlacklists, ok := remote[store.SnapshotBlacklistsPartition]
-	if !ok {
-		return fmt.Errorf("snapshot digest missing %s partition", store.SnapshotBlacklistsPartition)
-	}
-	if !snapshotPartitionDigestEqual(local[store.SnapshotBlacklistsPartition], remoteBlacklists) {
-		m.logSessionEvent("snapshot_partition_mismatch", sess).
-			Str("partition", remoteBlacklists.Partition).
-			Stringer("kind", remoteBlacklists.Kind).
-			Uint64("row_count", remoteBlacklists.RowCount).
-			Msg("snapshot partition mismatch detected")
-		m.requestSnapshotPartition(sess, remoteBlacklists)
+		m.requestSnapshotPartition(sess, remoteAttachments)
 		return nil
 	}
 	if sess.remoteMessageWindowSize != m.cfg.MessageWindowSize {
@@ -166,10 +153,7 @@ func (m *Manager) handleSnapshotDigest(sess *session, envelope *internalproto.En
 		if partition == store.SnapshotUsersPartition {
 			continue
 		}
-		if partition == store.SnapshotSubscriptionsPartition {
-			continue
-		}
-		if partition == store.SnapshotBlacklistsPartition {
+		if partition == store.SnapshotAttachmentsPartition {
 			continue
 		}
 		partitions = append(partitions, partition)
@@ -333,12 +317,8 @@ func (m *Manager) requestSnapshotRepairForOrigin(sess *session, originNodeID int
 			Kind:      internalproto.SnapshotPartitionKind_SNAPSHOT_PARTITION_KIND_USERS,
 		},
 		{
-			Partition: store.SnapshotSubscriptionsPartition,
-			Kind:      internalproto.SnapshotPartitionKind_SNAPSHOT_PARTITION_KIND_SUBSCRIPTIONS,
-		},
-		{
-			Partition: store.SnapshotBlacklistsPartition,
-			Kind:      internalproto.SnapshotPartitionKind_SNAPSHOT_PARTITION_KIND_BLACKLISTS,
+			Partition: store.SnapshotAttachmentsPartition,
+			Kind:      internalproto.SnapshotPartitionKind_SNAPSHOT_PARTITION_KIND_ATTACHMENTS,
 		},
 	}
 	if sess.remoteMessageWindowSize == m.cfg.MessageWindowSize {

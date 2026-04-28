@@ -71,20 +71,8 @@ func (s *Store) ApplyReplicatedEvent(ctx context.Context, event *internalproto.R
 		changedUser = true
 	case *internalproto.MessageCreatedEvent:
 		deferredMessageProjection = true
-	case *internalproto.ChannelSubscribedEvent:
-		if err := s.applyReplicatedChannelSubscription(ctx, tx, body, false, decoded.OriginNodeID); err != nil {
-			return err
-		}
-	case *internalproto.ChannelUnsubscribedEvent:
-		if err := s.applyReplicatedChannelSubscription(ctx, tx, body, true, decoded.OriginNodeID); err != nil {
-			return err
-		}
-	case *internalproto.UserBlockedEvent:
-		if err := s.applyReplicatedBlacklist(ctx, tx, body, false, decoded.OriginNodeID); err != nil {
-			return err
-		}
-	case *internalproto.UserUnblockedEvent:
-		if err := s.applyReplicatedBlacklist(ctx, tx, body, true, decoded.OriginNodeID); err != nil {
+	case *internalproto.UserAttachmentUpsertedEvent, *internalproto.UserAttachmentDeletedEvent:
+		if err := s.applyReplicatedAttachment(ctx, tx, body, decoded.OriginNodeID); err != nil {
 			return err
 		}
 	default:
@@ -209,174 +197,90 @@ VALUES(?, ?, ?, ?, ?, ?, ?, ?)
 	return nil
 }
 
-func (s *Store) applyReplicatedChannelSubscription(ctx context.Context, tx *sql.Tx, body internalproto.EventBody, deleted bool, originNodeID int64) error {
-	subscription, err := subscriptionFromEventBody(body)
+func (s *Store) applyReplicatedAttachment(ctx context.Context, tx *sql.Tx, body internalproto.EventBody, originNodeID int64) error {
+	attachment, err := attachmentFromEventBody(body)
 	if err != nil {
 		return err
 	}
-	if originNodeID != 0 && originNodeID != subscription.OriginNodeID {
-		return fmt.Errorf("%w: subscription origin node id %d does not match event origin %d", ErrInvalidInput, subscription.OriginNodeID, originNodeID)
+	if originNodeID != 0 && originNodeID != attachment.OriginNodeID {
+		return fmt.Errorf("%w: attachment origin node id %d does not match event origin %d", ErrInvalidInput, attachment.OriginNodeID, originNodeID)
 	}
-
-	if deleted {
-		if subscription.DeletedAt == nil {
-			return fmt.Errorf("%w: channel_unsubscribed missing deleted_at", ErrInvalidInput)
-		}
-	} else if subscription.DeletedAt != nil {
-		return fmt.Errorf("%w: channel_subscribed cannot include deleted_at", ErrInvalidInput)
-	}
-
-	if subscription.DeletedAt == nil {
-		if err := s.validateSubscriptionUsersTx(ctx, tx, subscription.Subscriber, subscription.Channel); err != nil {
+	if attachment.DeletedAt == nil {
+		if err := s.validateAttachmentUsersTx(ctx, tx, attachment.Owner, attachment.Subject, attachment.Type); err != nil {
 			return err
 		}
 	} else {
-		if _, err := s.getUserByIDTx(ctx, tx, subscription.Subscriber, false); err != nil {
+		if _, err := s.getUserByIDTx(ctx, tx, attachment.Owner, false); err != nil {
 			if errors.Is(err, ErrNotFound) {
 				return nil
 			}
 			return err
 		}
-		if _, err := s.getUserByIDTx(ctx, tx, subscription.Channel, false); err != nil {
+		if _, err := s.getUserByIDTx(ctx, tx, attachment.Subject, false); err != nil {
 			if errors.Is(err, ErrNotFound) {
 				return nil
 			}
 			return err
 		}
 	}
-	return s.upsertSubscriptionTx(ctx, tx, subscription)
+	return s.upsertAttachmentTx(ctx, tx, attachment)
 }
 
-func (s *Store) applyReplicatedBlacklist(ctx context.Context, tx *sql.Tx, body internalproto.EventBody, deleted bool, originNodeID int64) error {
-	entry, err := blacklistFromEventBody(body)
-	if err != nil {
-		return err
-	}
-	if originNodeID != 0 && originNodeID != entry.OriginNodeID {
-		return fmt.Errorf("%w: blacklist origin node id %d does not match event origin %d", ErrInvalidInput, entry.OriginNodeID, originNodeID)
-	}
-
-	if deleted {
-		if entry.DeletedAt == nil {
-			return fmt.Errorf("%w: user_unblocked missing deleted_at", ErrInvalidInput)
-		}
-	} else if entry.DeletedAt != nil {
-		return fmt.Errorf("%w: user_blocked cannot include deleted_at", ErrInvalidInput)
-	}
-
-	if entry.DeletedAt == nil {
-		if err := s.validateBlacklistUsersTx(ctx, tx, entry.Owner, entry.Blocked); err != nil {
-			return err
-		}
-	} else {
-		if _, err := s.getUserByIDTx(ctx, tx, entry.Owner, false); err != nil {
-			if errors.Is(err, ErrNotFound) {
-				return nil
-			}
-			return err
-		}
-		if _, err := s.getUserByIDTx(ctx, tx, entry.Blocked, false); err != nil {
-			if errors.Is(err, ErrNotFound) {
-				return nil
-			}
-			return err
-		}
-	}
-	return s.upsertBlacklistEntryTx(ctx, tx, entry)
-}
-
-func subscriptionFromEventBody(body internalproto.EventBody) (Subscription, error) {
+func attachmentFromEventBody(body internalproto.EventBody) (Attachment, error) {
 	switch typed := body.(type) {
-	case *internalproto.ChannelSubscribedEvent:
-		return subscriptionFromChannelData(typed.Subscriber, typed.Channel, typed.SubscribedAtHlc, "", typed.OriginNodeId)
-	case *internalproto.ChannelUnsubscribedEvent:
-		return subscriptionFromChannelData(typed.Subscriber, typed.Channel, typed.SubscribedAtHlc, typed.DeletedAtHlc, typed.OriginNodeId)
+	case *internalproto.UserAttachmentUpsertedEvent:
+		return attachmentFromData(typed.Owner, typed.Subject, typed.AttachmentType, typed.ConfigJson, typed.AttachedAtHlc, "", typed.OriginNodeId)
+	case *internalproto.UserAttachmentDeletedEvent:
+		return attachmentFromData(typed.Owner, typed.Subject, typed.AttachmentType, typed.ConfigJson, typed.AttachedAtHlc, typed.DeletedAtHlc, typed.OriginNodeId)
 	default:
-		return Subscription{}, fmt.Errorf("%w: unsupported subscription body %T", ErrInvalidInput, body)
+		return Attachment{}, fmt.Errorf("%w: unsupported attachment body %T", ErrInvalidInput, body)
 	}
 }
 
-func blacklistFromEventBody(body internalproto.EventBody) (BlacklistEntry, error) {
-	switch typed := body.(type) {
-	case *internalproto.UserBlockedEvent:
-		return blacklistFromData(typed.Owner, typed.Blocked, typed.BlockedAtHlc, "", typed.OriginNodeId)
-	case *internalproto.UserUnblockedEvent:
-		return blacklistFromData(typed.Owner, typed.Blocked, typed.BlockedAtHlc, typed.DeletedAtHlc, typed.OriginNodeId)
-	default:
-		return BlacklistEntry{}, fmt.Errorf("%w: unsupported blacklist body %T", ErrInvalidInput, body)
-	}
-}
-
-func subscriptionFromChannelData(subscriberRef, channelRef *internalproto.ClusterUserRef, subscribedAtRaw, deletedAtRaw string, originNodeID int64) (Subscription, error) {
-	if subscriberRef == nil {
-		return Subscription{}, fmt.Errorf("%w: subscriber cannot be empty", ErrInvalidInput)
-	}
-	if channelRef == nil {
-		return Subscription{}, fmt.Errorf("%w: channel cannot be empty", ErrInvalidInput)
-	}
-	subscription := Subscription{
-		Subscriber:   UserKey{NodeID: subscriberRef.NodeId, UserID: subscriberRef.UserId},
-		Channel:      UserKey{NodeID: channelRef.NodeId, UserID: channelRef.UserId},
-		OriginNodeID: originNodeID,
-	}
-	if err := subscription.Subscriber.Validate(); err != nil {
-		return Subscription{}, err
-	}
-	if err := subscription.Channel.Validate(); err != nil {
-		return Subscription{}, err
-	}
-	subscribedAt, err := parseRequiredTimestamp(subscribedAtRaw, "subscription subscribed_at")
-	if err != nil {
-		return Subscription{}, err
-	}
-	subscription.SubscribedAt = subscribedAt
-	if strings.TrimSpace(deletedAtRaw) != "" {
-		deletedAt, err := parseRequiredTimestamp(deletedAtRaw, "subscription deleted_at")
-		if err != nil {
-			return Subscription{}, err
-		}
-		subscription.DeletedAt = &deletedAt
-	}
-	if subscription.OriginNodeID <= 0 {
-		return Subscription{}, fmt.Errorf("%w: subscription origin node id is required", ErrInvalidInput)
-	}
-	return subscription, nil
-}
-
-func blacklistFromData(ownerRef, blockedRef *internalproto.ClusterUserRef, blockedAtRaw, deletedAtRaw string, originNodeID int64) (BlacklistEntry, error) {
+func attachmentFromData(ownerRef, subjectRef *internalproto.ClusterUserRef, rawType, rawConfig, attachedAtRaw, deletedAtRaw string, originNodeID int64) (Attachment, error) {
 	if ownerRef == nil {
-		return BlacklistEntry{}, fmt.Errorf("%w: owner cannot be empty", ErrInvalidInput)
+		return Attachment{}, fmt.Errorf("%w: owner cannot be empty", ErrInvalidInput)
 	}
-	if blockedRef == nil {
-		return BlacklistEntry{}, fmt.Errorf("%w: blocked cannot be empty", ErrInvalidInput)
+	if subjectRef == nil {
+		return Attachment{}, fmt.Errorf("%w: subject cannot be empty", ErrInvalidInput)
 	}
-	entry := BlacklistEntry{
+	attachmentType, err := NormalizeAttachmentType(rawType)
+	if err != nil {
+		return Attachment{}, err
+	}
+	configJSON, err := normalizeAttachmentConfigJSON(rawConfig)
+	if err != nil {
+		return Attachment{}, err
+	}
+	attachment := Attachment{
 		Owner:        UserKey{NodeID: ownerRef.NodeId, UserID: ownerRef.UserId},
-		Blocked:      UserKey{NodeID: blockedRef.NodeId, UserID: blockedRef.UserId},
+		Subject:      UserKey{NodeID: subjectRef.NodeId, UserID: subjectRef.UserId},
+		Type:         attachmentType,
+		ConfigJSON:   configJSON,
 		OriginNodeID: originNodeID,
 	}
-	if err := entry.Owner.Validate(); err != nil {
-		return BlacklistEntry{}, err
+	if err := attachment.Owner.Validate(); err != nil {
+		return Attachment{}, err
 	}
-	if err := entry.Blocked.Validate(); err != nil {
-		return BlacklistEntry{}, err
+	if err := attachment.Subject.Validate(); err != nil {
+		return Attachment{}, err
 	}
-	blockedAt, err := parseRequiredTimestamp(blockedAtRaw, "blacklist blocked_at")
+	attachedAt, err := parseRequiredTimestamp(attachedAtRaw, "attachment attached_at")
 	if err != nil {
-		return BlacklistEntry{}, err
+		return Attachment{}, err
 	}
-	entry.BlockedAt = blockedAt
+	attachment.AttachedAt = attachedAt
 	if strings.TrimSpace(deletedAtRaw) != "" {
-		deletedAt, err := parseRequiredTimestamp(deletedAtRaw, "blacklist deleted_at")
+		deletedAt, err := parseRequiredTimestamp(deletedAtRaw, "attachment deleted_at")
 		if err != nil {
-			return BlacklistEntry{}, err
+			return Attachment{}, err
 		}
-		entry.DeletedAt = &deletedAt
+		attachment.DeletedAt = &deletedAt
 	}
-	if entry.OriginNodeID <= 0 {
-		return BlacklistEntry{}, fmt.Errorf("%w: blacklist origin node id is required", ErrInvalidInput)
+	if attachment.OriginNodeID <= 0 {
+		return Attachment{}, fmt.Errorf("%w: attachment origin node id is required", ErrInvalidInput)
 	}
-	return entry, nil
+	return attachment, nil
 }
 
 func (s *Store) isEventAppliedTx(ctx context.Context, tx *sql.Tx, sourceNodeID, eventID int64) (bool, error) {

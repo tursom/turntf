@@ -73,7 +73,7 @@ const (
 	BroadcastUserID                     = int64(2)
 	NodeIngressUserID                   = int64(3)
 	ReservedUserIDMax                   = int64(1024)
-	defaultSchemaVersion                = "14"
+	defaultSchemaVersion                = "15"
 	schemaMetaNodeIDKey                 = "node_id"
 	schemaMetaMeshTopologyGenerationKey = "mesh_topology_generation"
 )
@@ -109,6 +109,7 @@ type Store struct {
 	bootstrapAdmin             BootstrapAdminConfig
 	eventLog                   EventLogRepository
 	userRepository             UserRepository
+	attachments                AttachmentRepository
 	subscriptions              SubscriptionRepository
 	blacklists                 BlacklistRepository
 	messageTrim                MessageTrimRepository
@@ -164,6 +165,25 @@ type Message struct {
 
 func (m Message) UserKey() UserKey {
 	return m.Recipient
+}
+
+type AttachmentType string
+
+const (
+	AttachmentTypeChannelManager      AttachmentType = "channel_manager"
+	AttachmentTypeChannelWriter       AttachmentType = "channel_writer"
+	AttachmentTypeChannelSubscription AttachmentType = "channel_subscription"
+	AttachmentTypeUserBlacklist       AttachmentType = "user_blacklist"
+)
+
+type Attachment struct {
+	Owner        UserKey          `json:"owner"`
+	Subject      UserKey          `json:"subject"`
+	Type         AttachmentType   `json:"attachment_type"`
+	ConfigJSON   string           `json:"config_json"`
+	AttachedAt   clock.Timestamp  `json:"attached_at"`
+	DeletedAt    *clock.Timestamp `json:"deleted_at,omitempty"`
+	OriginNodeID int64            `json:"origin_node_id"`
 }
 
 type Subscription struct {
@@ -300,6 +320,19 @@ type BlacklistParams struct {
 	Blocked UserKey
 }
 
+type UpsertAttachmentParams struct {
+	Owner      UserKey
+	Subject    UserKey
+	Type       AttachmentType
+	ConfigJSON string
+}
+
+type DeleteAttachmentParams struct {
+	Owner   UserKey
+	Subject UserKey
+	Type    AttachmentType
+}
+
 type BootstrapAdminConfig struct {
 	Username     string
 	PasswordHash string
@@ -353,6 +386,7 @@ func Open(dbPath string, opts Options) (*Store, error) {
 		return nil, err
 	}
 
+	attachmentRepo := &sqliteUserAttachmentRepository{db: db}
 	st := &Store{
 		db:                         db,
 		backend:                    backend,
@@ -362,8 +396,9 @@ func Open(dbPath string, opts Options) (*Store, error) {
 		pebbleMessageSyncMode:      normalizePebbleMessageSyncModeOption(opts.PebbleMessageSyncMode),
 		clock:                      opts.Clock,
 		userRepository:             newCachedUserRepository(&sqliteUserRepository{db: db}),
-		subscriptions:              &sqliteSubscriptionRepository{db: db},
-		blacklists:                 &sqliteBlacklistRepository{db: db},
+		attachments:                attachmentRepo,
+		subscriptions:              &sqliteSubscriptionRepository{attachments: attachmentRepo},
+		blacklists:                 &sqliteBlacklistRepository{attachments: attachmentRepo},
 	}
 	return st, nil
 }
@@ -383,6 +418,21 @@ func registerSQLiteDriver() {
 			},
 		})
 	})
+}
+
+func NormalizeAttachmentType(raw string) (AttachmentType, error) {
+	switch AttachmentType(strings.TrimSpace(raw)) {
+	case AttachmentTypeChannelManager:
+		return AttachmentTypeChannelManager, nil
+	case AttachmentTypeChannelWriter:
+		return AttachmentTypeChannelWriter, nil
+	case AttachmentTypeChannelSubscription:
+		return AttachmentTypeChannelSubscription, nil
+	case AttachmentTypeUserBlacklist:
+		return AttachmentTypeUserBlacklist, nil
+	default:
+		return "", fmt.Errorf("%w: unsupported attachment type %q", ErrInvalidInput, raw)
+	}
 }
 
 func sqliteDSN(dbPath string) string {

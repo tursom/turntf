@@ -338,8 +338,7 @@ func runBenchmarkMeshTruncatedCatchupRepairOnce(tb *testing.B, ctx context.Conte
 
 	expectedPartitions := map[string]struct{}{
 		store.SnapshotUsersPartition:                  {},
-		store.SnapshotSubscriptionsPartition:          {},
-		store.SnapshotBlacklistsPartition:             {},
+		store.SnapshotAttachmentsPartition:            {},
 		store.MessageSnapshotPartition(testNodeID(1)): {},
 	}
 	handleSnapshotRepairRequests(tb, sourceStore, targetMgr, sess, expectedPartitions, repairTimeout)

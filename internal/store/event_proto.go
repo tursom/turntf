@@ -8,14 +8,12 @@ import (
 type EventType string
 
 const (
-	EventTypeUserCreated         EventType = "user_created"
-	EventTypeUserUpdated         EventType = "user_updated"
-	EventTypeUserDeleted         EventType = "user_deleted"
-	EventTypeMessageCreated      EventType = "message_created"
-	EventTypeChannelSubscribed   EventType = "channel_subscribed"
-	EventTypeChannelUnsubscribed EventType = "channel_unsubscribed"
-	EventTypeUserBlocked         EventType = "user_blocked"
-	EventTypeUserUnblocked       EventType = "user_unblocked"
+	EventTypeUserCreated            EventType = "user_created"
+	EventTypeUserUpdated            EventType = "user_updated"
+	EventTypeUserDeleted            EventType = "user_deleted"
+	EventTypeMessageCreated         EventType = "message_created"
+	EventTypeUserAttachmentUpserted EventType = "user_attachment_upserted"
+	EventTypeUserAttachmentDeleted  EventType = "user_attachment_deleted"
 )
 
 func eventTypeOf(body internalproto.EventBody) EventType {
@@ -86,46 +84,28 @@ func messageCreatedProtoFromMessage(message Message) *internalproto.MessageCreat
 	}
 }
 
-func channelSubscribedProtoFromSubscription(subscription Subscription) *internalproto.ChannelSubscribedEvent {
-	return &internalproto.ChannelSubscribedEvent{
-		Subscriber:      &internalproto.ClusterUserRef{NodeId: subscription.Subscriber.NodeID, UserId: subscription.Subscriber.UserID},
-		Channel:         &internalproto.ClusterUserRef{NodeId: subscription.Channel.NodeID, UserId: subscription.Channel.UserID},
-		SubscribedAtHlc: subscription.SubscribedAt.String(),
-		OriginNodeId:    subscription.OriginNodeID,
+func userAttachmentUpsertedProtoFromAttachment(attachment Attachment) *internalproto.UserAttachmentUpsertedEvent {
+	return &internalproto.UserAttachmentUpsertedEvent{
+		Owner:          &internalproto.ClusterUserRef{NodeId: attachment.Owner.NodeID, UserId: attachment.Owner.UserID},
+		Subject:        &internalproto.ClusterUserRef{NodeId: attachment.Subject.NodeID, UserId: attachment.Subject.UserID},
+		AttachmentType: string(attachment.Type),
+		ConfigJson:     attachment.ConfigJSON,
+		AttachedAtHlc:  attachment.AttachedAt.String(),
+		OriginNodeId:   attachment.OriginNodeID,
 	}
 }
 
-func channelUnsubscribedProtoFromSubscription(subscription Subscription) *internalproto.ChannelUnsubscribedEvent {
-	event := &internalproto.ChannelUnsubscribedEvent{
-		Subscriber:      &internalproto.ClusterUserRef{NodeId: subscription.Subscriber.NodeID, UserId: subscription.Subscriber.UserID},
-		Channel:         &internalproto.ClusterUserRef{NodeId: subscription.Channel.NodeID, UserId: subscription.Channel.UserID},
-		SubscribedAtHlc: subscription.SubscribedAt.String(),
-		OriginNodeId:    subscription.OriginNodeID,
+func userAttachmentDeletedProtoFromAttachment(attachment Attachment) *internalproto.UserAttachmentDeletedEvent {
+	event := &internalproto.UserAttachmentDeletedEvent{
+		Owner:          &internalproto.ClusterUserRef{NodeId: attachment.Owner.NodeID, UserId: attachment.Owner.UserID},
+		Subject:        &internalproto.ClusterUserRef{NodeId: attachment.Subject.NodeID, UserId: attachment.Subject.UserID},
+		AttachmentType: string(attachment.Type),
+		ConfigJson:     attachment.ConfigJSON,
+		AttachedAtHlc:  attachment.AttachedAt.String(),
+		OriginNodeId:   attachment.OriginNodeID,
 	}
-	if subscription.DeletedAt != nil {
-		event.DeletedAtHlc = subscription.DeletedAt.String()
-	}
-	return event
-}
-
-func userBlockedProtoFromBlacklist(entry BlacklistEntry) *internalproto.UserBlockedEvent {
-	return &internalproto.UserBlockedEvent{
-		Owner:        &internalproto.ClusterUserRef{NodeId: entry.Owner.NodeID, UserId: entry.Owner.UserID},
-		Blocked:      &internalproto.ClusterUserRef{NodeId: entry.Blocked.NodeID, UserId: entry.Blocked.UserID},
-		BlockedAtHlc: entry.BlockedAt.String(),
-		OriginNodeId: entry.OriginNodeID,
-	}
-}
-
-func userUnblockedProtoFromBlacklist(entry BlacklistEntry) *internalproto.UserUnblockedEvent {
-	event := &internalproto.UserUnblockedEvent{
-		Owner:        &internalproto.ClusterUserRef{NodeId: entry.Owner.NodeID, UserId: entry.Owner.UserID},
-		Blocked:      &internalproto.ClusterUserRef{NodeId: entry.Blocked.NodeID, UserId: entry.Blocked.UserID},
-		BlockedAtHlc: entry.BlockedAt.String(),
-		OriginNodeId: entry.OriginNodeID,
-	}
-	if entry.DeletedAt != nil {
-		event.DeletedAtHlc = entry.DeletedAt.String()
+	if attachment.DeletedAt != nil {
+		event.DeletedAtHlc = attachment.DeletedAt.String()
 	}
 	return event
 }

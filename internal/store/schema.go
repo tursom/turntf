@@ -51,30 +51,19 @@ CREATE TABLE IF NOT EXISTS messages (
     PRIMARY KEY(user_node_id, user_id, node_id, seq)
 );
 
-CREATE TABLE IF NOT EXISTS channel_subscriptions (
-    subscriber_node_id INTEGER NOT NULL,
-    subscriber_user_id INTEGER NOT NULL,
-    channel_node_id INTEGER NOT NULL,
-    channel_user_id INTEGER NOT NULL,
-    subscribed_at_hlc TEXT NOT NULL,
-    deleted_at_hlc TEXT,
-    origin_node_id INTEGER NOT NULL,
-    FOREIGN KEY(subscriber_node_id, subscriber_user_id) REFERENCES users(node_id, user_id),
-    FOREIGN KEY(channel_node_id, channel_user_id) REFERENCES users(node_id, user_id),
-    PRIMARY KEY(subscriber_node_id, subscriber_user_id, channel_node_id, channel_user_id)
-);
-
-CREATE TABLE IF NOT EXISTS user_blacklists (
+CREATE TABLE IF NOT EXISTS user_attachments (
     owner_node_id INTEGER NOT NULL,
     owner_user_id INTEGER NOT NULL,
-    blocked_node_id INTEGER NOT NULL,
-    blocked_user_id INTEGER NOT NULL,
-    blocked_at_hlc TEXT NOT NULL,
+    subject_node_id INTEGER NOT NULL,
+    subject_user_id INTEGER NOT NULL,
+    attachment_type TEXT NOT NULL,
+    config_json TEXT NOT NULL DEFAULT '{}',
+    attached_at_hlc TEXT NOT NULL,
     deleted_at_hlc TEXT,
     origin_node_id INTEGER NOT NULL,
     FOREIGN KEY(owner_node_id, owner_user_id) REFERENCES users(node_id, user_id),
-    FOREIGN KEY(blocked_node_id, blocked_user_id) REFERENCES users(node_id, user_id),
-    PRIMARY KEY(owner_node_id, owner_user_id, blocked_node_id, blocked_user_id)
+    FOREIGN KEY(subject_node_id, subject_user_id) REFERENCES users(node_id, user_id),
+    PRIMARY KEY(owner_node_id, owner_user_id, subject_node_id, subject_user_id, attachment_type)
 );
 
 CREATE TABLE IF NOT EXISTS event_log (
@@ -189,10 +178,8 @@ CREATE TABLE IF NOT EXISTS discovered_peers (
 	if _, err := s.db.ExecContext(ctx, `
 CREATE INDEX IF NOT EXISTS idx_messages_user_created ON messages(user_node_id, user_id, created_at_hlc DESC, node_id ASC, seq DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_node ON messages(node_id, user_node_id, user_id, seq);
-CREATE INDEX IF NOT EXISTS idx_subscriptions_subscriber ON channel_subscriptions(subscriber_node_id, subscriber_user_id, deleted_at_hlc);
-CREATE INDEX IF NOT EXISTS idx_subscriptions_channel ON channel_subscriptions(channel_node_id, channel_user_id, deleted_at_hlc);
-CREATE INDEX IF NOT EXISTS idx_blacklists_owner ON user_blacklists(owner_node_id, owner_user_id, deleted_at_hlc);
-CREATE INDEX IF NOT EXISTS idx_blacklists_blocked ON user_blacklists(blocked_node_id, blocked_user_id, deleted_at_hlc);
+CREATE INDEX IF NOT EXISTS idx_user_attachments_owner_type ON user_attachments(owner_node_id, owner_user_id, attachment_type, deleted_at_hlc);
+CREATE INDEX IF NOT EXISTS idx_user_attachments_subject_type ON user_attachments(subject_node_id, subject_user_id, attachment_type, deleted_at_hlc);
 CREATE INDEX IF NOT EXISTS idx_event_log_origin_event ON event_log(origin_node_id, event_id);
 CREATE INDEX IF NOT EXISTS idx_pending_projections_failed ON pending_projections(last_failed_at_hlc, origin_node_id, event_id);
 CREATE INDEX IF NOT EXISTS idx_discovered_peers_url ON discovered_peers(url);

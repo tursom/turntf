@@ -15,17 +15,14 @@ message ClientEnvelope {
     UpdateUserRequest update_user = 7;
     DeleteUserRequest delete_user = 8;
     ListMessagesRequest list_messages = 9;
-    SubscribeChannelRequest subscribe_channel = 10;
-    UnsubscribeChannelRequest unsubscribe_channel = 11;
-    ListSubscriptionsRequest list_subscriptions = 12;
+    UpsertUserAttachmentRequest upsert_user_attachment = 10;
+    DeleteUserAttachmentRequest delete_user_attachment = 11;
+    ListUserAttachmentsRequest list_user_attachments = 12;
     ListEventsRequest list_events = 13;
     OperationsStatusRequest operations_status = 14;
     MetricsRequest metrics = 15;
     ListClusterNodesRequest list_cluster_nodes = 16;
     ListNodeLoggedInUsersRequest list_node_logged_in_users = 17;
-    BlockUserRequest block_user = 18;
-    UnblockUserRequest unblock_user = 19;
-    ListBlockedUsersRequest list_blocked_users = 20;
   }
 }
 
@@ -42,17 +39,14 @@ message ServerEnvelope {
     UpdateUserResponse update_user_response = 9;
     DeleteUserResponse delete_user_response = 10;
     ListMessagesResponse list_messages_response = 11;
-    SubscribeChannelResponse subscribe_channel_response = 12;
-    UnsubscribeChannelResponse unsubscribe_channel_response = 13;
-    ListSubscriptionsResponse list_subscriptions_response = 14;
+    UpsertUserAttachmentResponse upsert_user_attachment_response = 12;
+    DeleteUserAttachmentResponse delete_user_attachment_response = 13;
+    ListUserAttachmentsResponse list_user_attachments_response = 14;
     ListEventsResponse list_events_response = 15;
     OperationsStatusResponse operations_status_response = 16;
     MetricsResponse metrics_response = 17;
     ListClusterNodesResponse list_cluster_nodes_response = 18;
     ListNodeLoggedInUsersResponse list_node_logged_in_users_response = 19;
-    BlockUserResponse block_user_response = 20;
-    UnblockUserResponse unblock_user_response = 21;
-    ListBlockedUsersResponse list_blocked_users_response = 22;
   }
 }
 
@@ -152,38 +146,25 @@ message ListMessagesRequest {
   int32 limit = 3;
 }
 
-message SubscribeChannelRequest {
-  uint64 request_id = 1;
-  UserRef subscriber = 2;
-  UserRef channel = 3;
-}
-
-message UnsubscribeChannelRequest {
-  uint64 request_id = 1;
-  UserRef subscriber = 2;
-  UserRef channel = 3;
-}
-
-message ListSubscriptionsRequest {
-  uint64 request_id = 1;
-  UserRef subscriber = 2;
-}
-
-message BlockUserRequest {
+message UpsertUserAttachmentRequest {
   uint64 request_id = 1;
   UserRef owner = 2;
-  UserRef blocked = 3;
+  UserRef subject = 3;
+  AttachmentType attachment_type = 4;
+  bytes config_json = 5;
 }
 
-message UnblockUserRequest {
+message DeleteUserAttachmentRequest {
   uint64 request_id = 1;
   UserRef owner = 2;
-  UserRef blocked = 3;
+  UserRef subject = 3;
+  AttachmentType attachment_type = 4;
 }
 
-message ListBlockedUsersRequest {
+message ListUserAttachmentsRequest {
   uint64 request_id = 1;
   UserRef owner = 2;
+  AttachmentType attachment_type = 3;
 }
 
 message ListEventsRequest {
@@ -227,35 +208,19 @@ message ListMessagesResponse {
   int32 count = 3;
 }
 
-message SubscribeChannelResponse {
+message UpsertUserAttachmentResponse {
   uint64 request_id = 1;
-  Subscription subscription = 2;
+  Attachment attachment = 2;
 }
 
-message UnsubscribeChannelResponse {
+message DeleteUserAttachmentResponse {
   uint64 request_id = 1;
-  Subscription subscription = 2;
+  Attachment attachment = 2;
 }
 
-message ListSubscriptionsResponse {
+message ListUserAttachmentsResponse {
   uint64 request_id = 1;
-  repeated Subscription items = 2;
-  int32 count = 3;
-}
-
-message BlockUserResponse {
-  uint64 request_id = 1;
-  BlacklistEntry entry = 2;
-}
-
-message UnblockUserResponse {
-  uint64 request_id = 1;
-  BlacklistEntry entry = 2;
-}
-
-message ListBlockedUsersResponse {
-  uint64 request_id = 1;
-  repeated BlacklistEntry items = 2;
+  repeated Attachment items = 2;
   int32 count = 3;
 }
 
@@ -377,18 +342,20 @@ message Packet {
   ClientDeliveryMode delivery_mode = 7;
 }
 
-message Subscription {
-  UserRef subscriber = 1;
-  UserRef channel = 2;
-  string subscribed_at = 5;
-  string deleted_at = 6;
-  int64 origin_node_id = 7;
+enum AttachmentType {
+  ATTACHMENT_TYPE_UNSPECIFIED = 0;
+  ATTACHMENT_TYPE_CHANNEL_MANAGER = 1;
+  ATTACHMENT_TYPE_CHANNEL_WRITER = 2;
+  ATTACHMENT_TYPE_CHANNEL_SUBSCRIPTION = 3;
+  ATTACHMENT_TYPE_USER_BLACKLIST = 4;
 }
 
-message BlacklistEntry {
+message Attachment {
   UserRef owner = 1;
-  UserRef blocked = 2;
-  string blocked_at = 5;
+  UserRef subject = 2;
+  AttachmentType attachment_type = 3;
+  bytes config_json = 4;
+  string attached_at = 5;
   string deleted_at = 6;
   int64 origin_node_id = 7;
 }

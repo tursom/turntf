@@ -23,6 +23,7 @@ type sqliteMessageProjectionRepository struct {
 	clock             *clock.Clock
 	messageWindowSize int
 	userRepository    UserRepository
+	subscriptions     SubscriptionRepository
 	blacklists        BlacklistRepository
 }
 
@@ -280,7 +281,7 @@ func (r *sqliteMessageProjectionRepository) ListMessagesByUser(ctx context.Conte
 		add(messages)
 	}
 
-	subscriptions, err := (&sqliteSubscriptionRepository{db: r.db}).ListActiveSubscriptions(ctx, key)
+	subscriptions, err := r.subscriptions.ListActiveSubscriptions(ctx, key)
 	if err != nil {
 		return nil, err
 	}
@@ -459,61 +460,29 @@ LIMIT ?`
 }
 
 type sqliteBlacklistRepository struct {
-	db *sql.DB
+	attachments *sqliteUserAttachmentRepository
 }
 
 func (r *sqliteBlacklistRepository) ListActiveBlockedUsers(ctx context.Context, owner UserKey) ([]BlacklistEntry, error) {
-	if err := owner.Validate(); err != nil {
+	if r == nil || r.attachments == nil {
+		return nil, nil
+	}
+	attachments, err := r.attachments.ListActiveByOwner(ctx, owner, AttachmentTypeUserBlacklist)
+	if err != nil {
 		return nil, err
 	}
-	rows, err := r.db.QueryContext(ctx, `
-SELECT owner_node_id, owner_user_id, blocked_node_id, blocked_user_id, blocked_at_hlc, deleted_at_hlc, origin_node_id
-FROM user_blacklists
-WHERE owner_node_id = ? AND owner_user_id = ? AND deleted_at_hlc IS NULL
-ORDER BY blocked_node_id ASC, blocked_user_id ASC
-`, owner.NodeID, owner.UserID)
-	if err != nil {
-		return nil, fmt.Errorf("list active blacklists: %w", err)
-	}
-	defer rows.Close()
-
-	entries := make([]BlacklistEntry, 0)
-	for rows.Next() {
-		entry, err := scanBlacklistEntry(rows)
-		if err != nil {
-			return nil, err
-		}
-		entries = append(entries, entry)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate active blacklists: %w", err)
+	entries := make([]BlacklistEntry, 0, len(attachments))
+	for _, attachment := range attachments {
+		entries = append(entries, blacklistEntryFromAttachment(attachment))
 	}
 	return entries, nil
 }
 
 func (r *sqliteBlacklistRepository) HasActiveBlock(ctx context.Context, owner, blocked UserKey, createdAt *clock.Timestamp) (bool, error) {
-	if err := owner.Validate(); err != nil {
-		return false, err
+	if r == nil || r.attachments == nil {
+		return false, nil
 	}
-	if err := blocked.Validate(); err != nil {
-		return false, err
-	}
-	query := `
-SELECT COUNT(*)
-FROM user_blacklists
-WHERE owner_node_id = ? AND owner_user_id = ?
-  AND blocked_node_id = ? AND blocked_user_id = ?
-  AND deleted_at_hlc IS NULL`
-	args := []any{owner.NodeID, owner.UserID, blocked.NodeID, blocked.UserID}
-	if createdAt != nil {
-		query += ` AND blocked_at_hlc <= ?`
-		args = append(args, createdAt.String())
-	}
-	var count int
-	if err := r.db.QueryRowContext(ctx, query, args...).Scan(&count); err != nil {
-		return false, fmt.Errorf("check blacklist: %w", err)
-	}
-	return count > 0, nil
+	return r.attachments.HasActive(ctx, owner, blocked, AttachmentTypeUserBlacklist, createdAt)
 }
 
 func filterDirectMessagesByBlacklist(ctx context.Context, userRepo UserRepository, blacklistRepo BlacklistRepository, owner UserKey, messages []Message) ([]Message, error) {
@@ -566,7 +535,7 @@ type sqliteUserRepository struct {
 }
 
 type sqliteSubscriptionRepository struct {
-	db *sql.DB
+	attachments *sqliteUserAttachmentRepository
 }
 
 type sqliteMessageTrimRepository struct {
@@ -651,59 +620,31 @@ ORDER BY node_id ASC, user_id ASC
 }
 
 func (r *sqliteSubscriptionRepository) ListActiveSubscriptions(ctx context.Context, subscriber UserKey) ([]Subscription, error) {
-	if err := subscriber.Validate(); err != nil {
+	if r == nil || r.attachments == nil {
+		return nil, nil
+	}
+	attachments, err := r.attachments.ListActiveByOwner(ctx, subscriber, AttachmentTypeChannelSubscription)
+	if err != nil {
 		return nil, err
 	}
-	rows, err := r.db.QueryContext(ctx, `
-SELECT subscriber_node_id, subscriber_user_id, channel_node_id, channel_user_id, subscribed_at_hlc, deleted_at_hlc, origin_node_id
-FROM channel_subscriptions
-WHERE subscriber_node_id = ? AND subscriber_user_id = ? AND deleted_at_hlc IS NULL
-ORDER BY channel_node_id ASC, channel_user_id ASC
-`, subscriber.NodeID, subscriber.UserID)
-	if err != nil {
-		return nil, fmt.Errorf("list active subscriptions: %w", err)
-	}
-	defer rows.Close()
-
-	subscriptions := make([]Subscription, 0)
-	for rows.Next() {
-		subscription, err := scanSubscription(rows)
-		if err != nil {
-			return nil, err
-		}
-		subscriptions = append(subscriptions, subscription)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate active subscriptions: %w", err)
+	subscriptions := make([]Subscription, 0, len(attachments))
+	for _, attachment := range attachments {
+		subscriptions = append(subscriptions, subscriptionFromAttachment(attachment))
 	}
 	return subscriptions, nil
 }
 
 func (r *sqliteSubscriptionRepository) ListChannelSubscribers(ctx context.Context, channel UserKey) ([]Subscription, error) {
-	if err := channel.Validate(); err != nil {
+	if r == nil || r.attachments == nil {
+		return nil, nil
+	}
+	attachments, err := r.attachments.ListActiveBySubject(ctx, channel, AttachmentTypeChannelSubscription)
+	if err != nil {
 		return nil, err
 	}
-	rows, err := r.db.QueryContext(ctx, `
-SELECT subscriber_node_id, subscriber_user_id, channel_node_id, channel_user_id, subscribed_at_hlc, deleted_at_hlc, origin_node_id
-FROM channel_subscriptions
-WHERE channel_node_id = ? AND channel_user_id = ? AND deleted_at_hlc IS NULL
-ORDER BY subscriber_node_id ASC, subscriber_user_id ASC
-`, channel.NodeID, channel.UserID)
-	if err != nil {
-		return nil, fmt.Errorf("list channel subscribers: %w", err)
-	}
-	defer rows.Close()
-
-	subscriptions := make([]Subscription, 0)
-	for rows.Next() {
-		subscription, err := scanSubscription(rows)
-		if err != nil {
-			return nil, err
-		}
-		subscriptions = append(subscriptions, subscription)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate channel subscribers: %w", err)
+	subscriptions := make([]Subscription, 0, len(attachments))
+	for _, attachment := range attachments {
+		subscriptions = append(subscriptions, subscriptionFromAttachment(attachment))
 	}
 	return subscriptions, nil
 }

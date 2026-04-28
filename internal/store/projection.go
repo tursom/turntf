@@ -34,6 +34,11 @@ type UserRepository interface {
 	ListBroadcastUserKeys(context.Context) ([]UserKey, error)
 }
 
+type AttachmentRepository interface {
+	ListActiveByOwner(context.Context, UserKey, AttachmentType) ([]Attachment, error)
+	HasActive(context.Context, UserKey, UserKey, AttachmentType, *clock.Timestamp) (bool, error)
+}
+
 type SubscriptionRepository interface {
 	ListActiveSubscriptions(context.Context, UserKey) ([]Subscription, error)
 	ListChannelSubscribers(context.Context, UserKey) ([]Subscription, error)

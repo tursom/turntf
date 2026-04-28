@@ -1250,7 +1250,7 @@ func TestBlacklistLifecycleAndRoleValidation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("block bob: %v", err)
 	}
-	if event.EventType != EventTypeUserBlocked || entry.Owner != alice.Key() || entry.Blocked != bob.Key() {
+	if event.EventType != EventTypeUserAttachmentUpserted || entry.Owner != alice.Key() || entry.Blocked != bob.Key() {
 		t.Fatalf("unexpected blacklist block result: entry=%+v event=%+v", entry, event)
 	}
 
@@ -1261,8 +1261,8 @@ func TestBlacklistLifecycleAndRoleValidation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("duplicate block should be idempotent: %v", err)
 	}
-	if duplicateEvent.EventID != 0 || duplicate.BlockedAt != entry.BlockedAt {
-		t.Fatalf("unexpected duplicate block result: entry=%+v event=%+v", duplicate, duplicateEvent)
+	if duplicateEvent.EventID == 0 || duplicate.BlockedAt == entry.BlockedAt {
+		t.Fatalf("unexpected duplicate block refresh result: entry=%+v event=%+v", duplicate, duplicateEvent)
 	}
 
 	entries, err := st.ListBlockedUsers(ctx, alice.Key())
@@ -1280,7 +1280,7 @@ func TestBlacklistLifecycleAndRoleValidation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unblock bob: %v", err)
 	}
-	if unblockEvent.EventType != EventTypeUserUnblocked || unblocked.DeletedAt == nil {
+	if unblockEvent.EventType != EventTypeUserAttachmentDeleted || unblocked.DeletedAt == nil {
 		t.Fatalf("unexpected unblock result: entry=%+v event=%+v", unblocked, unblockEvent)
 	}
 	if _, _, err := st.UnblockUser(ctx, BlacklistParams{
@@ -2566,12 +2566,12 @@ func TestSnapshotSubscriptionsChunkRepairsSubscriptionVisibilityBoundary(t *test
 	if err := target.ApplySnapshotChunk(ctx, userChunk); err != nil {
 		t.Fatalf("apply users snapshot chunk: %v", err)
 	}
-	subscriptionChunk, err := source.BuildSnapshotChunk(ctx, SnapshotSubscriptionsPartition)
+	attachmentChunk, err := source.BuildSnapshotChunk(ctx, SnapshotAttachmentsPartition)
 	if err != nil {
-		t.Fatalf("build subscriptions snapshot chunk: %v", err)
+		t.Fatalf("build attachments snapshot chunk: %v", err)
 	}
-	if err := target.ApplySnapshotChunk(ctx, subscriptionChunk); err != nil {
-		t.Fatalf("apply subscriptions snapshot chunk: %v", err)
+	if err := target.ApplySnapshotChunk(ctx, attachmentChunk); err != nil {
+		t.Fatalf("apply attachments snapshot chunk: %v", err)
 	}
 	messageChunk, err := source.BuildSnapshotChunk(ctx, MessageSnapshotPartition(testNodeID(1)))
 	if err != nil {
@@ -2657,12 +2657,12 @@ func TestSnapshotBlacklistsChunkRepairsDirectVisibilityBoundary(t *testing.T) {
 	if err := target.ApplySnapshotChunk(ctx, userChunk); err != nil {
 		t.Fatalf("apply users snapshot chunk: %v", err)
 	}
-	blacklistChunk, err := source.BuildSnapshotChunk(ctx, SnapshotBlacklistsPartition)
+	attachmentChunk, err := source.BuildSnapshotChunk(ctx, SnapshotAttachmentsPartition)
 	if err != nil {
-		t.Fatalf("build blacklists snapshot chunk: %v", err)
+		t.Fatalf("build attachments snapshot chunk: %v", err)
 	}
-	if err := target.ApplySnapshotChunk(ctx, blacklistChunk); err != nil {
-		t.Fatalf("apply blacklists snapshot chunk: %v", err)
+	if err := target.ApplySnapshotChunk(ctx, attachmentChunk); err != nil {
+		t.Fatalf("apply attachments snapshot chunk: %v", err)
 	}
 	firstMessageChunk, err := source.BuildSnapshotChunk(ctx, MessageSnapshotPartition(testNodeID(1)))
 	if err != nil {

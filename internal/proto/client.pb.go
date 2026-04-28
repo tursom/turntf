@@ -168,6 +168,61 @@ func (ClientMessageSyncMode) EnumDescriptor() ([]byte, []int) {
 	return file_client_proto_rawDescGZIP(), []int{2}
 }
 
+type AttachmentType int32
+
+const (
+	AttachmentType_ATTACHMENT_TYPE_UNSPECIFIED          AttachmentType = 0
+	AttachmentType_ATTACHMENT_TYPE_CHANNEL_MANAGER      AttachmentType = 1
+	AttachmentType_ATTACHMENT_TYPE_CHANNEL_WRITER       AttachmentType = 2
+	AttachmentType_ATTACHMENT_TYPE_CHANNEL_SUBSCRIPTION AttachmentType = 3
+	AttachmentType_ATTACHMENT_TYPE_USER_BLACKLIST       AttachmentType = 4
+)
+
+// Enum value maps for AttachmentType.
+var (
+	AttachmentType_name = map[int32]string{
+		0: "ATTACHMENT_TYPE_UNSPECIFIED",
+		1: "ATTACHMENT_TYPE_CHANNEL_MANAGER",
+		2: "ATTACHMENT_TYPE_CHANNEL_WRITER",
+		3: "ATTACHMENT_TYPE_CHANNEL_SUBSCRIPTION",
+		4: "ATTACHMENT_TYPE_USER_BLACKLIST",
+	}
+	AttachmentType_value = map[string]int32{
+		"ATTACHMENT_TYPE_UNSPECIFIED":          0,
+		"ATTACHMENT_TYPE_CHANNEL_MANAGER":      1,
+		"ATTACHMENT_TYPE_CHANNEL_WRITER":       2,
+		"ATTACHMENT_TYPE_CHANNEL_SUBSCRIPTION": 3,
+		"ATTACHMENT_TYPE_USER_BLACKLIST":       4,
+	}
+)
+
+func (x AttachmentType) Enum() *AttachmentType {
+	p := new(AttachmentType)
+	*p = x
+	return p
+}
+
+func (x AttachmentType) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (AttachmentType) Descriptor() protoreflect.EnumDescriptor {
+	return file_client_proto_enumTypes[3].Descriptor()
+}
+
+func (AttachmentType) Type() protoreflect.EnumType {
+	return &file_client_proto_enumTypes[3]
+}
+
+func (x AttachmentType) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use AttachmentType.Descriptor instead.
+func (AttachmentType) EnumDescriptor() ([]byte, []int) {
+	return file_client_proto_rawDescGZIP(), []int{3}
+}
+
 type ClientEnvelope struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Types that are valid to be assigned to Body:
@@ -181,17 +236,14 @@ type ClientEnvelope struct {
 	//	*ClientEnvelope_UpdateUser
 	//	*ClientEnvelope_DeleteUser
 	//	*ClientEnvelope_ListMessages
-	//	*ClientEnvelope_SubscribeChannel
-	//	*ClientEnvelope_UnsubscribeChannel
-	//	*ClientEnvelope_ListSubscriptions
+	//	*ClientEnvelope_UpsertUserAttachment
+	//	*ClientEnvelope_DeleteUserAttachment
+	//	*ClientEnvelope_ListUserAttachments
 	//	*ClientEnvelope_ListEvents
 	//	*ClientEnvelope_OperationsStatus
 	//	*ClientEnvelope_Metrics
 	//	*ClientEnvelope_ListClusterNodes
 	//	*ClientEnvelope_ListNodeLoggedInUsers
-	//	*ClientEnvelope_BlockUser
-	//	*ClientEnvelope_UnblockUser
-	//	*ClientEnvelope_ListBlockedUsers
 	Body          isClientEnvelope_Body `protobuf_oneof:"body"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -315,28 +367,28 @@ func (x *ClientEnvelope) GetListMessages() *ListMessagesRequest {
 	return nil
 }
 
-func (x *ClientEnvelope) GetSubscribeChannel() *SubscribeChannelRequest {
+func (x *ClientEnvelope) GetUpsertUserAttachment() *UpsertUserAttachmentRequest {
 	if x != nil {
-		if x, ok := x.Body.(*ClientEnvelope_SubscribeChannel); ok {
-			return x.SubscribeChannel
+		if x, ok := x.Body.(*ClientEnvelope_UpsertUserAttachment); ok {
+			return x.UpsertUserAttachment
 		}
 	}
 	return nil
 }
 
-func (x *ClientEnvelope) GetUnsubscribeChannel() *UnsubscribeChannelRequest {
+func (x *ClientEnvelope) GetDeleteUserAttachment() *DeleteUserAttachmentRequest {
 	if x != nil {
-		if x, ok := x.Body.(*ClientEnvelope_UnsubscribeChannel); ok {
-			return x.UnsubscribeChannel
+		if x, ok := x.Body.(*ClientEnvelope_DeleteUserAttachment); ok {
+			return x.DeleteUserAttachment
 		}
 	}
 	return nil
 }
 
-func (x *ClientEnvelope) GetListSubscriptions() *ListSubscriptionsRequest {
+func (x *ClientEnvelope) GetListUserAttachments() *ListUserAttachmentsRequest {
 	if x != nil {
-		if x, ok := x.Body.(*ClientEnvelope_ListSubscriptions); ok {
-			return x.ListSubscriptions
+		if x, ok := x.Body.(*ClientEnvelope_ListUserAttachments); ok {
+			return x.ListUserAttachments
 		}
 	}
 	return nil
@@ -387,33 +439,6 @@ func (x *ClientEnvelope) GetListNodeLoggedInUsers() *ListNodeLoggedInUsersReques
 	return nil
 }
 
-func (x *ClientEnvelope) GetBlockUser() *BlockUserRequest {
-	if x != nil {
-		if x, ok := x.Body.(*ClientEnvelope_BlockUser); ok {
-			return x.BlockUser
-		}
-	}
-	return nil
-}
-
-func (x *ClientEnvelope) GetUnblockUser() *UnblockUserRequest {
-	if x != nil {
-		if x, ok := x.Body.(*ClientEnvelope_UnblockUser); ok {
-			return x.UnblockUser
-		}
-	}
-	return nil
-}
-
-func (x *ClientEnvelope) GetListBlockedUsers() *ListBlockedUsersRequest {
-	if x != nil {
-		if x, ok := x.Body.(*ClientEnvelope_ListBlockedUsers); ok {
-			return x.ListBlockedUsers
-		}
-	}
-	return nil
-}
-
 type isClientEnvelope_Body interface {
 	isClientEnvelope_Body()
 }
@@ -454,16 +479,16 @@ type ClientEnvelope_ListMessages struct {
 	ListMessages *ListMessagesRequest `protobuf:"bytes,9,opt,name=list_messages,json=listMessages,proto3,oneof"`
 }
 
-type ClientEnvelope_SubscribeChannel struct {
-	SubscribeChannel *SubscribeChannelRequest `protobuf:"bytes,10,opt,name=subscribe_channel,json=subscribeChannel,proto3,oneof"`
+type ClientEnvelope_UpsertUserAttachment struct {
+	UpsertUserAttachment *UpsertUserAttachmentRequest `protobuf:"bytes,10,opt,name=upsert_user_attachment,json=upsertUserAttachment,proto3,oneof"`
 }
 
-type ClientEnvelope_UnsubscribeChannel struct {
-	UnsubscribeChannel *UnsubscribeChannelRequest `protobuf:"bytes,11,opt,name=unsubscribe_channel,json=unsubscribeChannel,proto3,oneof"`
+type ClientEnvelope_DeleteUserAttachment struct {
+	DeleteUserAttachment *DeleteUserAttachmentRequest `protobuf:"bytes,11,opt,name=delete_user_attachment,json=deleteUserAttachment,proto3,oneof"`
 }
 
-type ClientEnvelope_ListSubscriptions struct {
-	ListSubscriptions *ListSubscriptionsRequest `protobuf:"bytes,12,opt,name=list_subscriptions,json=listSubscriptions,proto3,oneof"`
+type ClientEnvelope_ListUserAttachments struct {
+	ListUserAttachments *ListUserAttachmentsRequest `protobuf:"bytes,12,opt,name=list_user_attachments,json=listUserAttachments,proto3,oneof"`
 }
 
 type ClientEnvelope_ListEvents struct {
@@ -486,18 +511,6 @@ type ClientEnvelope_ListNodeLoggedInUsers struct {
 	ListNodeLoggedInUsers *ListNodeLoggedInUsersRequest `protobuf:"bytes,17,opt,name=list_node_logged_in_users,json=listNodeLoggedInUsers,proto3,oneof"`
 }
 
-type ClientEnvelope_BlockUser struct {
-	BlockUser *BlockUserRequest `protobuf:"bytes,18,opt,name=block_user,json=blockUser,proto3,oneof"`
-}
-
-type ClientEnvelope_UnblockUser struct {
-	UnblockUser *UnblockUserRequest `protobuf:"bytes,19,opt,name=unblock_user,json=unblockUser,proto3,oneof"`
-}
-
-type ClientEnvelope_ListBlockedUsers struct {
-	ListBlockedUsers *ListBlockedUsersRequest `protobuf:"bytes,20,opt,name=list_blocked_users,json=listBlockedUsers,proto3,oneof"`
-}
-
 func (*ClientEnvelope_Login) isClientEnvelope_Body() {}
 
 func (*ClientEnvelope_SendMessage) isClientEnvelope_Body() {}
@@ -516,11 +529,11 @@ func (*ClientEnvelope_DeleteUser) isClientEnvelope_Body() {}
 
 func (*ClientEnvelope_ListMessages) isClientEnvelope_Body() {}
 
-func (*ClientEnvelope_SubscribeChannel) isClientEnvelope_Body() {}
+func (*ClientEnvelope_UpsertUserAttachment) isClientEnvelope_Body() {}
 
-func (*ClientEnvelope_UnsubscribeChannel) isClientEnvelope_Body() {}
+func (*ClientEnvelope_DeleteUserAttachment) isClientEnvelope_Body() {}
 
-func (*ClientEnvelope_ListSubscriptions) isClientEnvelope_Body() {}
+func (*ClientEnvelope_ListUserAttachments) isClientEnvelope_Body() {}
 
 func (*ClientEnvelope_ListEvents) isClientEnvelope_Body() {}
 
@@ -531,12 +544,6 @@ func (*ClientEnvelope_Metrics) isClientEnvelope_Body() {}
 func (*ClientEnvelope_ListClusterNodes) isClientEnvelope_Body() {}
 
 func (*ClientEnvelope_ListNodeLoggedInUsers) isClientEnvelope_Body() {}
-
-func (*ClientEnvelope_BlockUser) isClientEnvelope_Body() {}
-
-func (*ClientEnvelope_UnblockUser) isClientEnvelope_Body() {}
-
-func (*ClientEnvelope_ListBlockedUsers) isClientEnvelope_Body() {}
 
 type ServerEnvelope struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -553,17 +560,14 @@ type ServerEnvelope struct {
 	//	*ServerEnvelope_UpdateUserResponse
 	//	*ServerEnvelope_DeleteUserResponse
 	//	*ServerEnvelope_ListMessagesResponse
-	//	*ServerEnvelope_SubscribeChannelResponse
-	//	*ServerEnvelope_UnsubscribeChannelResponse
-	//	*ServerEnvelope_ListSubscriptionsResponse
+	//	*ServerEnvelope_UpsertUserAttachmentResponse
+	//	*ServerEnvelope_DeleteUserAttachmentResponse
+	//	*ServerEnvelope_ListUserAttachmentsResponse
 	//	*ServerEnvelope_ListEventsResponse
 	//	*ServerEnvelope_OperationsStatusResponse
 	//	*ServerEnvelope_MetricsResponse
 	//	*ServerEnvelope_ListClusterNodesResponse
 	//	*ServerEnvelope_ListNodeLoggedInUsersResponse
-	//	*ServerEnvelope_BlockUserResponse
-	//	*ServerEnvelope_UnblockUserResponse
-	//	*ServerEnvelope_ListBlockedUsersResponse
 	Body          isServerEnvelope_Body `protobuf_oneof:"body"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -705,28 +709,28 @@ func (x *ServerEnvelope) GetListMessagesResponse() *ListMessagesResponse {
 	return nil
 }
 
-func (x *ServerEnvelope) GetSubscribeChannelResponse() *SubscribeChannelResponse {
+func (x *ServerEnvelope) GetUpsertUserAttachmentResponse() *UpsertUserAttachmentResponse {
 	if x != nil {
-		if x, ok := x.Body.(*ServerEnvelope_SubscribeChannelResponse); ok {
-			return x.SubscribeChannelResponse
+		if x, ok := x.Body.(*ServerEnvelope_UpsertUserAttachmentResponse); ok {
+			return x.UpsertUserAttachmentResponse
 		}
 	}
 	return nil
 }
 
-func (x *ServerEnvelope) GetUnsubscribeChannelResponse() *UnsubscribeChannelResponse {
+func (x *ServerEnvelope) GetDeleteUserAttachmentResponse() *DeleteUserAttachmentResponse {
 	if x != nil {
-		if x, ok := x.Body.(*ServerEnvelope_UnsubscribeChannelResponse); ok {
-			return x.UnsubscribeChannelResponse
+		if x, ok := x.Body.(*ServerEnvelope_DeleteUserAttachmentResponse); ok {
+			return x.DeleteUserAttachmentResponse
 		}
 	}
 	return nil
 }
 
-func (x *ServerEnvelope) GetListSubscriptionsResponse() *ListSubscriptionsResponse {
+func (x *ServerEnvelope) GetListUserAttachmentsResponse() *ListUserAttachmentsResponse {
 	if x != nil {
-		if x, ok := x.Body.(*ServerEnvelope_ListSubscriptionsResponse); ok {
-			return x.ListSubscriptionsResponse
+		if x, ok := x.Body.(*ServerEnvelope_ListUserAttachmentsResponse); ok {
+			return x.ListUserAttachmentsResponse
 		}
 	}
 	return nil
@@ -772,33 +776,6 @@ func (x *ServerEnvelope) GetListNodeLoggedInUsersResponse() *ListNodeLoggedInUse
 	if x != nil {
 		if x, ok := x.Body.(*ServerEnvelope_ListNodeLoggedInUsersResponse); ok {
 			return x.ListNodeLoggedInUsersResponse
-		}
-	}
-	return nil
-}
-
-func (x *ServerEnvelope) GetBlockUserResponse() *BlockUserResponse {
-	if x != nil {
-		if x, ok := x.Body.(*ServerEnvelope_BlockUserResponse); ok {
-			return x.BlockUserResponse
-		}
-	}
-	return nil
-}
-
-func (x *ServerEnvelope) GetUnblockUserResponse() *UnblockUserResponse {
-	if x != nil {
-		if x, ok := x.Body.(*ServerEnvelope_UnblockUserResponse); ok {
-			return x.UnblockUserResponse
-		}
-	}
-	return nil
-}
-
-func (x *ServerEnvelope) GetListBlockedUsersResponse() *ListBlockedUsersResponse {
-	if x != nil {
-		if x, ok := x.Body.(*ServerEnvelope_ListBlockedUsersResponse); ok {
-			return x.ListBlockedUsersResponse
 		}
 	}
 	return nil
@@ -852,16 +829,16 @@ type ServerEnvelope_ListMessagesResponse struct {
 	ListMessagesResponse *ListMessagesResponse `protobuf:"bytes,11,opt,name=list_messages_response,json=listMessagesResponse,proto3,oneof"`
 }
 
-type ServerEnvelope_SubscribeChannelResponse struct {
-	SubscribeChannelResponse *SubscribeChannelResponse `protobuf:"bytes,12,opt,name=subscribe_channel_response,json=subscribeChannelResponse,proto3,oneof"`
+type ServerEnvelope_UpsertUserAttachmentResponse struct {
+	UpsertUserAttachmentResponse *UpsertUserAttachmentResponse `protobuf:"bytes,12,opt,name=upsert_user_attachment_response,json=upsertUserAttachmentResponse,proto3,oneof"`
 }
 
-type ServerEnvelope_UnsubscribeChannelResponse struct {
-	UnsubscribeChannelResponse *UnsubscribeChannelResponse `protobuf:"bytes,13,opt,name=unsubscribe_channel_response,json=unsubscribeChannelResponse,proto3,oneof"`
+type ServerEnvelope_DeleteUserAttachmentResponse struct {
+	DeleteUserAttachmentResponse *DeleteUserAttachmentResponse `protobuf:"bytes,13,opt,name=delete_user_attachment_response,json=deleteUserAttachmentResponse,proto3,oneof"`
 }
 
-type ServerEnvelope_ListSubscriptionsResponse struct {
-	ListSubscriptionsResponse *ListSubscriptionsResponse `protobuf:"bytes,14,opt,name=list_subscriptions_response,json=listSubscriptionsResponse,proto3,oneof"`
+type ServerEnvelope_ListUserAttachmentsResponse struct {
+	ListUserAttachmentsResponse *ListUserAttachmentsResponse `protobuf:"bytes,14,opt,name=list_user_attachments_response,json=listUserAttachmentsResponse,proto3,oneof"`
 }
 
 type ServerEnvelope_ListEventsResponse struct {
@@ -882,18 +859,6 @@ type ServerEnvelope_ListClusterNodesResponse struct {
 
 type ServerEnvelope_ListNodeLoggedInUsersResponse struct {
 	ListNodeLoggedInUsersResponse *ListNodeLoggedInUsersResponse `protobuf:"bytes,19,opt,name=list_node_logged_in_users_response,json=listNodeLoggedInUsersResponse,proto3,oneof"`
-}
-
-type ServerEnvelope_BlockUserResponse struct {
-	BlockUserResponse *BlockUserResponse `protobuf:"bytes,20,opt,name=block_user_response,json=blockUserResponse,proto3,oneof"`
-}
-
-type ServerEnvelope_UnblockUserResponse struct {
-	UnblockUserResponse *UnblockUserResponse `protobuf:"bytes,21,opt,name=unblock_user_response,json=unblockUserResponse,proto3,oneof"`
-}
-
-type ServerEnvelope_ListBlockedUsersResponse struct {
-	ListBlockedUsersResponse *ListBlockedUsersResponse `protobuf:"bytes,22,opt,name=list_blocked_users_response,json=listBlockedUsersResponse,proto3,oneof"`
 }
 
 func (*ServerEnvelope_LoginResponse) isServerEnvelope_Body() {}
@@ -918,11 +883,11 @@ func (*ServerEnvelope_DeleteUserResponse) isServerEnvelope_Body() {}
 
 func (*ServerEnvelope_ListMessagesResponse) isServerEnvelope_Body() {}
 
-func (*ServerEnvelope_SubscribeChannelResponse) isServerEnvelope_Body() {}
+func (*ServerEnvelope_UpsertUserAttachmentResponse) isServerEnvelope_Body() {}
 
-func (*ServerEnvelope_UnsubscribeChannelResponse) isServerEnvelope_Body() {}
+func (*ServerEnvelope_DeleteUserAttachmentResponse) isServerEnvelope_Body() {}
 
-func (*ServerEnvelope_ListSubscriptionsResponse) isServerEnvelope_Body() {}
+func (*ServerEnvelope_ListUserAttachmentsResponse) isServerEnvelope_Body() {}
 
 func (*ServerEnvelope_ListEventsResponse) isServerEnvelope_Body() {}
 
@@ -933,12 +898,6 @@ func (*ServerEnvelope_MetricsResponse) isServerEnvelope_Body() {}
 func (*ServerEnvelope_ListClusterNodesResponse) isServerEnvelope_Body() {}
 
 func (*ServerEnvelope_ListNodeLoggedInUsersResponse) isServerEnvelope_Body() {}
-
-func (*ServerEnvelope_BlockUserResponse) isServerEnvelope_Body() {}
-
-func (*ServerEnvelope_UnblockUserResponse) isServerEnvelope_Body() {}
-
-func (*ServerEnvelope_ListBlockedUsersResponse) isServerEnvelope_Body() {}
 
 type LoginRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -1914,29 +1873,31 @@ func (x *ListMessagesRequest) GetLimit() int32 {
 	return 0
 }
 
-type SubscribeChannelRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	RequestId     uint64                 `protobuf:"varint,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
-	Subscriber    *UserRef               `protobuf:"bytes,2,opt,name=subscriber,proto3" json:"subscriber,omitempty"`
-	Channel       *UserRef               `protobuf:"bytes,3,opt,name=channel,proto3" json:"channel,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+type UpsertUserAttachmentRequest struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	RequestId      uint64                 `protobuf:"varint,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
+	Owner          *UserRef               `protobuf:"bytes,2,opt,name=owner,proto3" json:"owner,omitempty"`
+	Subject        *UserRef               `protobuf:"bytes,3,opt,name=subject,proto3" json:"subject,omitempty"`
+	AttachmentType AttachmentType         `protobuf:"varint,4,opt,name=attachment_type,json=attachmentType,proto3,enum=notifier.client.v1.AttachmentType" json:"attachment_type,omitempty"`
+	ConfigJson     []byte                 `protobuf:"bytes,5,opt,name=config_json,json=configJson,proto3" json:"config_json,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
-func (x *SubscribeChannelRequest) Reset() {
-	*x = SubscribeChannelRequest{}
+func (x *UpsertUserAttachmentRequest) Reset() {
+	*x = UpsertUserAttachmentRequest{}
 	mi := &file_client_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *SubscribeChannelRequest) String() string {
+func (x *UpsertUserAttachmentRequest) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*SubscribeChannelRequest) ProtoMessage() {}
+func (*UpsertUserAttachmentRequest) ProtoMessage() {}
 
-func (x *SubscribeChannelRequest) ProtoReflect() protoreflect.Message {
+func (x *UpsertUserAttachmentRequest) ProtoReflect() protoreflect.Message {
 	mi := &file_client_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -1948,55 +1909,70 @@ func (x *SubscribeChannelRequest) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use SubscribeChannelRequest.ProtoReflect.Descriptor instead.
-func (*SubscribeChannelRequest) Descriptor() ([]byte, []int) {
+// Deprecated: Use UpsertUserAttachmentRequest.ProtoReflect.Descriptor instead.
+func (*UpsertUserAttachmentRequest) Descriptor() ([]byte, []int) {
 	return file_client_proto_rawDescGZIP(), []int{18}
 }
 
-func (x *SubscribeChannelRequest) GetRequestId() uint64 {
+func (x *UpsertUserAttachmentRequest) GetRequestId() uint64 {
 	if x != nil {
 		return x.RequestId
 	}
 	return 0
 }
 
-func (x *SubscribeChannelRequest) GetSubscriber() *UserRef {
+func (x *UpsertUserAttachmentRequest) GetOwner() *UserRef {
 	if x != nil {
-		return x.Subscriber
+		return x.Owner
 	}
 	return nil
 }
 
-func (x *SubscribeChannelRequest) GetChannel() *UserRef {
+func (x *UpsertUserAttachmentRequest) GetSubject() *UserRef {
 	if x != nil {
-		return x.Channel
+		return x.Subject
 	}
 	return nil
 }
 
-type UnsubscribeChannelRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	RequestId     uint64                 `protobuf:"varint,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
-	Subscriber    *UserRef               `protobuf:"bytes,2,opt,name=subscriber,proto3" json:"subscriber,omitempty"`
-	Channel       *UserRef               `protobuf:"bytes,3,opt,name=channel,proto3" json:"channel,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+func (x *UpsertUserAttachmentRequest) GetAttachmentType() AttachmentType {
+	if x != nil {
+		return x.AttachmentType
+	}
+	return AttachmentType_ATTACHMENT_TYPE_UNSPECIFIED
 }
 
-func (x *UnsubscribeChannelRequest) Reset() {
-	*x = UnsubscribeChannelRequest{}
+func (x *UpsertUserAttachmentRequest) GetConfigJson() []byte {
+	if x != nil {
+		return x.ConfigJson
+	}
+	return nil
+}
+
+type DeleteUserAttachmentRequest struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	RequestId      uint64                 `protobuf:"varint,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
+	Owner          *UserRef               `protobuf:"bytes,2,opt,name=owner,proto3" json:"owner,omitempty"`
+	Subject        *UserRef               `protobuf:"bytes,3,opt,name=subject,proto3" json:"subject,omitempty"`
+	AttachmentType AttachmentType         `protobuf:"varint,4,opt,name=attachment_type,json=attachmentType,proto3,enum=notifier.client.v1.AttachmentType" json:"attachment_type,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *DeleteUserAttachmentRequest) Reset() {
+	*x = DeleteUserAttachmentRequest{}
 	mi := &file_client_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *UnsubscribeChannelRequest) String() string {
+func (x *DeleteUserAttachmentRequest) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*UnsubscribeChannelRequest) ProtoMessage() {}
+func (*DeleteUserAttachmentRequest) ProtoMessage() {}
 
-func (x *UnsubscribeChannelRequest) ProtoReflect() protoreflect.Message {
+func (x *DeleteUserAttachmentRequest) ProtoReflect() protoreflect.Message {
 	mi := &file_client_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -2008,54 +1984,62 @@ func (x *UnsubscribeChannelRequest) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use UnsubscribeChannelRequest.ProtoReflect.Descriptor instead.
-func (*UnsubscribeChannelRequest) Descriptor() ([]byte, []int) {
+// Deprecated: Use DeleteUserAttachmentRequest.ProtoReflect.Descriptor instead.
+func (*DeleteUserAttachmentRequest) Descriptor() ([]byte, []int) {
 	return file_client_proto_rawDescGZIP(), []int{19}
 }
 
-func (x *UnsubscribeChannelRequest) GetRequestId() uint64 {
+func (x *DeleteUserAttachmentRequest) GetRequestId() uint64 {
 	if x != nil {
 		return x.RequestId
 	}
 	return 0
 }
 
-func (x *UnsubscribeChannelRequest) GetSubscriber() *UserRef {
+func (x *DeleteUserAttachmentRequest) GetOwner() *UserRef {
 	if x != nil {
-		return x.Subscriber
+		return x.Owner
 	}
 	return nil
 }
 
-func (x *UnsubscribeChannelRequest) GetChannel() *UserRef {
+func (x *DeleteUserAttachmentRequest) GetSubject() *UserRef {
 	if x != nil {
-		return x.Channel
+		return x.Subject
 	}
 	return nil
 }
 
-type ListSubscriptionsRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	RequestId     uint64                 `protobuf:"varint,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
-	Subscriber    *UserRef               `protobuf:"bytes,2,opt,name=subscriber,proto3" json:"subscriber,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+func (x *DeleteUserAttachmentRequest) GetAttachmentType() AttachmentType {
+	if x != nil {
+		return x.AttachmentType
+	}
+	return AttachmentType_ATTACHMENT_TYPE_UNSPECIFIED
 }
 
-func (x *ListSubscriptionsRequest) Reset() {
-	*x = ListSubscriptionsRequest{}
+type ListUserAttachmentsRequest struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	RequestId      uint64                 `protobuf:"varint,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
+	Owner          *UserRef               `protobuf:"bytes,2,opt,name=owner,proto3" json:"owner,omitempty"`
+	AttachmentType AttachmentType         `protobuf:"varint,3,opt,name=attachment_type,json=attachmentType,proto3,enum=notifier.client.v1.AttachmentType" json:"attachment_type,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *ListUserAttachmentsRequest) Reset() {
+	*x = ListUserAttachmentsRequest{}
 	mi := &file_client_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *ListSubscriptionsRequest) String() string {
+func (x *ListUserAttachmentsRequest) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*ListSubscriptionsRequest) ProtoMessage() {}
+func (*ListUserAttachmentsRequest) ProtoMessage() {}
 
-func (x *ListSubscriptionsRequest) ProtoReflect() protoreflect.Message {
+func (x *ListUserAttachmentsRequest) ProtoReflect() protoreflect.Message {
 	mi := &file_client_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -2067,195 +2051,30 @@ func (x *ListSubscriptionsRequest) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use ListSubscriptionsRequest.ProtoReflect.Descriptor instead.
-func (*ListSubscriptionsRequest) Descriptor() ([]byte, []int) {
+// Deprecated: Use ListUserAttachmentsRequest.ProtoReflect.Descriptor instead.
+func (*ListUserAttachmentsRequest) Descriptor() ([]byte, []int) {
 	return file_client_proto_rawDescGZIP(), []int{20}
 }
 
-func (x *ListSubscriptionsRequest) GetRequestId() uint64 {
+func (x *ListUserAttachmentsRequest) GetRequestId() uint64 {
 	if x != nil {
 		return x.RequestId
 	}
 	return 0
 }
 
-func (x *ListSubscriptionsRequest) GetSubscriber() *UserRef {
-	if x != nil {
-		return x.Subscriber
-	}
-	return nil
-}
-
-type BlockUserRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	RequestId     uint64                 `protobuf:"varint,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
-	Owner         *UserRef               `protobuf:"bytes,2,opt,name=owner,proto3" json:"owner,omitempty"`
-	Blocked       *UserRef               `protobuf:"bytes,3,opt,name=blocked,proto3" json:"blocked,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *BlockUserRequest) Reset() {
-	*x = BlockUserRequest{}
-	mi := &file_client_proto_msgTypes[21]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *BlockUserRequest) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*BlockUserRequest) ProtoMessage() {}
-
-func (x *BlockUserRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_client_proto_msgTypes[21]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use BlockUserRequest.ProtoReflect.Descriptor instead.
-func (*BlockUserRequest) Descriptor() ([]byte, []int) {
-	return file_client_proto_rawDescGZIP(), []int{21}
-}
-
-func (x *BlockUserRequest) GetRequestId() uint64 {
-	if x != nil {
-		return x.RequestId
-	}
-	return 0
-}
-
-func (x *BlockUserRequest) GetOwner() *UserRef {
+func (x *ListUserAttachmentsRequest) GetOwner() *UserRef {
 	if x != nil {
 		return x.Owner
 	}
 	return nil
 }
 
-func (x *BlockUserRequest) GetBlocked() *UserRef {
+func (x *ListUserAttachmentsRequest) GetAttachmentType() AttachmentType {
 	if x != nil {
-		return x.Blocked
+		return x.AttachmentType
 	}
-	return nil
-}
-
-type UnblockUserRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	RequestId     uint64                 `protobuf:"varint,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
-	Owner         *UserRef               `protobuf:"bytes,2,opt,name=owner,proto3" json:"owner,omitempty"`
-	Blocked       *UserRef               `protobuf:"bytes,3,opt,name=blocked,proto3" json:"blocked,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *UnblockUserRequest) Reset() {
-	*x = UnblockUserRequest{}
-	mi := &file_client_proto_msgTypes[22]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *UnblockUserRequest) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*UnblockUserRequest) ProtoMessage() {}
-
-func (x *UnblockUserRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_client_proto_msgTypes[22]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use UnblockUserRequest.ProtoReflect.Descriptor instead.
-func (*UnblockUserRequest) Descriptor() ([]byte, []int) {
-	return file_client_proto_rawDescGZIP(), []int{22}
-}
-
-func (x *UnblockUserRequest) GetRequestId() uint64 {
-	if x != nil {
-		return x.RequestId
-	}
-	return 0
-}
-
-func (x *UnblockUserRequest) GetOwner() *UserRef {
-	if x != nil {
-		return x.Owner
-	}
-	return nil
-}
-
-func (x *UnblockUserRequest) GetBlocked() *UserRef {
-	if x != nil {
-		return x.Blocked
-	}
-	return nil
-}
-
-type ListBlockedUsersRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	RequestId     uint64                 `protobuf:"varint,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
-	Owner         *UserRef               `protobuf:"bytes,2,opt,name=owner,proto3" json:"owner,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *ListBlockedUsersRequest) Reset() {
-	*x = ListBlockedUsersRequest{}
-	mi := &file_client_proto_msgTypes[23]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *ListBlockedUsersRequest) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*ListBlockedUsersRequest) ProtoMessage() {}
-
-func (x *ListBlockedUsersRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_client_proto_msgTypes[23]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use ListBlockedUsersRequest.ProtoReflect.Descriptor instead.
-func (*ListBlockedUsersRequest) Descriptor() ([]byte, []int) {
-	return file_client_proto_rawDescGZIP(), []int{23}
-}
-
-func (x *ListBlockedUsersRequest) GetRequestId() uint64 {
-	if x != nil {
-		return x.RequestId
-	}
-	return 0
-}
-
-func (x *ListBlockedUsersRequest) GetOwner() *UserRef {
-	if x != nil {
-		return x.Owner
-	}
-	return nil
+	return AttachmentType_ATTACHMENT_TYPE_UNSPECIFIED
 }
 
 type ListEventsRequest struct {
@@ -2269,7 +2088,7 @@ type ListEventsRequest struct {
 
 func (x *ListEventsRequest) Reset() {
 	*x = ListEventsRequest{}
-	mi := &file_client_proto_msgTypes[24]
+	mi := &file_client_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2281,7 +2100,7 @@ func (x *ListEventsRequest) String() string {
 func (*ListEventsRequest) ProtoMessage() {}
 
 func (x *ListEventsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_client_proto_msgTypes[24]
+	mi := &file_client_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2294,7 +2113,7 @@ func (x *ListEventsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListEventsRequest.ProtoReflect.Descriptor instead.
 func (*ListEventsRequest) Descriptor() ([]byte, []int) {
-	return file_client_proto_rawDescGZIP(), []int{24}
+	return file_client_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *ListEventsRequest) GetRequestId() uint64 {
@@ -2327,7 +2146,7 @@ type OperationsStatusRequest struct {
 
 func (x *OperationsStatusRequest) Reset() {
 	*x = OperationsStatusRequest{}
-	mi := &file_client_proto_msgTypes[25]
+	mi := &file_client_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2339,7 +2158,7 @@ func (x *OperationsStatusRequest) String() string {
 func (*OperationsStatusRequest) ProtoMessage() {}
 
 func (x *OperationsStatusRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_client_proto_msgTypes[25]
+	mi := &file_client_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2352,7 +2171,7 @@ func (x *OperationsStatusRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OperationsStatusRequest.ProtoReflect.Descriptor instead.
 func (*OperationsStatusRequest) Descriptor() ([]byte, []int) {
-	return file_client_proto_rawDescGZIP(), []int{25}
+	return file_client_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *OperationsStatusRequest) GetRequestId() uint64 {
@@ -2371,7 +2190,7 @@ type MetricsRequest struct {
 
 func (x *MetricsRequest) Reset() {
 	*x = MetricsRequest{}
-	mi := &file_client_proto_msgTypes[26]
+	mi := &file_client_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2383,7 +2202,7 @@ func (x *MetricsRequest) String() string {
 func (*MetricsRequest) ProtoMessage() {}
 
 func (x *MetricsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_client_proto_msgTypes[26]
+	mi := &file_client_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2396,7 +2215,7 @@ func (x *MetricsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MetricsRequest.ProtoReflect.Descriptor instead.
 func (*MetricsRequest) Descriptor() ([]byte, []int) {
-	return file_client_proto_rawDescGZIP(), []int{26}
+	return file_client_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *MetricsRequest) GetRequestId() uint64 {
@@ -2416,7 +2235,7 @@ type CreateUserResponse struct {
 
 func (x *CreateUserResponse) Reset() {
 	*x = CreateUserResponse{}
-	mi := &file_client_proto_msgTypes[27]
+	mi := &file_client_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2428,7 +2247,7 @@ func (x *CreateUserResponse) String() string {
 func (*CreateUserResponse) ProtoMessage() {}
 
 func (x *CreateUserResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_client_proto_msgTypes[27]
+	mi := &file_client_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2441,7 +2260,7 @@ func (x *CreateUserResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateUserResponse.ProtoReflect.Descriptor instead.
 func (*CreateUserResponse) Descriptor() ([]byte, []int) {
-	return file_client_proto_rawDescGZIP(), []int{27}
+	return file_client_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *CreateUserResponse) GetRequestId() uint64 {
@@ -2468,7 +2287,7 @@ type GetUserResponse struct {
 
 func (x *GetUserResponse) Reset() {
 	*x = GetUserResponse{}
-	mi := &file_client_proto_msgTypes[28]
+	mi := &file_client_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2480,7 +2299,7 @@ func (x *GetUserResponse) String() string {
 func (*GetUserResponse) ProtoMessage() {}
 
 func (x *GetUserResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_client_proto_msgTypes[28]
+	mi := &file_client_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2493,7 +2312,7 @@ func (x *GetUserResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetUserResponse.ProtoReflect.Descriptor instead.
 func (*GetUserResponse) Descriptor() ([]byte, []int) {
-	return file_client_proto_rawDescGZIP(), []int{28}
+	return file_client_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *GetUserResponse) GetRequestId() uint64 {
@@ -2520,7 +2339,7 @@ type UpdateUserResponse struct {
 
 func (x *UpdateUserResponse) Reset() {
 	*x = UpdateUserResponse{}
-	mi := &file_client_proto_msgTypes[29]
+	mi := &file_client_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2532,7 +2351,7 @@ func (x *UpdateUserResponse) String() string {
 func (*UpdateUserResponse) ProtoMessage() {}
 
 func (x *UpdateUserResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_client_proto_msgTypes[29]
+	mi := &file_client_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2545,7 +2364,7 @@ func (x *UpdateUserResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateUserResponse.ProtoReflect.Descriptor instead.
 func (*UpdateUserResponse) Descriptor() ([]byte, []int) {
-	return file_client_proto_rawDescGZIP(), []int{29}
+	return file_client_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *UpdateUserResponse) GetRequestId() uint64 {
@@ -2573,7 +2392,7 @@ type DeleteUserResponse struct {
 
 func (x *DeleteUserResponse) Reset() {
 	*x = DeleteUserResponse{}
-	mi := &file_client_proto_msgTypes[30]
+	mi := &file_client_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2585,7 +2404,7 @@ func (x *DeleteUserResponse) String() string {
 func (*DeleteUserResponse) ProtoMessage() {}
 
 func (x *DeleteUserResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_client_proto_msgTypes[30]
+	mi := &file_client_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2598,7 +2417,7 @@ func (x *DeleteUserResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteUserResponse.ProtoReflect.Descriptor instead.
 func (*DeleteUserResponse) Descriptor() ([]byte, []int) {
-	return file_client_proto_rawDescGZIP(), []int{30}
+	return file_client_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *DeleteUserResponse) GetRequestId() uint64 {
@@ -2633,7 +2452,7 @@ type ListMessagesResponse struct {
 
 func (x *ListMessagesResponse) Reset() {
 	*x = ListMessagesResponse{}
-	mi := &file_client_proto_msgTypes[31]
+	mi := &file_client_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2645,7 +2464,7 @@ func (x *ListMessagesResponse) String() string {
 func (*ListMessagesResponse) ProtoMessage() {}
 
 func (x *ListMessagesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_client_proto_msgTypes[31]
+	mi := &file_client_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2658,7 +2477,7 @@ func (x *ListMessagesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListMessagesResponse.ProtoReflect.Descriptor instead.
 func (*ListMessagesResponse) Descriptor() ([]byte, []int) {
-	return file_client_proto_rawDescGZIP(), []int{31}
+	return file_client_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *ListMessagesResponse) GetRequestId() uint64 {
@@ -2682,29 +2501,29 @@ func (x *ListMessagesResponse) GetCount() int32 {
 	return 0
 }
 
-type SubscribeChannelResponse struct {
+type UpsertUserAttachmentResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	RequestId     uint64                 `protobuf:"varint,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
-	Subscription  *Subscription          `protobuf:"bytes,2,opt,name=subscription,proto3" json:"subscription,omitempty"`
+	Attachment    *Attachment            `protobuf:"bytes,2,opt,name=attachment,proto3" json:"attachment,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *SubscribeChannelResponse) Reset() {
-	*x = SubscribeChannelResponse{}
-	mi := &file_client_proto_msgTypes[32]
+func (x *UpsertUserAttachmentResponse) Reset() {
+	*x = UpsertUserAttachmentResponse{}
+	mi := &file_client_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *SubscribeChannelResponse) String() string {
+func (x *UpsertUserAttachmentResponse) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*SubscribeChannelResponse) ProtoMessage() {}
+func (*UpsertUserAttachmentResponse) ProtoMessage() {}
 
-func (x *SubscribeChannelResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_client_proto_msgTypes[32]
+func (x *UpsertUserAttachmentResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_client_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2715,48 +2534,48 @@ func (x *SubscribeChannelResponse) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use SubscribeChannelResponse.ProtoReflect.Descriptor instead.
-func (*SubscribeChannelResponse) Descriptor() ([]byte, []int) {
-	return file_client_proto_rawDescGZIP(), []int{32}
+// Deprecated: Use UpsertUserAttachmentResponse.ProtoReflect.Descriptor instead.
+func (*UpsertUserAttachmentResponse) Descriptor() ([]byte, []int) {
+	return file_client_proto_rawDescGZIP(), []int{29}
 }
 
-func (x *SubscribeChannelResponse) GetRequestId() uint64 {
+func (x *UpsertUserAttachmentResponse) GetRequestId() uint64 {
 	if x != nil {
 		return x.RequestId
 	}
 	return 0
 }
 
-func (x *SubscribeChannelResponse) GetSubscription() *Subscription {
+func (x *UpsertUserAttachmentResponse) GetAttachment() *Attachment {
 	if x != nil {
-		return x.Subscription
+		return x.Attachment
 	}
 	return nil
 }
 
-type UnsubscribeChannelResponse struct {
+type DeleteUserAttachmentResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	RequestId     uint64                 `protobuf:"varint,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
-	Subscription  *Subscription          `protobuf:"bytes,2,opt,name=subscription,proto3" json:"subscription,omitempty"`
+	Attachment    *Attachment            `protobuf:"bytes,2,opt,name=attachment,proto3" json:"attachment,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *UnsubscribeChannelResponse) Reset() {
-	*x = UnsubscribeChannelResponse{}
-	mi := &file_client_proto_msgTypes[33]
+func (x *DeleteUserAttachmentResponse) Reset() {
+	*x = DeleteUserAttachmentResponse{}
+	mi := &file_client_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *UnsubscribeChannelResponse) String() string {
+func (x *DeleteUserAttachmentResponse) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*UnsubscribeChannelResponse) ProtoMessage() {}
+func (*DeleteUserAttachmentResponse) ProtoMessage() {}
 
-func (x *UnsubscribeChannelResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_client_proto_msgTypes[33]
+func (x *DeleteUserAttachmentResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_client_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2767,49 +2586,49 @@ func (x *UnsubscribeChannelResponse) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use UnsubscribeChannelResponse.ProtoReflect.Descriptor instead.
-func (*UnsubscribeChannelResponse) Descriptor() ([]byte, []int) {
-	return file_client_proto_rawDescGZIP(), []int{33}
+// Deprecated: Use DeleteUserAttachmentResponse.ProtoReflect.Descriptor instead.
+func (*DeleteUserAttachmentResponse) Descriptor() ([]byte, []int) {
+	return file_client_proto_rawDescGZIP(), []int{30}
 }
 
-func (x *UnsubscribeChannelResponse) GetRequestId() uint64 {
+func (x *DeleteUserAttachmentResponse) GetRequestId() uint64 {
 	if x != nil {
 		return x.RequestId
 	}
 	return 0
 }
 
-func (x *UnsubscribeChannelResponse) GetSubscription() *Subscription {
+func (x *DeleteUserAttachmentResponse) GetAttachment() *Attachment {
 	if x != nil {
-		return x.Subscription
+		return x.Attachment
 	}
 	return nil
 }
 
-type ListSubscriptionsResponse struct {
+type ListUserAttachmentsResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	RequestId     uint64                 `protobuf:"varint,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
-	Items         []*Subscription        `protobuf:"bytes,2,rep,name=items,proto3" json:"items,omitempty"`
+	Items         []*Attachment          `protobuf:"bytes,2,rep,name=items,proto3" json:"items,omitempty"`
 	Count         int32                  `protobuf:"varint,3,opt,name=count,proto3" json:"count,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *ListSubscriptionsResponse) Reset() {
-	*x = ListSubscriptionsResponse{}
-	mi := &file_client_proto_msgTypes[34]
+func (x *ListUserAttachmentsResponse) Reset() {
+	*x = ListUserAttachmentsResponse{}
+	mi := &file_client_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *ListSubscriptionsResponse) String() string {
+func (x *ListUserAttachmentsResponse) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*ListSubscriptionsResponse) ProtoMessage() {}
+func (*ListUserAttachmentsResponse) ProtoMessage() {}
 
-func (x *ListSubscriptionsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_client_proto_msgTypes[34]
+func (x *ListUserAttachmentsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_client_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2820,190 +2639,26 @@ func (x *ListSubscriptionsResponse) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use ListSubscriptionsResponse.ProtoReflect.Descriptor instead.
-func (*ListSubscriptionsResponse) Descriptor() ([]byte, []int) {
-	return file_client_proto_rawDescGZIP(), []int{34}
+// Deprecated: Use ListUserAttachmentsResponse.ProtoReflect.Descriptor instead.
+func (*ListUserAttachmentsResponse) Descriptor() ([]byte, []int) {
+	return file_client_proto_rawDescGZIP(), []int{31}
 }
 
-func (x *ListSubscriptionsResponse) GetRequestId() uint64 {
+func (x *ListUserAttachmentsResponse) GetRequestId() uint64 {
 	if x != nil {
 		return x.RequestId
 	}
 	return 0
 }
 
-func (x *ListSubscriptionsResponse) GetItems() []*Subscription {
+func (x *ListUserAttachmentsResponse) GetItems() []*Attachment {
 	if x != nil {
 		return x.Items
 	}
 	return nil
 }
 
-func (x *ListSubscriptionsResponse) GetCount() int32 {
-	if x != nil {
-		return x.Count
-	}
-	return 0
-}
-
-type BlockUserResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	RequestId     uint64                 `protobuf:"varint,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
-	Entry         *BlacklistEntry        `protobuf:"bytes,2,opt,name=entry,proto3" json:"entry,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *BlockUserResponse) Reset() {
-	*x = BlockUserResponse{}
-	mi := &file_client_proto_msgTypes[35]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *BlockUserResponse) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*BlockUserResponse) ProtoMessage() {}
-
-func (x *BlockUserResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_client_proto_msgTypes[35]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use BlockUserResponse.ProtoReflect.Descriptor instead.
-func (*BlockUserResponse) Descriptor() ([]byte, []int) {
-	return file_client_proto_rawDescGZIP(), []int{35}
-}
-
-func (x *BlockUserResponse) GetRequestId() uint64 {
-	if x != nil {
-		return x.RequestId
-	}
-	return 0
-}
-
-func (x *BlockUserResponse) GetEntry() *BlacklistEntry {
-	if x != nil {
-		return x.Entry
-	}
-	return nil
-}
-
-type UnblockUserResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	RequestId     uint64                 `protobuf:"varint,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
-	Entry         *BlacklistEntry        `protobuf:"bytes,2,opt,name=entry,proto3" json:"entry,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *UnblockUserResponse) Reset() {
-	*x = UnblockUserResponse{}
-	mi := &file_client_proto_msgTypes[36]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *UnblockUserResponse) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*UnblockUserResponse) ProtoMessage() {}
-
-func (x *UnblockUserResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_client_proto_msgTypes[36]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use UnblockUserResponse.ProtoReflect.Descriptor instead.
-func (*UnblockUserResponse) Descriptor() ([]byte, []int) {
-	return file_client_proto_rawDescGZIP(), []int{36}
-}
-
-func (x *UnblockUserResponse) GetRequestId() uint64 {
-	if x != nil {
-		return x.RequestId
-	}
-	return 0
-}
-
-func (x *UnblockUserResponse) GetEntry() *BlacklistEntry {
-	if x != nil {
-		return x.Entry
-	}
-	return nil
-}
-
-type ListBlockedUsersResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	RequestId     uint64                 `protobuf:"varint,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
-	Items         []*BlacklistEntry      `protobuf:"bytes,2,rep,name=items,proto3" json:"items,omitempty"`
-	Count         int32                  `protobuf:"varint,3,opt,name=count,proto3" json:"count,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *ListBlockedUsersResponse) Reset() {
-	*x = ListBlockedUsersResponse{}
-	mi := &file_client_proto_msgTypes[37]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *ListBlockedUsersResponse) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*ListBlockedUsersResponse) ProtoMessage() {}
-
-func (x *ListBlockedUsersResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_client_proto_msgTypes[37]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use ListBlockedUsersResponse.ProtoReflect.Descriptor instead.
-func (*ListBlockedUsersResponse) Descriptor() ([]byte, []int) {
-	return file_client_proto_rawDescGZIP(), []int{37}
-}
-
-func (x *ListBlockedUsersResponse) GetRequestId() uint64 {
-	if x != nil {
-		return x.RequestId
-	}
-	return 0
-}
-
-func (x *ListBlockedUsersResponse) GetItems() []*BlacklistEntry {
-	if x != nil {
-		return x.Items
-	}
-	return nil
-}
-
-func (x *ListBlockedUsersResponse) GetCount() int32 {
+func (x *ListUserAttachmentsResponse) GetCount() int32 {
 	if x != nil {
 		return x.Count
 	}
@@ -3021,7 +2676,7 @@ type ListEventsResponse struct {
 
 func (x *ListEventsResponse) Reset() {
 	*x = ListEventsResponse{}
-	mi := &file_client_proto_msgTypes[38]
+	mi := &file_client_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3033,7 +2688,7 @@ func (x *ListEventsResponse) String() string {
 func (*ListEventsResponse) ProtoMessage() {}
 
 func (x *ListEventsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_client_proto_msgTypes[38]
+	mi := &file_client_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3046,7 +2701,7 @@ func (x *ListEventsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListEventsResponse.ProtoReflect.Descriptor instead.
 func (*ListEventsResponse) Descriptor() ([]byte, []int) {
-	return file_client_proto_rawDescGZIP(), []int{38}
+	return file_client_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *ListEventsResponse) GetRequestId() uint64 {
@@ -3080,7 +2735,7 @@ type OperationsStatusResponse struct {
 
 func (x *OperationsStatusResponse) Reset() {
 	*x = OperationsStatusResponse{}
-	mi := &file_client_proto_msgTypes[39]
+	mi := &file_client_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3092,7 +2747,7 @@ func (x *OperationsStatusResponse) String() string {
 func (*OperationsStatusResponse) ProtoMessage() {}
 
 func (x *OperationsStatusResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_client_proto_msgTypes[39]
+	mi := &file_client_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3105,7 +2760,7 @@ func (x *OperationsStatusResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OperationsStatusResponse.ProtoReflect.Descriptor instead.
 func (*OperationsStatusResponse) Descriptor() ([]byte, []int) {
-	return file_client_proto_rawDescGZIP(), []int{39}
+	return file_client_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *OperationsStatusResponse) GetRequestId() uint64 {
@@ -3132,7 +2787,7 @@ type MetricsResponse struct {
 
 func (x *MetricsResponse) Reset() {
 	*x = MetricsResponse{}
-	mi := &file_client_proto_msgTypes[40]
+	mi := &file_client_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3144,7 +2799,7 @@ func (x *MetricsResponse) String() string {
 func (*MetricsResponse) ProtoMessage() {}
 
 func (x *MetricsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_client_proto_msgTypes[40]
+	mi := &file_client_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3157,7 +2812,7 @@ func (x *MetricsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MetricsResponse.ProtoReflect.Descriptor instead.
 func (*MetricsResponse) Descriptor() ([]byte, []int) {
-	return file_client_proto_rawDescGZIP(), []int{40}
+	return file_client_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *MetricsResponse) GetRequestId() uint64 {
@@ -3183,7 +2838,7 @@ type ListClusterNodesRequest struct {
 
 func (x *ListClusterNodesRequest) Reset() {
 	*x = ListClusterNodesRequest{}
-	mi := &file_client_proto_msgTypes[41]
+	mi := &file_client_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3195,7 +2850,7 @@ func (x *ListClusterNodesRequest) String() string {
 func (*ListClusterNodesRequest) ProtoMessage() {}
 
 func (x *ListClusterNodesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_client_proto_msgTypes[41]
+	mi := &file_client_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3208,7 +2863,7 @@ func (x *ListClusterNodesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListClusterNodesRequest.ProtoReflect.Descriptor instead.
 func (*ListClusterNodesRequest) Descriptor() ([]byte, []int) {
-	return file_client_proto_rawDescGZIP(), []int{41}
+	return file_client_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *ListClusterNodesRequest) GetRequestId() uint64 {
@@ -3229,7 +2884,7 @@ type ListClusterNodesResponse struct {
 
 func (x *ListClusterNodesResponse) Reset() {
 	*x = ListClusterNodesResponse{}
-	mi := &file_client_proto_msgTypes[42]
+	mi := &file_client_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3241,7 +2896,7 @@ func (x *ListClusterNodesResponse) String() string {
 func (*ListClusterNodesResponse) ProtoMessage() {}
 
 func (x *ListClusterNodesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_client_proto_msgTypes[42]
+	mi := &file_client_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3254,7 +2909,7 @@ func (x *ListClusterNodesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListClusterNodesResponse.ProtoReflect.Descriptor instead.
 func (*ListClusterNodesResponse) Descriptor() ([]byte, []int) {
-	return file_client_proto_rawDescGZIP(), []int{42}
+	return file_client_proto_rawDescGZIP(), []int{36}
 }
 
 func (x *ListClusterNodesResponse) GetRequestId() uint64 {
@@ -3288,7 +2943,7 @@ type ListNodeLoggedInUsersRequest struct {
 
 func (x *ListNodeLoggedInUsersRequest) Reset() {
 	*x = ListNodeLoggedInUsersRequest{}
-	mi := &file_client_proto_msgTypes[43]
+	mi := &file_client_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3300,7 +2955,7 @@ func (x *ListNodeLoggedInUsersRequest) String() string {
 func (*ListNodeLoggedInUsersRequest) ProtoMessage() {}
 
 func (x *ListNodeLoggedInUsersRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_client_proto_msgTypes[43]
+	mi := &file_client_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3313,7 +2968,7 @@ func (x *ListNodeLoggedInUsersRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListNodeLoggedInUsersRequest.ProtoReflect.Descriptor instead.
 func (*ListNodeLoggedInUsersRequest) Descriptor() ([]byte, []int) {
-	return file_client_proto_rawDescGZIP(), []int{43}
+	return file_client_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *ListNodeLoggedInUsersRequest) GetRequestId() uint64 {
@@ -3342,7 +2997,7 @@ type ListNodeLoggedInUsersResponse struct {
 
 func (x *ListNodeLoggedInUsersResponse) Reset() {
 	*x = ListNodeLoggedInUsersResponse{}
-	mi := &file_client_proto_msgTypes[44]
+	mi := &file_client_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3354,7 +3009,7 @@ func (x *ListNodeLoggedInUsersResponse) String() string {
 func (*ListNodeLoggedInUsersResponse) ProtoMessage() {}
 
 func (x *ListNodeLoggedInUsersResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_client_proto_msgTypes[44]
+	mi := &file_client_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3367,7 +3022,7 @@ func (x *ListNodeLoggedInUsersResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListNodeLoggedInUsersResponse.ProtoReflect.Descriptor instead.
 func (*ListNodeLoggedInUsersResponse) Descriptor() ([]byte, []int) {
-	return file_client_proto_rawDescGZIP(), []int{44}
+	return file_client_proto_rawDescGZIP(), []int{38}
 }
 
 func (x *ListNodeLoggedInUsersResponse) GetRequestId() uint64 {
@@ -3410,7 +3065,7 @@ type ClusterNode struct {
 
 func (x *ClusterNode) Reset() {
 	*x = ClusterNode{}
-	mi := &file_client_proto_msgTypes[45]
+	mi := &file_client_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3422,7 +3077,7 @@ func (x *ClusterNode) String() string {
 func (*ClusterNode) ProtoMessage() {}
 
 func (x *ClusterNode) ProtoReflect() protoreflect.Message {
-	mi := &file_client_proto_msgTypes[45]
+	mi := &file_client_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3435,7 +3090,7 @@ func (x *ClusterNode) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ClusterNode.ProtoReflect.Descriptor instead.
 func (*ClusterNode) Descriptor() ([]byte, []int) {
-	return file_client_proto_rawDescGZIP(), []int{45}
+	return file_client_proto_rawDescGZIP(), []int{39}
 }
 
 func (x *ClusterNode) GetNodeId() int64 {
@@ -3477,7 +3132,7 @@ type LoggedInUser struct {
 
 func (x *LoggedInUser) Reset() {
 	*x = LoggedInUser{}
-	mi := &file_client_proto_msgTypes[46]
+	mi := &file_client_proto_msgTypes[40]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3489,7 +3144,7 @@ func (x *LoggedInUser) String() string {
 func (*LoggedInUser) ProtoMessage() {}
 
 func (x *LoggedInUser) ProtoReflect() protoreflect.Message {
-	mi := &file_client_proto_msgTypes[46]
+	mi := &file_client_proto_msgTypes[40]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3502,7 +3157,7 @@ func (x *LoggedInUser) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LoggedInUser.ProtoReflect.Descriptor instead.
 func (*LoggedInUser) Descriptor() ([]byte, []int) {
-	return file_client_proto_rawDescGZIP(), []int{46}
+	return file_client_proto_rawDescGZIP(), []int{40}
 }
 
 func (x *LoggedInUser) GetNodeId() int64 {
@@ -3535,7 +3190,7 @@ type StringField struct {
 
 func (x *StringField) Reset() {
 	*x = StringField{}
-	mi := &file_client_proto_msgTypes[47]
+	mi := &file_client_proto_msgTypes[41]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3547,7 +3202,7 @@ func (x *StringField) String() string {
 func (*StringField) ProtoMessage() {}
 
 func (x *StringField) ProtoReflect() protoreflect.Message {
-	mi := &file_client_proto_msgTypes[47]
+	mi := &file_client_proto_msgTypes[41]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3560,7 +3215,7 @@ func (x *StringField) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StringField.ProtoReflect.Descriptor instead.
 func (*StringField) Descriptor() ([]byte, []int) {
-	return file_client_proto_rawDescGZIP(), []int{47}
+	return file_client_proto_rawDescGZIP(), []int{41}
 }
 
 func (x *StringField) GetValue() string {
@@ -3579,7 +3234,7 @@ type BytesField struct {
 
 func (x *BytesField) Reset() {
 	*x = BytesField{}
-	mi := &file_client_proto_msgTypes[48]
+	mi := &file_client_proto_msgTypes[42]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3591,7 +3246,7 @@ func (x *BytesField) String() string {
 func (*BytesField) ProtoMessage() {}
 
 func (x *BytesField) ProtoReflect() protoreflect.Message {
-	mi := &file_client_proto_msgTypes[48]
+	mi := &file_client_proto_msgTypes[42]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3604,7 +3259,7 @@ func (x *BytesField) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BytesField.ProtoReflect.Descriptor instead.
 func (*BytesField) Descriptor() ([]byte, []int) {
-	return file_client_proto_rawDescGZIP(), []int{48}
+	return file_client_proto_rawDescGZIP(), []int{42}
 }
 
 func (x *BytesField) GetValue() []byte {
@@ -3624,7 +3279,7 @@ type MessageCursor struct {
 
 func (x *MessageCursor) Reset() {
 	*x = MessageCursor{}
-	mi := &file_client_proto_msgTypes[49]
+	mi := &file_client_proto_msgTypes[43]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3636,7 +3291,7 @@ func (x *MessageCursor) String() string {
 func (*MessageCursor) ProtoMessage() {}
 
 func (x *MessageCursor) ProtoReflect() protoreflect.Message {
-	mi := &file_client_proto_msgTypes[49]
+	mi := &file_client_proto_msgTypes[43]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3649,7 +3304,7 @@ func (x *MessageCursor) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MessageCursor.ProtoReflect.Descriptor instead.
 func (*MessageCursor) Descriptor() ([]byte, []int) {
-	return file_client_proto_rawDescGZIP(), []int{49}
+	return file_client_proto_rawDescGZIP(), []int{43}
 }
 
 func (x *MessageCursor) GetNodeId() int64 {
@@ -3676,7 +3331,7 @@ type UserRef struct {
 
 func (x *UserRef) Reset() {
 	*x = UserRef{}
-	mi := &file_client_proto_msgTypes[50]
+	mi := &file_client_proto_msgTypes[44]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3688,7 +3343,7 @@ func (x *UserRef) String() string {
 func (*UserRef) ProtoMessage() {}
 
 func (x *UserRef) ProtoReflect() protoreflect.Message {
-	mi := &file_client_proto_msgTypes[50]
+	mi := &file_client_proto_msgTypes[44]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3701,7 +3356,7 @@ func (x *UserRef) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UserRef.ProtoReflect.Descriptor instead.
 func (*UserRef) Descriptor() ([]byte, []int) {
-	return file_client_proto_rawDescGZIP(), []int{50}
+	return file_client_proto_rawDescGZIP(), []int{44}
 }
 
 func (x *UserRef) GetNodeId() int64 {
@@ -3735,7 +3390,7 @@ type User struct {
 
 func (x *User) Reset() {
 	*x = User{}
-	mi := &file_client_proto_msgTypes[51]
+	mi := &file_client_proto_msgTypes[45]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3747,7 +3402,7 @@ func (x *User) String() string {
 func (*User) ProtoMessage() {}
 
 func (x *User) ProtoReflect() protoreflect.Message {
-	mi := &file_client_proto_msgTypes[51]
+	mi := &file_client_proto_msgTypes[45]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3760,7 +3415,7 @@ func (x *User) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use User.ProtoReflect.Descriptor instead.
 func (*User) Descriptor() ([]byte, []int) {
-	return file_client_proto_rawDescGZIP(), []int{51}
+	return file_client_proto_rawDescGZIP(), []int{45}
 }
 
 func (x *User) GetNodeId() int64 {
@@ -3840,7 +3495,7 @@ type Message struct {
 
 func (x *Message) Reset() {
 	*x = Message{}
-	mi := &file_client_proto_msgTypes[52]
+	mi := &file_client_proto_msgTypes[46]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3852,7 +3507,7 @@ func (x *Message) String() string {
 func (*Message) ProtoMessage() {}
 
 func (x *Message) ProtoReflect() protoreflect.Message {
-	mi := &file_client_proto_msgTypes[52]
+	mi := &file_client_proto_msgTypes[46]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3865,7 +3520,7 @@ func (x *Message) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Message.ProtoReflect.Descriptor instead.
 func (*Message) Descriptor() ([]byte, []int) {
-	return file_client_proto_rawDescGZIP(), []int{52}
+	return file_client_proto_rawDescGZIP(), []int{46}
 }
 
 func (x *Message) GetRecipient() *UserRef {
@@ -3925,7 +3580,7 @@ type Packet struct {
 
 func (x *Packet) Reset() {
 	*x = Packet{}
-	mi := &file_client_proto_msgTypes[53]
+	mi := &file_client_proto_msgTypes[47]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3937,7 +3592,7 @@ func (x *Packet) String() string {
 func (*Packet) ProtoMessage() {}
 
 func (x *Packet) ProtoReflect() protoreflect.Message {
-	mi := &file_client_proto_msgTypes[53]
+	mi := &file_client_proto_msgTypes[47]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3950,7 +3605,7 @@ func (x *Packet) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Packet.ProtoReflect.Descriptor instead.
 func (*Packet) Descriptor() ([]byte, []int) {
-	return file_client_proto_rawDescGZIP(), []int{53}
+	return file_client_proto_rawDescGZIP(), []int{47}
 }
 
 func (x *Packet) GetPacketId() uint64 {
@@ -4002,32 +3657,34 @@ func (x *Packet) GetDeliveryMode() ClientDeliveryMode {
 	return ClientDeliveryMode_CLIENT_DELIVERY_MODE_UNSPECIFIED
 }
 
-type Subscription struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Subscriber    *UserRef               `protobuf:"bytes,1,opt,name=subscriber,proto3" json:"subscriber,omitempty"`
-	Channel       *UserRef               `protobuf:"bytes,2,opt,name=channel,proto3" json:"channel,omitempty"`
-	SubscribedAt  string                 `protobuf:"bytes,5,opt,name=subscribed_at,json=subscribedAt,proto3" json:"subscribed_at,omitempty"`
-	DeletedAt     string                 `protobuf:"bytes,6,opt,name=deleted_at,json=deletedAt,proto3" json:"deleted_at,omitempty"`
-	OriginNodeId  int64                  `protobuf:"varint,7,opt,name=origin_node_id,json=originNodeId,proto3" json:"origin_node_id,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+type Attachment struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	Owner          *UserRef               `protobuf:"bytes,1,opt,name=owner,proto3" json:"owner,omitempty"`
+	Subject        *UserRef               `protobuf:"bytes,2,opt,name=subject,proto3" json:"subject,omitempty"`
+	AttachmentType AttachmentType         `protobuf:"varint,3,opt,name=attachment_type,json=attachmentType,proto3,enum=notifier.client.v1.AttachmentType" json:"attachment_type,omitempty"`
+	ConfigJson     []byte                 `protobuf:"bytes,4,opt,name=config_json,json=configJson,proto3" json:"config_json,omitempty"`
+	AttachedAt     string                 `protobuf:"bytes,5,opt,name=attached_at,json=attachedAt,proto3" json:"attached_at,omitempty"`
+	DeletedAt      string                 `protobuf:"bytes,6,opt,name=deleted_at,json=deletedAt,proto3" json:"deleted_at,omitempty"`
+	OriginNodeId   int64                  `protobuf:"varint,7,opt,name=origin_node_id,json=originNodeId,proto3" json:"origin_node_id,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
-func (x *Subscription) Reset() {
-	*x = Subscription{}
-	mi := &file_client_proto_msgTypes[54]
+func (x *Attachment) Reset() {
+	*x = Attachment{}
+	mi := &file_client_proto_msgTypes[48]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *Subscription) String() string {
+func (x *Attachment) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*Subscription) ProtoMessage() {}
+func (*Attachment) ProtoMessage() {}
 
-func (x *Subscription) ProtoReflect() protoreflect.Message {
-	mi := &file_client_proto_msgTypes[54]
+func (x *Attachment) ProtoReflect() protoreflect.Message {
+	mi := &file_client_proto_msgTypes[48]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4038,116 +3695,54 @@ func (x *Subscription) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use Subscription.ProtoReflect.Descriptor instead.
-func (*Subscription) Descriptor() ([]byte, []int) {
-	return file_client_proto_rawDescGZIP(), []int{54}
+// Deprecated: Use Attachment.ProtoReflect.Descriptor instead.
+func (*Attachment) Descriptor() ([]byte, []int) {
+	return file_client_proto_rawDescGZIP(), []int{48}
 }
 
-func (x *Subscription) GetSubscriber() *UserRef {
-	if x != nil {
-		return x.Subscriber
-	}
-	return nil
-}
-
-func (x *Subscription) GetChannel() *UserRef {
-	if x != nil {
-		return x.Channel
-	}
-	return nil
-}
-
-func (x *Subscription) GetSubscribedAt() string {
-	if x != nil {
-		return x.SubscribedAt
-	}
-	return ""
-}
-
-func (x *Subscription) GetDeletedAt() string {
-	if x != nil {
-		return x.DeletedAt
-	}
-	return ""
-}
-
-func (x *Subscription) GetOriginNodeId() int64 {
-	if x != nil {
-		return x.OriginNodeId
-	}
-	return 0
-}
-
-type BlacklistEntry struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Owner         *UserRef               `protobuf:"bytes,1,opt,name=owner,proto3" json:"owner,omitempty"`
-	Blocked       *UserRef               `protobuf:"bytes,2,opt,name=blocked,proto3" json:"blocked,omitempty"`
-	BlockedAt     string                 `protobuf:"bytes,5,opt,name=blocked_at,json=blockedAt,proto3" json:"blocked_at,omitempty"`
-	DeletedAt     string                 `protobuf:"bytes,6,opt,name=deleted_at,json=deletedAt,proto3" json:"deleted_at,omitempty"`
-	OriginNodeId  int64                  `protobuf:"varint,7,opt,name=origin_node_id,json=originNodeId,proto3" json:"origin_node_id,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *BlacklistEntry) Reset() {
-	*x = BlacklistEntry{}
-	mi := &file_client_proto_msgTypes[55]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *BlacklistEntry) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*BlacklistEntry) ProtoMessage() {}
-
-func (x *BlacklistEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_client_proto_msgTypes[55]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use BlacklistEntry.ProtoReflect.Descriptor instead.
-func (*BlacklistEntry) Descriptor() ([]byte, []int) {
-	return file_client_proto_rawDescGZIP(), []int{55}
-}
-
-func (x *BlacklistEntry) GetOwner() *UserRef {
+func (x *Attachment) GetOwner() *UserRef {
 	if x != nil {
 		return x.Owner
 	}
 	return nil
 }
 
-func (x *BlacklistEntry) GetBlocked() *UserRef {
+func (x *Attachment) GetSubject() *UserRef {
 	if x != nil {
-		return x.Blocked
+		return x.Subject
 	}
 	return nil
 }
 
-func (x *BlacklistEntry) GetBlockedAt() string {
+func (x *Attachment) GetAttachmentType() AttachmentType {
 	if x != nil {
-		return x.BlockedAt
+		return x.AttachmentType
+	}
+	return AttachmentType_ATTACHMENT_TYPE_UNSPECIFIED
+}
+
+func (x *Attachment) GetConfigJson() []byte {
+	if x != nil {
+		return x.ConfigJson
+	}
+	return nil
+}
+
+func (x *Attachment) GetAttachedAt() string {
+	if x != nil {
+		return x.AttachedAt
 	}
 	return ""
 }
 
-func (x *BlacklistEntry) GetDeletedAt() string {
+func (x *Attachment) GetDeletedAt() string {
 	if x != nil {
 		return x.DeletedAt
 	}
 	return ""
 }
 
-func (x *BlacklistEntry) GetOriginNodeId() int64 {
+func (x *Attachment) GetOriginNodeId() int64 {
 	if x != nil {
 		return x.OriginNodeId
 	}
@@ -4171,7 +3766,7 @@ type Event struct {
 
 func (x *Event) Reset() {
 	*x = Event{}
-	mi := &file_client_proto_msgTypes[56]
+	mi := &file_client_proto_msgTypes[49]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4183,7 +3778,7 @@ func (x *Event) String() string {
 func (*Event) ProtoMessage() {}
 
 func (x *Event) ProtoReflect() protoreflect.Message {
-	mi := &file_client_proto_msgTypes[56]
+	mi := &file_client_proto_msgTypes[49]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4196,7 +3791,7 @@ func (x *Event) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Event.ProtoReflect.Descriptor instead.
 func (*Event) Descriptor() ([]byte, []int) {
-	return file_client_proto_rawDescGZIP(), []int{56}
+	return file_client_proto_rawDescGZIP(), []int{49}
 }
 
 func (x *Event) GetSequence() int64 {
@@ -4279,7 +3874,7 @@ type OperationsStatus struct {
 
 func (x *OperationsStatus) Reset() {
 	*x = OperationsStatus{}
-	mi := &file_client_proto_msgTypes[57]
+	mi := &file_client_proto_msgTypes[50]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4291,7 +3886,7 @@ func (x *OperationsStatus) String() string {
 func (*OperationsStatus) ProtoMessage() {}
 
 func (x *OperationsStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_client_proto_msgTypes[57]
+	mi := &file_client_proto_msgTypes[50]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4304,7 +3899,7 @@ func (x *OperationsStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OperationsStatus.ProtoReflect.Descriptor instead.
 func (*OperationsStatus) Descriptor() ([]byte, []int) {
-	return file_client_proto_rawDescGZIP(), []int{57}
+	return file_client_proto_rawDescGZIP(), []int{50}
 }
 
 func (x *OperationsStatus) GetNodeId() int64 {
@@ -4380,7 +3975,7 @@ type MessageTrimStatus struct {
 
 func (x *MessageTrimStatus) Reset() {
 	*x = MessageTrimStatus{}
-	mi := &file_client_proto_msgTypes[58]
+	mi := &file_client_proto_msgTypes[51]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4392,7 +3987,7 @@ func (x *MessageTrimStatus) String() string {
 func (*MessageTrimStatus) ProtoMessage() {}
 
 func (x *MessageTrimStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_client_proto_msgTypes[58]
+	mi := &file_client_proto_msgTypes[51]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4405,7 +4000,7 @@ func (x *MessageTrimStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MessageTrimStatus.ProtoReflect.Descriptor instead.
 func (*MessageTrimStatus) Descriptor() ([]byte, []int) {
-	return file_client_proto_rawDescGZIP(), []int{58}
+	return file_client_proto_rawDescGZIP(), []int{51}
 }
 
 func (x *MessageTrimStatus) GetTrimmedTotal() int64 {
@@ -4432,7 +4027,7 @@ type EventLogTrimStatus struct {
 
 func (x *EventLogTrimStatus) Reset() {
 	*x = EventLogTrimStatus{}
-	mi := &file_client_proto_msgTypes[59]
+	mi := &file_client_proto_msgTypes[52]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4444,7 +4039,7 @@ func (x *EventLogTrimStatus) String() string {
 func (*EventLogTrimStatus) ProtoMessage() {}
 
 func (x *EventLogTrimStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_client_proto_msgTypes[59]
+	mi := &file_client_proto_msgTypes[52]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4457,7 +4052,7 @@ func (x *EventLogTrimStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EventLogTrimStatus.ProtoReflect.Descriptor instead.
 func (*EventLogTrimStatus) Descriptor() ([]byte, []int) {
-	return file_client_proto_rawDescGZIP(), []int{59}
+	return file_client_proto_rawDescGZIP(), []int{52}
 }
 
 func (x *EventLogTrimStatus) GetTrimmedTotal() int64 {
@@ -4484,7 +4079,7 @@ type ProjectionStatus struct {
 
 func (x *ProjectionStatus) Reset() {
 	*x = ProjectionStatus{}
-	mi := &file_client_proto_msgTypes[60]
+	mi := &file_client_proto_msgTypes[53]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4496,7 +4091,7 @@ func (x *ProjectionStatus) String() string {
 func (*ProjectionStatus) ProtoMessage() {}
 
 func (x *ProjectionStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_client_proto_msgTypes[60]
+	mi := &file_client_proto_msgTypes[53]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4509,7 +4104,7 @@ func (x *ProjectionStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ProjectionStatus.ProtoReflect.Descriptor instead.
 func (*ProjectionStatus) Descriptor() ([]byte, []int) {
-	return file_client_proto_rawDescGZIP(), []int{60}
+	return file_client_proto_rawDescGZIP(), []int{53}
 }
 
 func (x *ProjectionStatus) GetPendingTotal() int64 {
@@ -4541,7 +4136,7 @@ type PeerOriginStatus struct {
 
 func (x *PeerOriginStatus) Reset() {
 	*x = PeerOriginStatus{}
-	mi := &file_client_proto_msgTypes[61]
+	mi := &file_client_proto_msgTypes[54]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4553,7 +4148,7 @@ func (x *PeerOriginStatus) String() string {
 func (*PeerOriginStatus) ProtoMessage() {}
 
 func (x *PeerOriginStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_client_proto_msgTypes[61]
+	mi := &file_client_proto_msgTypes[54]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4566,7 +4161,7 @@ func (x *PeerOriginStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PeerOriginStatus.ProtoReflect.Descriptor instead.
 func (*PeerOriginStatus) Descriptor() ([]byte, []int) {
-	return file_client_proto_rawDescGZIP(), []int{61}
+	return file_client_proto_rawDescGZIP(), []int{54}
 }
 
 func (x *PeerOriginStatus) GetOriginNodeId() int64 {
@@ -4648,7 +4243,7 @@ type PeerStatus struct {
 
 func (x *PeerStatus) Reset() {
 	*x = PeerStatus{}
-	mi := &file_client_proto_msgTypes[62]
+	mi := &file_client_proto_msgTypes[55]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4660,7 +4255,7 @@ func (x *PeerStatus) String() string {
 func (*PeerStatus) ProtoMessage() {}
 
 func (x *PeerStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_client_proto_msgTypes[62]
+	mi := &file_client_proto_msgTypes[55]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4673,7 +4268,7 @@ func (x *PeerStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PeerStatus.ProtoReflect.Descriptor instead.
 func (*PeerStatus) Descriptor() ([]byte, []int) {
-	return file_client_proto_rawDescGZIP(), []int{62}
+	return file_client_proto_rawDescGZIP(), []int{55}
 }
 
 func (x *PeerStatus) GetNodeId() int64 {
@@ -4834,7 +4429,8 @@ var File_client_proto protoreflect.FileDescriptor
 
 const file_client_proto_rawDesc = "" +
 	"\n" +
-	"\fclient.proto\x12\x12notifier.client.v1\"\xc0\f\n" +
+	"\fclient.proto\x12\x12notifier.client.v1\"\xea\n" +
+	"\n" +
 	"\x0eClientEnvelope\x128\n" +
 	"\x05login\x18\x01 \x01(\v2 .notifier.client.v1.LoginRequestH\x00R\x05login\x12K\n" +
 	"\fsend_message\x18\x02 \x01(\v2&.notifier.client.v1.SendMessageRequestH\x00R\vsendMessage\x12A\n" +
@@ -4848,22 +4444,18 @@ const file_client_proto_rawDesc = "" +
 	"updateUser\x12H\n" +
 	"\vdelete_user\x18\b \x01(\v2%.notifier.client.v1.DeleteUserRequestH\x00R\n" +
 	"deleteUser\x12N\n" +
-	"\rlist_messages\x18\t \x01(\v2'.notifier.client.v1.ListMessagesRequestH\x00R\flistMessages\x12Z\n" +
-	"\x11subscribe_channel\x18\n" +
-	" \x01(\v2+.notifier.client.v1.SubscribeChannelRequestH\x00R\x10subscribeChannel\x12`\n" +
-	"\x13unsubscribe_channel\x18\v \x01(\v2-.notifier.client.v1.UnsubscribeChannelRequestH\x00R\x12unsubscribeChannel\x12]\n" +
-	"\x12list_subscriptions\x18\f \x01(\v2,.notifier.client.v1.ListSubscriptionsRequestH\x00R\x11listSubscriptions\x12H\n" +
+	"\rlist_messages\x18\t \x01(\v2'.notifier.client.v1.ListMessagesRequestH\x00R\flistMessages\x12g\n" +
+	"\x16upsert_user_attachment\x18\n" +
+	" \x01(\v2/.notifier.client.v1.UpsertUserAttachmentRequestH\x00R\x14upsertUserAttachment\x12g\n" +
+	"\x16delete_user_attachment\x18\v \x01(\v2/.notifier.client.v1.DeleteUserAttachmentRequestH\x00R\x14deleteUserAttachment\x12d\n" +
+	"\x15list_user_attachments\x18\f \x01(\v2..notifier.client.v1.ListUserAttachmentsRequestH\x00R\x13listUserAttachments\x12H\n" +
 	"\vlist_events\x18\r \x01(\v2%.notifier.client.v1.ListEventsRequestH\x00R\n" +
 	"listEvents\x12Z\n" +
 	"\x11operations_status\x18\x0e \x01(\v2+.notifier.client.v1.OperationsStatusRequestH\x00R\x10operationsStatus\x12>\n" +
 	"\ametrics\x18\x0f \x01(\v2\".notifier.client.v1.MetricsRequestH\x00R\ametrics\x12[\n" +
 	"\x12list_cluster_nodes\x18\x10 \x01(\v2+.notifier.client.v1.ListClusterNodesRequestH\x00R\x10listClusterNodes\x12l\n" +
-	"\x19list_node_logged_in_users\x18\x11 \x01(\v20.notifier.client.v1.ListNodeLoggedInUsersRequestH\x00R\x15listNodeLoggedInUsers\x12E\n" +
-	"\n" +
-	"block_user\x18\x12 \x01(\v2$.notifier.client.v1.BlockUserRequestH\x00R\tblockUser\x12K\n" +
-	"\funblock_user\x18\x13 \x01(\v2&.notifier.client.v1.UnblockUserRequestH\x00R\vunblockUser\x12[\n" +
-	"\x12list_blocked_users\x18\x14 \x01(\v2+.notifier.client.v1.ListBlockedUsersRequestH\x00R\x10listBlockedUsersB\x06\n" +
-	"\x04body\"\x89\x10\n" +
+	"\x19list_node_logged_in_users\x18\x11 \x01(\v20.notifier.client.v1.ListNodeLoggedInUsersRequestH\x00R\x15listNodeLoggedInUsersB\x06\n" +
+	"\x04body\"\xfd\r\n" +
 	"\x0eServerEnvelope\x12J\n" +
 	"\x0elogin_response\x18\x01 \x01(\v2!.notifier.client.v1.LoginResponseH\x00R\rloginResponse\x12J\n" +
 	"\x0emessage_pushed\x18\x02 \x01(\v2!.notifier.client.v1.MessagePushedH\x00R\rmessagePushed\x12]\n" +
@@ -4876,18 +4468,15 @@ const file_client_proto_rawDesc = "" +
 	"\x14update_user_response\x18\t \x01(\v2&.notifier.client.v1.UpdateUserResponseH\x00R\x12updateUserResponse\x12Z\n" +
 	"\x14delete_user_response\x18\n" +
 	" \x01(\v2&.notifier.client.v1.DeleteUserResponseH\x00R\x12deleteUserResponse\x12`\n" +
-	"\x16list_messages_response\x18\v \x01(\v2(.notifier.client.v1.ListMessagesResponseH\x00R\x14listMessagesResponse\x12l\n" +
-	"\x1asubscribe_channel_response\x18\f \x01(\v2,.notifier.client.v1.SubscribeChannelResponseH\x00R\x18subscribeChannelResponse\x12r\n" +
-	"\x1cunsubscribe_channel_response\x18\r \x01(\v2..notifier.client.v1.UnsubscribeChannelResponseH\x00R\x1aunsubscribeChannelResponse\x12o\n" +
-	"\x1blist_subscriptions_response\x18\x0e \x01(\v2-.notifier.client.v1.ListSubscriptionsResponseH\x00R\x19listSubscriptionsResponse\x12Z\n" +
+	"\x16list_messages_response\x18\v \x01(\v2(.notifier.client.v1.ListMessagesResponseH\x00R\x14listMessagesResponse\x12y\n" +
+	"\x1fupsert_user_attachment_response\x18\f \x01(\v20.notifier.client.v1.UpsertUserAttachmentResponseH\x00R\x1cupsertUserAttachmentResponse\x12y\n" +
+	"\x1fdelete_user_attachment_response\x18\r \x01(\v20.notifier.client.v1.DeleteUserAttachmentResponseH\x00R\x1cdeleteUserAttachmentResponse\x12v\n" +
+	"\x1elist_user_attachments_response\x18\x0e \x01(\v2/.notifier.client.v1.ListUserAttachmentsResponseH\x00R\x1blistUserAttachmentsResponse\x12Z\n" +
 	"\x14list_events_response\x18\x0f \x01(\v2&.notifier.client.v1.ListEventsResponseH\x00R\x12listEventsResponse\x12l\n" +
 	"\x1aoperations_status_response\x18\x10 \x01(\v2,.notifier.client.v1.OperationsStatusResponseH\x00R\x18operationsStatusResponse\x12P\n" +
 	"\x10metrics_response\x18\x11 \x01(\v2#.notifier.client.v1.MetricsResponseH\x00R\x0fmetricsResponse\x12m\n" +
 	"\x1blist_cluster_nodes_response\x18\x12 \x01(\v2,.notifier.client.v1.ListClusterNodesResponseH\x00R\x18listClusterNodesResponse\x12~\n" +
-	"\"list_node_logged_in_users_response\x18\x13 \x01(\v21.notifier.client.v1.ListNodeLoggedInUsersResponseH\x00R\x1dlistNodeLoggedInUsersResponse\x12W\n" +
-	"\x13block_user_response\x18\x14 \x01(\v2%.notifier.client.v1.BlockUserResponseH\x00R\x11blockUserResponse\x12]\n" +
-	"\x15unblock_user_response\x18\x15 \x01(\v2'.notifier.client.v1.UnblockUserResponseH\x00R\x13unblockUserResponse\x12m\n" +
-	"\x1blist_blocked_users_response\x18\x16 \x01(\v2,.notifier.client.v1.ListBlockedUsersResponseH\x00R\x18listBlockedUsersResponseB\x06\n" +
+	"\"list_node_logged_in_users_response\x18\x13 \x01(\v21.notifier.client.v1.ListNodeLoggedInUsersResponseH\x00R\x1dlistNodeLoggedInUsersResponseB\x06\n" +
 	"\x04body\"\xca\x01\n" +
 	"\fLoginRequest\x12/\n" +
 	"\x04user\x18\x01 \x01(\v2\x1b.notifier.client.v1.UserRefR\x04user\x12\x1a\n" +
@@ -4962,41 +4551,26 @@ const file_client_proto_rawDesc = "" +
 	"\n" +
 	"request_id\x18\x01 \x01(\x04R\trequestId\x12/\n" +
 	"\x04user\x18\x02 \x01(\v2\x1b.notifier.client.v1.UserRefR\x04user\x12\x14\n" +
-	"\x05limit\x18\x03 \x01(\x05R\x05limit\"\xac\x01\n" +
-	"\x17SubscribeChannelRequest\x12\x1d\n" +
-	"\n" +
-	"request_id\x18\x01 \x01(\x04R\trequestId\x12;\n" +
-	"\n" +
-	"subscriber\x18\x02 \x01(\v2\x1b.notifier.client.v1.UserRefR\n" +
-	"subscriber\x125\n" +
-	"\achannel\x18\x03 \x01(\v2\x1b.notifier.client.v1.UserRefR\achannel\"\xae\x01\n" +
-	"\x19UnsubscribeChannelRequest\x12\x1d\n" +
-	"\n" +
-	"request_id\x18\x01 \x01(\x04R\trequestId\x12;\n" +
-	"\n" +
-	"subscriber\x18\x02 \x01(\v2\x1b.notifier.client.v1.UserRefR\n" +
-	"subscriber\x125\n" +
-	"\achannel\x18\x03 \x01(\v2\x1b.notifier.client.v1.UserRefR\achannel\"v\n" +
-	"\x18ListSubscriptionsRequest\x12\x1d\n" +
-	"\n" +
-	"request_id\x18\x01 \x01(\x04R\trequestId\x12;\n" +
-	"\n" +
-	"subscriber\x18\x02 \x01(\v2\x1b.notifier.client.v1.UserRefR\n" +
-	"subscriber\"\x9b\x01\n" +
-	"\x10BlockUserRequest\x12\x1d\n" +
+	"\x05limit\x18\x03 \x01(\x05R\x05limit\"\x94\x02\n" +
+	"\x1bUpsertUserAttachmentRequest\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\x04R\trequestId\x121\n" +
 	"\x05owner\x18\x02 \x01(\v2\x1b.notifier.client.v1.UserRefR\x05owner\x125\n" +
-	"\ablocked\x18\x03 \x01(\v2\x1b.notifier.client.v1.UserRefR\ablocked\"\x9d\x01\n" +
-	"\x12UnblockUserRequest\x12\x1d\n" +
+	"\asubject\x18\x03 \x01(\v2\x1b.notifier.client.v1.UserRefR\asubject\x12K\n" +
+	"\x0fattachment_type\x18\x04 \x01(\x0e2\".notifier.client.v1.AttachmentTypeR\x0eattachmentType\x12\x1f\n" +
+	"\vconfig_json\x18\x05 \x01(\fR\n" +
+	"configJson\"\xf3\x01\n" +
+	"\x1bDeleteUserAttachmentRequest\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\x04R\trequestId\x121\n" +
 	"\x05owner\x18\x02 \x01(\v2\x1b.notifier.client.v1.UserRefR\x05owner\x125\n" +
-	"\ablocked\x18\x03 \x01(\v2\x1b.notifier.client.v1.UserRefR\ablocked\"k\n" +
-	"\x17ListBlockedUsersRequest\x12\x1d\n" +
+	"\asubject\x18\x03 \x01(\v2\x1b.notifier.client.v1.UserRefR\asubject\x12K\n" +
+	"\x0fattachment_type\x18\x04 \x01(\x0e2\".notifier.client.v1.AttachmentTypeR\x0eattachmentType\"\xbb\x01\n" +
+	"\x1aListUserAttachmentsRequest\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\x04R\trequestId\x121\n" +
-	"\x05owner\x18\x02 \x01(\v2\x1b.notifier.client.v1.UserRefR\x05owner\"^\n" +
+	"\x05owner\x18\x02 \x01(\v2\x1b.notifier.client.v1.UserRefR\x05owner\x12K\n" +
+	"\x0fattachment_type\x18\x03 \x01(\x0e2\".notifier.client.v1.AttachmentTypeR\x0eattachmentType\"^\n" +
 	"\x11ListEventsRequest\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\x04R\trequestId\x12\x14\n" +
@@ -5029,32 +4603,23 @@ const file_client_proto_rawDesc = "" +
 	"\n" +
 	"request_id\x18\x01 \x01(\x04R\trequestId\x121\n" +
 	"\x05items\x18\x02 \x03(\v2\x1b.notifier.client.v1.MessageR\x05items\x12\x14\n" +
-	"\x05count\x18\x03 \x01(\x05R\x05count\"\x7f\n" +
-	"\x18SubscribeChannelResponse\x12\x1d\n" +
+	"\x05count\x18\x03 \x01(\x05R\x05count\"}\n" +
+	"\x1cUpsertUserAttachmentResponse\x12\x1d\n" +
 	"\n" +
-	"request_id\x18\x01 \x01(\x04R\trequestId\x12D\n" +
-	"\fsubscription\x18\x02 \x01(\v2 .notifier.client.v1.SubscriptionR\fsubscription\"\x81\x01\n" +
-	"\x1aUnsubscribeChannelResponse\x12\x1d\n" +
+	"request_id\x18\x01 \x01(\x04R\trequestId\x12>\n" +
 	"\n" +
-	"request_id\x18\x01 \x01(\x04R\trequestId\x12D\n" +
-	"\fsubscription\x18\x02 \x01(\v2 .notifier.client.v1.SubscriptionR\fsubscription\"\x88\x01\n" +
-	"\x19ListSubscriptionsResponse\x12\x1d\n" +
+	"attachment\x18\x02 \x01(\v2\x1e.notifier.client.v1.AttachmentR\n" +
+	"attachment\"}\n" +
+	"\x1cDeleteUserAttachmentResponse\x12\x1d\n" +
 	"\n" +
-	"request_id\x18\x01 \x01(\x04R\trequestId\x126\n" +
-	"\x05items\x18\x02 \x03(\v2 .notifier.client.v1.SubscriptionR\x05items\x12\x14\n" +
-	"\x05count\x18\x03 \x01(\x05R\x05count\"l\n" +
-	"\x11BlockUserResponse\x12\x1d\n" +
+	"request_id\x18\x01 \x01(\x04R\trequestId\x12>\n" +
 	"\n" +
-	"request_id\x18\x01 \x01(\x04R\trequestId\x128\n" +
-	"\x05entry\x18\x02 \x01(\v2\".notifier.client.v1.BlacklistEntryR\x05entry\"n\n" +
-	"\x13UnblockUserResponse\x12\x1d\n" +
+	"attachment\x18\x02 \x01(\v2\x1e.notifier.client.v1.AttachmentR\n" +
+	"attachment\"\x88\x01\n" +
+	"\x1bListUserAttachmentsResponse\x12\x1d\n" +
 	"\n" +
-	"request_id\x18\x01 \x01(\x04R\trequestId\x128\n" +
-	"\x05entry\x18\x02 \x01(\v2\".notifier.client.v1.BlacklistEntryR\x05entry\"\x89\x01\n" +
-	"\x18ListBlockedUsersResponse\x12\x1d\n" +
-	"\n" +
-	"request_id\x18\x01 \x01(\x04R\trequestId\x128\n" +
-	"\x05items\x18\x02 \x03(\v2\".notifier.client.v1.BlacklistEntryR\x05items\x12\x14\n" +
+	"request_id\x18\x01 \x01(\x04R\trequestId\x124\n" +
+	"\x05items\x18\x02 \x03(\v2\x1e.notifier.client.v1.AttachmentR\x05items\x12\x14\n" +
 	"\x05count\x18\x03 \x01(\x05R\x05count\"z\n" +
 	"\x12ListEventsResponse\x12\x1d\n" +
 	"\n" +
@@ -5133,21 +4698,16 @@ const file_client_proto_rawDesc = "" +
 	"\trecipient\x18\x04 \x01(\v2\x1b.notifier.client.v1.UserRefR\trecipient\x123\n" +
 	"\x06sender\x18\x05 \x01(\v2\x1b.notifier.client.v1.UserRefR\x06sender\x12\x12\n" +
 	"\x04body\x18\x06 \x01(\fR\x04body\x12K\n" +
-	"\rdelivery_mode\x18\a \x01(\x0e2&.notifier.client.v1.ClientDeliveryModeR\fdeliveryMode\"\xec\x01\n" +
-	"\fSubscription\x12;\n" +
+	"\rdelivery_mode\x18\a \x01(\x0e2&.notifier.client.v1.ClientDeliveryModeR\fdeliveryMode\"\xca\x02\n" +
 	"\n" +
-	"subscriber\x18\x01 \x01(\v2\x1b.notifier.client.v1.UserRefR\n" +
-	"subscriber\x125\n" +
-	"\achannel\x18\x02 \x01(\v2\x1b.notifier.client.v1.UserRefR\achannel\x12#\n" +
-	"\rsubscribed_at\x18\x05 \x01(\tR\fsubscribedAt\x12\x1d\n" +
-	"\n" +
-	"deleted_at\x18\x06 \x01(\tR\tdeletedAt\x12$\n" +
-	"\x0eorigin_node_id\x18\a \x01(\x03R\foriginNodeId\"\xde\x01\n" +
-	"\x0eBlacklistEntry\x121\n" +
+	"Attachment\x121\n" +
 	"\x05owner\x18\x01 \x01(\v2\x1b.notifier.client.v1.UserRefR\x05owner\x125\n" +
-	"\ablocked\x18\x02 \x01(\v2\x1b.notifier.client.v1.UserRefR\ablocked\x12\x1d\n" +
-	"\n" +
-	"blocked_at\x18\x05 \x01(\tR\tblockedAt\x12\x1d\n" +
+	"\asubject\x18\x02 \x01(\v2\x1b.notifier.client.v1.UserRefR\asubject\x12K\n" +
+	"\x0fattachment_type\x18\x03 \x01(\x0e2\".notifier.client.v1.AttachmentTypeR\x0eattachmentType\x12\x1f\n" +
+	"\vconfig_json\x18\x04 \x01(\fR\n" +
+	"configJson\x12\x1f\n" +
+	"\vattached_at\x18\x05 \x01(\tR\n" +
+	"attachedAt\x12\x1d\n" +
 	"\n" +
 	"deleted_at\x18\x06 \x01(\tR\tdeletedAt\x12$\n" +
 	"\x0eorigin_node_id\x18\a \x01(\x03R\foriginNodeId\"\xa1\x02\n" +
@@ -5228,7 +4788,13 @@ const file_client_proto_rawDesc = "" +
 	"\x15ClientMessageSyncMode\x12(\n" +
 	"$CLIENT_MESSAGE_SYNC_MODE_UNSPECIFIED\x10\x00\x12'\n" +
 	"#CLIENT_MESSAGE_SYNC_MODE_FORCE_SYNC\x10\x01\x12$\n" +
-	" CLIENT_MESSAGE_SYNC_MODE_NO_SYNC\x10\x02B/Z-github.com/tursom/turntf/internal/proto;protob\x06proto3"
+	" CLIENT_MESSAGE_SYNC_MODE_NO_SYNC\x10\x02*\xc8\x01\n" +
+	"\x0eAttachmentType\x12\x1f\n" +
+	"\x1bATTACHMENT_TYPE_UNSPECIFIED\x10\x00\x12#\n" +
+	"\x1fATTACHMENT_TYPE_CHANNEL_MANAGER\x10\x01\x12\"\n" +
+	"\x1eATTACHMENT_TYPE_CHANNEL_WRITER\x10\x02\x12(\n" +
+	"$ATTACHMENT_TYPE_CHANNEL_SUBSCRIPTION\x10\x03\x12\"\n" +
+	"\x1eATTACHMENT_TYPE_USER_BLACKLIST\x10\x04B/Z-github.com/tursom/turntf/internal/proto;protob\x06proto3"
 
 var (
 	file_client_proto_rawDescOnce sync.Once
@@ -5242,185 +4808,167 @@ func file_client_proto_rawDescGZIP() []byte {
 	return file_client_proto_rawDescData
 }
 
-var file_client_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
-var file_client_proto_msgTypes = make([]protoimpl.MessageInfo, 63)
+var file_client_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
+var file_client_proto_msgTypes = make([]protoimpl.MessageInfo, 56)
 var file_client_proto_goTypes = []any{
 	(ClientDeliveryKind)(0),               // 0: notifier.client.v1.ClientDeliveryKind
 	(ClientDeliveryMode)(0),               // 1: notifier.client.v1.ClientDeliveryMode
 	(ClientMessageSyncMode)(0),            // 2: notifier.client.v1.ClientMessageSyncMode
-	(*ClientEnvelope)(nil),                // 3: notifier.client.v1.ClientEnvelope
-	(*ServerEnvelope)(nil),                // 4: notifier.client.v1.ServerEnvelope
-	(*LoginRequest)(nil),                  // 5: notifier.client.v1.LoginRequest
-	(*LoginResponse)(nil),                 // 6: notifier.client.v1.LoginResponse
-	(*SendMessageRequest)(nil),            // 7: notifier.client.v1.SendMessageRequest
-	(*SendMessageResponse)(nil),           // 8: notifier.client.v1.SendMessageResponse
-	(*MessagePushed)(nil),                 // 9: notifier.client.v1.MessagePushed
-	(*PacketPushed)(nil),                  // 10: notifier.client.v1.PacketPushed
-	(*TransientAccepted)(nil),             // 11: notifier.client.v1.TransientAccepted
-	(*AckMessage)(nil),                    // 12: notifier.client.v1.AckMessage
-	(*Ping)(nil),                          // 13: notifier.client.v1.Ping
-	(*Pong)(nil),                          // 14: notifier.client.v1.Pong
-	(*Error)(nil),                         // 15: notifier.client.v1.Error
-	(*CreateUserRequest)(nil),             // 16: notifier.client.v1.CreateUserRequest
-	(*GetUserRequest)(nil),                // 17: notifier.client.v1.GetUserRequest
-	(*UpdateUserRequest)(nil),             // 18: notifier.client.v1.UpdateUserRequest
-	(*DeleteUserRequest)(nil),             // 19: notifier.client.v1.DeleteUserRequest
-	(*ListMessagesRequest)(nil),           // 20: notifier.client.v1.ListMessagesRequest
-	(*SubscribeChannelRequest)(nil),       // 21: notifier.client.v1.SubscribeChannelRequest
-	(*UnsubscribeChannelRequest)(nil),     // 22: notifier.client.v1.UnsubscribeChannelRequest
-	(*ListSubscriptionsRequest)(nil),      // 23: notifier.client.v1.ListSubscriptionsRequest
-	(*BlockUserRequest)(nil),              // 24: notifier.client.v1.BlockUserRequest
-	(*UnblockUserRequest)(nil),            // 25: notifier.client.v1.UnblockUserRequest
-	(*ListBlockedUsersRequest)(nil),       // 26: notifier.client.v1.ListBlockedUsersRequest
-	(*ListEventsRequest)(nil),             // 27: notifier.client.v1.ListEventsRequest
-	(*OperationsStatusRequest)(nil),       // 28: notifier.client.v1.OperationsStatusRequest
-	(*MetricsRequest)(nil),                // 29: notifier.client.v1.MetricsRequest
-	(*CreateUserResponse)(nil),            // 30: notifier.client.v1.CreateUserResponse
-	(*GetUserResponse)(nil),               // 31: notifier.client.v1.GetUserResponse
-	(*UpdateUserResponse)(nil),            // 32: notifier.client.v1.UpdateUserResponse
-	(*DeleteUserResponse)(nil),            // 33: notifier.client.v1.DeleteUserResponse
-	(*ListMessagesResponse)(nil),          // 34: notifier.client.v1.ListMessagesResponse
-	(*SubscribeChannelResponse)(nil),      // 35: notifier.client.v1.SubscribeChannelResponse
-	(*UnsubscribeChannelResponse)(nil),    // 36: notifier.client.v1.UnsubscribeChannelResponse
-	(*ListSubscriptionsResponse)(nil),     // 37: notifier.client.v1.ListSubscriptionsResponse
-	(*BlockUserResponse)(nil),             // 38: notifier.client.v1.BlockUserResponse
-	(*UnblockUserResponse)(nil),           // 39: notifier.client.v1.UnblockUserResponse
-	(*ListBlockedUsersResponse)(nil),      // 40: notifier.client.v1.ListBlockedUsersResponse
-	(*ListEventsResponse)(nil),            // 41: notifier.client.v1.ListEventsResponse
-	(*OperationsStatusResponse)(nil),      // 42: notifier.client.v1.OperationsStatusResponse
-	(*MetricsResponse)(nil),               // 43: notifier.client.v1.MetricsResponse
-	(*ListClusterNodesRequest)(nil),       // 44: notifier.client.v1.ListClusterNodesRequest
-	(*ListClusterNodesResponse)(nil),      // 45: notifier.client.v1.ListClusterNodesResponse
-	(*ListNodeLoggedInUsersRequest)(nil),  // 46: notifier.client.v1.ListNodeLoggedInUsersRequest
-	(*ListNodeLoggedInUsersResponse)(nil), // 47: notifier.client.v1.ListNodeLoggedInUsersResponse
-	(*ClusterNode)(nil),                   // 48: notifier.client.v1.ClusterNode
-	(*LoggedInUser)(nil),                  // 49: notifier.client.v1.LoggedInUser
-	(*StringField)(nil),                   // 50: notifier.client.v1.StringField
-	(*BytesField)(nil),                    // 51: notifier.client.v1.BytesField
-	(*MessageCursor)(nil),                 // 52: notifier.client.v1.MessageCursor
-	(*UserRef)(nil),                       // 53: notifier.client.v1.UserRef
-	(*User)(nil),                          // 54: notifier.client.v1.User
-	(*Message)(nil),                       // 55: notifier.client.v1.Message
-	(*Packet)(nil),                        // 56: notifier.client.v1.Packet
-	(*Subscription)(nil),                  // 57: notifier.client.v1.Subscription
-	(*BlacklistEntry)(nil),                // 58: notifier.client.v1.BlacklistEntry
-	(*Event)(nil),                         // 59: notifier.client.v1.Event
-	(*OperationsStatus)(nil),              // 60: notifier.client.v1.OperationsStatus
-	(*MessageTrimStatus)(nil),             // 61: notifier.client.v1.MessageTrimStatus
-	(*EventLogTrimStatus)(nil),            // 62: notifier.client.v1.EventLogTrimStatus
-	(*ProjectionStatus)(nil),              // 63: notifier.client.v1.ProjectionStatus
-	(*PeerOriginStatus)(nil),              // 64: notifier.client.v1.PeerOriginStatus
-	(*PeerStatus)(nil),                    // 65: notifier.client.v1.PeerStatus
+	(AttachmentType)(0),                   // 3: notifier.client.v1.AttachmentType
+	(*ClientEnvelope)(nil),                // 4: notifier.client.v1.ClientEnvelope
+	(*ServerEnvelope)(nil),                // 5: notifier.client.v1.ServerEnvelope
+	(*LoginRequest)(nil),                  // 6: notifier.client.v1.LoginRequest
+	(*LoginResponse)(nil),                 // 7: notifier.client.v1.LoginResponse
+	(*SendMessageRequest)(nil),            // 8: notifier.client.v1.SendMessageRequest
+	(*SendMessageResponse)(nil),           // 9: notifier.client.v1.SendMessageResponse
+	(*MessagePushed)(nil),                 // 10: notifier.client.v1.MessagePushed
+	(*PacketPushed)(nil),                  // 11: notifier.client.v1.PacketPushed
+	(*TransientAccepted)(nil),             // 12: notifier.client.v1.TransientAccepted
+	(*AckMessage)(nil),                    // 13: notifier.client.v1.AckMessage
+	(*Ping)(nil),                          // 14: notifier.client.v1.Ping
+	(*Pong)(nil),                          // 15: notifier.client.v1.Pong
+	(*Error)(nil),                         // 16: notifier.client.v1.Error
+	(*CreateUserRequest)(nil),             // 17: notifier.client.v1.CreateUserRequest
+	(*GetUserRequest)(nil),                // 18: notifier.client.v1.GetUserRequest
+	(*UpdateUserRequest)(nil),             // 19: notifier.client.v1.UpdateUserRequest
+	(*DeleteUserRequest)(nil),             // 20: notifier.client.v1.DeleteUserRequest
+	(*ListMessagesRequest)(nil),           // 21: notifier.client.v1.ListMessagesRequest
+	(*UpsertUserAttachmentRequest)(nil),   // 22: notifier.client.v1.UpsertUserAttachmentRequest
+	(*DeleteUserAttachmentRequest)(nil),   // 23: notifier.client.v1.DeleteUserAttachmentRequest
+	(*ListUserAttachmentsRequest)(nil),    // 24: notifier.client.v1.ListUserAttachmentsRequest
+	(*ListEventsRequest)(nil),             // 25: notifier.client.v1.ListEventsRequest
+	(*OperationsStatusRequest)(nil),       // 26: notifier.client.v1.OperationsStatusRequest
+	(*MetricsRequest)(nil),                // 27: notifier.client.v1.MetricsRequest
+	(*CreateUserResponse)(nil),            // 28: notifier.client.v1.CreateUserResponse
+	(*GetUserResponse)(nil),               // 29: notifier.client.v1.GetUserResponse
+	(*UpdateUserResponse)(nil),            // 30: notifier.client.v1.UpdateUserResponse
+	(*DeleteUserResponse)(nil),            // 31: notifier.client.v1.DeleteUserResponse
+	(*ListMessagesResponse)(nil),          // 32: notifier.client.v1.ListMessagesResponse
+	(*UpsertUserAttachmentResponse)(nil),  // 33: notifier.client.v1.UpsertUserAttachmentResponse
+	(*DeleteUserAttachmentResponse)(nil),  // 34: notifier.client.v1.DeleteUserAttachmentResponse
+	(*ListUserAttachmentsResponse)(nil),   // 35: notifier.client.v1.ListUserAttachmentsResponse
+	(*ListEventsResponse)(nil),            // 36: notifier.client.v1.ListEventsResponse
+	(*OperationsStatusResponse)(nil),      // 37: notifier.client.v1.OperationsStatusResponse
+	(*MetricsResponse)(nil),               // 38: notifier.client.v1.MetricsResponse
+	(*ListClusterNodesRequest)(nil),       // 39: notifier.client.v1.ListClusterNodesRequest
+	(*ListClusterNodesResponse)(nil),      // 40: notifier.client.v1.ListClusterNodesResponse
+	(*ListNodeLoggedInUsersRequest)(nil),  // 41: notifier.client.v1.ListNodeLoggedInUsersRequest
+	(*ListNodeLoggedInUsersResponse)(nil), // 42: notifier.client.v1.ListNodeLoggedInUsersResponse
+	(*ClusterNode)(nil),                   // 43: notifier.client.v1.ClusterNode
+	(*LoggedInUser)(nil),                  // 44: notifier.client.v1.LoggedInUser
+	(*StringField)(nil),                   // 45: notifier.client.v1.StringField
+	(*BytesField)(nil),                    // 46: notifier.client.v1.BytesField
+	(*MessageCursor)(nil),                 // 47: notifier.client.v1.MessageCursor
+	(*UserRef)(nil),                       // 48: notifier.client.v1.UserRef
+	(*User)(nil),                          // 49: notifier.client.v1.User
+	(*Message)(nil),                       // 50: notifier.client.v1.Message
+	(*Packet)(nil),                        // 51: notifier.client.v1.Packet
+	(*Attachment)(nil),                    // 52: notifier.client.v1.Attachment
+	(*Event)(nil),                         // 53: notifier.client.v1.Event
+	(*OperationsStatus)(nil),              // 54: notifier.client.v1.OperationsStatus
+	(*MessageTrimStatus)(nil),             // 55: notifier.client.v1.MessageTrimStatus
+	(*EventLogTrimStatus)(nil),            // 56: notifier.client.v1.EventLogTrimStatus
+	(*ProjectionStatus)(nil),              // 57: notifier.client.v1.ProjectionStatus
+	(*PeerOriginStatus)(nil),              // 58: notifier.client.v1.PeerOriginStatus
+	(*PeerStatus)(nil),                    // 59: notifier.client.v1.PeerStatus
 }
 var file_client_proto_depIdxs = []int32{
-	5,   // 0: notifier.client.v1.ClientEnvelope.login:type_name -> notifier.client.v1.LoginRequest
-	7,   // 1: notifier.client.v1.ClientEnvelope.send_message:type_name -> notifier.client.v1.SendMessageRequest
-	12,  // 2: notifier.client.v1.ClientEnvelope.ack_message:type_name -> notifier.client.v1.AckMessage
-	13,  // 3: notifier.client.v1.ClientEnvelope.ping:type_name -> notifier.client.v1.Ping
-	16,  // 4: notifier.client.v1.ClientEnvelope.create_user:type_name -> notifier.client.v1.CreateUserRequest
-	17,  // 5: notifier.client.v1.ClientEnvelope.get_user:type_name -> notifier.client.v1.GetUserRequest
-	18,  // 6: notifier.client.v1.ClientEnvelope.update_user:type_name -> notifier.client.v1.UpdateUserRequest
-	19,  // 7: notifier.client.v1.ClientEnvelope.delete_user:type_name -> notifier.client.v1.DeleteUserRequest
-	20,  // 8: notifier.client.v1.ClientEnvelope.list_messages:type_name -> notifier.client.v1.ListMessagesRequest
-	21,  // 9: notifier.client.v1.ClientEnvelope.subscribe_channel:type_name -> notifier.client.v1.SubscribeChannelRequest
-	22,  // 10: notifier.client.v1.ClientEnvelope.unsubscribe_channel:type_name -> notifier.client.v1.UnsubscribeChannelRequest
-	23,  // 11: notifier.client.v1.ClientEnvelope.list_subscriptions:type_name -> notifier.client.v1.ListSubscriptionsRequest
-	27,  // 12: notifier.client.v1.ClientEnvelope.list_events:type_name -> notifier.client.v1.ListEventsRequest
-	28,  // 13: notifier.client.v1.ClientEnvelope.operations_status:type_name -> notifier.client.v1.OperationsStatusRequest
-	29,  // 14: notifier.client.v1.ClientEnvelope.metrics:type_name -> notifier.client.v1.MetricsRequest
-	44,  // 15: notifier.client.v1.ClientEnvelope.list_cluster_nodes:type_name -> notifier.client.v1.ListClusterNodesRequest
-	46,  // 16: notifier.client.v1.ClientEnvelope.list_node_logged_in_users:type_name -> notifier.client.v1.ListNodeLoggedInUsersRequest
-	24,  // 17: notifier.client.v1.ClientEnvelope.block_user:type_name -> notifier.client.v1.BlockUserRequest
-	25,  // 18: notifier.client.v1.ClientEnvelope.unblock_user:type_name -> notifier.client.v1.UnblockUserRequest
-	26,  // 19: notifier.client.v1.ClientEnvelope.list_blocked_users:type_name -> notifier.client.v1.ListBlockedUsersRequest
-	6,   // 20: notifier.client.v1.ServerEnvelope.login_response:type_name -> notifier.client.v1.LoginResponse
-	9,   // 21: notifier.client.v1.ServerEnvelope.message_pushed:type_name -> notifier.client.v1.MessagePushed
-	8,   // 22: notifier.client.v1.ServerEnvelope.send_message_response:type_name -> notifier.client.v1.SendMessageResponse
-	15,  // 23: notifier.client.v1.ServerEnvelope.error:type_name -> notifier.client.v1.Error
-	14,  // 24: notifier.client.v1.ServerEnvelope.pong:type_name -> notifier.client.v1.Pong
-	10,  // 25: notifier.client.v1.ServerEnvelope.packet_pushed:type_name -> notifier.client.v1.PacketPushed
-	30,  // 26: notifier.client.v1.ServerEnvelope.create_user_response:type_name -> notifier.client.v1.CreateUserResponse
-	31,  // 27: notifier.client.v1.ServerEnvelope.get_user_response:type_name -> notifier.client.v1.GetUserResponse
-	32,  // 28: notifier.client.v1.ServerEnvelope.update_user_response:type_name -> notifier.client.v1.UpdateUserResponse
-	33,  // 29: notifier.client.v1.ServerEnvelope.delete_user_response:type_name -> notifier.client.v1.DeleteUserResponse
-	34,  // 30: notifier.client.v1.ServerEnvelope.list_messages_response:type_name -> notifier.client.v1.ListMessagesResponse
-	35,  // 31: notifier.client.v1.ServerEnvelope.subscribe_channel_response:type_name -> notifier.client.v1.SubscribeChannelResponse
-	36,  // 32: notifier.client.v1.ServerEnvelope.unsubscribe_channel_response:type_name -> notifier.client.v1.UnsubscribeChannelResponse
-	37,  // 33: notifier.client.v1.ServerEnvelope.list_subscriptions_response:type_name -> notifier.client.v1.ListSubscriptionsResponse
-	41,  // 34: notifier.client.v1.ServerEnvelope.list_events_response:type_name -> notifier.client.v1.ListEventsResponse
-	42,  // 35: notifier.client.v1.ServerEnvelope.operations_status_response:type_name -> notifier.client.v1.OperationsStatusResponse
-	43,  // 36: notifier.client.v1.ServerEnvelope.metrics_response:type_name -> notifier.client.v1.MetricsResponse
-	45,  // 37: notifier.client.v1.ServerEnvelope.list_cluster_nodes_response:type_name -> notifier.client.v1.ListClusterNodesResponse
-	47,  // 38: notifier.client.v1.ServerEnvelope.list_node_logged_in_users_response:type_name -> notifier.client.v1.ListNodeLoggedInUsersResponse
-	38,  // 39: notifier.client.v1.ServerEnvelope.block_user_response:type_name -> notifier.client.v1.BlockUserResponse
-	39,  // 40: notifier.client.v1.ServerEnvelope.unblock_user_response:type_name -> notifier.client.v1.UnblockUserResponse
-	40,  // 41: notifier.client.v1.ServerEnvelope.list_blocked_users_response:type_name -> notifier.client.v1.ListBlockedUsersResponse
-	53,  // 42: notifier.client.v1.LoginRequest.user:type_name -> notifier.client.v1.UserRef
-	52,  // 43: notifier.client.v1.LoginRequest.seen_messages:type_name -> notifier.client.v1.MessageCursor
-	54,  // 44: notifier.client.v1.LoginResponse.user:type_name -> notifier.client.v1.User
-	53,  // 45: notifier.client.v1.SendMessageRequest.target:type_name -> notifier.client.v1.UserRef
-	0,   // 46: notifier.client.v1.SendMessageRequest.delivery_kind:type_name -> notifier.client.v1.ClientDeliveryKind
-	1,   // 47: notifier.client.v1.SendMessageRequest.delivery_mode:type_name -> notifier.client.v1.ClientDeliveryMode
-	2,   // 48: notifier.client.v1.SendMessageRequest.sync_mode:type_name -> notifier.client.v1.ClientMessageSyncMode
-	55,  // 49: notifier.client.v1.SendMessageResponse.message:type_name -> notifier.client.v1.Message
-	11,  // 50: notifier.client.v1.SendMessageResponse.transient_accepted:type_name -> notifier.client.v1.TransientAccepted
-	55,  // 51: notifier.client.v1.MessagePushed.message:type_name -> notifier.client.v1.Message
-	56,  // 52: notifier.client.v1.PacketPushed.packet:type_name -> notifier.client.v1.Packet
-	53,  // 53: notifier.client.v1.TransientAccepted.recipient:type_name -> notifier.client.v1.UserRef
-	1,   // 54: notifier.client.v1.TransientAccepted.delivery_mode:type_name -> notifier.client.v1.ClientDeliveryMode
-	52,  // 55: notifier.client.v1.AckMessage.cursor:type_name -> notifier.client.v1.MessageCursor
-	53,  // 56: notifier.client.v1.GetUserRequest.user:type_name -> notifier.client.v1.UserRef
-	53,  // 57: notifier.client.v1.UpdateUserRequest.user:type_name -> notifier.client.v1.UserRef
-	50,  // 58: notifier.client.v1.UpdateUserRequest.username:type_name -> notifier.client.v1.StringField
-	50,  // 59: notifier.client.v1.UpdateUserRequest.password:type_name -> notifier.client.v1.StringField
-	51,  // 60: notifier.client.v1.UpdateUserRequest.profile_json:type_name -> notifier.client.v1.BytesField
-	50,  // 61: notifier.client.v1.UpdateUserRequest.role:type_name -> notifier.client.v1.StringField
-	53,  // 62: notifier.client.v1.DeleteUserRequest.user:type_name -> notifier.client.v1.UserRef
-	53,  // 63: notifier.client.v1.ListMessagesRequest.user:type_name -> notifier.client.v1.UserRef
-	53,  // 64: notifier.client.v1.SubscribeChannelRequest.subscriber:type_name -> notifier.client.v1.UserRef
-	53,  // 65: notifier.client.v1.SubscribeChannelRequest.channel:type_name -> notifier.client.v1.UserRef
-	53,  // 66: notifier.client.v1.UnsubscribeChannelRequest.subscriber:type_name -> notifier.client.v1.UserRef
-	53,  // 67: notifier.client.v1.UnsubscribeChannelRequest.channel:type_name -> notifier.client.v1.UserRef
-	53,  // 68: notifier.client.v1.ListSubscriptionsRequest.subscriber:type_name -> notifier.client.v1.UserRef
-	53,  // 69: notifier.client.v1.BlockUserRequest.owner:type_name -> notifier.client.v1.UserRef
-	53,  // 70: notifier.client.v1.BlockUserRequest.blocked:type_name -> notifier.client.v1.UserRef
-	53,  // 71: notifier.client.v1.UnblockUserRequest.owner:type_name -> notifier.client.v1.UserRef
-	53,  // 72: notifier.client.v1.UnblockUserRequest.blocked:type_name -> notifier.client.v1.UserRef
-	53,  // 73: notifier.client.v1.ListBlockedUsersRequest.owner:type_name -> notifier.client.v1.UserRef
-	54,  // 74: notifier.client.v1.CreateUserResponse.user:type_name -> notifier.client.v1.User
-	54,  // 75: notifier.client.v1.GetUserResponse.user:type_name -> notifier.client.v1.User
-	54,  // 76: notifier.client.v1.UpdateUserResponse.user:type_name -> notifier.client.v1.User
-	53,  // 77: notifier.client.v1.DeleteUserResponse.user:type_name -> notifier.client.v1.UserRef
-	55,  // 78: notifier.client.v1.ListMessagesResponse.items:type_name -> notifier.client.v1.Message
-	57,  // 79: notifier.client.v1.SubscribeChannelResponse.subscription:type_name -> notifier.client.v1.Subscription
-	57,  // 80: notifier.client.v1.UnsubscribeChannelResponse.subscription:type_name -> notifier.client.v1.Subscription
-	57,  // 81: notifier.client.v1.ListSubscriptionsResponse.items:type_name -> notifier.client.v1.Subscription
-	58,  // 82: notifier.client.v1.BlockUserResponse.entry:type_name -> notifier.client.v1.BlacklistEntry
-	58,  // 83: notifier.client.v1.UnblockUserResponse.entry:type_name -> notifier.client.v1.BlacklistEntry
-	58,  // 84: notifier.client.v1.ListBlockedUsersResponse.items:type_name -> notifier.client.v1.BlacklistEntry
-	59,  // 85: notifier.client.v1.ListEventsResponse.items:type_name -> notifier.client.v1.Event
-	60,  // 86: notifier.client.v1.OperationsStatusResponse.status:type_name -> notifier.client.v1.OperationsStatus
-	48,  // 87: notifier.client.v1.ListClusterNodesResponse.items:type_name -> notifier.client.v1.ClusterNode
-	49,  // 88: notifier.client.v1.ListNodeLoggedInUsersResponse.items:type_name -> notifier.client.v1.LoggedInUser
-	53,  // 89: notifier.client.v1.Message.recipient:type_name -> notifier.client.v1.UserRef
-	53,  // 90: notifier.client.v1.Message.sender:type_name -> notifier.client.v1.UserRef
-	53,  // 91: notifier.client.v1.Packet.recipient:type_name -> notifier.client.v1.UserRef
-	53,  // 92: notifier.client.v1.Packet.sender:type_name -> notifier.client.v1.UserRef
-	1,   // 93: notifier.client.v1.Packet.delivery_mode:type_name -> notifier.client.v1.ClientDeliveryMode
-	53,  // 94: notifier.client.v1.Subscription.subscriber:type_name -> notifier.client.v1.UserRef
-	53,  // 95: notifier.client.v1.Subscription.channel:type_name -> notifier.client.v1.UserRef
-	53,  // 96: notifier.client.v1.BlacklistEntry.owner:type_name -> notifier.client.v1.UserRef
-	53,  // 97: notifier.client.v1.BlacklistEntry.blocked:type_name -> notifier.client.v1.UserRef
-	61,  // 98: notifier.client.v1.OperationsStatus.message_trim:type_name -> notifier.client.v1.MessageTrimStatus
-	63,  // 99: notifier.client.v1.OperationsStatus.projection:type_name -> notifier.client.v1.ProjectionStatus
-	65,  // 100: notifier.client.v1.OperationsStatus.peers:type_name -> notifier.client.v1.PeerStatus
-	62,  // 101: notifier.client.v1.OperationsStatus.event_log_trim:type_name -> notifier.client.v1.EventLogTrimStatus
-	64,  // 102: notifier.client.v1.PeerStatus.origins:type_name -> notifier.client.v1.PeerOriginStatus
-	103, // [103:103] is the sub-list for method output_type
-	103, // [103:103] is the sub-list for method input_type
-	103, // [103:103] is the sub-list for extension type_name
-	103, // [103:103] is the sub-list for extension extendee
-	0,   // [0:103] is the sub-list for field type_name
+	6,  // 0: notifier.client.v1.ClientEnvelope.login:type_name -> notifier.client.v1.LoginRequest
+	8,  // 1: notifier.client.v1.ClientEnvelope.send_message:type_name -> notifier.client.v1.SendMessageRequest
+	13, // 2: notifier.client.v1.ClientEnvelope.ack_message:type_name -> notifier.client.v1.AckMessage
+	14, // 3: notifier.client.v1.ClientEnvelope.ping:type_name -> notifier.client.v1.Ping
+	17, // 4: notifier.client.v1.ClientEnvelope.create_user:type_name -> notifier.client.v1.CreateUserRequest
+	18, // 5: notifier.client.v1.ClientEnvelope.get_user:type_name -> notifier.client.v1.GetUserRequest
+	19, // 6: notifier.client.v1.ClientEnvelope.update_user:type_name -> notifier.client.v1.UpdateUserRequest
+	20, // 7: notifier.client.v1.ClientEnvelope.delete_user:type_name -> notifier.client.v1.DeleteUserRequest
+	21, // 8: notifier.client.v1.ClientEnvelope.list_messages:type_name -> notifier.client.v1.ListMessagesRequest
+	22, // 9: notifier.client.v1.ClientEnvelope.upsert_user_attachment:type_name -> notifier.client.v1.UpsertUserAttachmentRequest
+	23, // 10: notifier.client.v1.ClientEnvelope.delete_user_attachment:type_name -> notifier.client.v1.DeleteUserAttachmentRequest
+	24, // 11: notifier.client.v1.ClientEnvelope.list_user_attachments:type_name -> notifier.client.v1.ListUserAttachmentsRequest
+	25, // 12: notifier.client.v1.ClientEnvelope.list_events:type_name -> notifier.client.v1.ListEventsRequest
+	26, // 13: notifier.client.v1.ClientEnvelope.operations_status:type_name -> notifier.client.v1.OperationsStatusRequest
+	27, // 14: notifier.client.v1.ClientEnvelope.metrics:type_name -> notifier.client.v1.MetricsRequest
+	39, // 15: notifier.client.v1.ClientEnvelope.list_cluster_nodes:type_name -> notifier.client.v1.ListClusterNodesRequest
+	41, // 16: notifier.client.v1.ClientEnvelope.list_node_logged_in_users:type_name -> notifier.client.v1.ListNodeLoggedInUsersRequest
+	7,  // 17: notifier.client.v1.ServerEnvelope.login_response:type_name -> notifier.client.v1.LoginResponse
+	10, // 18: notifier.client.v1.ServerEnvelope.message_pushed:type_name -> notifier.client.v1.MessagePushed
+	9,  // 19: notifier.client.v1.ServerEnvelope.send_message_response:type_name -> notifier.client.v1.SendMessageResponse
+	16, // 20: notifier.client.v1.ServerEnvelope.error:type_name -> notifier.client.v1.Error
+	15, // 21: notifier.client.v1.ServerEnvelope.pong:type_name -> notifier.client.v1.Pong
+	11, // 22: notifier.client.v1.ServerEnvelope.packet_pushed:type_name -> notifier.client.v1.PacketPushed
+	28, // 23: notifier.client.v1.ServerEnvelope.create_user_response:type_name -> notifier.client.v1.CreateUserResponse
+	29, // 24: notifier.client.v1.ServerEnvelope.get_user_response:type_name -> notifier.client.v1.GetUserResponse
+	30, // 25: notifier.client.v1.ServerEnvelope.update_user_response:type_name -> notifier.client.v1.UpdateUserResponse
+	31, // 26: notifier.client.v1.ServerEnvelope.delete_user_response:type_name -> notifier.client.v1.DeleteUserResponse
+	32, // 27: notifier.client.v1.ServerEnvelope.list_messages_response:type_name -> notifier.client.v1.ListMessagesResponse
+	33, // 28: notifier.client.v1.ServerEnvelope.upsert_user_attachment_response:type_name -> notifier.client.v1.UpsertUserAttachmentResponse
+	34, // 29: notifier.client.v1.ServerEnvelope.delete_user_attachment_response:type_name -> notifier.client.v1.DeleteUserAttachmentResponse
+	35, // 30: notifier.client.v1.ServerEnvelope.list_user_attachments_response:type_name -> notifier.client.v1.ListUserAttachmentsResponse
+	36, // 31: notifier.client.v1.ServerEnvelope.list_events_response:type_name -> notifier.client.v1.ListEventsResponse
+	37, // 32: notifier.client.v1.ServerEnvelope.operations_status_response:type_name -> notifier.client.v1.OperationsStatusResponse
+	38, // 33: notifier.client.v1.ServerEnvelope.metrics_response:type_name -> notifier.client.v1.MetricsResponse
+	40, // 34: notifier.client.v1.ServerEnvelope.list_cluster_nodes_response:type_name -> notifier.client.v1.ListClusterNodesResponse
+	42, // 35: notifier.client.v1.ServerEnvelope.list_node_logged_in_users_response:type_name -> notifier.client.v1.ListNodeLoggedInUsersResponse
+	48, // 36: notifier.client.v1.LoginRequest.user:type_name -> notifier.client.v1.UserRef
+	47, // 37: notifier.client.v1.LoginRequest.seen_messages:type_name -> notifier.client.v1.MessageCursor
+	49, // 38: notifier.client.v1.LoginResponse.user:type_name -> notifier.client.v1.User
+	48, // 39: notifier.client.v1.SendMessageRequest.target:type_name -> notifier.client.v1.UserRef
+	0,  // 40: notifier.client.v1.SendMessageRequest.delivery_kind:type_name -> notifier.client.v1.ClientDeliveryKind
+	1,  // 41: notifier.client.v1.SendMessageRequest.delivery_mode:type_name -> notifier.client.v1.ClientDeliveryMode
+	2,  // 42: notifier.client.v1.SendMessageRequest.sync_mode:type_name -> notifier.client.v1.ClientMessageSyncMode
+	50, // 43: notifier.client.v1.SendMessageResponse.message:type_name -> notifier.client.v1.Message
+	12, // 44: notifier.client.v1.SendMessageResponse.transient_accepted:type_name -> notifier.client.v1.TransientAccepted
+	50, // 45: notifier.client.v1.MessagePushed.message:type_name -> notifier.client.v1.Message
+	51, // 46: notifier.client.v1.PacketPushed.packet:type_name -> notifier.client.v1.Packet
+	48, // 47: notifier.client.v1.TransientAccepted.recipient:type_name -> notifier.client.v1.UserRef
+	1,  // 48: notifier.client.v1.TransientAccepted.delivery_mode:type_name -> notifier.client.v1.ClientDeliveryMode
+	47, // 49: notifier.client.v1.AckMessage.cursor:type_name -> notifier.client.v1.MessageCursor
+	48, // 50: notifier.client.v1.GetUserRequest.user:type_name -> notifier.client.v1.UserRef
+	48, // 51: notifier.client.v1.UpdateUserRequest.user:type_name -> notifier.client.v1.UserRef
+	45, // 52: notifier.client.v1.UpdateUserRequest.username:type_name -> notifier.client.v1.StringField
+	45, // 53: notifier.client.v1.UpdateUserRequest.password:type_name -> notifier.client.v1.StringField
+	46, // 54: notifier.client.v1.UpdateUserRequest.profile_json:type_name -> notifier.client.v1.BytesField
+	45, // 55: notifier.client.v1.UpdateUserRequest.role:type_name -> notifier.client.v1.StringField
+	48, // 56: notifier.client.v1.DeleteUserRequest.user:type_name -> notifier.client.v1.UserRef
+	48, // 57: notifier.client.v1.ListMessagesRequest.user:type_name -> notifier.client.v1.UserRef
+	48, // 58: notifier.client.v1.UpsertUserAttachmentRequest.owner:type_name -> notifier.client.v1.UserRef
+	48, // 59: notifier.client.v1.UpsertUserAttachmentRequest.subject:type_name -> notifier.client.v1.UserRef
+	3,  // 60: notifier.client.v1.UpsertUserAttachmentRequest.attachment_type:type_name -> notifier.client.v1.AttachmentType
+	48, // 61: notifier.client.v1.DeleteUserAttachmentRequest.owner:type_name -> notifier.client.v1.UserRef
+	48, // 62: notifier.client.v1.DeleteUserAttachmentRequest.subject:type_name -> notifier.client.v1.UserRef
+	3,  // 63: notifier.client.v1.DeleteUserAttachmentRequest.attachment_type:type_name -> notifier.client.v1.AttachmentType
+	48, // 64: notifier.client.v1.ListUserAttachmentsRequest.owner:type_name -> notifier.client.v1.UserRef
+	3,  // 65: notifier.client.v1.ListUserAttachmentsRequest.attachment_type:type_name -> notifier.client.v1.AttachmentType
+	49, // 66: notifier.client.v1.CreateUserResponse.user:type_name -> notifier.client.v1.User
+	49, // 67: notifier.client.v1.GetUserResponse.user:type_name -> notifier.client.v1.User
+	49, // 68: notifier.client.v1.UpdateUserResponse.user:type_name -> notifier.client.v1.User
+	48, // 69: notifier.client.v1.DeleteUserResponse.user:type_name -> notifier.client.v1.UserRef
+	50, // 70: notifier.client.v1.ListMessagesResponse.items:type_name -> notifier.client.v1.Message
+	52, // 71: notifier.client.v1.UpsertUserAttachmentResponse.attachment:type_name -> notifier.client.v1.Attachment
+	52, // 72: notifier.client.v1.DeleteUserAttachmentResponse.attachment:type_name -> notifier.client.v1.Attachment
+	52, // 73: notifier.client.v1.ListUserAttachmentsResponse.items:type_name -> notifier.client.v1.Attachment
+	53, // 74: notifier.client.v1.ListEventsResponse.items:type_name -> notifier.client.v1.Event
+	54, // 75: notifier.client.v1.OperationsStatusResponse.status:type_name -> notifier.client.v1.OperationsStatus
+	43, // 76: notifier.client.v1.ListClusterNodesResponse.items:type_name -> notifier.client.v1.ClusterNode
+	44, // 77: notifier.client.v1.ListNodeLoggedInUsersResponse.items:type_name -> notifier.client.v1.LoggedInUser
+	48, // 78: notifier.client.v1.Message.recipient:type_name -> notifier.client.v1.UserRef
+	48, // 79: notifier.client.v1.Message.sender:type_name -> notifier.client.v1.UserRef
+	48, // 80: notifier.client.v1.Packet.recipient:type_name -> notifier.client.v1.UserRef
+	48, // 81: notifier.client.v1.Packet.sender:type_name -> notifier.client.v1.UserRef
+	1,  // 82: notifier.client.v1.Packet.delivery_mode:type_name -> notifier.client.v1.ClientDeliveryMode
+	48, // 83: notifier.client.v1.Attachment.owner:type_name -> notifier.client.v1.UserRef
+	48, // 84: notifier.client.v1.Attachment.subject:type_name -> notifier.client.v1.UserRef
+	3,  // 85: notifier.client.v1.Attachment.attachment_type:type_name -> notifier.client.v1.AttachmentType
+	55, // 86: notifier.client.v1.OperationsStatus.message_trim:type_name -> notifier.client.v1.MessageTrimStatus
+	57, // 87: notifier.client.v1.OperationsStatus.projection:type_name -> notifier.client.v1.ProjectionStatus
+	59, // 88: notifier.client.v1.OperationsStatus.peers:type_name -> notifier.client.v1.PeerStatus
+	56, // 89: notifier.client.v1.OperationsStatus.event_log_trim:type_name -> notifier.client.v1.EventLogTrimStatus
+	58, // 90: notifier.client.v1.PeerStatus.origins:type_name -> notifier.client.v1.PeerOriginStatus
+	91, // [91:91] is the sub-list for method output_type
+	91, // [91:91] is the sub-list for method input_type
+	91, // [91:91] is the sub-list for extension type_name
+	91, // [91:91] is the sub-list for extension extendee
+	0,  // [0:91] is the sub-list for field type_name
 }
 
 func init() { file_client_proto_init() }
@@ -5438,17 +4986,14 @@ func file_client_proto_init() {
 		(*ClientEnvelope_UpdateUser)(nil),
 		(*ClientEnvelope_DeleteUser)(nil),
 		(*ClientEnvelope_ListMessages)(nil),
-		(*ClientEnvelope_SubscribeChannel)(nil),
-		(*ClientEnvelope_UnsubscribeChannel)(nil),
-		(*ClientEnvelope_ListSubscriptions)(nil),
+		(*ClientEnvelope_UpsertUserAttachment)(nil),
+		(*ClientEnvelope_DeleteUserAttachment)(nil),
+		(*ClientEnvelope_ListUserAttachments)(nil),
 		(*ClientEnvelope_ListEvents)(nil),
 		(*ClientEnvelope_OperationsStatus)(nil),
 		(*ClientEnvelope_Metrics)(nil),
 		(*ClientEnvelope_ListClusterNodes)(nil),
 		(*ClientEnvelope_ListNodeLoggedInUsers)(nil),
-		(*ClientEnvelope_BlockUser)(nil),
-		(*ClientEnvelope_UnblockUser)(nil),
-		(*ClientEnvelope_ListBlockedUsers)(nil),
 	}
 	file_client_proto_msgTypes[1].OneofWrappers = []any{
 		(*ServerEnvelope_LoginResponse)(nil),
@@ -5462,17 +5007,14 @@ func file_client_proto_init() {
 		(*ServerEnvelope_UpdateUserResponse)(nil),
 		(*ServerEnvelope_DeleteUserResponse)(nil),
 		(*ServerEnvelope_ListMessagesResponse)(nil),
-		(*ServerEnvelope_SubscribeChannelResponse)(nil),
-		(*ServerEnvelope_UnsubscribeChannelResponse)(nil),
-		(*ServerEnvelope_ListSubscriptionsResponse)(nil),
+		(*ServerEnvelope_UpsertUserAttachmentResponse)(nil),
+		(*ServerEnvelope_DeleteUserAttachmentResponse)(nil),
+		(*ServerEnvelope_ListUserAttachmentsResponse)(nil),
 		(*ServerEnvelope_ListEventsResponse)(nil),
 		(*ServerEnvelope_OperationsStatusResponse)(nil),
 		(*ServerEnvelope_MetricsResponse)(nil),
 		(*ServerEnvelope_ListClusterNodesResponse)(nil),
 		(*ServerEnvelope_ListNodeLoggedInUsersResponse)(nil),
-		(*ServerEnvelope_BlockUserResponse)(nil),
-		(*ServerEnvelope_UnblockUserResponse)(nil),
-		(*ServerEnvelope_ListBlockedUsersResponse)(nil),
 	}
 	file_client_proto_msgTypes[5].OneofWrappers = []any{
 		(*SendMessageResponse_Message)(nil),
@@ -5483,8 +5025,8 @@ func file_client_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_client_proto_rawDesc), len(file_client_proto_rawDesc)),
-			NumEnums:      3,
-			NumMessages:   63,
+			NumEnums:      4,
+			NumMessages:   56,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

@@ -82,12 +82,32 @@ func New(st *store.Store, eventSink EventSink) *Service {
 }
 
 func (s *Service) CreateUser(ctx context.Context, params store.CreateUserParams) (store.User, store.Event, error) {
+	return s.CreateUserAs(ctx, params, nil)
+}
+
+func (s *Service) CreateUserAs(ctx context.Context, params store.CreateUserParams, creator *store.UserKey) (store.User, store.Event, error) {
 	if err := s.allowWrite(ctx); err != nil {
 		return store.User{}, store.Event{}, err
 	}
 	user, event, err := s.store.CreateUser(ctx, params)
-	if err == nil {
-		s.eventSink.Publish(event)
+	if err != nil {
+		return user, event, err
+	}
+	s.eventSink.Publish(event)
+	if params.Role == store.RoleChannel && creator != nil {
+		for _, attachmentType := range []store.AttachmentType{
+			store.AttachmentTypeChannelManager,
+			store.AttachmentTypeChannelWriter,
+		} {
+			if _, _, err := s.UpsertAttachment(ctx, store.UpsertAttachmentParams{
+				Owner:      user.Key(),
+				Subject:    *creator,
+				Type:       attachmentType,
+				ConfigJSON: "{}",
+			}); err != nil {
+				return store.User{}, store.Event{}, err
+			}
+		}
 	}
 	return user, event, err
 }
@@ -212,6 +232,40 @@ func (s *Service) deliverTransientPacket(packet store.TransientPacket) bool {
 
 func (s *Service) ListMessagesByUser(ctx context.Context, key store.UserKey, limit int) ([]store.Message, error) {
 	return s.store.ListMessagesByUser(ctx, key, limit)
+}
+
+func (s *Service) UpsertAttachment(ctx context.Context, params store.UpsertAttachmentParams) (store.Attachment, store.Event, error) {
+	if err := s.allowWrite(ctx); err != nil {
+		return store.Attachment{}, store.Event{}, err
+	}
+	attachment, event, err := s.store.UpsertAttachment(ctx, params)
+	if err == nil {
+		s.eventSink.Publish(event)
+	}
+	return attachment, event, err
+}
+
+func (s *Service) DeleteAttachment(ctx context.Context, params store.DeleteAttachmentParams) (store.Attachment, store.Event, error) {
+	if err := s.allowWrite(ctx); err != nil {
+		return store.Attachment{}, store.Event{}, err
+	}
+	attachment, event, err := s.store.DeleteAttachment(ctx, params)
+	if err == nil {
+		s.eventSink.Publish(event)
+	}
+	return attachment, event, err
+}
+
+func (s *Service) ListUserAttachments(ctx context.Context, owner store.UserKey, attachmentType store.AttachmentType) ([]store.Attachment, error) {
+	return s.store.ListUserAttachments(ctx, owner, attachmentType)
+}
+
+func (s *Service) IsChannelManager(ctx context.Context, channel, subject store.UserKey) (bool, error) {
+	return s.store.IsChannelManager(ctx, channel, subject)
+}
+
+func (s *Service) IsChannelWriter(ctx context.Context, channel, subject store.UserKey) (bool, error) {
+	return s.store.IsChannelWriter(ctx, channel, subject)
 }
 
 func (s *Service) SubscribeChannel(ctx context.Context, params store.ChannelSubscriptionParams) (store.Subscription, store.Event, error) {

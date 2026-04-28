@@ -145,46 +145,29 @@ func TestReplicatedEventTypedBodyHelpers(t *testing.T) {
 			eventType: "message_created",
 		},
 		{
-			name: "channel_subscribed",
-			body: &ChannelSubscribedEvent{
-				Subscriber:      &ClusterUserRef{NodeId: testNodeID, UserId: 1001},
-				Channel:         &ClusterUserRef{NodeId: testNodeID, UserId: 2002},
-				SubscribedAtHlc: "1740000000000-00004-0000000000000004096",
-				OriginNodeId:    testNodeID,
+			name: "user_attachment_upserted",
+			body: &UserAttachmentUpsertedEvent{
+				Owner:          &ClusterUserRef{NodeId: testNodeID, UserId: 1001},
+				Subject:        &ClusterUserRef{NodeId: testNodeID, UserId: 2002},
+				AttachmentType: "channel_subscription",
+				ConfigJson:     "{}",
+				AttachedAtHlc:  "1740000000000-00004-0000000000000004096",
+				OriginNodeId:   testNodeID,
 			},
-			eventType: "channel_subscribed",
+			eventType: "user_attachment_upserted",
 		},
 		{
-			name: "channel_unsubscribed",
-			body: &ChannelUnsubscribedEvent{
-				Subscriber:      &ClusterUserRef{NodeId: testNodeID, UserId: 1001},
-				Channel:         &ClusterUserRef{NodeId: testNodeID, UserId: 2002},
-				SubscribedAtHlc: "1740000000000-00004-0000000000000004096",
-				DeletedAtHlc:    "1740000000000-00005-0000000000000004096",
-				OriginNodeId:    testNodeID,
+			name: "user_attachment_deleted",
+			body: &UserAttachmentDeletedEvent{
+				Owner:          &ClusterUserRef{NodeId: testNodeID, UserId: 1001},
+				Subject:        &ClusterUserRef{NodeId: testNodeID, UserId: 2002},
+				AttachmentType: "user_blacklist",
+				ConfigJson:     "{}",
+				AttachedAtHlc:  "1740000000000-00006-0000000000000004096",
+				DeletedAtHlc:   "1740000000000-00007-0000000000000004096",
+				OriginNodeId:   testNodeID,
 			},
-			eventType: "channel_unsubscribed",
-		},
-		{
-			name: "user_blocked",
-			body: &UserBlockedEvent{
-				Owner:        &ClusterUserRef{NodeId: testNodeID, UserId: 1001},
-				Blocked:      &ClusterUserRef{NodeId: testNodeID, UserId: 2002},
-				BlockedAtHlc: "1740000000000-00006-0000000000000004096",
-				OriginNodeId: testNodeID,
-			},
-			eventType: "user_blocked",
-		},
-		{
-			name: "user_unblocked",
-			body: &UserUnblockedEvent{
-				Owner:        &ClusterUserRef{NodeId: testNodeID, UserId: 1001},
-				Blocked:      &ClusterUserRef{NodeId: testNodeID, UserId: 2002},
-				BlockedAtHlc: "1740000000000-00006-0000000000000004096",
-				DeletedAtHlc: "1740000000000-00007-0000000000000004096",
-				OriginNodeId: testNodeID,
-			},
-			eventType: "user_unblocked",
+			eventType: "user_attachment_deleted",
 		},
 	}
 
@@ -301,7 +284,7 @@ func TestSnapshotMessageRowRoundTripUsesTripleIdentity(t *testing.T) {
 	}
 }
 
-func TestSnapshotSubscriptionRowRoundTrip(t *testing.T) {
+func TestSnapshotAttachmentRowRoundTrip(t *testing.T) {
 	t.Parallel()
 
 	envelope := &Envelope{
@@ -309,16 +292,18 @@ func TestSnapshotSubscriptionRowRoundTrip(t *testing.T) {
 		Body: &Envelope_SnapshotChunk{
 			SnapshotChunk: &SnapshotChunk{
 				SnapshotVersion: SnapshotVersion,
-				Partition:       "subscriptions/full",
-				Kind:            SnapshotPartitionKind_SNAPSHOT_PARTITION_KIND_SUBSCRIPTIONS,
+				Partition:       "attachments/full",
+				Kind:            SnapshotPartitionKind_SNAPSHOT_PARTITION_KIND_ATTACHMENTS,
 				Rows: []*SnapshotRow{
 					{
-						Body: &SnapshotRow_Subscription{
-							Subscription: &SnapshotSubscriptionRow{
-								Subscriber:      &ClusterUserRef{NodeId: testNodeID, UserId: 42},
-								Channel:         &ClusterUserRef{NodeId: testNodeID, UserId: 99},
-								SubscribedAtHlc: "1740000000000-00001-0000000000000004096",
-								OriginNodeId:    testNodeID,
+						Body: &SnapshotRow_Attachment{
+							Attachment: &SnapshotAttachmentRow{
+								Owner:          &ClusterUserRef{NodeId: testNodeID, UserId: 42},
+								Subject:        &ClusterUserRef{NodeId: testNodeID, UserId: 99},
+								AttachmentType: "channel_subscription",
+								ConfigJson:     "{}",
+								AttachedAtHlc:  "1740000000000-00001-0000000000000004096",
+								OriginNodeId:   testNodeID,
 							},
 						},
 					},
@@ -337,8 +322,8 @@ func TestSnapshotSubscriptionRowRoundTrip(t *testing.T) {
 		t.Fatalf("unmarshal envelope: %v", err)
 	}
 
-	subscription := decoded.GetSnapshotChunk().GetRows()[0].GetSubscription()
-	if subscription.GetSubscriber().GetUserId() != 42 || subscription.GetChannel().GetUserId() != 99 {
-		t.Fatalf("unexpected snapshot subscription: %+v", subscription)
+	attachment := decoded.GetSnapshotChunk().GetRows()[0].GetAttachment()
+	if attachment.GetOwner().GetUserId() != 42 || attachment.GetSubject().GetUserId() != 99 {
+		t.Fatalf("unexpected snapshot attachment: %+v", attachment)
 	}
 }

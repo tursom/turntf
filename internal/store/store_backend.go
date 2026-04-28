@@ -88,6 +88,7 @@ func (b *sqliteStoreBackend) Bind(bindings storeBackendBindings) error {
 		clock:             b.clock,
 		messageWindowSize: b.messageWindowSize,
 		userRepository:    bindings.UserRepository,
+		subscriptions:     bindings.Subscriptions,
 		blacklists:        bindings.Blacklists,
 	}
 	b.eventLog = &sqliteEventLogRepository{

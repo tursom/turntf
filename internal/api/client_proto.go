@@ -55,6 +55,38 @@ func clientProtoTransientAccepted(packet store.TransientPacket) *internalproto.T
 	}
 }
 
+func attachmentTypeFromProto(kind internalproto.AttachmentType) (store.AttachmentType, error) {
+	switch kind {
+	case internalproto.AttachmentType_ATTACHMENT_TYPE_CHANNEL_MANAGER:
+		return store.AttachmentTypeChannelManager, nil
+	case internalproto.AttachmentType_ATTACHMENT_TYPE_CHANNEL_WRITER:
+		return store.AttachmentTypeChannelWriter, nil
+	case internalproto.AttachmentType_ATTACHMENT_TYPE_CHANNEL_SUBSCRIPTION:
+		return store.AttachmentTypeChannelSubscription, nil
+	case internalproto.AttachmentType_ATTACHMENT_TYPE_USER_BLACKLIST:
+		return store.AttachmentTypeUserBlacklist, nil
+	case internalproto.AttachmentType_ATTACHMENT_TYPE_UNSPECIFIED:
+		return "", nil
+	default:
+		return "", fmt.Errorf("%w: unsupported attachment type %q", store.ErrInvalidInput, kind.String())
+	}
+}
+
+func attachmentTypeToProto(kind store.AttachmentType) internalproto.AttachmentType {
+	switch kind {
+	case store.AttachmentTypeChannelManager:
+		return internalproto.AttachmentType_ATTACHMENT_TYPE_CHANNEL_MANAGER
+	case store.AttachmentTypeChannelWriter:
+		return internalproto.AttachmentType_ATTACHMENT_TYPE_CHANNEL_WRITER
+	case store.AttachmentTypeChannelSubscription:
+		return internalproto.AttachmentType_ATTACHMENT_TYPE_CHANNEL_SUBSCRIPTION
+	case store.AttachmentTypeUserBlacklist:
+		return internalproto.AttachmentType_ATTACHMENT_TYPE_USER_BLACKLIST
+	default:
+		return internalproto.AttachmentType_ATTACHMENT_TYPE_UNSPECIFIED
+	}
+}
+
 func clientDeliveryKindFromProto(kind internalproto.ClientDeliveryKind) (deliveryKind, error) {
 	switch kind {
 	case internalproto.ClientDeliveryKind_CLIENT_DELIVERY_KIND_UNSPECIFIED, internalproto.ClientDeliveryKind_CLIENT_DELIVERY_KIND_PERSISTENT:

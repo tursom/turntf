@@ -18,14 +18,12 @@ import (
 )
 
 const (
-	SnapshotUsersPartition            = "users/full"
-	SnapshotSubscriptionsPartition    = "subscriptions/full"
-	SnapshotBlacklistsPartition       = "blacklists/full"
-	SnapshotMessagesPrefix            = "messages/"
-	snapshotPartitionKindUsers        = clusterproto.SnapshotPartitionKind_SNAPSHOT_PARTITION_KIND_USERS
-	snapshotPartitionKindMessage      = clusterproto.SnapshotPartitionKind_SNAPSHOT_PARTITION_KIND_MESSAGES
-	snapshotPartitionKindSubscription = clusterproto.SnapshotPartitionKind_SNAPSHOT_PARTITION_KIND_SUBSCRIPTIONS
-	snapshotPartitionKindBlacklist    = clusterproto.SnapshotPartitionKind_SNAPSHOT_PARTITION_KIND_BLACKLISTS
+	SnapshotUsersPartition          = "users/full"
+	SnapshotAttachmentsPartition    = "attachments/full"
+	SnapshotMessagesPrefix          = "messages/"
+	snapshotPartitionKindUsers      = clusterproto.SnapshotPartitionKind_SNAPSHOT_PARTITION_KIND_USERS
+	snapshotPartitionKindMessage    = clusterproto.SnapshotPartitionKind_SNAPSHOT_PARTITION_KIND_MESSAGES
+	snapshotPartitionKindAttachment = clusterproto.SnapshotPartitionKind_SNAPSHOT_PARTITION_KIND_ATTACHMENTS
 )
 
 func MessageSnapshotPartition(originNodeID int64) string {
@@ -50,34 +48,19 @@ func (s *Store) BuildSnapshotDigest(ctx context.Context, producerNodeIDs []int64
 		Hash:      userHash,
 	})
 
-	subscriptionRows, err := s.buildSubscriptionSnapshotRows(ctx)
+	attachmentRows, err := s.buildAttachmentSnapshotRows(ctx)
 	if err != nil {
 		return nil, err
 	}
-	subscriptionHash, err := hashSnapshotRows(subscriptionRows)
-	if err != nil {
-		return nil, err
-	}
-	partitions = append(partitions, &clusterproto.SnapshotPartitionDigest{
-		Partition: SnapshotSubscriptionsPartition,
-		Kind:      snapshotPartitionKindSubscription,
-		RowCount:  uint64(len(subscriptionRows)),
-		Hash:      subscriptionHash,
-	})
-
-	blacklistRows, err := s.buildBlacklistSnapshotRows(ctx)
-	if err != nil {
-		return nil, err
-	}
-	blacklistHash, err := hashSnapshotRows(blacklistRows)
+	attachmentHash, err := hashSnapshotRows(attachmentRows)
 	if err != nil {
 		return nil, err
 	}
 	partitions = append(partitions, &clusterproto.SnapshotPartitionDigest{
-		Partition: SnapshotBlacklistsPartition,
-		Kind:      snapshotPartitionKindBlacklist,
-		RowCount:  uint64(len(blacklistRows)),
-		Hash:      blacklistHash,
+		Partition: SnapshotAttachmentsPartition,
+		Kind:      snapshotPartitionKindAttachment,
+		RowCount:  uint64(len(attachmentRows)),
+		Hash:      attachmentHash,
 	})
 
 	for _, producer := range normalizeProducerNodeIDs(producerNodeIDs) {
@@ -113,24 +96,14 @@ func (s *Store) BuildSnapshotChunk(ctx context.Context, partition string) (*clus
 			Kind:      snapshotPartitionKindUsers,
 			Rows:      rows,
 		}, nil
-	case partition == SnapshotSubscriptionsPartition:
-		rows, err := s.buildSubscriptionSnapshotRows(ctx)
+	case partition == SnapshotAttachmentsPartition:
+		rows, err := s.buildAttachmentSnapshotRows(ctx)
 		if err != nil {
 			return nil, err
 		}
 		return &clusterproto.SnapshotChunk{
 			Partition: partition,
-			Kind:      snapshotPartitionKindSubscription,
-			Rows:      rows,
-		}, nil
-	case partition == SnapshotBlacklistsPartition:
-		rows, err := s.buildBlacklistSnapshotRows(ctx)
-		if err != nil {
-			return nil, err
-		}
-		return &clusterproto.SnapshotChunk{
-			Partition: partition,
-			Kind:      snapshotPartitionKindBlacklist,
+			Kind:      snapshotPartitionKindAttachment,
 			Rows:      rows,
 		}, nil
 	case strings.HasPrefix(partition, SnapshotMessagesPrefix):
@@ -181,21 +154,12 @@ func (s *Store) ApplySnapshotChunk(ctx context.Context, chunk *clusterproto.Snap
 				return err
 			}
 		}
-	case partition == SnapshotSubscriptionsPartition:
-		if chunk.Kind != snapshotPartitionKindSubscription {
-			return fmt.Errorf("%w: subscriptions snapshot chunk has kind %s", ErrInvalidInput, chunk.Kind)
+	case partition == SnapshotAttachmentsPartition:
+		if chunk.Kind != snapshotPartitionKindAttachment {
+			return fmt.Errorf("%w: attachments snapshot chunk has kind %s", ErrInvalidInput, chunk.Kind)
 		}
 		for _, row := range chunk.Rows {
-			if err := s.applySubscriptionSnapshotRowTx(ctx, tx, row); err != nil {
-				return err
-			}
-		}
-	case partition == SnapshotBlacklistsPartition:
-		if chunk.Kind != snapshotPartitionKindBlacklist {
-			return fmt.Errorf("%w: blacklists snapshot chunk has kind %s", ErrInvalidInput, chunk.Kind)
-		}
-		for _, row := range chunk.Rows {
-			if err := s.applyBlacklistSnapshotRowTx(ctx, tx, row); err != nil {
+			if err := s.applyAttachmentSnapshotRowTx(ctx, tx, row); err != nil {
 				return err
 			}
 		}
@@ -293,29 +257,14 @@ func MaxSnapshotChunkTimestamp(chunk *clusterproto.SnapshotChunk) (clock.Timesta
 			record(ts)
 			continue
 		}
-		if subscriptionRow := row.GetSubscription(); subscriptionRow != nil {
-			ts, err := parseRequiredTimestamp(subscriptionRow.SubscribedAtHlc, "snapshot subscription subscribed_at")
+		if attachmentRow := row.GetAttachment(); attachmentRow != nil {
+			ts, err := parseRequiredTimestamp(attachmentRow.AttachedAtHlc, "snapshot attachment attached_at")
 			if err != nil {
 				return clock.Timestamp{}, err
 			}
 			record(ts)
-			if strings.TrimSpace(subscriptionRow.DeletedAtHlc) != "" {
-				ts, err := parseRequiredTimestamp(subscriptionRow.DeletedAtHlc, "snapshot subscription deleted_at")
-				if err != nil {
-					return clock.Timestamp{}, err
-				}
-				record(ts)
-			}
-			continue
-		}
-		if blacklistRow := row.GetBlacklist(); blacklistRow != nil {
-			ts, err := parseRequiredTimestamp(blacklistRow.BlockedAtHlc, "snapshot blacklist blocked_at")
-			if err != nil {
-				return clock.Timestamp{}, err
-			}
-			record(ts)
-			if strings.TrimSpace(blacklistRow.DeletedAtHlc) != "" {
-				ts, err := parseRequiredTimestamp(blacklistRow.DeletedAtHlc, "snapshot blacklist deleted_at")
+			if strings.TrimSpace(attachmentRow.DeletedAtHlc) != "" {
+				ts, err := parseRequiredTimestamp(attachmentRow.DeletedAtHlc, "snapshot attachment deleted_at")
 				if err != nil {
 					return clock.Timestamp{}, err
 				}
@@ -415,52 +364,27 @@ ORDER BY user_node_id ASC, user_id ASC, created_at_hlc DESC, node_id ASC, seq DE
 	return snapshotRows, nil
 }
 
-func (s *Store) buildSubscriptionSnapshotRows(ctx context.Context) ([]*clusterproto.SnapshotRow, error) {
+func (s *Store) buildAttachmentSnapshotRows(ctx context.Context) ([]*clusterproto.SnapshotRow, error) {
 	rows, err := s.db.QueryContext(ctx, `
-SELECT subscriber_node_id, subscriber_user_id, channel_node_id, channel_user_id, subscribed_at_hlc, deleted_at_hlc, origin_node_id
-FROM channel_subscriptions
-ORDER BY subscriber_node_id ASC, subscriber_user_id ASC, channel_node_id ASC, channel_user_id ASC
+SELECT owner_node_id, owner_user_id, subject_node_id, subject_user_id, attachment_type, config_json, attached_at_hlc, deleted_at_hlc, origin_node_id
+FROM user_attachments
+ORDER BY owner_node_id ASC, owner_user_id ASC, attachment_type ASC, subject_node_id ASC, subject_user_id ASC
 `)
 	if err != nil {
-		return nil, fmt.Errorf("query snapshot subscriptions: %w", err)
+		return nil, fmt.Errorf("query snapshot attachments: %w", err)
 	}
 	defer rows.Close()
 
 	snapshotRows := make([]*clusterproto.SnapshotRow, 0)
 	for rows.Next() {
-		subscription, err := scanSubscription(rows)
+		attachment, err := scanAttachment(rows)
 		if err != nil {
 			return nil, err
 		}
-		snapshotRows = append(snapshotRows, snapshotRowFromSubscription(subscription))
+		snapshotRows = append(snapshotRows, snapshotRowFromAttachment(attachment))
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate snapshot subscriptions: %w", err)
-	}
-	return snapshotRows, nil
-}
-
-func (s *Store) buildBlacklistSnapshotRows(ctx context.Context) ([]*clusterproto.SnapshotRow, error) {
-	rows, err := s.db.QueryContext(ctx, `
-SELECT owner_node_id, owner_user_id, blocked_node_id, blocked_user_id, blocked_at_hlc, deleted_at_hlc, origin_node_id
-FROM user_blacklists
-ORDER BY owner_node_id ASC, owner_user_id ASC, blocked_node_id ASC, blocked_user_id ASC
-`)
-	if err != nil {
-		return nil, fmt.Errorf("query snapshot blacklists: %w", err)
-	}
-	defer rows.Close()
-
-	snapshotRows := make([]*clusterproto.SnapshotRow, 0)
-	for rows.Next() {
-		entry, err := scanBlacklistEntry(rows)
-		if err != nil {
-			return nil, err
-		}
-		snapshotRows = append(snapshotRows, snapshotRowFromBlacklist(entry))
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate snapshot blacklists: %w", err)
+		return nil, fmt.Errorf("iterate snapshot attachments: %w", err)
 	}
 	return snapshotRows, nil
 }
@@ -553,60 +477,40 @@ VALUES(?, ?, ?, ?, ?, ?, ?, ?)
 	return key, nil
 }
 
-func (s *Store) applySubscriptionSnapshotRowTx(ctx context.Context, tx *sql.Tx, row *clusterproto.SnapshotRow) error {
+func (s *Store) applyAttachmentSnapshotRowTx(ctx context.Context, tx *sql.Tx, row *clusterproto.SnapshotRow) error {
 	if row == nil {
 		return fmt.Errorf("%w: snapshot row cannot be nil", ErrInvalidInput)
 	}
-	subscriptionRow := row.GetSubscription()
-	if subscriptionRow == nil {
-		return fmt.Errorf("%w: subscriptions snapshot contains non-subscription row", ErrInvalidInput)
+	attachmentRow := row.GetAttachment()
+	if attachmentRow == nil {
+		return fmt.Errorf("%w: attachments snapshot contains non-attachment row", ErrInvalidInput)
 	}
-	subscription, err := subscriptionFromSnapshotRow(subscriptionRow)
+	attachment, err := attachmentFromSnapshotRow(attachmentRow)
 	if err != nil {
 		return err
 	}
-	if subscription.DeletedAt == nil {
-		if err := s.validateSubscriptionUsersTx(ctx, tx, subscription.Subscriber, subscription.Channel); err != nil {
+	if attachment.DeletedAt == nil {
+		if err := s.validateAttachmentUsersTx(ctx, tx, attachment.Owner, attachment.Subject, attachment.Type); err != nil {
 			if errors.Is(err, ErrNotFound) {
 				return nil
 			}
 			return err
 		}
 	} else {
-		if _, err := s.getUserByIDTx(ctx, tx, subscription.Subscriber, false); err != nil {
+		if _, err := s.getUserByIDTx(ctx, tx, attachment.Owner, false); err != nil {
 			if errors.Is(err, ErrNotFound) {
 				return nil
 			}
 			return err
 		}
-		if _, err := s.getUserByIDTx(ctx, tx, subscription.Channel, false); err != nil {
+		if _, err := s.getUserByIDTx(ctx, tx, attachment.Subject, false); err != nil {
 			if errors.Is(err, ErrNotFound) {
 				return nil
 			}
 			return err
 		}
 	}
-	return s.upsertSubscriptionTx(ctx, tx, subscription)
-}
-
-func (s *Store) applyBlacklistSnapshotRowTx(ctx context.Context, tx *sql.Tx, row *clusterproto.SnapshotRow) error {
-	if row == nil {
-		return fmt.Errorf("%w: snapshot row cannot be nil", ErrInvalidInput)
-	}
-	blacklistRow := row.GetBlacklist()
-	if blacklistRow == nil {
-		return fmt.Errorf("%w: blacklists snapshot contains non-blacklist row", ErrInvalidInput)
-	}
-	entry, err := blacklistFromSnapshotRow(blacklistRow)
-	if err != nil {
-		return err
-	}
-	if entry.DeletedAt == nil {
-		if err := s.validateBlacklistUsersTx(ctx, tx, entry.Owner, entry.Blocked); err != nil {
-			return err
-		}
-	}
-	return s.upsertBlacklistEntryTx(ctx, tx, entry)
+	return s.upsertAttachmentTx(ctx, tx, attachment)
 }
 
 func snapshotRowFromUser(user User) *clusterproto.SnapshotRow {
@@ -649,36 +553,21 @@ func snapshotRowFromMessage(message Message) *clusterproto.SnapshotRow {
 	}
 }
 
-func snapshotRowFromSubscription(subscription Subscription) *clusterproto.SnapshotRow {
-	row := &clusterproto.SnapshotSubscriptionRow{
-		Subscriber:      &clusterproto.ClusterUserRef{NodeId: subscription.Subscriber.NodeID, UserId: subscription.Subscriber.UserID},
-		Channel:         &clusterproto.ClusterUserRef{NodeId: subscription.Channel.NodeID, UserId: subscription.Channel.UserID},
-		SubscribedAtHlc: subscription.SubscribedAt.String(),
-		OriginNodeId:    subscription.OriginNodeID,
+func snapshotRowFromAttachment(attachment Attachment) *clusterproto.SnapshotRow {
+	row := &clusterproto.SnapshotAttachmentRow{
+		Owner:          &clusterproto.ClusterUserRef{NodeId: attachment.Owner.NodeID, UserId: attachment.Owner.UserID},
+		Subject:        &clusterproto.ClusterUserRef{NodeId: attachment.Subject.NodeID, UserId: attachment.Subject.UserID},
+		AttachmentType: string(attachment.Type),
+		ConfigJson:     attachment.ConfigJSON,
+		AttachedAtHlc:  attachment.AttachedAt.String(),
+		OriginNodeId:   attachment.OriginNodeID,
 	}
-	if subscription.DeletedAt != nil {
-		row.DeletedAtHlc = subscription.DeletedAt.String()
-	}
-	return &clusterproto.SnapshotRow{
-		Body: &clusterproto.SnapshotRow_Subscription{
-			Subscription: row,
-		},
-	}
-}
-
-func snapshotRowFromBlacklist(entry BlacklistEntry) *clusterproto.SnapshotRow {
-	row := &clusterproto.SnapshotBlacklistRow{
-		Owner:        &clusterproto.ClusterUserRef{NodeId: entry.Owner.NodeID, UserId: entry.Owner.UserID},
-		Blocked:      &clusterproto.ClusterUserRef{NodeId: entry.Blocked.NodeID, UserId: entry.Blocked.UserID},
-		BlockedAtHlc: entry.BlockedAt.String(),
-		OriginNodeId: entry.OriginNodeID,
-	}
-	if entry.DeletedAt != nil {
-		row.DeletedAtHlc = entry.DeletedAt.String()
+	if attachment.DeletedAt != nil {
+		row.DeletedAtHlc = attachment.DeletedAt.String()
 	}
 	return &clusterproto.SnapshotRow{
-		Body: &clusterproto.SnapshotRow_Blacklist{
-			Blacklist: row,
+		Body: &clusterproto.SnapshotRow_Attachment{
+			Attachment: row,
 		},
 	}
 }
@@ -751,50 +640,11 @@ func userFromSnapshotRow(row *clusterproto.SnapshotUserRow) (User, error) {
 	return user, nil
 }
 
-func subscriptionFromSnapshotRow(row *clusterproto.SnapshotSubscriptionRow) (Subscription, error) {
+func attachmentFromSnapshotRow(row *clusterproto.SnapshotAttachmentRow) (Attachment, error) {
 	if row == nil {
-		return Subscription{}, fmt.Errorf("%w: snapshot subscription cannot be nil", ErrInvalidInput)
+		return Attachment{}, fmt.Errorf("%w: snapshot attachment cannot be nil", ErrInvalidInput)
 	}
-	if row.Subscriber == nil {
-		return Subscription{}, fmt.Errorf("%w: snapshot subscriber cannot be empty", ErrInvalidInput)
-	}
-	if row.Channel == nil {
-		return Subscription{}, fmt.Errorf("%w: snapshot channel cannot be empty", ErrInvalidInput)
-	}
-	subscription := Subscription{
-		Subscriber:   UserKey{NodeID: row.Subscriber.NodeId, UserID: row.Subscriber.UserId},
-		Channel:      UserKey{NodeID: row.Channel.NodeId, UserID: row.Channel.UserId},
-		OriginNodeID: row.OriginNodeId,
-	}
-	if err := subscription.Subscriber.Validate(); err != nil {
-		return Subscription{}, err
-	}
-	if err := subscription.Channel.Validate(); err != nil {
-		return Subscription{}, err
-	}
-	subscribedAt, err := parseRequiredTimestamp(row.SubscribedAtHlc, "snapshot subscription subscribed_at")
-	if err != nil {
-		return Subscription{}, err
-	}
-	subscription.SubscribedAt = subscribedAt
-	if strings.TrimSpace(row.DeletedAtHlc) != "" {
-		deletedAt, err := parseRequiredTimestamp(row.DeletedAtHlc, "snapshot subscription deleted_at")
-		if err != nil {
-			return Subscription{}, err
-		}
-		subscription.DeletedAt = &deletedAt
-	}
-	if subscription.OriginNodeID <= 0 {
-		return Subscription{}, fmt.Errorf("%w: snapshot subscription origin node id is required", ErrInvalidInput)
-	}
-	return subscription, nil
-}
-
-func blacklistFromSnapshotRow(row *clusterproto.SnapshotBlacklistRow) (BlacklistEntry, error) {
-	if row == nil {
-		return BlacklistEntry{}, fmt.Errorf("%w: snapshot blacklist cannot be nil", ErrInvalidInput)
-	}
-	return blacklistFromData(row.Owner, row.Blocked, row.BlockedAtHlc, row.DeletedAtHlc, row.OriginNodeId)
+	return attachmentFromData(row.Owner, row.Subject, row.AttachmentType, row.ConfigJson, row.AttachedAtHlc, row.DeletedAtHlc, row.OriginNodeId)
 }
 
 func timestampSnapshotString(ts *clock.Timestamp) string {

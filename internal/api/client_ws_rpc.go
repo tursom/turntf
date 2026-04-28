@@ -102,12 +102,17 @@ func (s *clientWSSession) handleCreateUser(ctx context.Context, req *internalpro
 			return s.writeError("invalid_request", err.Error(), req.RequestId)
 		}
 	}
-	user, _, err := s.http.service.CreateUser(ctx, store.CreateUserParams{
+	var creator *store.UserKey
+	if s.principal != nil {
+		key := s.principal.User.Key()
+		creator = &key
+	}
+	user, _, err := s.http.service.CreateUserAs(ctx, store.CreateUserParams{
 		Username:     req.Username,
 		PasswordHash: passwordHash,
 		Profile:      profile,
 		Role:         req.Role,
-	})
+	}, creator)
 	if err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
@@ -155,7 +160,11 @@ func (s *clientWSSession) handleUpdateUser(ctx context.Context, req *internalpro
 	if err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
-	if err := s.requireAdminPrincipal(); err != nil {
+	target, err := s.http.service.GetUser(ctx, key)
+	if err != nil {
+		return s.writeStoreOrRequestError(req.RequestId, err)
+	}
+	if err := s.authorizeManageUserPrincipal(ctx, target); err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
 
@@ -175,6 +184,11 @@ func (s *clientWSSession) handleUpdateUser(ctx context.Context, req *internalpro
 			return s.writeError("invalid_request", err.Error(), req.RequestId)
 		}
 		passwordHash = &hashed
+	}
+	if !isAdminRole(s.principal.User.Role) && target.Role == store.RoleChannel {
+		if passwordHash != nil || req.Role != nil {
+			return s.writeStoreOrRequestError(req.RequestId, store.ErrForbidden)
+		}
 	}
 
 	user, _, err := s.http.service.UpdateUser(ctx, store.UpdateUserParams{
@@ -206,7 +220,11 @@ func (s *clientWSSession) handleDeleteUser(ctx context.Context, req *internalpro
 	if err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
-	if err := s.requireAdminPrincipal(); err != nil {
+	target, err := s.http.service.GetUser(ctx, key)
+	if err != nil {
+		return s.writeStoreOrRequestError(req.RequestId, err)
+	}
+	if err := s.authorizeManageUserPrincipal(ctx, target); err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
 	if _, err := s.http.service.DeleteUser(ctx, key); err != nil {
@@ -258,190 +276,109 @@ func (s *clientWSSession) handleListMessages(ctx context.Context, req *internalp
 	})
 }
 
-func (s *clientWSSession) handleSubscribeChannel(ctx context.Context, req *internalproto.SubscribeChannelRequest) error {
+func (s *clientWSSession) handleUpsertUserAttachment(ctx context.Context, req *internalproto.UpsertUserAttachmentRequest) error {
 	if req == nil {
-		return s.writeError("invalid_request", "subscribe_channel cannot be empty", 0)
-	}
-	subscriber, err := userKeyFromProto(req.Subscriber)
-	if err != nil {
-		return s.writeStoreOrRequestError(req.RequestId, err)
-	}
-	channel, err := userKeyFromProto(req.Channel)
-	if err != nil {
-		return s.writeStoreOrRequestError(req.RequestId, err)
-	}
-	if err := s.requireSelfOrAdminPrincipal(subscriber); err != nil {
-		return s.writeStoreOrRequestError(req.RequestId, err)
-	}
-	subscription, _, err := s.http.service.SubscribeChannel(ctx, store.ChannelSubscriptionParams{
-		Subscriber: subscriber,
-		Channel:    channel,
-	})
-	if err != nil {
-		return s.writeStoreOrRequestError(req.RequestId, err)
-	}
-	s.http.invalidateUserChannelSubscriptionCache(subscriber, channel)
-	return s.writeEnvelope(&internalproto.ServerEnvelope{
-		Body: &internalproto.ServerEnvelope_SubscribeChannelResponse{
-			SubscribeChannelResponse: &internalproto.SubscribeChannelResponse{
-				RequestId:    req.RequestId,
-				Subscription: clientProtoSubscription(subscription),
-			},
-		},
-	})
-}
-
-func (s *clientWSSession) handleUnsubscribeChannel(ctx context.Context, req *internalproto.UnsubscribeChannelRequest) error {
-	if req == nil {
-		return s.writeError("invalid_request", "unsubscribe_channel cannot be empty", 0)
-	}
-	subscriber, err := userKeyFromProto(req.Subscriber)
-	if err != nil {
-		return s.writeStoreOrRequestError(req.RequestId, err)
-	}
-	channel, err := userKeyFromProto(req.Channel)
-	if err != nil {
-		return s.writeStoreOrRequestError(req.RequestId, err)
-	}
-	if err := s.requireSelfOrAdminPrincipal(subscriber); err != nil {
-		return s.writeStoreOrRequestError(req.RequestId, err)
-	}
-	subscription, _, err := s.http.service.UnsubscribeChannel(ctx, store.ChannelSubscriptionParams{
-		Subscriber: subscriber,
-		Channel:    channel,
-	})
-	if err != nil {
-		return s.writeStoreOrRequestError(req.RequestId, err)
-	}
-	s.http.invalidateUserChannelSubscriptionCache(subscriber, channel)
-	return s.writeEnvelope(&internalproto.ServerEnvelope{
-		Body: &internalproto.ServerEnvelope_UnsubscribeChannelResponse{
-			UnsubscribeChannelResponse: &internalproto.UnsubscribeChannelResponse{
-				RequestId:    req.RequestId,
-				Subscription: clientProtoSubscription(subscription),
-			},
-		},
-	})
-}
-
-func (s *clientWSSession) handleListSubscriptions(ctx context.Context, req *internalproto.ListSubscriptionsRequest) error {
-	if req == nil {
-		return s.writeError("invalid_request", "list_subscriptions cannot be empty", 0)
-	}
-	subscriber, err := userKeyFromProto(req.Subscriber)
-	if err != nil {
-		return s.writeStoreOrRequestError(req.RequestId, err)
-	}
-	if err := s.requireSelfOrAdminPrincipal(subscriber); err != nil {
-		return s.writeStoreOrRequestError(req.RequestId, err)
-	}
-	subscriptions, err := s.http.service.ListChannelSubscriptions(ctx, subscriber)
-	if err != nil {
-		return s.writeStoreOrRequestError(req.RequestId, err)
-	}
-	items := make([]*internalproto.Subscription, 0, len(subscriptions))
-	for _, subscription := range subscriptions {
-		items = append(items, clientProtoSubscription(subscription))
-	}
-	return s.writeEnvelope(&internalproto.ServerEnvelope{
-		Body: &internalproto.ServerEnvelope_ListSubscriptionsResponse{
-			ListSubscriptionsResponse: &internalproto.ListSubscriptionsResponse{
-				RequestId: req.RequestId,
-				Items:     items,
-				Count:     int32(len(items)),
-			},
-		},
-	})
-}
-
-func (s *clientWSSession) handleBlockUser(ctx context.Context, req *internalproto.BlockUserRequest) error {
-	if req == nil {
-		return s.writeError("invalid_request", "block_user cannot be empty", 0)
+		return s.writeError("invalid_request", "upsert_user_attachment cannot be empty", 0)
 	}
 	owner, err := userKeyFromProto(req.Owner)
 	if err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
-	blocked, err := userKeyFromProto(req.Blocked)
+	subject, err := userKeyFromProto(req.Subject)
 	if err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
-	if err := s.requireSelfOrAdminPrincipal(owner); err != nil {
+	attachmentType, err := attachmentTypeFromProto(req.AttachmentType)
+	if err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
-	entry, _, err := s.http.service.BlockUser(ctx, store.BlacklistParams{
+	if err := s.authorizeAttachmentPrincipal(ctx, owner, attachmentType); err != nil {
+		return s.writeStoreOrRequestError(req.RequestId, err)
+	}
+	attachment, _, err := s.http.service.UpsertAttachment(ctx, store.UpsertAttachmentParams{
+		Owner:      owner,
+		Subject:    subject,
+		Type:       attachmentType,
+		ConfigJSON: string(req.ConfigJson),
+	})
+	if err != nil {
+		return s.writeStoreOrRequestError(req.RequestId, err)
+	}
+	s.http.invalidateAttachmentCaches(attachment)
+	return s.writeEnvelope(&internalproto.ServerEnvelope{
+		Body: &internalproto.ServerEnvelope_UpsertUserAttachmentResponse{
+			UpsertUserAttachmentResponse: &internalproto.UpsertUserAttachmentResponse{
+				RequestId:  req.RequestId,
+				Attachment: clientProtoAttachment(attachment),
+			},
+		},
+	})
+}
+
+func (s *clientWSSession) handleDeleteUserAttachment(ctx context.Context, req *internalproto.DeleteUserAttachmentRequest) error {
+	if req == nil {
+		return s.writeError("invalid_request", "delete_user_attachment cannot be empty", 0)
+	}
+	owner, err := userKeyFromProto(req.Owner)
+	if err != nil {
+		return s.writeStoreOrRequestError(req.RequestId, err)
+	}
+	subject, err := userKeyFromProto(req.Subject)
+	if err != nil {
+		return s.writeStoreOrRequestError(req.RequestId, err)
+	}
+	attachmentType, err := attachmentTypeFromProto(req.AttachmentType)
+	if err != nil {
+		return s.writeStoreOrRequestError(req.RequestId, err)
+	}
+	if err := s.authorizeAttachmentPrincipal(ctx, owner, attachmentType); err != nil {
+		return s.writeStoreOrRequestError(req.RequestId, err)
+	}
+	attachment, _, err := s.http.service.DeleteAttachment(ctx, store.DeleteAttachmentParams{
 		Owner:   owner,
-		Blocked: blocked,
+		Subject: subject,
+		Type:    attachmentType,
 	})
 	if err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
-	s.http.invalidateUserBlacklistCache(owner, blocked)
+	s.http.invalidateAttachmentCaches(attachment)
 	return s.writeEnvelope(&internalproto.ServerEnvelope{
-		Body: &internalproto.ServerEnvelope_BlockUserResponse{
-			BlockUserResponse: &internalproto.BlockUserResponse{
-				RequestId: req.RequestId,
-				Entry:     clientProtoBlacklistEntry(entry),
+		Body: &internalproto.ServerEnvelope_DeleteUserAttachmentResponse{
+			DeleteUserAttachmentResponse: &internalproto.DeleteUserAttachmentResponse{
+				RequestId:  req.RequestId,
+				Attachment: clientProtoAttachment(attachment),
 			},
 		},
 	})
 }
 
-func (s *clientWSSession) handleUnblockUser(ctx context.Context, req *internalproto.UnblockUserRequest) error {
+func (s *clientWSSession) handleListUserAttachments(ctx context.Context, req *internalproto.ListUserAttachmentsRequest) error {
 	if req == nil {
-		return s.writeError("invalid_request", "unblock_user cannot be empty", 0)
+		return s.writeError("invalid_request", "list_user_attachments cannot be empty", 0)
 	}
 	owner, err := userKeyFromProto(req.Owner)
 	if err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
-	blocked, err := userKeyFromProto(req.Blocked)
+	attachmentType, err := attachmentTypeFromProto(req.AttachmentType)
 	if err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
-	if err := s.requireSelfOrAdminPrincipal(owner); err != nil {
+	if err := s.authorizeAttachmentOwnerPrincipal(ctx, owner, attachmentType); err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
-	entry, _, err := s.http.service.UnblockUser(ctx, store.BlacklistParams{
-		Owner:   owner,
-		Blocked: blocked,
-	})
+	attachments, err := s.http.service.ListUserAttachments(ctx, owner, attachmentType)
 	if err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
-	s.http.invalidateUserBlacklistCache(owner, blocked)
-	return s.writeEnvelope(&internalproto.ServerEnvelope{
-		Body: &internalproto.ServerEnvelope_UnblockUserResponse{
-			UnblockUserResponse: &internalproto.UnblockUserResponse{
-				RequestId: req.RequestId,
-				Entry:     clientProtoBlacklistEntry(entry),
-			},
-		},
-	})
-}
-
-func (s *clientWSSession) handleListBlockedUsers(ctx context.Context, req *internalproto.ListBlockedUsersRequest) error {
-	if req == nil {
-		return s.writeError("invalid_request", "list_blocked_users cannot be empty", 0)
-	}
-	owner, err := userKeyFromProto(req.Owner)
-	if err != nil {
-		return s.writeStoreOrRequestError(req.RequestId, err)
-	}
-	if err := s.requireSelfOrAdminPrincipal(owner); err != nil {
-		return s.writeStoreOrRequestError(req.RequestId, err)
-	}
-	entries, err := s.http.service.ListBlockedUsers(ctx, owner)
-	if err != nil {
-		return s.writeStoreOrRequestError(req.RequestId, err)
-	}
-	items := make([]*internalproto.BlacklistEntry, 0, len(entries))
-	for _, entry := range entries {
-		items = append(items, clientProtoBlacklistEntry(entry))
+	items := make([]*internalproto.Attachment, 0, len(attachments))
+	for _, attachment := range attachments {
+		items = append(items, clientProtoAttachment(attachment))
 	}
 	return s.writeEnvelope(&internalproto.ServerEnvelope{
-		Body: &internalproto.ServerEnvelope_ListBlockedUsersResponse{
-			ListBlockedUsersResponse: &internalproto.ListBlockedUsersResponse{
+		Body: &internalproto.ServerEnvelope_ListUserAttachmentsResponse{
+			ListUserAttachmentsResponse: &internalproto.ListUserAttachmentsResponse{
 				RequestId: req.RequestId,
 				Items:     items,
 				Count:     int32(len(items)),
@@ -603,6 +540,83 @@ func (s *clientWSSession) requireSelfOrAdminPrincipal(key store.UserKey) error {
 	return store.ErrForbidden
 }
 
+func (s *clientWSSession) authorizeManageUserPrincipal(ctx context.Context, target store.User) error {
+	if s.principal == nil {
+		return store.ErrForbidden
+	}
+	if isAdminRole(s.principal.User.Role) {
+		return nil
+	}
+	if target.Role != store.RoleChannel {
+		return store.ErrForbidden
+	}
+	allowed, err := s.http.service.IsChannelManager(ctx, target.Key(), s.principal.User.Key())
+	if err != nil {
+		return err
+	}
+	if !allowed {
+		return store.ErrForbidden
+	}
+	return nil
+}
+
+func (s *clientWSSession) authorizeAttachmentPrincipal(ctx context.Context, owner store.UserKey, attachmentType store.AttachmentType) error {
+	if s.principal == nil {
+		return store.ErrForbidden
+	}
+	if isAdminRole(s.principal.User.Role) {
+		return nil
+	}
+	switch attachmentType {
+	case store.AttachmentTypeChannelManager, store.AttachmentTypeChannelWriter:
+		allowed, err := s.http.service.IsChannelManager(ctx, owner, s.principal.User.Key())
+		if err != nil {
+			return err
+		}
+		if allowed {
+			return nil
+		}
+		return store.ErrForbidden
+	case store.AttachmentTypeChannelSubscription, store.AttachmentTypeUserBlacklist:
+		if s.principal.User.Key() == owner {
+			return nil
+		}
+		return store.ErrForbidden
+	default:
+		return store.ErrInvalidInput
+	}
+}
+
+func (s *clientWSSession) authorizeAttachmentOwnerPrincipal(ctx context.Context, owner store.UserKey, attachmentType store.AttachmentType) error {
+	if s.principal == nil {
+		return store.ErrForbidden
+	}
+	if isAdminRole(s.principal.User.Role) {
+		return nil
+	}
+	if attachmentType != "" {
+		return s.authorizeAttachmentPrincipal(ctx, owner, attachmentType)
+	}
+	ownerUser, err := s.http.service.GetUser(ctx, owner)
+	if err != nil {
+		return err
+	}
+	if ownerUser.Role == store.RoleChannel {
+		allowed, err := s.http.service.IsChannelManager(ctx, owner, s.principal.User.Key())
+		if err != nil {
+			return err
+		}
+		if allowed {
+			return nil
+		}
+		return store.ErrForbidden
+	}
+	if s.principal.User.Key() == owner {
+		return nil
+	}
+	return store.ErrForbidden
+}
+
 func (s *clientWSSession) authorizeListMessages(ctx context.Context, key store.UserKey) error {
 	target, err := s.http.service.GetUser(ctx, key)
 	if err != nil {
@@ -641,28 +655,17 @@ func hashPasswordFromWS(password string) (string, error) {
 	return hashed, nil
 }
 
-func clientProtoSubscription(subscription store.Subscription) *internalproto.Subscription {
-	item := &internalproto.Subscription{
-		Subscriber:   &internalproto.UserRef{NodeId: subscription.Subscriber.NodeID, UserId: subscription.Subscriber.UserID},
-		Channel:      &internalproto.UserRef{NodeId: subscription.Channel.NodeID, UserId: subscription.Channel.UserID},
-		SubscribedAt: subscription.SubscribedAt.String(),
-		OriginNodeId: subscription.OriginNodeID,
+func clientProtoAttachment(attachment store.Attachment) *internalproto.Attachment {
+	item := &internalproto.Attachment{
+		Owner:          &internalproto.UserRef{NodeId: attachment.Owner.NodeID, UserId: attachment.Owner.UserID},
+		Subject:        &internalproto.UserRef{NodeId: attachment.Subject.NodeID, UserId: attachment.Subject.UserID},
+		AttachmentType: attachmentTypeToProto(attachment.Type),
+		ConfigJson:     []byte(attachment.ConfigJSON),
+		AttachedAt:     attachment.AttachedAt.String(),
+		OriginNodeId:   attachment.OriginNodeID,
 	}
-	if subscription.DeletedAt != nil {
-		item.DeletedAt = subscription.DeletedAt.String()
-	}
-	return item
-}
-
-func clientProtoBlacklistEntry(entry store.BlacklistEntry) *internalproto.BlacklistEntry {
-	item := &internalproto.BlacklistEntry{
-		Owner:        &internalproto.UserRef{NodeId: entry.Owner.NodeID, UserId: entry.Owner.UserID},
-		Blocked:      &internalproto.UserRef{NodeId: entry.Blocked.NodeID, UserId: entry.Blocked.UserID},
-		BlockedAt:    entry.BlockedAt.String(),
-		OriginNodeId: entry.OriginNodeID,
-	}
-	if entry.DeletedAt != nil {
-		item.DeletedAt = entry.DeletedAt.String()
+	if attachment.DeletedAt != nil {
+		item.DeletedAt = attachment.DeletedAt.String()
 	}
 	return item
 }

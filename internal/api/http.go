@@ -89,6 +89,10 @@ type blacklistRequest struct {
 	BlockedUserID int64 `json:"blocked_user_id"`
 }
 
+type attachmentRequest struct {
+	ConfigJSON json.RawMessage `json:"config_json"`
+}
+
 type loginRequest struct {
 	NodeID   int64  `json:"node_id"`
 	UserID   int64  `json:"user_id"`
@@ -176,12 +180,9 @@ func (h *HTTP) routes() {
 	h.mux.HandleFunc("DELETE /nodes/{node_id}/users/{user_id}", h.handleDeleteUser)
 	h.mux.HandleFunc("GET /nodes/{node_id}/users/{user_id}/messages", h.handleListMessagesByUser)
 	h.mux.HandleFunc("POST /nodes/{node_id}/users/{user_id}/messages", h.handleCreateMessage)
-	h.mux.HandleFunc("GET /nodes/{node_id}/users/{user_id}/subscriptions", h.handleListSubscriptions)
-	h.mux.HandleFunc("POST /nodes/{node_id}/users/{user_id}/subscriptions", h.handleSubscribeChannel)
-	h.mux.HandleFunc("DELETE /nodes/{node_id}/users/{user_id}/subscriptions/{channel_node_id}/{channel_user_id}", h.handleUnsubscribeChannel)
-	h.mux.HandleFunc("GET /nodes/{node_id}/users/{user_id}/blacklist", h.handleListBlockedUsers)
-	h.mux.HandleFunc("POST /nodes/{node_id}/users/{user_id}/blacklist", h.handleBlockUser)
-	h.mux.HandleFunc("DELETE /nodes/{node_id}/users/{user_id}/blacklist/{blocked_node_id}/{blocked_user_id}", h.handleUnblockUser)
+	h.mux.HandleFunc("GET /nodes/{node_id}/users/{user_id}/attachments", h.handleListUserAttachments)
+	h.mux.HandleFunc("PUT /nodes/{node_id}/users/{user_id}/attachments/{attachment_type}/{subject_node_id}/{subject_user_id}", h.handleUpsertUserAttachment)
+	h.mux.HandleFunc("DELETE /nodes/{node_id}/users/{user_id}/attachments/{attachment_type}/{subject_node_id}/{subject_user_id}", h.handleDeleteUserAttachment)
 	h.mux.HandleFunc("GET /events", h.handleListEvents)
 	h.mux.HandleFunc("GET /cluster/nodes", h.handleClusterNodes)
 	h.mux.HandleFunc("GET /cluster/nodes/{node_id}/logged-in-users", h.handleNodeLoggedInUsers)
@@ -240,7 +241,8 @@ func (h *HTTP) handleLogin(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *HTTP) handleCreateUser(w http.ResponseWriter, r *http.Request) {
-	if _, ok := h.requireAdmin(w, r); !ok {
+	principal, ok := h.requireAdmin(w, r)
+	if !ok {
 		return
 	}
 
@@ -265,12 +267,17 @@ func (h *HTTP) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	user, _, err := h.service.CreateUser(r.Context(), store.CreateUserParams{
+	var creator *store.UserKey
+	if principal != nil {
+		key := principal.User.Key()
+		creator = &key
+	}
+	user, _, err := h.service.CreateUserAs(r.Context(), store.CreateUserParams{
 		Username:     req.Username,
 		PasswordHash: passwordHash,
 		Profile:      profile,
 		Role:         req.Role,
-	})
+	}, creator)
 	if err != nil {
 		writeStoreError(w, err)
 		return
@@ -304,7 +311,17 @@ func (h *HTTP) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if _, ok := h.requireAdmin(w, r); !ok {
+	principal, ok := h.requireAuthenticated(w, r)
+	if !ok {
+		return
+	}
+	target, err := h.service.GetUser(r.Context(), key)
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	if err := h.authorizeManageUser(r.Context(), principal, target, true); err != nil {
+		writeStoreError(w, err)
 		return
 	}
 
@@ -333,6 +350,13 @@ func (h *HTTP) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		passwordHash = &hashed
 	}
 
+	if principal != nil && !isAdminRole(principal.User.Role) && target.Role == store.RoleChannel {
+		if req.Password != nil || req.Role != nil {
+			writeStoreError(w, store.ErrForbidden)
+			return
+		}
+	}
+
 	user, _, err := h.service.UpdateUser(r.Context(), store.UpdateUserParams{
 		Key:          key,
 		Username:     req.Username,
@@ -353,7 +377,17 @@ func (h *HTTP) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if _, ok := h.requireAdmin(w, r); !ok {
+	principal, ok := h.requireAuthenticated(w, r)
+	if !ok {
+		return
+	}
+	target, err := h.service.GetUser(r.Context(), key)
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	if err := h.authorizeManageUser(r.Context(), principal, target, false); err != nil {
+		writeStoreError(w, err)
 		return
 	}
 
@@ -449,14 +483,17 @@ func (h *HTTP) authorizeCreateMessage(ctx context.Context, principal *requestPri
 	if err != nil {
 		return err
 	}
+	if target.CanLogin() {
+		return nil
+	}
 	if target.Role != store.RoleChannel {
 		return store.ErrForbidden
 	}
-	subscribed, err := h.service.IsSubscribedToChannel(ctx, principal.User.Key(), key)
+	allowed, err := h.service.IsChannelWriter(ctx, key, principal.User.Key())
 	if err != nil {
 		return err
 	}
-	if !subscribed {
+	if !allowed {
 		return store.ErrForbidden
 	}
 	return nil
@@ -505,6 +542,90 @@ func (h *HTTP) handleListMessagesByUser(w http.ResponseWriter, r *http.Request) 
 		"items": items,
 		"count": len(items),
 	})
+}
+
+func (h *HTTP) handleListUserAttachments(w http.ResponseWriter, r *http.Request) {
+	owner, ok := parsePathUserKey(w, r)
+	if !ok {
+		return
+	}
+	principal, ok := h.requireAuthenticated(w, r)
+	if !ok {
+		return
+	}
+	attachmentType, err := attachmentTypeFromQuery(r)
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	if err := h.authorizeAttachmentOwnerAccess(r.Context(), principal, owner, attachmentType); err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	attachments, err := h.service.ListUserAttachments(r.Context(), owner, attachmentType)
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	items := make([]attachmentResponse, 0, len(attachments))
+	for _, attachment := range attachments {
+		items = append(items, attachmentResponseFromStore(attachment))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"items": items,
+		"count": len(items),
+	})
+}
+
+func (h *HTTP) handleUpsertUserAttachment(w http.ResponseWriter, r *http.Request) {
+	owner, attachmentType, subject, principal, ok := h.parseAttachmentWriteRequest(w, r)
+	if !ok {
+		return
+	}
+	if err := h.authorizeAttachmentAccess(r.Context(), principal, owner, attachmentType); err != nil {
+		writeStoreError(w, err)
+		return
+	}
+
+	var req attachmentRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	attachment, _, err := h.service.UpsertAttachment(r.Context(), store.UpsertAttachmentParams{
+		Owner:      owner,
+		Subject:    subject,
+		Type:       attachmentType,
+		ConfigJSON: string(req.ConfigJSON),
+	})
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	h.invalidateAttachmentCaches(attachment)
+	writeJSON(w, http.StatusCreated, attachmentResponseFromStore(attachment))
+}
+
+func (h *HTTP) handleDeleteUserAttachment(w http.ResponseWriter, r *http.Request) {
+	owner, attachmentType, subject, principal, ok := h.parseAttachmentWriteRequest(w, r)
+	if !ok {
+		return
+	}
+	if err := h.authorizeAttachmentAccess(r.Context(), principal, owner, attachmentType); err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	attachment, _, err := h.service.DeleteAttachment(r.Context(), store.DeleteAttachmentParams{
+		Owner:   owner,
+		Subject: subject,
+		Type:    attachmentType,
+	})
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	h.invalidateAttachmentCaches(attachment)
+	writeJSON(w, http.StatusOK, attachmentResponseFromStore(attachment))
 }
 
 func (h *HTTP) handleSubscribeChannel(w http.ResponseWriter, r *http.Request) {
@@ -792,6 +913,16 @@ type transientPacketResponse struct {
 	DeliveryMode string        `json:"delivery_mode"`
 }
 
+type attachmentResponse struct {
+	Owner          store.UserKey   `json:"owner"`
+	Subject        store.UserKey   `json:"subject"`
+	AttachmentType string          `json:"attachment_type"`
+	ConfigJSON     json.RawMessage `json:"config_json"`
+	AttachedAt     string          `json:"attached_at"`
+	DeletedAt      string          `json:"deleted_at,omitempty"`
+	OriginNodeID   int64           `json:"origin_node_id"`
+}
+
 type subscriptionResponse struct {
 	Subscriber   store.UserKey `json:"subscriber"`
 	Channel      store.UserKey `json:"channel"`
@@ -855,6 +986,21 @@ func transientPacketAcceptedResponse(packet store.TransientPacket) transientPack
 		Recipient:    packet.Recipient,
 		DeliveryMode: string(packet.DeliveryMode),
 	}
+}
+
+func attachmentResponseFromStore(attachment store.Attachment) attachmentResponse {
+	response := attachmentResponse{
+		Owner:          attachment.Owner,
+		Subject:        attachment.Subject,
+		AttachmentType: string(attachment.Type),
+		ConfigJSON:     json.RawMessage(attachment.ConfigJSON),
+		AttachedAt:     attachment.AttachedAt.String(),
+		OriginNodeID:   attachment.OriginNodeID,
+	}
+	if attachment.DeletedAt != nil {
+		response.DeletedAt = attachment.DeletedAt.String()
+	}
+	return response
 }
 
 func clientSessionShardIndex(key store.UserKey) int {
@@ -1116,6 +1262,128 @@ func normalizeJSONValue(raw json.RawMessage, defaultValue string) (string, error
 		return "", fmt.Errorf("invalid json payload")
 	}
 	return string(trimmed), nil
+}
+
+func attachmentTypeFromQuery(r *http.Request) (store.AttachmentType, error) {
+	if r == nil {
+		return "", nil
+	}
+	raw := strings.TrimSpace(r.URL.Query().Get("attachment_type"))
+	if raw == "" {
+		return "", nil
+	}
+	return store.NormalizeAttachmentType(raw)
+}
+
+func attachmentTypeFromPath(w http.ResponseWriter, r *http.Request) (store.AttachmentType, bool) {
+	raw := strings.TrimSpace(r.PathValue("attachment_type"))
+	attachmentType, err := store.NormalizeAttachmentType(raw)
+	if err != nil {
+		writeStoreError(w, err)
+		return "", false
+	}
+	return attachmentType, true
+}
+
+func (h *HTTP) parseAttachmentWriteRequest(w http.ResponseWriter, r *http.Request) (store.UserKey, store.AttachmentType, store.UserKey, *requestPrincipal, bool) {
+	owner, ok := parsePathUserKey(w, r)
+	if !ok {
+		return store.UserKey{}, "", store.UserKey{}, nil, false
+	}
+	attachmentType, ok := attachmentTypeFromPath(w, r)
+	if !ok {
+		return store.UserKey{}, "", store.UserKey{}, nil, false
+	}
+	subjectNodeID, ok := parsePositivePathInt(w, r, "subject_node_id")
+	if !ok {
+		return store.UserKey{}, "", store.UserKey{}, nil, false
+	}
+	subjectUserID, ok := parsePositivePathInt(w, r, "subject_user_id")
+	if !ok {
+		return store.UserKey{}, "", store.UserKey{}, nil, false
+	}
+	principal, ok := h.requireAuthenticated(w, r)
+	if !ok {
+		return store.UserKey{}, "", store.UserKey{}, nil, false
+	}
+	return owner, attachmentType, store.UserKey{NodeID: subjectNodeID, UserID: subjectUserID}, principal, true
+}
+
+func (h *HTTP) authorizeAttachmentAccess(ctx context.Context, principal *requestPrincipal, owner store.UserKey, attachmentType store.AttachmentType) error {
+	if principal == nil || isAdminRole(principal.User.Role) {
+		return nil
+	}
+	switch attachmentType {
+	case store.AttachmentTypeChannelManager, store.AttachmentTypeChannelWriter:
+		allowed, err := h.service.IsChannelManager(ctx, owner, principal.User.Key())
+		if err != nil {
+			return err
+		}
+		if allowed {
+			return nil
+		}
+		return store.ErrForbidden
+	case store.AttachmentTypeChannelSubscription, store.AttachmentTypeUserBlacklist:
+		if principal.User.Key() == owner {
+			return nil
+		}
+		return store.ErrForbidden
+	default:
+		return store.ErrInvalidInput
+	}
+}
+
+func (h *HTTP) authorizeAttachmentOwnerAccess(ctx context.Context, principal *requestPrincipal, owner store.UserKey, attachmentType store.AttachmentType) error {
+	if principal == nil || isAdminRole(principal.User.Role) {
+		return nil
+	}
+	if attachmentType != "" {
+		return h.authorizeAttachmentAccess(ctx, principal, owner, attachmentType)
+	}
+	ownerUser, err := h.service.GetUser(ctx, owner)
+	if err != nil {
+		return err
+	}
+	if ownerUser.Role == store.RoleChannel {
+		allowed, err := h.service.IsChannelManager(ctx, owner, principal.User.Key())
+		if err != nil {
+			return err
+		}
+		if allowed {
+			return nil
+		}
+		return store.ErrForbidden
+	}
+	if principal.User.Key() == owner {
+		return nil
+	}
+	return store.ErrForbidden
+}
+
+func (h *HTTP) authorizeManageUser(ctx context.Context, principal *requestPrincipal, target store.User, update bool) error {
+	if principal == nil || isAdminRole(principal.User.Role) {
+		return nil
+	}
+	if target.Role != store.RoleChannel {
+		return store.ErrForbidden
+	}
+	allowed, err := h.service.IsChannelManager(ctx, target.Key(), principal.User.Key())
+	if err != nil {
+		return err
+	}
+	if !allowed {
+		return store.ErrForbidden
+	}
+	return nil
+}
+
+func (h *HTTP) invalidateAttachmentCaches(attachment store.Attachment) {
+	switch attachment.Type {
+	case store.AttachmentTypeChannelSubscription:
+		h.invalidateUserChannelSubscriptionCache(attachment.Owner, attachment.Subject)
+	case store.AttachmentTypeUserBlacklist:
+		h.invalidateUserBlacklistCache(attachment.Owner, attachment.Subject)
+	}
 }
 
 func (h *HTTP) requireAuthenticated(w http.ResponseWriter, r *http.Request) (*requestPrincipal, bool) {

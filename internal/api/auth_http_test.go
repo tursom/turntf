@@ -123,7 +123,7 @@ func TestAuthenticatedHTTPLoginAndAuthorization(t *testing.T) {
 		"body": []byte("forbidden"),
 	}, map[string]string{
 		"Authorization": "Bearer " + aliceToken,
-	}, http.StatusForbidden)
+	}, http.StatusCreated)
 
 	var channel struct {
 		NodeID int64  `json:"node_id"`
@@ -139,6 +139,7 @@ func TestAuthenticatedHTTPLoginAndAuthorization(t *testing.T) {
 	if channel.Role != store.RoleChannel {
 		t.Fatalf("expected channel role, got %+v", channel)
 	}
+	channelKey := store.UserKey{NodeID: channel.NodeID, UserID: channel.UserID}
 
 	doJSONWithHeaders(t, testAPI.handler, http.MethodPost, "/auth/login", map[string]any{
 		"node_id":  channel.NodeID,
@@ -152,11 +153,15 @@ func TestAuthenticatedHTTPLoginAndAuthorization(t *testing.T) {
 		"Authorization": "Bearer " + aliceToken,
 	}, http.StatusForbidden)
 
-	doJSONWithHeaders(t, testAPI.handler, http.MethodPost, subscriptionsPath(aliceKey.NodeID, aliceKey.UserID), map[string]any{
-		"channel_node_id": channel.NodeID,
-		"channel_user_id": channel.UserID,
+	doJSONWithHeaders(t, testAPI.handler, http.MethodPut, attachmentPath(aliceKey, store.AttachmentTypeChannelSubscription, channelKey), map[string]any{
+		"config_json": map[string]any{},
 	}, map[string]string{
 		"Authorization": "Bearer " + aliceToken,
+	}, http.StatusCreated)
+	doJSONWithHeaders(t, testAPI.handler, http.MethodPut, attachmentPath(channelKey, store.AttachmentTypeChannelWriter, aliceKey), map[string]any{
+		"config_json": map[string]any{},
+	}, map[string]string{
+		"Authorization": "Bearer " + adminToken,
 	}, http.StatusCreated)
 
 	doJSONWithHeaders(t, testAPI.handler, http.MethodPost, userMessagesPath(channel.NodeID, channel.UserID), map[string]any{
@@ -208,17 +213,20 @@ func TestBlacklistHTTPAPIRejectsDirectMessagesButKeepsChannelVisibility(t *testi
 	aliceToken := loginToken(t, handler, aliceKey, "alice-password")
 	bobToken := loginToken(t, handler, bobKey, "bob-password")
 
-	doJSONWithHeaders(t, handler, http.MethodPost, subscriptionsPath(aliceKey.NodeID, aliceKey.UserID), map[string]any{
-		"channel_node_id": channelKey.NodeID,
-		"channel_user_id": channelKey.UserID,
+	doJSONWithHeaders(t, handler, http.MethodPut, attachmentPath(aliceKey, store.AttachmentTypeChannelSubscription, channelKey), map[string]any{
+		"config_json": map[string]any{},
 	}, map[string]string{
 		"Authorization": "Bearer " + aliceToken,
 	}, http.StatusCreated)
-	doJSONWithHeaders(t, handler, http.MethodPost, subscriptionsPath(bobKey.NodeID, bobKey.UserID), map[string]any{
-		"channel_node_id": channelKey.NodeID,
-		"channel_user_id": channelKey.UserID,
+	doJSONWithHeaders(t, handler, http.MethodPut, attachmentPath(bobKey, store.AttachmentTypeChannelSubscription, channelKey), map[string]any{
+		"config_json": map[string]any{},
 	}, map[string]string{
 		"Authorization": "Bearer " + bobToken,
+	}, http.StatusCreated)
+	doJSONWithHeaders(t, handler, http.MethodPut, attachmentPath(channelKey, store.AttachmentTypeChannelWriter, bobKey), map[string]any{
+		"config_json": map[string]any{},
+	}, map[string]string{
+		"Authorization": "Bearer " + adminToken,
 	}, http.StatusCreated)
 
 	if _, _, err := testAPI.http.service.CreateMessage(context.Background(), store.CreateMessageParams{
@@ -229,23 +237,22 @@ func TestBlacklistHTTPAPIRejectsDirectMessagesButKeepsChannelVisibility(t *testi
 		t.Fatalf("create direct message before blacklist: %v", err)
 	}
 
-	doJSONWithHeaders(t, handler, http.MethodPost, blacklistPath(aliceKey.NodeID, aliceKey.UserID), map[string]any{
-		"blocked_node_id": bobKey.NodeID,
-		"blocked_user_id": bobKey.UserID,
+	doJSONWithHeaders(t, handler, http.MethodPut, attachmentPath(aliceKey, store.AttachmentTypeUserBlacklist, bobKey), map[string]any{
+		"config_json": map[string]any{},
 	}, map[string]string{
 		"Authorization": "Bearer " + aliceToken,
 	}, http.StatusCreated)
 
 	var blockedList struct {
 		Items []struct {
-			Blocked store.UserKey `json:"blocked"`
+			Subject store.UserKey `json:"subject"`
 		} `json:"items"`
 		Count int `json:"count"`
 	}
-	mustJSON(t, doJSONWithHeaders(t, handler, http.MethodGet, blacklistPath(aliceKey.NodeID, aliceKey.UserID), nil, map[string]string{
+	mustJSON(t, doJSONWithHeaders(t, handler, http.MethodGet, attachmentsPath(aliceKey)+"?attachment_type="+string(store.AttachmentTypeUserBlacklist), nil, map[string]string{
 		"Authorization": "Bearer " + aliceToken,
 	}, http.StatusOK), &blockedList)
-	if blockedList.Count != 1 || blockedList.Items[0].Blocked != bobKey {
+	if blockedList.Count != 1 || blockedList.Items[0].Subject != bobKey {
 		t.Fatalf("unexpected blocked users list: %+v", blockedList)
 	}
 
@@ -276,7 +283,7 @@ func TestBlacklistHTTPAPIRejectsDirectMessagesButKeepsChannelVisibility(t *testi
 		t.Fatalf("unexpected blocked direct message in list: %+v", aliceMessages)
 	}
 
-	doJSONWithHeaders(t, handler, http.MethodDelete, blacklistPath(aliceKey.NodeID, aliceKey.UserID)+"/"+strconv.FormatInt(bobKey.NodeID, 10)+"/"+strconv.FormatInt(bobKey.UserID, 10), nil, map[string]string{
+	doJSONWithHeaders(t, handler, http.MethodDelete, attachmentPath(aliceKey, store.AttachmentTypeUserBlacklist, bobKey), nil, map[string]string{
 		"Authorization": "Bearer " + adminToken,
 	}, http.StatusOK)
 	if _, _, err := testAPI.http.service.CreateMessage(context.Background(), store.CreateMessageParams{
@@ -661,11 +668,15 @@ func TestClientWebSocketSubscribedChannelReceivesRealtimePush(t *testing.T) {
 	adminToken := loginToken(t, testAPI.handler, adminKey, "root-password")
 	aliceKey := createUserAs(t, testAPI.handler, adminToken, "alice", "alice-password", store.RoleUser)
 	channelKey := createUserAs(t, testAPI.handler, adminToken, "orders", "", store.RoleChannel)
+	doJSONWithHeaders(t, testAPI.handler, http.MethodPut, attachmentPath(channelKey, store.AttachmentTypeChannelWriter, aliceKey), map[string]any{
+		"config_json": map[string]any{},
+	}, map[string]string{
+		"Authorization": "Bearer " + adminToken,
+	}, http.StatusCreated)
 	aliceToken := loginToken(t, testAPI.handler, aliceKey, "alice-password")
 
-	doJSONWithHeaders(t, testAPI.handler, http.MethodPost, subscriptionsPath(aliceKey.NodeID, aliceKey.UserID), map[string]any{
-		"channel_node_id": channelKey.NodeID,
-		"channel_user_id": channelKey.UserID,
+	doJSONWithHeaders(t, testAPI.handler, http.MethodPut, attachmentPath(aliceKey, store.AttachmentTypeChannelSubscription, channelKey), map[string]any{
+		"config_json": map[string]any{},
 	}, map[string]string{
 		"Authorization": "Bearer " + aliceToken,
 	}, http.StatusCreated)
@@ -1234,6 +1245,11 @@ func TestClientWebSocketRPCRespectsUserAuthorizationAndSubscriptions(t *testing.
 	adminToken := loginToken(t, testAPI.handler, adminKey, "root-password")
 	aliceKey := createUserAs(t, testAPI.handler, adminToken, "alice", "alice-password", store.RoleUser)
 	channelKey := createUserAs(t, testAPI.handler, adminToken, "orders", "", store.RoleChannel)
+	doJSONWithHeaders(t, testAPI.handler, http.MethodPut, attachmentPath(channelKey, store.AttachmentTypeChannelWriter, aliceKey), map[string]any{
+		"config_json": map[string]any{},
+	}, map[string]string{
+		"Authorization": "Bearer " + adminToken,
+	}, http.StatusCreated)
 
 	conn := dialClientWebSocket(t, server.URL)
 	defer conn.Close()
@@ -1302,39 +1318,42 @@ func TestClientWebSocketRPCRespectsUserAuthorizationAndSubscriptions(t *testing.
 	}
 
 	writeClientEnvelope(t, conn, &internalproto.ClientEnvelope{
-		Body: &internalproto.ClientEnvelope_SubscribeChannel{
-			SubscribeChannel: &internalproto.SubscribeChannelRequest{
+		Body: &internalproto.ClientEnvelope_UpsertUserAttachment{
+			UpsertUserAttachment: &internalproto.UpsertUserAttachmentRequest{
 				RequestId: 25,
-				Subscriber: &internalproto.UserRef{
+				Owner: &internalproto.UserRef{
 					NodeId: aliceKey.NodeID,
 					UserId: aliceKey.UserID,
 				},
-				Channel: &internalproto.UserRef{
+				Subject: &internalproto.UserRef{
 					NodeId: channelKey.NodeID,
 					UserId: channelKey.UserID,
 				},
+				AttachmentType: internalproto.AttachmentType_ATTACHMENT_TYPE_CHANNEL_SUBSCRIPTION,
+				ConfigJson:     []byte("{}"),
 			},
 		},
 	})
-	subscribeResp := readServerEnvelope(t, conn).GetSubscribeChannelResponse()
-	if subscribeResp == nil || subscribeResp.RequestId != 25 || subscribeResp.Subscription.GetChannel().GetUserId() != channelKey.UserID {
-		t.Fatalf("unexpected subscribe response: %+v", subscribeResp)
+	upsertResp := readServerEnvelope(t, conn).GetUpsertUserAttachmentResponse()
+	if upsertResp == nil || upsertResp.RequestId != 25 || upsertResp.Attachment.GetSubject().GetUserId() != channelKey.UserID {
+		t.Fatalf("unexpected attachment upsert response: %+v", upsertResp)
 	}
 
 	writeClientEnvelope(t, conn, &internalproto.ClientEnvelope{
-		Body: &internalproto.ClientEnvelope_ListSubscriptions{
-			ListSubscriptions: &internalproto.ListSubscriptionsRequest{
+		Body: &internalproto.ClientEnvelope_ListUserAttachments{
+			ListUserAttachments: &internalproto.ListUserAttachmentsRequest{
 				RequestId: 26,
-				Subscriber: &internalproto.UserRef{
+				Owner: &internalproto.UserRef{
 					NodeId: aliceKey.NodeID,
 					UserId: aliceKey.UserID,
 				},
+				AttachmentType: internalproto.AttachmentType_ATTACHMENT_TYPE_CHANNEL_SUBSCRIPTION,
 			},
 		},
 	})
-	listSubs := readServerEnvelope(t, conn).GetListSubscriptionsResponse()
-	if listSubs == nil || listSubs.RequestId != 26 || listSubs.Count != 1 || listSubs.Items[0].GetChannel().GetUserId() != channelKey.UserID {
-		t.Fatalf("unexpected list subscriptions response: %+v", listSubs)
+	listAttachments := readServerEnvelope(t, conn).GetListUserAttachmentsResponse()
+	if listAttachments == nil || listAttachments.RequestId != 26 || listAttachments.Count != 1 || listAttachments.Items[0].GetSubject().GetUserId() != channelKey.UserID {
+		t.Fatalf("unexpected list attachments response: %+v", listAttachments)
 	}
 
 	writeClientEnvelope(t, conn, &internalproto.ClientEnvelope{
@@ -1355,24 +1374,28 @@ func TestClientWebSocketRPCRespectsUserAuthorizationAndSubscriptions(t *testing.
 	}
 
 	writeClientEnvelope(t, conn, &internalproto.ClientEnvelope{
-		Body: &internalproto.ClientEnvelope_UnsubscribeChannel{
-			UnsubscribeChannel: &internalproto.UnsubscribeChannelRequest{
+		Body: &internalproto.ClientEnvelope_DeleteUserAttachment{
+			DeleteUserAttachment: &internalproto.DeleteUserAttachmentRequest{
 				RequestId: 28,
-				Subscriber: &internalproto.UserRef{
+				Owner: &internalproto.UserRef{
 					NodeId: aliceKey.NodeID,
 					UserId: aliceKey.UserID,
 				},
-				Channel: &internalproto.UserRef{
+				Subject: &internalproto.UserRef{
 					NodeId: channelKey.NodeID,
 					UserId: channelKey.UserID,
 				},
+				AttachmentType: internalproto.AttachmentType_ATTACHMENT_TYPE_CHANNEL_SUBSCRIPTION,
 			},
 		},
 	})
-	unsubscribeResp := readServerEnvelope(t, conn).GetUnsubscribeChannelResponse()
-	if unsubscribeResp == nil || unsubscribeResp.RequestId != 28 || unsubscribeResp.Subscription.GetDeletedAt() == "" {
-		t.Fatalf("unexpected unsubscribe response: %+v", unsubscribeResp)
+	deleteResp := readServerEnvelope(t, conn).GetDeleteUserAttachmentResponse()
+	if deleteResp == nil || deleteResp.RequestId != 28 || deleteResp.Attachment.GetDeletedAt() == "" {
+		t.Fatalf("unexpected attachment delete response: %+v", deleteResp)
 	}
+	doJSONWithHeaders(t, testAPI.handler, http.MethodDelete, attachmentPath(channelKey, store.AttachmentTypeChannelWriter, aliceKey), nil, map[string]string{
+		"Authorization": "Bearer " + adminToken,
+	}, http.StatusOK)
 
 	writeClientEnvelope(t, conn, &internalproto.ClientEnvelope{
 		Body: &internalproto.ClientEnvelope_SendMessage{
@@ -1471,7 +1494,7 @@ func TestClientWebSocketTransientSendMessageRejectsSyncMode(t *testing.T) {
 	}
 }
 
-func TestClientWebSocketBlacklistRPC(t *testing.T) {
+func TestClientWebSocketAttachmentRPC(t *testing.T) {
 	t.Parallel()
 
 	testAPI := newAuthenticatedTestAPI(t)
@@ -1488,44 +1511,48 @@ func TestClientWebSocketBlacklistRPC(t *testing.T) {
 	loginClientWebSocket(t, conn, aliceKey, "alice-password")
 
 	writeClientEnvelope(t, conn, &internalproto.ClientEnvelope{
-		Body: &internalproto.ClientEnvelope_BlockUser{
-			BlockUser: &internalproto.BlockUserRequest{
-				RequestId: 30,
-				Owner:     &internalproto.UserRef{NodeId: aliceKey.NodeID, UserId: aliceKey.UserID},
-				Blocked:   &internalproto.UserRef{NodeId: bobKey.NodeID, UserId: bobKey.UserID},
+		Body: &internalproto.ClientEnvelope_UpsertUserAttachment{
+			UpsertUserAttachment: &internalproto.UpsertUserAttachmentRequest{
+				RequestId:      30,
+				Owner:          &internalproto.UserRef{NodeId: aliceKey.NodeID, UserId: aliceKey.UserID},
+				Subject:        &internalproto.UserRef{NodeId: bobKey.NodeID, UserId: bobKey.UserID},
+				AttachmentType: internalproto.AttachmentType_ATTACHMENT_TYPE_USER_BLACKLIST,
+				ConfigJson:     []byte("{}"),
 			},
 		},
 	})
-	blockResp := readServerEnvelope(t, conn).GetBlockUserResponse()
-	if blockResp == nil || blockResp.RequestId != 30 || !senderMatchesRef(blockResp.Entry.GetBlocked(), bobKey) {
-		t.Fatalf("unexpected block response: %+v", blockResp)
+	blockResp := readServerEnvelope(t, conn).GetUpsertUserAttachmentResponse()
+	if blockResp == nil || blockResp.RequestId != 30 || !senderMatchesRef(blockResp.Attachment.GetSubject(), bobKey) {
+		t.Fatalf("unexpected attachment upsert response: %+v", blockResp)
 	}
 
 	writeClientEnvelope(t, conn, &internalproto.ClientEnvelope{
-		Body: &internalproto.ClientEnvelope_ListBlockedUsers{
-			ListBlockedUsers: &internalproto.ListBlockedUsersRequest{
-				RequestId: 31,
-				Owner:     &internalproto.UserRef{NodeId: aliceKey.NodeID, UserId: aliceKey.UserID},
+		Body: &internalproto.ClientEnvelope_ListUserAttachments{
+			ListUserAttachments: &internalproto.ListUserAttachmentsRequest{
+				RequestId:      31,
+				Owner:          &internalproto.UserRef{NodeId: aliceKey.NodeID, UserId: aliceKey.UserID},
+				AttachmentType: internalproto.AttachmentType_ATTACHMENT_TYPE_USER_BLACKLIST,
 			},
 		},
 	})
-	listResp := readServerEnvelope(t, conn).GetListBlockedUsersResponse()
-	if listResp == nil || listResp.RequestId != 31 || listResp.Count != 1 || !senderMatchesRef(listResp.Items[0].GetBlocked(), bobKey) {
-		t.Fatalf("unexpected list blocked users response: %+v", listResp)
+	listResp := readServerEnvelope(t, conn).GetListUserAttachmentsResponse()
+	if listResp == nil || listResp.RequestId != 31 || listResp.Count != 1 || !senderMatchesRef(listResp.Items[0].GetSubject(), bobKey) {
+		t.Fatalf("unexpected list attachments response: %+v", listResp)
 	}
 
 	writeClientEnvelope(t, conn, &internalproto.ClientEnvelope{
-		Body: &internalproto.ClientEnvelope_UnblockUser{
-			UnblockUser: &internalproto.UnblockUserRequest{
-				RequestId: 32,
-				Owner:     &internalproto.UserRef{NodeId: aliceKey.NodeID, UserId: aliceKey.UserID},
-				Blocked:   &internalproto.UserRef{NodeId: bobKey.NodeID, UserId: bobKey.UserID},
+		Body: &internalproto.ClientEnvelope_DeleteUserAttachment{
+			DeleteUserAttachment: &internalproto.DeleteUserAttachmentRequest{
+				RequestId:      32,
+				Owner:          &internalproto.UserRef{NodeId: aliceKey.NodeID, UserId: aliceKey.UserID},
+				Subject:        &internalproto.UserRef{NodeId: bobKey.NodeID, UserId: bobKey.UserID},
+				AttachmentType: internalproto.AttachmentType_ATTACHMENT_TYPE_USER_BLACKLIST,
 			},
 		},
 	})
-	unblockResp := readServerEnvelope(t, conn).GetUnblockUserResponse()
-	if unblockResp == nil || unblockResp.RequestId != 32 || unblockResp.Entry.GetDeletedAt() == "" {
-		t.Fatalf("unexpected unblock response: %+v", unblockResp)
+	unblockResp := readServerEnvelope(t, conn).GetDeleteUserAttachmentResponse()
+	if unblockResp == nil || unblockResp.RequestId != 32 || unblockResp.Attachment.GetDeletedAt() == "" {
+		t.Fatalf("unexpected attachment delete response: %+v", unblockResp)
 	}
 }
 
@@ -1611,12 +1638,12 @@ func createUserAs(t *testing.T, handler http.Handler, token, username, password,
 	return key
 }
 
-func subscriptionsPath(nodeID, userID int64) string {
-	return userPath(nodeID, userID) + "/subscriptions"
+func attachmentsPath(owner store.UserKey) string {
+	return userPath(owner.NodeID, owner.UserID) + "/attachments"
 }
 
-func blacklistPath(nodeID, userID int64) string {
-	return userPath(nodeID, userID) + "/blacklist"
+func attachmentPath(owner store.UserKey, attachmentType store.AttachmentType, subject store.UserKey) string {
+	return attachmentsPath(owner) + "/" + string(attachmentType) + "/" + strconv.FormatInt(subject.NodeID, 10) + "/" + strconv.FormatInt(subject.UserID, 10)
 }
 
 type authMessageItem struct {

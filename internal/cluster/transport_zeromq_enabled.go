@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/url"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -20,6 +21,13 @@ import (
 )
 
 var errZeroMQNotBuilt error
+var zeroMQContextConfigOnce sync.Once
+var zeroMQContextConfigErr error
+
+const (
+	zeroMQSocketBufferBytes = 1 << 20
+	zeroMQSocketBacklog     = 1024
+)
 
 var zeroMQCurveAuthState struct {
 	sync.Mutex
@@ -39,12 +47,12 @@ type zeroMQClusterListener struct {
 // zeroMQWakePair turns Go-side queue activity into a pollable inproc signal
 // so ROUTER/DEALER loops can block indefinitely without reintroducing 100ms polling.
 type zeroMQWakePair struct {
-	recv     *zmq4.Socket
-	send     *zmq4.Socket
-	notifyCh chan struct{}
-	done     chan struct{}
+	recv *zmq4.Socket
+	send *zmq4.Socket
 
-	waitGroup sync.WaitGroup
+	mu      sync.Mutex
+	pending bool
+	closed  bool
 }
 
 type ZeroMQMuxListener struct {
@@ -141,6 +149,9 @@ func (l *ZeroMQMuxListener) SetClientAccept(accept func(TransportConn)) {
 }
 
 func (d *zeroMQDialer) Dial(ctx context.Context, peerURL string) (TransportConn, error) {
+	if err := ensureZeroMQRuntimeConfigured(); err != nil {
+		return nil, err
+	}
 	socket, err := zmq4.NewSocket(zmq4.DEALER)
 	if err != nil {
 		return nil, fmt.Errorf("create zeromq dealer socket: %w", err)
@@ -204,6 +215,9 @@ func (l *zeroMQClusterListener) Close() error {
 }
 
 func (l *ZeroMQMuxListener) Start(ctx context.Context) error {
+	if err := ensureZeroMQRuntimeConfigured(); err != nil {
+		return err
+	}
 	socket, err := zmq4.NewSocket(zmq4.ROUTER)
 	if err != nil {
 		return fmt.Errorf("create zeromq router socket: %w", err)
@@ -371,6 +385,15 @@ func configureZeroMQSocket(socket *zmq4.Socket) error {
 	if err := socket.SetImmediate(true); err != nil {
 		return fmt.Errorf("set zeromq immediate: %w", err)
 	}
+	if err := socket.SetBacklog(zeroMQSocketBacklog); err != nil {
+		return fmt.Errorf("set zeromq backlog: %w", err)
+	}
+	if err := socket.SetSndbuf(zeroMQSocketBufferBytes); err != nil {
+		return fmt.Errorf("set zeromq sndbuf: %w", err)
+	}
+	if err := socket.SetRcvbuf(zeroMQSocketBufferBytes); err != nil {
+		return fmt.Errorf("set zeromq rcvbuf: %w", err)
+	}
 	if err := socket.SetSndhwm(outboundQueueSize); err != nil {
 		return fmt.Errorf("set zeromq sndhwm: %w", err)
 	}
@@ -404,6 +427,15 @@ func runZeroMQDealer(socket *zmq4.Socket, wake *zeroMQWakePair, conn *zeroMQTran
 		if len(pending) > 0 {
 			if !zeroMQFlushDealerMessages(socket, conn, &pending) {
 				return
+			}
+		}
+		if len(pending) == 0 && wake != nil {
+			wake.Reset()
+			zeroMQDrainBytesQueue(conn.sendCh, &pending)
+			if len(pending) > 0 {
+				if !zeroMQFlushDealerMessages(socket, conn, &pending) {
+					return
+				}
 			}
 		}
 		wantWritable := len(pending) > 0
@@ -498,6 +530,15 @@ func runZeroMQRouter(ctx context.Context, socket *zmq4.Socket, wake *zeroMQWakeP
 		if len(pending) > 0 {
 			if !zeroMQFlushRouterMessages(socket, peers, closePeer, &pending) {
 				return
+			}
+		}
+		if len(pending) == 0 && wake != nil {
+			wake.Reset()
+			zeroMQDrainRouterControlQueues(listener, &pending, closePeer)
+			if len(pending) > 0 {
+				if !zeroMQFlushRouterMessages(socket, peers, closePeer, &pending) {
+					return
+				}
 			}
 		}
 		wantWritable := len(pending) > 0
@@ -595,6 +636,14 @@ func (l *ZeroMQMuxListener) newInboundConn(identityKey string, identity []byte, 
 }
 
 func (c *zeroMQTransportConn) Send(ctx context.Context, payload []byte) error {
+	return c.sendQueuedPayload(ctx, cloneBytes(payload))
+}
+
+func (c *zeroMQTransportConn) SendOwned(ctx context.Context, payload []byte) error {
+	return c.sendQueuedPayload(ctx, payload)
+}
+
+func (c *zeroMQTransportConn) sendQueuedPayload(ctx context.Context, payload []byte) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -604,14 +653,14 @@ func (c *zeroMQTransportConn) Send(ctx context.Context, payload []byte) error {
 	default:
 	}
 	if c.sendFn != nil {
-		return c.sendFn(ctx, cloneBytes(payload))
+		return c.sendFn(ctx, payload)
 	}
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
 	case <-c.done:
 		return c.closedErr()
-	case c.sendCh <- cloneBytes(payload):
+	case c.sendCh <- payload:
 		if len(c.sendCh) == 1 {
 			c.signalWake()
 		}
@@ -757,6 +806,9 @@ func cloneBytes(data []byte) []byte {
 }
 
 func newZeroMQWakePair() (*zeroMQWakePair, error) {
+	if err := ensureZeroMQRuntimeConfigured(); err != nil {
+		return nil, err
+	}
 	endpointID, err := newZeroMQIdentity()
 	if err != nil {
 		return nil, err
@@ -791,13 +843,9 @@ func newZeroMQWakePair() (*zeroMQWakePair, error) {
 		return nil, fmt.Errorf("connect zeromq wake sender socket: %w", err)
 	}
 	wake := &zeroMQWakePair{
-		recv:     recv,
-		send:     send,
-		notifyCh: make(chan struct{}, 1),
-		done:     make(chan struct{}),
+		recv: recv,
+		send: send,
 	}
-	wake.waitGroup.Add(1)
-	go wake.run()
 	return wake, nil
 }
 
@@ -814,35 +862,17 @@ func configureZeroMQWakeSocket(socket *zmq4.Socket) error {
 	return nil
 }
 
-func (w *zeroMQWakePair) run() {
-	defer w.waitGroup.Done()
-	for {
-		select {
-		case <-w.done:
-			return
-		case <-w.notifyCh:
-		}
-		if w.send != nil {
-			_, _ = w.send.SendBytes([]byte{1}, zmq4.DONTWAIT)
-		}
-		for {
-			select {
-			case <-w.notifyCh:
-			default:
-				goto NEXT
-			}
-		}
-	NEXT:
-	}
-}
-
 func (w *zeroMQWakePair) Signal() {
 	if w == nil {
 		return
 	}
-	select {
-	case w.notifyCh <- struct{}{}:
-	default:
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.closed || w.pending || w.send == nil {
+		return
+	}
+	if _, err := w.send.SendBytes([]byte{1}, zmq4.DONTWAIT); err == nil || zeroMQWouldBlock(err) {
+		w.pending = true
 	}
 }
 
@@ -860,16 +890,26 @@ func (w *zeroMQWakePair) Drain() {
 	}
 }
 
+func (w *zeroMQWakePair) Reset() {
+	if w == nil {
+		return
+	}
+	w.mu.Lock()
+	w.pending = false
+	w.mu.Unlock()
+}
+
 func (w *zeroMQWakePair) Close() {
 	if w == nil {
 		return
 	}
-	select {
-	case <-w.done:
-	default:
-		close(w.done)
+	w.mu.Lock()
+	if w.closed {
+		w.mu.Unlock()
+		return
 	}
-	w.waitGroup.Wait()
+	w.closed = true
+	w.mu.Unlock()
 	if w.send != nil {
 		_ = w.send.Close()
 	}
@@ -937,7 +977,7 @@ func zeroMQFlushDealerMessages(socket *zmq4.Socket, conn *zeroMQTransportConn, p
 
 func zeroMQReceiveDealerMessages(socket *zmq4.Socket, conn *zeroMQTransportConn) bool {
 	for {
-		frames, err := socket.RecvMessageBytes(zmq4.DONTWAIT)
+		payload, err := zeroMQReceiveLastFrame(socket)
 		if err != nil {
 			if zeroMQWouldBlock(err) {
 				return true
@@ -945,10 +985,10 @@ func zeroMQReceiveDealerMessages(socket *zmq4.Socket, conn *zeroMQTransportConn)
 			conn.finish(fmt.Errorf("receive zeromq dealer payload: %w", err))
 			return false
 		}
-		if len(frames) == 0 {
+		if len(payload) == 0 {
 			continue
 		}
-		if !conn.deliver(frames[len(frames)-1]) {
+		if !conn.deliver(payload) {
 			return false
 		}
 	}
@@ -956,19 +996,17 @@ func zeroMQReceiveDealerMessages(socket *zmq4.Socket, conn *zeroMQTransportConn)
 
 func zeroMQReceiveRouterMessages(socket *zmq4.Socket, listener *ZeroMQMuxListener, peers map[string]*zeroMQRouterPeer, closePeer func(string)) bool {
 	for {
-		frames, err := socket.RecvMessageBytes(zmq4.DONTWAIT)
+		identity, payload, err := zeroMQReceiveRouterMessage(socket)
 		if err != nil {
 			if zeroMQWouldBlock(err) {
 				return true
 			}
 			return false
 		}
-		if len(frames) < 2 {
+		if len(identity) == 0 || len(payload) == 0 {
 			continue
 		}
-		identity := frames[0]
-		payload := frames[len(frames)-1]
-		identityKey := hex.EncodeToString(identity)
+		identityKey := string(identity)
 		peer, ok := peers[identityKey]
 		if !ok {
 			role, err := parseZeroMQMuxHello(payload)
@@ -1002,7 +1040,15 @@ func zeroMQFlushRouterMessages(socket *zmq4.Socket, peers map[string]*zeroMQRout
 			*pending = (*pending)[1:]
 			continue
 		}
-		if _, err := socket.SendMessageDontwait(outbound.identity, outbound.payload); err != nil {
+		if _, err := socket.SendBytes(outbound.identity, zmq4.SNDMORE|zmq4.DONTWAIT); err != nil {
+			if zeroMQWouldBlock(err) {
+				return true
+			}
+			closePeer(outbound.identityKey)
+			*pending = (*pending)[1:]
+			continue
+		}
+		if _, err := socket.SendBytes(outbound.payload, zmq4.DONTWAIT); err != nil {
 			if zeroMQWouldBlock(err) {
 				return true
 			}
@@ -1015,6 +1061,75 @@ func zeroMQFlushRouterMessages(socket *zmq4.Socket, peers map[string]*zeroMQRout
 	return true
 }
 
+func zeroMQReceiveLastFrame(socket *zmq4.Socket) ([]byte, error) {
+	payload, err := socket.RecvBytes(zmq4.DONTWAIT)
+	if err != nil {
+		return nil, err
+	}
+	more, err := socket.GetRcvmore()
+	if err != nil {
+		return nil, err
+	}
+	for more {
+		payload, err = socket.RecvBytes(zmq4.DONTWAIT)
+		if err != nil {
+			return nil, err
+		}
+		more, err = socket.GetRcvmore()
+		if err != nil {
+			return nil, err
+		}
+	}
+	return payload, nil
+}
+
+func zeroMQReceiveRouterMessage(socket *zmq4.Socket) ([]byte, []byte, error) {
+	identity, err := socket.RecvBytes(zmq4.DONTWAIT)
+	if err != nil {
+		return nil, nil, err
+	}
+	more, err := socket.GetRcvmore()
+	if err != nil {
+		return nil, nil, err
+	}
+	if !more {
+		return nil, nil, nil
+	}
+	payload, err := socket.RecvBytes(zmq4.DONTWAIT)
+	if err != nil {
+		return nil, nil, err
+	}
+	more, err = socket.GetRcvmore()
+	if err != nil {
+		return nil, nil, err
+	}
+	for more {
+		payload, err = socket.RecvBytes(zmq4.DONTWAIT)
+		if err != nil {
+			return nil, nil, err
+		}
+		more, err = socket.GetRcvmore()
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+	return identity, payload, nil
+}
+
 func zeroMQWouldBlock(err error) bool {
 	return zmq4.AsErrno(err) == zmq4.Errno(syscall.EAGAIN)
+}
+
+func ensureZeroMQRuntimeConfigured() error {
+	zeroMQContextConfigOnce.Do(func() {
+		threads := runtime.GOMAXPROCS(0) / 2
+		if threads < 1 {
+			threads = 1
+		}
+		if threads > 4 {
+			threads = 4
+		}
+		zeroMQContextConfigErr = zmq4.SetIoThreads(threads)
+	})
+	return zeroMQContextConfigErr
 }

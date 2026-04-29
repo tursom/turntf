@@ -31,6 +31,22 @@ func (noopSender) SendPacket(context.Context, int64, TransportKind, *ForwardedPa
 	return nil
 }
 
+func testTransientForwardedPacket(packetID uint64, sourceNodeID, targetNodeID int64, ttlHops uint32) *ForwardedPacket {
+	return &ForwardedPacket{
+		PacketId:     packetID,
+		SourceNodeId: sourceNodeID,
+		TargetNodeId: targetNodeID,
+		TrafficClass: TrafficTransientInteractive,
+		TtlHops:      ttlHops,
+		TransientPacket: &TransientPacket{
+			PacketId:     packetID,
+			SourceNodeId: sourceNodeID,
+			TargetNodeId: targetNodeID,
+			Body:         []byte("transient"),
+		},
+	}
+}
+
 func TestEngineDeliversLocalPacket(t *testing.T) {
 	t.Parallel()
 
@@ -59,6 +75,7 @@ func TestEngineDeliversLocalPacket(t *testing.T) {
 		TrafficClass:     TrafficControlCritical,
 		IngressTransport: TransportLibP2P,
 		TtlHops:          3,
+		Payload:          []byte("control"),
 	})
 	if err != nil {
 		t.Fatalf("deliver local packet: %v", err)
@@ -112,6 +129,7 @@ func TestEngineForwardsPacket(t *testing.T) {
 		TargetNodeId: 3,
 		TrafficClass: TrafficControlCritical,
 		TtlHops:      3,
+		Payload:      []byte("control"),
 	})
 	if err != nil {
 		t.Fatalf("forward packet: %v", err)
@@ -121,6 +139,63 @@ func TestEngineForwardsPacket(t *testing.T) {
 	}
 	if sender.packet == nil || sender.packet.TtlHops != 2 || sender.packet.LastHopNodeId != 1 {
 		t.Fatalf("unexpected forwarded packet: %+v", sender.packet)
+	}
+}
+
+func TestEngineRejectsTransientPacketWithoutTypedBody(t *testing.T) {
+	t.Parallel()
+
+	store := NewMemoryTopologyStore()
+	store.ApplyHello(1, &NodeHello{
+		NodeId:           1,
+		ProtocolVersion:  ProtocolVersion,
+		ForwardingPolicy: DefaultForwardingPolicy(1),
+		Transports: []*TransportCapability{
+			{Transport: TransportLibP2P, OutboundEnabled: true, InboundEnabled: true},
+		},
+	})
+	engine := NewEngine(1, store.Snapshot, NewPlanner(1), noopSender{}, nil, nil)
+
+	err := engine.HandleInbound(context.Background(), &ForwardedPacket{
+		PacketId:         9,
+		SourceNodeId:     2,
+		TargetNodeId:     1,
+		TrafficClass:     TrafficTransientInteractive,
+		IngressTransport: TransportLibP2P,
+		TtlHops:          3,
+		Payload:          []byte("legacy-transient"),
+	})
+	if err == nil || err.Error() != "mesh: transient forwarded packet must carry transient_packet" {
+		t.Fatalf("unexpected transient validation error: %v", err)
+	}
+}
+
+func TestEngineRejectsNonTransientPacketWithTransientBody(t *testing.T) {
+	t.Parallel()
+
+	store := NewMemoryTopologyStore()
+	store.ApplyHello(1, &NodeHello{
+		NodeId:           1,
+		ProtocolVersion:  ProtocolVersion,
+		ForwardingPolicy: DefaultForwardingPolicy(1),
+		Transports: []*TransportCapability{
+			{Transport: TransportLibP2P, OutboundEnabled: true, InboundEnabled: true},
+		},
+	})
+	engine := NewEngine(1, store.Snapshot, NewPlanner(1), noopSender{}, nil, nil)
+
+	err := engine.HandleInbound(context.Background(), &ForwardedPacket{
+		PacketId:         10,
+		SourceNodeId:     2,
+		TargetNodeId:     1,
+		TrafficClass:     TrafficControlCritical,
+		IngressTransport: TransportLibP2P,
+		TtlHops:          3,
+		Payload:          []byte("query"),
+		TransientPacket:  &TransientPacket{Body: []byte("unexpected")},
+	})
+	if err == nil || err.Error() != "mesh: non-transient forwarded packet must not carry transient_packet" {
+		t.Fatalf("unexpected non-transient validation error: %v", err)
 	}
 }
 
@@ -169,6 +244,7 @@ func TestEngineRejectsImmediateLoop(t *testing.T) {
 		LastHopNodeId:    2,
 		IngressTransport: TransportLibP2P,
 		TtlHops:          3,
+		Payload:          []byte("control"),
 	})
 	if !errors.Is(err, ErrLoopDetected) {
 		t.Fatalf("unexpected error: %v", err)
@@ -197,6 +273,7 @@ func TestEngineRejectsDuplicatePacket(t *testing.T) {
 		TrafficClass:     TrafficControlCritical,
 		IngressTransport: TransportLibP2P,
 		TtlHops:          3,
+		Payload:          []byte("control"),
 	}
 
 	if err := engine.HandleInbound(context.Background(), packet); err != nil {
@@ -234,14 +311,8 @@ func TestEngineDeduplicatesInboundTransitPacket(t *testing.T) {
 	})
 	sender := &recordingSender{}
 	engine := NewEngine(2, store.Snapshot, NewPlanner(2), sender, nil, nil)
-	packet := &ForwardedPacket{
-		PacketId:         42,
-		SourceNodeId:     1,
-		TargetNodeId:     3,
-		TrafficClass:     TrafficTransientInteractive,
-		IngressTransport: TransportLibP2P,
-		TtlHops:          3,
-	}
+	packet := testTransientForwardedPacket(42, 1, 3, 3)
+	packet.IngressTransport = TransportLibP2P
 
 	if err := engine.HandleInbound(context.Background(), packet); err != nil {
 		t.Fatalf("first inbound forward failed: %v", err)
@@ -270,13 +341,7 @@ func TestEngineOutboundNoRouteDoesNotMarkPacketSeen(t *testing.T) {
 	}
 	sender := &recordingSender{}
 	engine := NewEngine(1, store.Snapshot, NewPlanner(1), sender, nil, nil)
-	packet := &ForwardedPacket{
-		PacketId:     99,
-		SourceNodeId: 1,
-		TargetNodeId: 2,
-		TrafficClass: TrafficTransientInteractive,
-		TtlHops:      3,
-	}
+	packet := testTransientForwardedPacket(99, 1, 2, 3)
 
 	if err := engine.Forward(context.Background(), packet); !errors.Is(err, ErrNoRoute) {
 		t.Fatalf("expected no route, got %v", err)
@@ -405,13 +470,7 @@ func TestEngineOutboundDuplicateDoesNotResend(t *testing.T) {
 	})
 	sender := &recordingSender{}
 	engine := NewEngine(1, store.Snapshot, NewPlanner(1), sender, nil, nil)
-	packet := &ForwardedPacket{
-		PacketId:     100,
-		SourceNodeId: 1,
-		TargetNodeId: 2,
-		TrafficClass: TrafficTransientInteractive,
-		TtlHops:      3,
-	}
+	packet := testTransientForwardedPacket(100, 1, 2, 3)
 
 	if err := engine.Forward(context.Background(), packet); err != nil {
 		t.Fatalf("first forward failed: %v", err)
@@ -451,13 +510,7 @@ func TestEngineOutboundSendFailureAllowsRetry(t *testing.T) {
 	})
 	sender := &recordingSender{err: ErrNoRoute}
 	engine := NewEngine(1, store.Snapshot, NewPlanner(1), sender, nil, nil)
-	packet := &ForwardedPacket{
-		PacketId:     101,
-		SourceNodeId: 1,
-		TargetNodeId: 2,
-		TrafficClass: TrafficTransientInteractive,
-		TtlHops:      3,
-	}
+	packet := testTransientForwardedPacket(101, 1, 2, 3)
 
 	if err := engine.Forward(context.Background(), packet); !errors.Is(err, ErrNoRoute) {
 		t.Fatalf("expected first forward to fail with no route, got %v", err)

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/tursom/turntf/internal/mesh"
 	internalproto "github.com/tursom/turntf/internal/proto"
 	"github.com/tursom/turntf/internal/store"
 )
@@ -124,6 +125,37 @@ func transientPacketProto(packet store.TransientPacket) *internalproto.Transient
 		TtlHops:       uint32(packet.TTLHops),
 		TargetSession: storeSessionRefToCluster(packet.TargetSession),
 	}
+}
+
+func transientPacketFromProto(packet *internalproto.TransientPacket, forwarded *mesh.ForwardedPacket) (store.TransientPacket, error) {
+	if packet == nil {
+		return store.TransientPacket{}, fmt.Errorf("transient packet cannot be empty")
+	}
+	if packet.Recipient == nil {
+		return store.TransientPacket{}, fmt.Errorf("transient packet recipient cannot be empty")
+	}
+	if packet.Sender == nil {
+		return store.TransientPacket{}, fmt.Errorf("transient packet sender cannot be empty")
+	}
+	transient := store.TransientPacket{
+		PacketID:      packet.GetPacketId(),
+		SourceNodeID:  packet.GetSourceNodeId(),
+		TargetNodeID:  packet.GetTargetNodeId(),
+		Recipient:     store.UserKey{NodeID: packet.Recipient.NodeId, UserID: packet.Recipient.UserId},
+		Sender:        store.UserKey{NodeID: packet.Sender.NodeId, UserID: packet.Sender.UserId},
+		Body:          packet.GetBody(),
+		DeliveryMode:  clusterDeliveryModeToStore(packet.GetDeliveryMode()),
+		TTLHops:       int32(packet.GetTtlHops()),
+		TargetSession: clusterSessionRefToStore(packet.GetTargetSession()),
+	}
+	if forwarded == nil {
+		return transient, nil
+	}
+	transient.PacketID = forwarded.GetPacketId()
+	transient.SourceNodeID = forwarded.GetSourceNodeId()
+	transient.TargetNodeID = forwarded.GetTargetNodeId()
+	transient.TTLHops = int32(forwarded.GetTtlHops())
+	return transient, nil
 }
 
 func cloneTransientPacket(packet store.TransientPacket) store.TransientPacket {

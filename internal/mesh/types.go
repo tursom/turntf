@@ -6,7 +6,7 @@ import (
 	internalproto "github.com/tursom/turntf/internal/proto"
 )
 
-const ProtocolVersion = "mesh-v1alpha1"
+const ProtocolVersion = "mesh-v1alpha2"
 
 type ClusterEnvelope = internalproto.ClusterEnvelope
 type ClusterEnvelope_NodeHello = internalproto.ClusterEnvelope_NodeHello
@@ -41,6 +41,7 @@ type TimeSyncRequest = internalproto.MeshTimeSyncRequest
 type TimeSyncResponse = internalproto.MeshTimeSyncResponse
 type QueryRequest = internalproto.MeshQueryRequest
 type QueryResponse = internalproto.MeshQueryResponse
+type TransientPacket = internalproto.TransientPacket
 type MembershipUpdate = internalproto.MeshMembershipUpdate
 type MeshPresenceUpdate = internalproto.MeshPresenceUpdate
 type MeshConnectivityRumor = internalproto.MeshConnectivityRumor

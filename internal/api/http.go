@@ -24,9 +24,14 @@ import (
 
 const clientSessionShardCount = 256
 
+type clientSessionBucket struct {
+	bySessionID map[string]*clientWSSession
+	snapshot    []*clientWSSession
+}
+
 type clientSessionShard struct {
 	mu       sync.RWMutex
-	sessions map[store.UserKey]map[string]*clientWSSession
+	sessions map[store.UserKey]*clientSessionBucket
 }
 
 type onlineUserState struct {
@@ -150,7 +155,7 @@ func NewHTTP(service *Service, opts ...HTTPOptions) *HTTP {
 		h.sessionRegistry = service.sessionRegistry
 	}
 	for idx := range h.sessionShards {
-		h.sessionShards[idx].sessions = make(map[store.UserKey]map[string]*clientWSSession)
+		h.sessionShards[idx].sessions = make(map[store.UserKey]*clientSessionBucket)
 	}
 	if service != nil {
 		service.SetTransientPacketReceiver(h)
@@ -1022,6 +1027,31 @@ func (h *HTTP) sessionShard(key store.UserKey) *clientSessionShard {
 	return &h.sessionShards[clientSessionShardIndex(key)]
 }
 
+func newClientSessionBucket() *clientSessionBucket {
+	return &clientSessionBucket{
+		bySessionID: make(map[string]*clientWSSession),
+	}
+}
+
+func appendClientSessionSnapshot(snapshot []*clientWSSession, sess *clientWSSession) []*clientWSSession {
+	next := make([]*clientWSSession, len(snapshot), len(snapshot)+1)
+	copy(next, snapshot)
+	return append(next, sess)
+}
+
+func removeClientSessionSnapshot(snapshot []*clientWSSession, sessionID string) []*clientWSSession {
+	for idx, sess := range snapshot {
+		if sess == nil || sess.sessionRef.SessionID != sessionID {
+			continue
+		}
+		next := make([]*clientWSSession, 0, len(snapshot)-1)
+		next = append(next, snapshot[:idx]...)
+		next = append(next, snapshot[idx+1:]...)
+		return next
+	}
+	return snapshot
+}
+
 func (h *HTTP) registerClientSession(key store.UserKey, sess *clientWSSession) {
 	if h == nil || sess == nil {
 		return
@@ -1033,18 +1063,19 @@ func (h *HTTP) registerClientSession(key store.UserKey, sess *clientWSSession) {
 	shard.mu.Lock()
 	bucket := shard.sessions[key]
 	if bucket == nil {
-		bucket = make(map[string]*clientWSSession)
+		bucket = newClientSessionBucket()
 		shard.sessions[key] = bucket
 	}
 	if sess.sessionRef.SessionID == "" {
 		shard.mu.Unlock()
 		return
 	}
-	if _, exists := bucket[sess.sessionRef.SessionID]; exists {
+	if _, exists := bucket.bySessionID[sess.sessionRef.SessionID]; exists {
 		shard.mu.Unlock()
 		return
 	}
-	bucket[sess.sessionRef.SessionID] = sess
+	bucket.bySessionID[sess.sessionRef.SessionID] = sess
+	bucket.snapshot = appendClientSessionSnapshot(bucket.snapshot, sess)
 	shard.mu.Unlock()
 
 	h.onlineUsersMu.Lock()
@@ -1081,12 +1112,13 @@ func (h *HTTP) unregisterClientSession(key store.UserKey, sess *clientWSSession)
 		shard.mu.Unlock()
 		return
 	}
-	if _, exists := bucket[sess.sessionRef.SessionID]; !exists {
+	if _, exists := bucket.bySessionID[sess.sessionRef.SessionID]; !exists {
 		shard.mu.Unlock()
 		return
 	}
-	delete(bucket, sess.sessionRef.SessionID)
-	if len(bucket) == 0 {
+	delete(bucket.bySessionID, sess.sessionRef.SessionID)
+	bucket.snapshot = removeClientSessionSnapshot(bucket.snapshot, sess.sessionRef.SessionID)
+	if len(bucket.bySessionID) == 0 {
 		delete(shard.sessions, key)
 	}
 	shard.mu.Unlock()
@@ -1128,7 +1160,10 @@ func (h *HTTP) ReceiveTransientPacket(packet store.TransientPacket) bool {
 		}
 		shard.mu.RLock()
 		bucket := shard.sessions[packet.Recipient]
-		sess := bucket[packet.TargetSession.SessionID]
+		var sess *clientWSSession
+		if bucket != nil {
+			sess = bucket.bySessionID[packet.TargetSession.SessionID]
+		}
 		shard.mu.RUnlock()
 		if sess == nil {
 			return false
@@ -1137,9 +1172,9 @@ func (h *HTTP) ReceiveTransientPacket(packet store.TransientPacket) bool {
 	}
 	shard.mu.RLock()
 	bucket := shard.sessions[packet.Recipient]
-	sessions := make([]*clientWSSession, 0, len(bucket))
-	for _, sess := range bucket {
-		sessions = append(sessions, sess)
+	var sessions []*clientWSSession
+	if bucket != nil {
+		sessions = bucket.snapshot
 	}
 	shard.mu.RUnlock()
 	if len(sessions) == 0 {
@@ -1164,9 +1199,15 @@ func (h *HTTP) ListLocalUserSessions(_ context.Context, key store.UserKey) ([]st
 	}
 	shard.mu.RLock()
 	bucket := shard.sessions[key]
-	items := make([]store.OnlineSession, 0, len(bucket))
-	for _, sess := range bucket {
-		items = append(items, sess.onlineSession())
+	size := 0
+	if bucket != nil {
+		size = len(bucket.snapshot)
+	}
+	items := make([]store.OnlineSession, 0, size)
+	if bucket != nil {
+		for _, sess := range bucket.snapshot {
+			items = append(items, sess.onlineSession())
+		}
 	}
 	shard.mu.RUnlock()
 	sort.Slice(items, func(i, j int) bool {

@@ -39,12 +39,12 @@ type Engine struct {
 	handler     LocalPacketHandler
 	observer    ForwardingObserver
 
-	mu               sync.Mutex
-	seen             map[seenKey]time.Time
-	seenTTL          time.Duration
+	mu                sync.Mutex
+	seen              map[seenKey]time.Time
+	seenTTL           time.Duration
 	seenSweepInterval time.Duration
-	nextSeenSweepAt  time.Time
-	now              func() time.Time
+	nextSeenSweepAt   time.Time
+	now               func() time.Time
 }
 
 type seenKey struct {
@@ -52,18 +52,51 @@ type seenKey struct {
 	packetID     uint64
 }
 
+func validateForwardedPacket(packet *ForwardedPacket) error {
+	if packet == nil {
+		return fmt.Errorf("mesh: forwarded packet cannot be nil")
+	}
+	switch packet.TrafficClass {
+	case TrafficTransientInteractive:
+		if packet.GetTransientPacket() == nil {
+			return fmt.Errorf("mesh: transient forwarded packet must carry transient_packet")
+		}
+		if len(packet.GetPayload()) != 0 {
+			return fmt.Errorf("mesh: transient forwarded packet must not carry payload bytes")
+		}
+	default:
+		if packet.GetTransientPacket() != nil {
+			return fmt.Errorf("mesh: non-transient forwarded packet must not carry transient_packet")
+		}
+		if len(packet.GetPayload()) == 0 {
+			return fmt.Errorf("mesh: non-transient forwarded packet must carry payload bytes")
+		}
+	}
+	return nil
+}
+
+func forwardedPacketPayloadBytes(packet *ForwardedPacket) int {
+	if packet == nil {
+		return 0
+	}
+	if transient := packet.GetTransientPacket(); transient != nil {
+		return len(transient.GetBody())
+	}
+	return len(packet.GetPayload())
+}
+
 func NewEngine(localNodeID int64, snapshotFn func() TopologySnapshot, planner RoutePlanner, sender PacketSender, handler LocalPacketHandler, observer ForwardingObserver) *Engine {
 	return &Engine{
-		localNodeID: localNodeID,
-		snapshotFn:  snapshotFn,
-		planner:     planner,
-		sender:      sender,
-		handler:     handler,
-		observer:    observer,
-		seen:             make(map[seenKey]time.Time),
-		seenTTL:          30 * time.Second,
+		localNodeID:       localNodeID,
+		snapshotFn:        snapshotFn,
+		planner:           planner,
+		sender:            sender,
+		handler:           handler,
+		observer:          observer,
+		seen:              make(map[seenKey]time.Time),
+		seenTTL:           30 * time.Second,
 		seenSweepInterval: time.Second,
-		now:              func() time.Time { return time.Now().UTC() },
+		now:               func() time.Time { return time.Now().UTC() },
 	}
 }
 
@@ -87,6 +120,9 @@ func (e *Engine) forward(ctx context.Context, packet *ForwardedPacket, ingress T
 	}
 	if packet.TrafficClass == TrafficClassUnspecified {
 		packet.TrafficClass = TrafficTransientInteractive
+	}
+	if err := validateForwardedPacket(packet); err != nil {
+		return err
 	}
 	if packet.TtlHops == 0 {
 		packet.TtlHops = DefaultTTLHops
@@ -207,6 +243,7 @@ func cloneForwardedPacket(packet *ForwardedPacket) *ForwardedPacket {
 		TtlHops:          packet.TtlHops,
 		Payload:          packet.Payload,
 		TraceId:          packet.TraceId,
+		TransientPacket:  packet.TransientPacket,
 	}
 }
 
@@ -226,7 +263,7 @@ func (e *Engine) observeForward(packet *ForwardedPacket, ingress TransportKind, 
 		TrafficClass:       packet.TrafficClass,
 		PathClass:          observedPathClass(packet, ingress, decision),
 		EstimatedCost:      decision.EstimatedCost,
-		PayloadBytes:       len(packet.Payload),
+		PayloadBytes:       forwardedPacketPayloadBytes(packet),
 		TargetNodeID:       packet.TargetNodeId,
 		TopologyGeneration: decision.TopologyGeneration,
 	})

@@ -81,7 +81,7 @@ peer 自动发现见 [docs/peer-discovery.md](/root/dev/sys/turntf/docs/peer-dis
 - mesh `TimeSyncRequest` / `TimeSyncResponse`：runtime 内部链路测量消息，用于更新 RTT/jitter 与拓扑代价
 - `EventBatch` / `PullEvents` / `Ack`：复制批次、补拉请求与确认消息，统一经 mesh 按策略路由转发
 - `MembershipUpdate`：节点间交换已验证 peer URL 的 membership 摘要，用于自动发现更多可拨号 peer
-- `TransientPacket`：发往 `(node_id, 3)` 的非持久化数据包，会被编码进 mesh payload，经逐跳重算路由多跳转发到目标节点在线用户
+- `TransientPacket`：发往 `(node_id, 3)` 的非持久化数据包，会作为 mesh transient fast-path 的 typed packet 经逐跳重算路由多跳转发到目标节点在线用户
 - `peer_ack_cursors` / `origin_cursors`：前者记录“某 peer 已确认到哪个 origin/event_id”，后者记录“本地对某 origin 已应用到哪个 event_id”，供重连后继续追平
 - WebSocket、libp2p、ZeroMQ 都会接入 mesh runtime；同一 `peer_node_id` 允许存在多条并行 adjacency，逐跳转发会按链路观测的延迟和抖动择优选出口
 - peer 自动发现默认随集群模式启用；节点会通过已连接 peer 传播已绑定 `node_id` 的可拨号 URL，并为发现候选启动受限的动态拨号器

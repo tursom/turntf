@@ -50,7 +50,7 @@ func clientProtoPacket(packet store.TransientPacket) *internalproto.Packet {
 		TargetNodeId:  packet.TargetNodeID,
 		Recipient:     &internalproto.UserRef{NodeId: packet.Recipient.NodeID, UserId: packet.Recipient.UserID},
 		Sender:        &internalproto.UserRef{NodeId: packet.Sender.NodeID, UserId: packet.Sender.UserID},
-		Body:          append([]byte(nil), packet.Body...),
+		Body:          packet.Body,
 		DeliveryMode:  clientDeliveryModeProto(packet.DeliveryMode),
 		TargetSession: clientProtoSessionRef(packet.TargetSession),
 	}

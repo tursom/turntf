@@ -436,6 +436,7 @@ func TestRuntimeForwardingPolicyRejectsInvalidTransitPaths(t *testing.T) {
 					TargetNodeId: 3,
 					TrafficClass: TrafficControlQuery,
 					TtlHops:      4,
+					Payload:      []byte("query"),
 				})
 			},
 		},
@@ -461,6 +462,12 @@ func TestRuntimeForwardingPolicyRejectsInvalidTransitPaths(t *testing.T) {
 					TargetNodeId: 3,
 					TrafficClass: TrafficTransientInteractive,
 					TtlHops:      4,
+					TransientPacket: &TransientPacket{
+						PacketId:     2,
+						SourceNodeId: 1,
+						TargetNodeId: 3,
+						Body:         []byte("blocked"),
+					},
 				})
 			},
 		},

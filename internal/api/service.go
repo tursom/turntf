@@ -342,7 +342,7 @@ func (s *Service) newTransientPacket(recipient store.UserKey, sender store.UserK
 		TargetNodeID:  targetNodeID,
 		Recipient:     recipient,
 		Sender:        sender,
-		Body:          append([]byte(nil), body...),
+		Body:          body,
 		DeliveryMode:  mode,
 		TTLHops:       8,
 		TargetSession: targetSession,

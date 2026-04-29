@@ -17,6 +17,7 @@
   - [internal/api/http_benchmark_test.go](/root/dev/sys/turntf/turntf/internal/api/http_benchmark_test.go)
   - [internal/api/client_benchmark_test.go](/root/dev/sys/turntf/turntf/internal/api/client_benchmark_test.go)
   - [internal/api/client_point_to_point_throughput_benchmark_test.go](/root/dev/sys/turntf/turntf/internal/api/client_point_to_point_throughput_benchmark_test.go)
+  - [internal/api/client_point_to_point_throughput_zeromq_client_benchmark_test.go](/root/dev/sys/turntf/turntf/internal/api/client_point_to_point_throughput_zeromq_client_benchmark_test.go)
 
 当前基线覆盖以下场景：
 
@@ -37,6 +38,7 @@
 - `BenchmarkClientWebSocketTransientSendMessageAuthenticatedLinearMesh`：3 节点 / 7 节点线性拓扑下的带鉴权 `WS /ws/client` transient `SendMessage` RPC，发送端连接源节点 API，接收端连接目标节点 API，校验多跳 mesh 后的 `TransientAccepted` / `PacketPushed` 端到端路径。
 - `BenchmarkClientWebSocketTransientSendMessageAuthenticatedLinearMeshWithOnlineUsers`：在 3 节点 / 7 节点线性拓扑下先建立大批已登录 WebSocket 会话，再测一条跨节点 transient `SendMessage`，用于观察更贴近稳态在线连接负载下的端到端延迟。
 - `BenchmarkClientWebSocketTransientSendMessageAuthenticatedPointToPointThroughput`：客户端 transient 端到端点对点吞吐；固定使用 SQLite，覆盖单节点、2 节点纯协议直连，以及 7 节点纯协议线性 `WebSocket/libp2p/ZeroMQ`。这里刻意不做 mixed bridge，因为当前桥接拓扑不支持复制，源节点无法按真实语义解析目标用户。这两组点对点吞吐 benchmark 不再切 `tmp/disk` 子场景。
+- `BenchmarkClientZeroMQTransientSendMessageAuthenticatedPointToPointThroughput`：客户端通过 ZeroMQ 长连接接入时的 transient 端到端点对点吞吐；覆盖 `2` 节点直连与 `7` 节点纯 ZeroMQ 线性拓扑，用于把“客户端 ZeroMQ 入口开销”和“节点间 ZeroMQ mesh hop 开销”单独拉平观察。
 
 ## 采集策略
 
@@ -70,6 +72,7 @@ go test ./internal/api -run '^$' -bench 'BenchmarkClientWebSocketTransientSendMe
 ```bash
 go test -tags zeromq ./internal/cluster -run '^$' -bench 'BenchmarkMeshTransientPointToPointThroughput' -benchmem -count=1
 go test -tags zeromq ./internal/api -run '^$' -bench 'BenchmarkClientWebSocketTransientSendMessageAuthenticatedPointToPointThroughput' -benchmem -count=1
+go test -tags zeromq ./internal/api -run '^$' -bench 'BenchmarkClientZeroMQTransientSendMessageAuthenticatedPointToPointThroughput' -benchmem -count=1
 ```
 
 这两组点对点吞吐 benchmark 现在固定只跑一组临时目录场景，因此结果名称不会再出现 `/tmp` 或 `/disk`。
@@ -105,6 +108,7 @@ go test ./internal/cluster -run '^$' -bench 'BenchmarkMeshTransientPointToPointT
 go test ./internal/api -run '^$' -bench 'BenchmarkClientWebSocketTransientSendMessageAuthenticatedPointToPointThroughput' -benchmem -count=1 -benchtime=1x
 go test -tags zeromq ./internal/cluster -run '^$' -bench 'BenchmarkMeshTransientPointToPointThroughput' -benchmem -count=1 -benchtime=1x
 go test -tags zeromq ./internal/api -run '^$' -bench 'BenchmarkClientWebSocketTransientSendMessageAuthenticatedPointToPointThroughput' -benchmem -count=1 -benchtime=1x
+go test -tags zeromq ./internal/api -run '^$' -bench 'BenchmarkClientZeroMQTransientSendMessageAuthenticatedPointToPointThroughput' -benchmem -count=1 -benchtime=1x
 ```
 
 ## 指标说明

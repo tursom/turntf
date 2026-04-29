@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/tursom/turntf/internal/mesh"
+	"github.com/tursom/turntf/internal/store"
 )
 
 type meshMetricSample struct {
@@ -112,6 +113,25 @@ func (m *Manager) routeMeshEnvelope(ctx context.Context, targetNodeID int64, tra
 
 func (m *Manager) forwardMeshPayloadWithPacketID(ctx context.Context, targetNodeID int64, trafficClass mesh.TrafficClass, packetID uint64, payload []byte) error {
 	return m.forwardMeshPayloadWithPacketIDAndTTL(ctx, targetNodeID, trafficClass, packetID, 0, payload)
+}
+
+func (m *Manager) forwardMeshTransientPacket(ctx context.Context, packet store.TransientPacket) error {
+	binding := m.MeshRuntime()
+	if binding == nil {
+		return fmt.Errorf("mesh runtime is not attached")
+	}
+	ttlHops := uint32(packet.TTLHops)
+	if ttlHops == 0 {
+		ttlHops = mesh.DefaultTTLHops
+	}
+	return binding.ForwardPacket(ctx, &mesh.ForwardedPacket{
+		PacketId:        packet.PacketID,
+		SourceNodeId:    packet.SourceNodeID,
+		TargetNodeId:    packet.TargetNodeID,
+		TrafficClass:    mesh.TrafficTransientInteractive,
+		TtlHops:         ttlHops,
+		TransientPacket: transientPacketProto(packet),
+	})
 }
 
 func (m *Manager) forwardMeshPayloadWithPacketIDAndTTL(ctx context.Context, targetNodeID int64, trafficClass mesh.TrafficClass, packetID uint64, ttlHops uint32, payload []byte) error {

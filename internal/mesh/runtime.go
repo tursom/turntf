@@ -108,6 +108,10 @@ type noopVerifier struct{}
 
 func (noopVerifier) Verify(_ *ClusterEnvelope, _ []byte) error { return nil }
 
+type ownedEnvelopeSender interface {
+	SendOwned(ctx context.Context, envelope []byte) error
+}
+
 // RuntimeOptions configures a Runtime. Only LocalNodeID and Adapters are
 // required; other fields fall back to sensible defaults.
 type RuntimeOptions struct {
@@ -865,6 +869,9 @@ func (r *Runtime) sendEnvelopeCtx(ctx context.Context, conn TransportConn, envel
 	}
 	sendCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+	if sender, ok := conn.(ownedEnvelopeSender); ok {
+		return sender.SendOwned(sendCtx, signed)
+	}
 	return conn.Send(sendCtx, signed)
 }
 

@@ -116,6 +116,7 @@ message MeshForwardedPacket {
   uint32 ttl_hops = 7;
   bytes payload = 8;
   string trace_id = 9;
+  notifier.cluster.v1.TransientPacket transient_packet = 10;
 }
 
 message MeshReplicationBatch {

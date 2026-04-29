@@ -535,26 +535,9 @@ func (m *Manager) handleMeshForwardedPacket(ctx context.Context, packet *mesh.Fo
 	if packet.TrafficClass != mesh.TrafficTransientInteractive {
 		return fmt.Errorf("unsupported non-transient forwarded packet traffic class %s", packet.TrafficClass.String())
 	}
-	body := &internalproto.TransientPacket{}
-	if err := proto.Unmarshal(packet.Payload, body); err != nil {
+	transient, err := transientPacketFromProto(packet.GetTransientPacket(), packet)
+	if err != nil {
 		return err
-	}
-	if body.Recipient == nil {
-		return fmt.Errorf("transient packet recipient cannot be empty")
-	}
-	if body.Sender == nil {
-		return fmt.Errorf("transient packet sender cannot be empty")
-	}
-	transient := store.TransientPacket{
-		PacketID:      packet.PacketId,
-		SourceNodeID:  packet.SourceNodeId,
-		TargetNodeID:  packet.TargetNodeId,
-		Recipient:     store.UserKey{NodeID: body.Recipient.NodeId, UserID: body.Recipient.UserId},
-		Sender:        store.UserKey{NodeID: body.Sender.NodeId, UserID: body.Sender.UserId},
-		Body:          append([]byte(nil), body.Body...),
-		DeliveryMode:  clusterDeliveryModeToStore(body.DeliveryMode),
-		TTLHops:       int32(packet.TtlHops),
-		TargetSession: clusterSessionRefToStore(body.GetTargetSession()),
 	}
 	if transient.TargetNodeID != m.cfg.NodeID {
 		return fmt.Errorf("mesh transient delivered to node %d for target %d", m.cfg.NodeID, transient.TargetNodeID)
@@ -596,14 +579,7 @@ func (m *Manager) routeOrQueueMeshTransient(ctx context.Context, packet store.Tr
 		m.queueTransientPacket(packet)
 		return
 	}
-	payload, err := proto.Marshal(transientPacketProto(packet))
-	if err != nil {
-		addPacketLogFields(m.logWarn("transient_packet_dropped", err), packet).
-			Str("reason", "marshal_failed").
-			Msg("dropping transient packet")
-		return
-	}
-	err = m.forwardMeshPayloadWithPacketIDAndTTL(ctx, packet.TargetNodeID, mesh.TrafficTransientInteractive, packet.PacketID, uint32(packet.TTLHops), payload)
+	err := m.forwardMeshTransientPacket(ctx, packet)
 	if err == nil {
 		m.removeQueuedTransientPacket(packet)
 		addPacketLogFields(m.logInfo("transient_packet_forwarded"), packet).

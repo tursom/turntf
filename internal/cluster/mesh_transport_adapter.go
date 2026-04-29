@@ -310,6 +310,15 @@ func (c *meshTransportConn) Send(ctx context.Context, envelope []byte) error {
 	return c.conn.Send(ctx, envelope)
 }
 
+func (c *meshTransportConn) SendOwned(ctx context.Context, envelope []byte) error {
+	if sender, ok := c.conn.(interface {
+		SendOwned(context.Context, []byte) error
+	}); ok {
+		return sender.SendOwned(ctx, envelope)
+	}
+	return c.conn.Send(ctx, envelope)
+}
+
 func (c *meshTransportConn) Receive(ctx context.Context) ([]byte, error) {
 	return c.conn.Receive(ctx)
 }

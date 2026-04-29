@@ -216,12 +216,14 @@ func (h *HTTP) clonePersistentDirectRecipients(recipient store.UserKey) []*clien
 	shard := h.sessionShard(recipient)
 	if shard != nil {
 		shard.mu.RLock()
-		for _, sess := range shard.sessions[recipient] {
-			if sess == nil || !sess.requiresPersistentPush() {
-				continue
+		if bucket := shard.sessions[recipient]; bucket != nil {
+			for _, sess := range bucket.snapshot {
+				if sess == nil || !sess.requiresPersistentPush() {
+					continue
+				}
+				dedup[sess] = struct{}{}
+				sessions = append(sessions, sess)
 			}
-			dedup[sess] = struct{}{}
-			sessions = append(sessions, sess)
 		}
 		shard.mu.RUnlock()
 	}
@@ -294,9 +296,10 @@ func (h *HTTP) cloneSessionsForUser(key store.UserKey) []*clientWSSession {
 	shard.mu.RLock()
 	defer shard.mu.RUnlock()
 	bucket := shard.sessions[key]
-	sessions := make([]*clientWSSession, 0, len(bucket))
-	for _, sess := range bucket {
-		sessions = append(sessions, sess)
+	if bucket == nil || len(bucket.snapshot) == 0 {
+		return nil
 	}
+	sessions := make([]*clientWSSession, len(bucket.snapshot))
+	copy(sessions, bucket.snapshot)
 	return sessions
 }

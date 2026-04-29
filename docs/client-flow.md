@@ -142,8 +142,7 @@ ws://127.0.0.1:8080/ws/client
 ```protobuf
 ClientEnvelope {
   login: LoginRequest {
-    node_id: 4096
-    user_id: 1025
+    user: { node_id: 4096, user_id: 1025 }
     password: "alice-password"
     seen_messages: []
   }
@@ -267,10 +266,10 @@ ClientEnvelope {
 
 发送权限：
 
-- 普通用户可以给自己发送。
-- 普通用户可以给已订阅 channel 发送。
+- 普通用户可以给任意可登录用户（包括自己）发送消息。
+- 普通用户可以给已授权写入的 channel 发送。
 - 管理员可以给任意用户、channel 或 broadcast 发送。
-- 瞬时消息只能发给可登录用户；普通用户只能发给自己，管理员可以发给任意可登录用户。
+- 以上规则同时适用于持久消息和瞬时消息。
 
 ## HTTP 消息接口
 
@@ -340,8 +339,7 @@ curl -sS -H "Authorization: Bearer ${ADMIN_TOKEN}" \
 ```protobuf
 ClientEnvelope {
   login: LoginRequest {
-    node_id: 4096
-    user_id: 1025
+    user: { node_id: 4096, user_id: 1025 }
     password: "alice-password"
     seen_messages: [
       { node_id: 4096, seq: 1 },
@@ -360,7 +358,7 @@ channel：
 
 1. 管理员创建 `role=channel` 用户。
 2. 普通用户订阅该 channel。
-3. 普通用户或管理员向 channel 地址发消息。
+3. 获得 channel 写入授权的用户（创建者自动获得授权）或管理员向 channel 地址发消息。
 4. 订阅者通过 WebSocket 收到订阅时间之后的 channel 消息。
 
 broadcast：

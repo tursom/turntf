@@ -386,7 +386,7 @@ zeromq = { curve_server_public_key = "" }
 - `GET /cluster/nodes` 需要登录，但普通用户即可访问；只返回当前节点视角下已连接的集群节点列表
 - `GET /nodes/{node_id}/users/{user_id}` 允许本人或管理员访问
 - `GET /nodes/{node_id}/users/{user_id}/messages` 对可登录用户允许本人或管理员访问；对 `role=channel` 或 `role=broadcast` 地址仅管理员可直接查询原始消息
-- `POST /nodes/{node_id}/users/{user_id}/messages` 需要登录；普通用户只能给自己或已订阅的 `role=channel` 地址写消息，管理员可给任意地址写消息，包括广播地址
+- `POST /nodes/{node_id}/users/{user_id}/messages` 需要登录；普通用户可以给任意可登录用户或已授权写入的 `role=channel` 地址写消息，管理员可给任意地址写消息，包括广播地址
 - 持久消息可额外携带可选的 `sync_mode`：`no_sync`、`force_sync`；省略时走服务端默认值。该字段仅在 `store.engine = "pebble"` 下影响本地持久消息提交方式，其他引擎会接受但忽略
 - 当目标是 `(node_id, 3)` 时，请求进入“节点入口瞬时包”模式：`relay_target` 必填，任意已登录用户都可以发送；该数据包不会持久化，只会尽力转发给目标节点上当前在线的指定用户
 - 订阅接口允许普通用户维护自己的 channel 订阅，管理员可维护任意用户订阅

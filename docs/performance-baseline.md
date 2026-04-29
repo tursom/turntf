@@ -4,23 +4,26 @@
 
 ## 覆盖范围
 
-- `cluster` 层继续限定默认 WebSocket 传输，不比较 libp2p 或 ZeroMQ。
+- 大多数 `cluster` 延迟 / 恢复基线仍限定默认 WebSocket 传输；新增的点对点 transient 吞吐基线会额外比较 libp2p 和 ZeroMQ。
 - `cluster` 基线现在同时覆盖稳态多节点复制、多跳路由，以及 retention 截断后的 snapshot repair / catchup repair。
 - `store` 与 `api` 层新增 `SQLite` / `Pebble` 对照，用于补充低层热点差异。
 - `Pebble` 范围按当前实现定义：事件日志和消息投影走 Pebble，元数据仍保留在 SQLite。
 - benchmark 实现在：
   - [internal/cluster/mesh_benchmark_test.go](/root/dev/sys/turntf/turntf/internal/cluster/mesh_benchmark_test.go)
+  - [internal/cluster/mesh_point_to_point_throughput_benchmark_test.go](/root/dev/sys/turntf/turntf/internal/cluster/mesh_point_to_point_throughput_benchmark_test.go)
   - [internal/cluster/mesh_recovery_benchmark_test.go](/root/dev/sys/turntf/turntf/internal/cluster/mesh_recovery_benchmark_test.go)
   - [internal/store/store_benchmark_test.go](/root/dev/sys/turntf/turntf/internal/store/store_benchmark_test.go)
   - [internal/store/store_degradation_benchmark_test.go](/root/dev/sys/turntf/turntf/internal/store/store_degradation_benchmark_test.go)
   - [internal/api/http_benchmark_test.go](/root/dev/sys/turntf/turntf/internal/api/http_benchmark_test.go)
   - [internal/api/client_benchmark_test.go](/root/dev/sys/turntf/turntf/internal/api/client_benchmark_test.go)
+  - [internal/api/client_point_to_point_throughput_benchmark_test.go](/root/dev/sys/turntf/turntf/internal/api/client_point_to_point_throughput_benchmark_test.go)
 
 当前基线覆盖以下场景：
 
 - `BenchmarkMeshReplicationPebbleLinear3Nodes`：3 节点线性拓扑下的持久消息复制，校验最远端节点已应用且源节点已收到 `Ack`。
 - `BenchmarkMeshQueryLoggedInUsersPebbleLinear`：3 节点 / 7 节点线性拓扑下的多跳在线用户查询，校验返回条数和代表性 payload。
 - `BenchmarkMeshTransientRoutePebbleLinear`：3 节点 / 7 节点线性拓扑下的瞬时包多跳转发，校验 `packet_id`、payload 和最终 TTL。
+- `BenchmarkMeshTransientPointToPointThroughput`：服务端 transient 数据面点对点吞吐；默认覆盖单节点、本机 WebSocket 直连、libp2p 直连和 `ws -> libp2p` 桥接；带 `-tags zeromq` 时追加 ZeroMQ 直连与 `ws -> zeromq` 桥接。
 - `BenchmarkMeshSnapshotRepairPebbleLinear3Nodes`：3 节点线性拓扑下的 snapshot repair，校验目标节点通过快照修复收敛。
 - `BenchmarkMeshTruncatedCatchupRepairPebble`：retention 截断后的 truncated pull + snapshot repair 恢复路径。
 - `BenchmarkStoreCreateMessage`：`SQLite` / `Pebble` 下直接消息写入；`Pebble` 子场景会继续细分 `balanced/throughput` 与 `no_sync/force_sync`。
@@ -33,6 +36,7 @@
 - `BenchmarkClientWebSocketTransientSendMessageAuthenticated`：带鉴权的 `WS /ws/client` transient `SendMessage` RPC，发送端校验 `TransientAccepted`，接收端校验 `PacketPushed`，并确认消息未落盘。
 - `BenchmarkClientWebSocketTransientSendMessageAuthenticatedLinearMesh`：3 节点 / 7 节点线性拓扑下的带鉴权 `WS /ws/client` transient `SendMessage` RPC，发送端连接源节点 API，接收端连接目标节点 API，校验多跳 mesh 后的 `TransientAccepted` / `PacketPushed` 端到端路径。
 - `BenchmarkClientWebSocketTransientSendMessageAuthenticatedLinearMeshWithOnlineUsers`：在 3 节点 / 7 节点线性拓扑下先建立大批已登录 WebSocket 会话，再测一条跨节点 transient `SendMessage`，用于观察更贴近稳态在线连接负载下的端到端延迟。
+- `BenchmarkClientWebSocketTransientSendMessageAuthenticatedPointToPointThroughput`：客户端 transient 端到端点对点吞吐；固定使用 SQLite，只覆盖单节点、本协议 2 节点直连；带 `-tags zeromq` 时追加 ZeroMQ 直连。这里刻意不做桥接，因为当前桥接拓扑不支持复制，源节点无法按真实语义解析目标用户。
 
 ## 采集策略
 
@@ -51,6 +55,20 @@
 
 ```bash
 go test ./internal/cluster -run '^$' -bench 'BenchmarkMesh(Replication|QueryLoggedInUsers|TransientRoute|SnapshotRepair|TruncatedCatchup)' -benchmem -count=1
+```
+
+点对点吞吐 benchmark：
+
+```bash
+go test ./internal/cluster -run '^$' -bench 'BenchmarkMeshTransientPointToPointThroughput' -benchmem -count=1
+go test ./internal/api -run '^$' -bench 'BenchmarkClientWebSocketTransientSendMessageAuthenticatedPointToPointThroughput' -benchmem -count=1
+```
+
+带 `ZeroMQ` 的点对点吞吐 benchmark：
+
+```bash
+go test -tags zeromq ./internal/cluster -run '^$' -bench 'BenchmarkMeshTransientPointToPointThroughput' -benchmem -count=1
+go test -tags zeromq ./internal/api -run '^$' -bench 'BenchmarkClientWebSocketTransientSendMessageAuthenticatedPointToPointThroughput' -benchmem -count=1
 ```
 
 `store/api` benchmark：
@@ -80,11 +98,16 @@ go test ./internal/cluster ./internal/store ./internal/api -count=1
 ```bash
 go test ./internal/cluster -run '^$' -bench 'BenchmarkMesh(Replication|QueryLoggedInUsers|TransientRoute|SnapshotRepair|TruncatedCatchup)' -benchmem -count=1 -benchtime=1x
 go test ./internal/store ./internal/api -run '^$' -bench 'Benchmark(Store|HTTP|ClientWebSocket)' -benchmem -count=1 -benchtime=1x
+go test ./internal/cluster -run '^$' -bench 'BenchmarkMeshTransientPointToPointThroughput' -benchmem -count=1 -benchtime=1x
+go test ./internal/api -run '^$' -bench 'BenchmarkClientWebSocketTransientSendMessageAuthenticatedPointToPointThroughput' -benchmem -count=1 -benchtime=1x
+go test -tags zeromq ./internal/cluster -run '^$' -bench 'BenchmarkMeshTransientPointToPointThroughput' -benchmem -count=1 -benchtime=1x
+go test -tags zeromq ./internal/api -run '^$' -bench 'BenchmarkClientWebSocketTransientSendMessageAuthenticatedPointToPointThroughput' -benchmem -count=1 -benchtime=1x
 ```
 
 ## 指标说明
 
 - `ns/op`：Go benchmark 的标准单次操作耗时。
+- `MB/s`：对调用了 `SetBytes` 的吞吐 benchmark，Go benchmark 会额外给出按 payload 大小换算后的吞吐率。
 - `B/op`：每次操作平均分配的内存字节数。
 - `allocs/op`：每次操作平均分配次数。
 - `bytes/op`：场景里单次操作的业务 payload 大小，便于横向对比不同消息体。

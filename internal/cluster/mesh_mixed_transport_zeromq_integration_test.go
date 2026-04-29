@@ -75,24 +75,24 @@ func TestManagerRoutesTransientPacketUsesWebSocketZeroMQBridge(t *testing.T) {
 	}
 }
 
-func startWebSocketZeroMQBridgeManagers(t *testing.T) (*Manager, *Manager, *Manager) {
-	t.Helper()
+func startWebSocketZeroMQBridgeManagers(tb testing.TB) (*Manager, *Manager, *Manager) {
+	tb.Helper()
 
-	stC := newReplicationTestStore(t, "node-c", 3)
+	stC := newReplicationTestStore(tb, "node-c", 3)
 	cfgC := mixedTransportBaseConfig(3)
 	cfgC.ZeroMQ = ZeroMQConfig{
 		Enabled: true,
-		BindURL: nextZeroMQTCPAddress(t),
+		BindURL: nextZeroMQTCPAddress(tb),
 	}
-	mgrC, _ := startMixedTransportManager(t, cfgC, stC)
-	startZeroMQClusterListener(t, mgrC)
+	mgrC, _ := startMixedTransportManager(tb, cfgC, stC)
+	startZeroMQClusterListener(tb, mgrC)
 	cZeroMQURL := zeroMQPeerURLForBindURL(mgrC.cfg.ZeroMQ.BindURL)
 
-	stA := newReplicationTestStore(t, "node-a", 1)
+	stA := newReplicationTestStore(tb, "node-a", 1)
 	cfgA := mixedTransportBaseConfig(1)
-	mgrA, serverAURL := startMixedTransportManager(t, cfgA, stA)
+	mgrA, serverAURL := startMixedTransportManager(tb, cfgA, stA)
 
-	stB := newReplicationTestStore(t, "node-b", 2)
+	stB := newReplicationTestStore(tb, "node-b", 2)
 	cfgB := mixedTransportBaseConfig(2)
 	cfgB.ZeroMQ = ZeroMQConfig{
 		Enabled: true,
@@ -101,40 +101,40 @@ func startWebSocketZeroMQBridgeManagers(t *testing.T) (*Manager, *Manager, *Mana
 		{URL: websocketURL(serverAURL) + websocketPath},
 		{URL: cZeroMQURL},
 	}
-	mgrB, _ := startMixedTransportManager(t, cfgB, stB)
+	mgrB, _ := startMixedTransportManager(tb, cfgB, stB)
 
 	return mgrA, mgrB, mgrC
 }
 
-func startZeroMQClusterListener(t *testing.T, mgr *Manager) {
-	t.Helper()
+func startZeroMQClusterListener(tb testing.TB, mgr *Manager) {
+	tb.Helper()
 	if mgr == nil || !mgr.cfg.zeroMQListenerEnabled() {
-		t.Fatalf("expected listening zeromq manager")
+		tb.Fatalf("expected listening zeromq manager")
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	listener := NewZeroMQMuxListenerWithConfig(mgr.cfg.ZeroMQ.BindURL, mgr.cfg.ZeroMQ)
 	listener.SetClusterAccept(mgr.AcceptZeroMQConn)
 	if err := listener.Start(ctx); err != nil {
 		cancel()
-		t.Fatalf("start zeromq cluster listener: %v", err)
+		tb.Fatalf("start zeromq cluster listener: %v", err)
 	}
 	mgr.SetZeroMQListenerRunning(true)
-	t.Cleanup(func() {
+	tb.Cleanup(func() {
 		mgr.SetZeroMQListenerRunning(false)
 		cancel()
 		_ = listener.Close()
 	})
 }
 
-func nextZeroMQTCPAddress(t *testing.T) string {
-	t.Helper()
+func nextZeroMQTCPAddress(tb testing.TB) string {
+	tb.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		t.Fatalf("listen for zeromq test address: %v", err)
+		tb.Fatalf("listen for zeromq test address: %v", err)
 	}
 	addr := ln.Addr().String()
 	if err := ln.Close(); err != nil {
-		t.Fatalf("close zeromq test address listener: %v", err)
+		tb.Fatalf("close zeromq test address listener: %v", err)
 	}
 	return "tcp://" + addr
 }

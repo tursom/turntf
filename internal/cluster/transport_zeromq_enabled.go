@@ -401,6 +401,11 @@ func runZeroMQDealer(socket *zmq4.Socket, wake *zeroMQWakePair, conn *zeroMQTran
 	pollingWritable := false
 	for {
 		zeroMQDrainBytesQueue(conn.sendCh, &pending)
+		if len(pending) > 0 {
+			if !zeroMQFlushDealerMessages(socket, conn, &pending) {
+				return
+			}
+		}
 		wantWritable := len(pending) > 0
 		if wantWritable != pollingWritable {
 			events := zmq4.POLLIN
@@ -428,6 +433,12 @@ func runZeroMQDealer(socket *zmq4.Socket, wake *zeroMQWakePair, conn *zeroMQTran
 		for _, item := range polled {
 			if wake != nil && item.Socket == wake.recv {
 				wake.Drain()
+				zeroMQDrainBytesQueue(conn.sendCh, &pending)
+				if len(pending) > 0 {
+					if !zeroMQFlushDealerMessages(socket, conn, &pending) {
+						return
+					}
+				}
 				continue
 			}
 			if item.Events&zmq4.POLLIN != 0 {
@@ -484,6 +495,11 @@ func runZeroMQRouter(ctx context.Context, socket *zmq4.Socket, wake *zeroMQWakeP
 		}
 
 	POLL:
+		if len(pending) > 0 {
+			if !zeroMQFlushRouterMessages(socket, peers, closePeer, &pending) {
+				return
+			}
+		}
 		wantWritable := len(pending) > 0
 		if wantWritable != pollingWritable {
 			events := zmq4.POLLIN
@@ -503,6 +519,12 @@ func runZeroMQRouter(ctx context.Context, socket *zmq4.Socket, wake *zeroMQWakeP
 		for _, item := range polled {
 			if wake != nil && item.Socket == wake.recv {
 				wake.Drain()
+				zeroMQDrainRouterControlQueues(listener, &pending, closePeer)
+				if len(pending) > 0 {
+					if !zeroMQFlushRouterMessages(socket, peers, closePeer, &pending) {
+						return
+					}
+				}
 				continue
 			}
 			if item.Events&zmq4.POLLIN != 0 {
@@ -639,7 +661,7 @@ func (c *zeroMQTransportConn) deliver(payload []byte) bool {
 	select {
 	case <-c.done:
 		return false
-	case c.recvCh <- cloneBytes(payload):
+	case c.recvCh <- payload:
 		return true
 	}
 }
@@ -881,6 +903,22 @@ func zeroMQDrainBytesQueue(ch <-chan []byte, pending *[][]byte) {
 	}
 }
 
+func zeroMQDrainRouterControlQueues(listener *ZeroMQMuxListener, pending *[]zeroMQRouterOutbound, closePeer func(string)) {
+	if listener == nil {
+		return
+	}
+	for {
+		select {
+		case identityKey := <-listener.connClosedCh:
+			closePeer(identityKey)
+		case outbound := <-listener.sendCh:
+			*pending = append(*pending, outbound)
+		default:
+			return
+		}
+	}
+}
+
 func zeroMQFlushDealerMessages(socket *zmq4.Socket, conn *zeroMQTransportConn, pending *[][]byte) bool {
 	for len(*pending) > 0 {
 		payload := (*pending)[0]
@@ -928,7 +966,7 @@ func zeroMQReceiveRouterMessages(socket *zmq4.Socket, listener *ZeroMQMuxListene
 		if len(frames) < 2 {
 			continue
 		}
-		identity := cloneBytes(frames[0])
+		identity := frames[0]
 		payload := frames[len(frames)-1]
 		identityKey := hex.EncodeToString(identity)
 		peer, ok := peers[identityKey]

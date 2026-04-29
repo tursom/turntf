@@ -201,7 +201,7 @@ func TestTopologyStoreApplyTopologyUpdateNilPolicySameGenerationIsIgnored(t *tes
 	}
 }
 
-func TestTopologyStoreSnapshotClonesCapabilities(t *testing.T) {
+func TestTopologyStoreSnapshotRebuildsAuthoritativeStateAfterUpdate(t *testing.T) {
 	t.Parallel()
 
 	store := NewMemoryTopologyStore()
@@ -218,19 +218,30 @@ func TestTopologyStoreSnapshotClonesCapabilities(t *testing.T) {
 	if !ok {
 		t.Fatal("expected origin node in snapshot")
 	}
+	// Returned snapshots are read-only views. Mutating them must not be
+	// treated as supported API, but the next authoritative rebuild should
+	// still recover from accidental caller-side mutation.
 	node.TransportCaps[TransportWebSocket].AdvertisedEndpoints[0] = "wss://mutated.example/ws"
 	node.TransportCaps[TransportWebSocket].InboundEnabled = false
+	store.ApplyHello(1, &NodeHello{
+		NodeId:           1,
+		ProtocolVersion:  ProtocolVersion,
+		ForwardingPolicy: DefaultForwardingPolicy(1),
+		Transports: []*TransportCapability{
+			{Transport: TransportWebSocket, InboundEnabled: true, AdvertisedEndpoints: []string{"wss://original.example/ws"}},
+		},
+	})
 
 	refreshed := store.Snapshot()
 	capability := refreshed.Nodes[1].TransportCaps[TransportWebSocket]
 	if capability == nil {
-		t.Fatal("expected websocket capability in refreshed snapshot")
+		t.Fatal("expected websocket capability after snapshot rebuild")
 	}
 	if capability.AdvertisedEndpoints[0] != "wss://original.example/ws" {
-		t.Fatalf("expected snapshot clone to protect stored endpoints, got %+v", capability.AdvertisedEndpoints)
+		t.Fatalf("expected snapshot rebuild to restore stored endpoints, got %+v", capability.AdvertisedEndpoints)
 	}
 	if !capability.InboundEnabled {
-		t.Fatalf("expected snapshot clone to protect stored capability, got %+v", capability)
+		t.Fatalf("expected snapshot rebuild to restore stored capability, got %+v", capability)
 	}
 }
 

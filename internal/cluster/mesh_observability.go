@@ -131,7 +131,7 @@ func (m *Manager) forwardMeshPayloadWithPacketIDAndTTL(ctx context.Context, targ
 		TargetNodeId: targetNodeID,
 		TrafficClass: trafficClass,
 		TtlHops:      ttlHops,
-		Payload:      append([]byte(nil), payload...),
+		Payload:      payload,
 	}
 	return binding.ForwardPacket(ctx, packet)
 }

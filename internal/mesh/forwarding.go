@@ -39,10 +39,17 @@ type Engine struct {
 	handler     LocalPacketHandler
 	observer    ForwardingObserver
 
-	mu      sync.Mutex
-	seen    map[string]time.Time
-	seenTTL time.Duration
-	now     func() time.Time
+	mu               sync.Mutex
+	seen             map[seenKey]time.Time
+	seenTTL          time.Duration
+	seenSweepInterval time.Duration
+	nextSeenSweepAt  time.Time
+	now              func() time.Time
+}
+
+type seenKey struct {
+	sourceNodeID int64
+	packetID     uint64
 }
 
 func NewEngine(localNodeID int64, snapshotFn func() TopologySnapshot, planner RoutePlanner, sender PacketSender, handler LocalPacketHandler, observer ForwardingObserver) *Engine {
@@ -53,9 +60,10 @@ func NewEngine(localNodeID int64, snapshotFn func() TopologySnapshot, planner Ro
 		sender:      sender,
 		handler:     handler,
 		observer:    observer,
-		seen:        make(map[string]time.Time),
-		seenTTL:     30 * time.Second,
-		now:         func() time.Time { return time.Now().UTC() },
+		seen:             make(map[seenKey]time.Time),
+		seenTTL:          30 * time.Second,
+		seenSweepInterval: time.Second,
+		now:              func() time.Time { return time.Now().UTC() },
 	}
 }
 
@@ -148,7 +156,7 @@ func (e *Engine) deliverLocal(ctx context.Context, packet *ForwardedPacket, seen
 	if e.handler == nil {
 		return nil
 	}
-	return e.handler(ctx, cloneForwardedPacket(packet))
+	return e.handler(ctx, packet)
 }
 
 func (e *Engine) markSeen(packet *ForwardedPacket) bool {
@@ -160,13 +168,15 @@ func (e *Engine) markSeen(packet *ForwardedPacket) bool {
 	if e.seenTTL <= 0 {
 		e.seenTTL = 30 * time.Second
 	}
-	now := e.now()
-	for key, ts := range e.seen {
-		if now.Sub(ts) > e.seenTTL {
-			delete(e.seen, key)
-		}
+	if e.seenSweepInterval <= 0 {
+		e.seenSweepInterval = time.Second
 	}
-	key := fmt.Sprintf("%d:%d", packet.SourceNodeId, packet.PacketId)
+	now := e.now()
+	if e.nextSeenSweepAt.IsZero() || !now.Before(e.nextSeenSweepAt) {
+		e.sweepSeenLocked(now)
+		e.nextSeenSweepAt = now.Add(e.seenSweepInterval)
+	}
+	key := seenKey{sourceNodeID: packet.SourceNodeId, packetID: packet.PacketId}
 	if _, ok := e.seen[key]; ok {
 		return false
 	}
@@ -180,7 +190,7 @@ func (e *Engine) unmarkSeen(packet *ForwardedPacket) {
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	delete(e.seen, fmt.Sprintf("%d:%d", packet.SourceNodeId, packet.PacketId))
+	delete(e.seen, seenKey{sourceNodeID: packet.SourceNodeId, packetID: packet.PacketId})
 }
 
 func cloneForwardedPacket(packet *ForwardedPacket) *ForwardedPacket {
@@ -195,8 +205,16 @@ func cloneForwardedPacket(packet *ForwardedPacket) *ForwardedPacket {
 		LastHopNodeId:    packet.LastHopNodeId,
 		IngressTransport: packet.IngressTransport,
 		TtlHops:          packet.TtlHops,
-		Payload:          append([]byte(nil), packet.Payload...),
+		Payload:          packet.Payload,
 		TraceId:          packet.TraceId,
+	}
+}
+
+func (e *Engine) sweepSeenLocked(now time.Time) {
+	for key, ts := range e.seen {
+		if now.Sub(ts) > e.seenTTL {
+			delete(e.seen, key)
+		}
 	}
 }
 

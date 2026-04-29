@@ -13,7 +13,14 @@ import (
 
 const websocketReadLimit = 8 << 20
 
+const websocketIOBufferSize = 32 << 10
+
 var errNonBinaryWebSocketFrame = errors.New("websocket transport received non-binary frame")
+var websocketWriteBufferPool = &sync.Pool{
+	New: func() any {
+		return make([]byte, websocketIOBufferSize)
+	},
+}
 
 type webSocketTransport struct {
 	upgrader     websocket.Upgrader
@@ -38,11 +45,18 @@ type webSocketTransportConn struct {
 }
 
 func newWebSocketTransport() *webSocketTransport {
+	dialer := *websocket.DefaultDialer
+	dialer.ReadBufferSize = websocketIOBufferSize
+	dialer.WriteBufferSize = websocketIOBufferSize
+	dialer.WriteBufferPool = websocketWriteBufferPool
 	return &webSocketTransport{
 		upgrader: websocket.Upgrader{
-			CheckOrigin: func(*http.Request) bool { return true },
+			CheckOrigin:     func(*http.Request) bool { return true },
+			ReadBufferSize:  websocketIOBufferSize,
+			WriteBufferSize: websocketIOBufferSize,
+			WriteBufferPool: websocketWriteBufferPool,
 		},
-		dialer:       websocket.DefaultDialer,
+		dialer:       &dialer,
 		readLimit:    websocketReadLimit,
 		readTimeout:  readTimeout,
 		writeWait:    writeWait,

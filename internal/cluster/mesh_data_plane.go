@@ -65,7 +65,7 @@ func (m *Manager) routeMeshMembershipUpdate(ctx context.Context, targetNodeID in
 	return m.routeMeshEnvelope(ctx, targetNodeID, mesh.TrafficControlCritical, &mesh.ClusterEnvelope{
 		Body: &mesh.ClusterEnvelope_MembershipUpdate{
 			MembershipUpdate: &mesh.MembershipUpdate{
-				MembershipUpdate: proto.Clone(update).(*internalproto.MembershipUpdate),
+				MembershipUpdate: update,
 			},
 		},
 	})
@@ -78,7 +78,7 @@ func (m *Manager) routeMeshPresenceUpdate(ctx context.Context, targetNodeID int6
 	return m.routeMeshEnvelope(ctx, targetNodeID, mesh.TrafficControlCritical, &mesh.ClusterEnvelope{
 		Body: &mesh.ClusterEnvelope_PresenceUpdate{
 			PresenceUpdate: &mesh.MeshPresenceUpdate{
-				PresenceUpdate: proto.Clone(snapshot).(*internalproto.OnlinePresenceSnapshot),
+				PresenceUpdate: snapshot,
 			},
 		},
 	})
@@ -91,7 +91,7 @@ func (m *Manager) routeMeshConnectivityRumor(ctx context.Context, targetNodeID i
 	return m.routeMeshEnvelope(ctx, targetNodeID, mesh.TrafficControlCritical, &mesh.ClusterEnvelope{
 		Body: &mesh.ClusterEnvelope_ConnectivityRumor{
 			ConnectivityRumor: &mesh.MeshConnectivityRumor{
-				ConnectivityRumor: proto.Clone(rumor).(*internalproto.NodeConnectivityRumor),
+				ConnectivityRumor: rumor,
 			},
 		},
 	})
@@ -181,7 +181,7 @@ func (m *Manager) routeMeshReplicationBatch(ctx context.Context, targetNodeID in
 				OriginNodeId: m.cfg.NodeID,
 				Sequence:     sequence,
 				SentAtHlc:    sentAtHlc,
-				EventBatch:   proto.Clone(batch).(*internalproto.EventBatch),
+				EventBatch:   batch,
 			},
 		},
 	})
@@ -195,7 +195,7 @@ func (m *Manager) routeMeshPullRequest(ctx context.Context, targetNodeID int64, 
 		Body: &mesh.ClusterEnvelope_PullRequest{
 			PullRequest: &mesh.PullRequest{
 				OriginNodeId: m.cfg.NodeID,
-				PullEvents:   proto.Clone(pull).(*internalproto.PullEvents),
+				PullEvents:   pull,
 			},
 		},
 	})
@@ -208,7 +208,7 @@ func (m *Manager) routeMeshReplicationAck(ctx context.Context, targetNodeID int6
 	return m.routeMeshEnvelope(ctx, targetNodeID, mesh.TrafficControlCritical, &mesh.ClusterEnvelope{
 		Body: &mesh.ClusterEnvelope_ReplicationAck{
 			ReplicationAck: &mesh.ReplicationAck{
-				Ack: proto.Clone(ack).(*internalproto.Ack),
+				Ack: ack,
 			},
 		},
 	})
@@ -221,7 +221,7 @@ func (m *Manager) routeMeshSnapshotManifest(ctx context.Context, targetNodeID in
 	return m.routeMeshEnvelope(ctx, targetNodeID, mesh.TrafficSnapshotBulk, &mesh.ClusterEnvelope{
 		Body: &mesh.ClusterEnvelope_SnapshotManifest{
 			SnapshotManifest: &mesh.SnapshotManifest{
-				SnapshotDigest: proto.Clone(digest).(*internalproto.SnapshotDigest),
+				SnapshotDigest: digest,
 			},
 		},
 	})
@@ -234,7 +234,7 @@ func (m *Manager) routeMeshSnapshotChunk(ctx context.Context, targetNodeID int64
 	return m.routeMeshEnvelope(ctx, targetNodeID, mesh.TrafficSnapshotBulk, &mesh.ClusterEnvelope{
 		Body: &mesh.ClusterEnvelope_SnapshotChunk{
 			SnapshotChunk: &mesh.SnapshotChunk{
-				SnapshotChunk: proto.Clone(chunk).(*internalproto.SnapshotChunk),
+				SnapshotChunk: chunk,
 			},
 		},
 	})
@@ -257,7 +257,7 @@ func (m *Manager) handleMeshReplicationBatchEnvelope(packet *mesh.ForwardedPacke
 		Sequence:  batch.GetSequence(),
 		SentAtHlc: batch.GetSentAtHlc(),
 		Body: &internalproto.Envelope_EventBatch{
-			EventBatch: proto.Clone(eventBatch).(*internalproto.EventBatch),
+			EventBatch: eventBatch,
 		},
 	})
 }
@@ -277,7 +277,7 @@ func (m *Manager) handleMeshPullRequestEnvelope(packet *mesh.ForwardedPacket, pu
 	return m.handlePullEvents(sess, &internalproto.Envelope{
 		NodeId: sessionPeerIDForEnvelope(sess, pull.GetOriginNodeId()),
 		Body: &internalproto.Envelope_PullEvents{
-			PullEvents: proto.Clone(pullEvents).(*internalproto.PullEvents),
+			PullEvents: pullEvents,
 		},
 	})
 }
@@ -293,7 +293,7 @@ func (m *Manager) handleMeshReplicationAckEnvelope(packet *mesh.ForwardedPacket,
 	return m.handleAck(sess, &internalproto.Envelope{
 		NodeId: sessionPeerIDForEnvelope(sess, ack.GetAck().GetNodeId()),
 		Body: &internalproto.Envelope_Ack{
-			Ack: proto.Clone(ack.GetAck()).(*internalproto.Ack),
+			Ack: ack.GetAck(),
 		},
 	})
 }
@@ -309,7 +309,7 @@ func (m *Manager) handleMeshSnapshotManifestEnvelope(packet *mesh.ForwardedPacke
 	return m.handleSnapshotDigest(sess, &internalproto.Envelope{
 		NodeId: sessionPeerIDForEnvelope(sess, packetSourceNodeID(packet)),
 		Body: &internalproto.Envelope_SnapshotDigest{
-			SnapshotDigest: proto.Clone(manifest.GetSnapshotDigest()).(*internalproto.SnapshotDigest),
+			SnapshotDigest: manifest.GetSnapshotDigest(),
 		},
 	})
 }
@@ -325,7 +325,7 @@ func (m *Manager) handleMeshSnapshotChunkEnvelope(packet *mesh.ForwardedPacket, 
 	return m.handleSnapshotChunk(sess, &internalproto.Envelope{
 		NodeId: sessionPeerIDForEnvelope(sess, packetSourceNodeID(packet)),
 		Body: &internalproto.Envelope_SnapshotChunk{
-			SnapshotChunk: proto.Clone(chunk.GetSnapshotChunk()).(*internalproto.SnapshotChunk),
+			SnapshotChunk: chunk.GetSnapshotChunk(),
 		},
 	})
 }

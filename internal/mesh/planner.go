@@ -20,7 +20,6 @@ type plannerMeta struct {
 	externalHops   int
 	firstHopNode   int64
 	firstTransport TransportKind
-	path           []plannerState
 }
 
 type queueItem struct {
@@ -62,9 +61,7 @@ func (p *Planner) Compute(snapshot TopologySnapshot, destinationNodeID int64, tr
 	best := make(map[plannerState]plannerMeta)
 	pq := make(stateQueue, 0, len(starts))
 	for _, start := range starts {
-		meta := plannerMeta{
-			path: []plannerState{start},
-		}
+		meta := plannerMeta{}
 		best[start] = meta
 		heap.Push(&pq, &queueItem{state: start, meta: meta})
 	}
@@ -122,7 +119,6 @@ func (p *Planner) expand(snapshot TopologySnapshot, destinationNodeID int64, tra
 			nextMeta.firstHopNode = link.ToNodeID
 			nextMeta.firstTransport = link.Transport
 		}
-		nextMeta.path = appendPath(meta.path, nextState)
 		transitions = append(transitions, transition{state: nextState, meta: nextMeta})
 	}
 	if !BridgeAllowedForTrafficClass(trafficClass) {
@@ -140,7 +136,6 @@ func (p *Planner) expand(snapshot TopologySnapshot, destinationNodeID int64, tra
 		nextMeta := meta
 		nextMeta.cost += BridgePenaltyMs
 		nextMeta.usedBridge = true
-		nextMeta.path = appendPath(meta.path, nextState)
 		transitions = append(transitions, transition{state: nextState, meta: nextMeta})
 	}
 	return transitions
@@ -220,13 +215,6 @@ func buildRouteDecision(destinationNodeID int64, generation uint64, meta planner
 		EstimatedCost:      meta.cost,
 		TopologyGeneration: generation,
 	}
-}
-
-func appendPath(path []plannerState, next plannerState) []plannerState {
-	cloned := make([]plannerState, len(path)+1)
-	copy(cloned, path)
-	cloned[len(path)] = next
-	return cloned
 }
 
 func (q stateQueue) Len() int { return len(q) }

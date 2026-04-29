@@ -173,13 +173,13 @@ func benchmarkMeshTransientRoutePebbleLinear(b *testing.B, mode benchroot.Mode, 
 
 	waitForMeshRouteDecision(b, source, targetNodeID, mesh.TrafficTransientInteractive, testNodeID(2), mesh.TransportWebSocket)
 
-	payload := bytes.Repeat([]byte("t"), payloadSize)
-	runClusterBenchmarkWarmup(b, func() {
-		warmupPacket := store.TransientPacket{
-			PacketID:     0,
-			SourceNodeID: testNodeID(1),
-			TargetNodeID: targetNodeID,
-			Recipient:    store.UserKey{NodeID: targetNodeID, UserID: 99},
+		payload := bytes.Repeat([]byte("t"), payloadSize)
+		runClusterBenchmarkWarmup(b, func() {
+			warmupPacket := store.TransientPacket{
+				PacketID:     uint64(1) << 62,
+				SourceNodeID: testNodeID(1),
+				TargetNodeID: targetNodeID,
+				Recipient:    store.UserKey{NodeID: targetNodeID, UserID: 99},
 			Sender:       store.UserKey{NodeID: testNodeID(1), UserID: 100},
 			Body:         payload,
 			DeliveryMode: store.DeliveryModeBestEffort,

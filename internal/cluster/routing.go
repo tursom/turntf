@@ -15,7 +15,7 @@ func (m *Manager) queueTransientPacket(packet store.TransientPacket) {
 	key := packetCacheKey(packet.SourceNodeID, packet.PacketID)
 	now := time.Now().UTC()
 	item := queuedPacket{
-		packet:      packet,
+		packet:      cloneTransientPacket(packet),
 		queuedAt:    now,
 		nextAttempt: now.Add(routeRetryInterval),
 	}
@@ -119,11 +119,16 @@ func transientPacketProto(packet store.TransientPacket) *internalproto.Transient
 		TargetNodeId:  packet.TargetNodeID,
 		Recipient:     &internalproto.ClusterUserRef{NodeId: packet.Recipient.NodeID, UserId: packet.Recipient.UserID},
 		Sender:        &internalproto.ClusterUserRef{NodeId: packet.Sender.NodeID, UserId: packet.Sender.UserID},
-		Body:          append([]byte(nil), packet.Body...),
+		Body:          packet.Body,
 		DeliveryMode:  storeDeliveryModeToCluster(packet.DeliveryMode),
 		TtlHops:       uint32(packet.TTLHops),
 		TargetSession: storeSessionRefToCluster(packet.TargetSession),
 	}
+}
+
+func cloneTransientPacket(packet store.TransientPacket) store.TransientPacket {
+	packet.Body = append([]byte(nil), packet.Body...)
+	return packet
 }
 
 func storeSessionRefToCluster(ref store.SessionRef) *internalproto.ClusterSessionRef {

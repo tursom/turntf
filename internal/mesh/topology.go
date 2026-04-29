@@ -51,6 +51,7 @@ type MemoryTopologyStore struct {
 	links      map[linkKey]LinkState
 	generation map[int64]uint64
 	updates    map[int64]*TopologyUpdate
+	snapshot   TopologySnapshot
 }
 
 func NewMemoryTopologyStore() *MemoryTopologyStore {
@@ -78,6 +79,7 @@ func (s *MemoryTopologyStore) ApplyHello(nodeID int64, hello *NodeHello) {
 		}
 		node.capabilities[capability.Transport] = CloneCapability(capability)
 	}
+	s.rebuildSnapshotLocked()
 }
 
 func (s *MemoryTopologyStore) ApplyTopologyUpdate(update *TopologyUpdate) {
@@ -128,6 +130,7 @@ func (s *MemoryTopologyStore) ApplyTopologyUpdate(update *TopologyUpdate) {
 			Established:  link.Established,
 		}
 	}
+	s.rebuildSnapshotLocked()
 }
 
 func (s *MemoryTopologyStore) Snapshot() TopologySnapshot {
@@ -136,6 +139,13 @@ func (s *MemoryTopologyStore) Snapshot() TopologySnapshot {
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	return s.snapshot
+}
+
+func (s *MemoryTopologyStore) rebuildSnapshotLocked() {
+	if s == nil {
+		return
+	}
 	snapshot := TopologySnapshot{
 		Nodes:         make(map[int64]NodeState, len(s.nodes)),
 		Links:         make([]LinkState, 0, len(s.links)),
@@ -172,7 +182,7 @@ func (s *MemoryTopologyStore) Snapshot() TopologySnapshot {
 			snapshot.TopologyGeneration = gen
 		}
 	}
-	return snapshot
+	s.snapshot = snapshot
 }
 
 func (s *MemoryTopologyStore) ensureNodeLocked(nodeID int64) *storeNode {

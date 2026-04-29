@@ -25,6 +25,12 @@ func (s *recordingSender) SendPacket(_ context.Context, nextHopNodeID int64, tra
 	return nil
 }
 
+type noopSender struct{}
+
+func (noopSender) SendPacket(context.Context, int64, TransportKind, *ForwardedPacket) error {
+	return nil
+}
+
 func TestEngineDeliversLocalPacket(t *testing.T) {
 	t.Parallel()
 
@@ -292,6 +298,84 @@ func TestEngineOutboundNoRouteDoesNotMarkPacketSeen(t *testing.T) {
 	if sender.count != 1 {
 		t.Fatalf("expected one forwarded retry, got %d", sender.count)
 	}
+}
+
+func BenchmarkMeshForwardingHotPath(b *testing.B) {
+	store := NewMemoryTopologyStore()
+	for _, nodeID := range []int64{1, 2, 3} {
+		store.ApplyHello(nodeID, &NodeHello{
+			NodeId:           nodeID,
+			ProtocolVersion:  ProtocolVersion,
+			ForwardingPolicy: DefaultForwardingPolicy(1),
+			Transports: []*TransportCapability{
+				{Transport: TransportLibP2P, OutboundEnabled: true, InboundEnabled: true},
+			},
+		})
+	}
+	store.ApplyTopologyUpdate(&TopologyUpdate{
+		OriginNodeId:     1,
+		Generation:       1,
+		ForwardingPolicy: DefaultForwardingPolicy(1),
+		Transports: []*TransportCapability{
+			{Transport: TransportLibP2P, OutboundEnabled: true, InboundEnabled: true},
+		},
+		Links: []*LinkAdvertisement{
+			{FromNodeId: 1, ToNodeId: 2, Transport: TransportLibP2P, PathClass: PathClassDirect, CostMs: 5, Established: true},
+		},
+	})
+	store.ApplyTopologyUpdate(&TopologyUpdate{
+		OriginNodeId:     2,
+		Generation:       1,
+		ForwardingPolicy: DefaultForwardingPolicy(1),
+		Transports: []*TransportCapability{
+			{Transport: TransportLibP2P, OutboundEnabled: true, InboundEnabled: true},
+		},
+		Links: []*LinkAdvertisement{
+			{FromNodeId: 2, ToNodeId: 3, Transport: TransportLibP2P, PathClass: PathClassDirect, CostMs: 5, Established: true},
+		},
+	})
+
+	snapshot := store.Snapshot()
+	planner := NewPlanner(1)
+	ctx := context.Background()
+
+	b.Run("snapshot", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			got := store.Snapshot()
+			if _, ok := got.Node(1); !ok {
+				b.Fatal("expected local node in snapshot")
+			}
+		}
+	})
+
+	b.Run("planner", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			decision, ok := planner.Compute(snapshot, 3, TrafficControlCritical, TransportUnspecified)
+			if !ok || decision.NextHopNodeID != 2 {
+				b.Fatalf("unexpected planner decision: ok=%v decision=%+v", ok, decision)
+			}
+		}
+	})
+
+	b.Run("forward", func(b *testing.B) {
+		b.ReportAllocs()
+		engine := NewEngine(1, store.Snapshot, planner, noopSender{}, nil, nil)
+		packet := &ForwardedPacket{
+			SourceNodeId: 1,
+			TargetNodeId: 3,
+			TrafficClass: TrafficControlCritical,
+			TtlHops:      3,
+			Payload:      []byte("bench"),
+		}
+		for i := 0; i < b.N; i++ {
+			packet.PacketId = uint64(i + 1)
+			if err := engine.Forward(ctx, packet); err != nil {
+				b.Fatalf("forward: %v", err)
+			}
+		}
+	})
 }
 
 func TestEngineOutboundDuplicateDoesNotResend(t *testing.T) {

@@ -18,6 +18,8 @@ var (
 	ErrAdapterAlreadyBound = errors.New("mesh: adapter transport already registered")
 )
 
+var envelopeMarshalOptions = proto.MarshalOptions{Deterministic: true}
+
 // EnvelopeCodec encodes and decodes ClusterEnvelope messages on the wire.
 // The default implementation uses protobuf; tests can inject a fake codec.
 type EnvelopeCodec interface {
@@ -85,7 +87,7 @@ type DialSeed struct {
 type protoCodec struct{}
 
 func (protoCodec) Encode(envelope *ClusterEnvelope) ([]byte, error) {
-	return proto.Marshal(envelope)
+	return envelopeMarshalOptions.Marshal(envelope)
 }
 
 func (protoCodec) Decode(data []byte) (*ClusterEnvelope, error) {
@@ -170,6 +172,7 @@ type Runtime struct {
 	wg        sync.WaitGroup
 	adjByConn map[TransportConn]*Adjacency
 	adjByKey  map[adjacencyKey]map[TransportConn]*Adjacency
+	adjByRoute map[routeAdjacencyKey][]*Adjacency
 
 	generation        uint64
 	knownGeneration   map[int64]uint64
@@ -186,6 +189,11 @@ type adjacencyKey struct {
 	nodeID    int64
 	transport TransportKind
 	hint      string
+}
+
+type routeAdjacencyKey struct {
+	nodeID    int64
+	transport TransportKind
 }
 
 type floodKey struct {
@@ -341,6 +349,7 @@ func NewRuntime(opts RuntimeOptions) (*Runtime, error) {
 		adapterByKnd:           adapterByKnd,
 		adjByConn:              make(map[TransportConn]*Adjacency),
 		adjByKey:               make(map[adjacencyKey]map[TransportConn]*Adjacency),
+		adjByRoute:             make(map[routeAdjacencyKey][]*Adjacency),
 		knownGeneration:        make(map[int64]uint64),
 		seenFlood:              make(map[floodKey]struct{}),
 		lastUpdate:             make(map[int64]*TopologyUpdate),
@@ -537,7 +546,7 @@ func (r *Runtime) SendPacket(ctx context.Context, nextHopNodeID int64, transport
 	if adj == nil {
 		return ErrNoRoute
 	}
-	envelope := &ClusterEnvelope{Body: &ClusterEnvelope_ForwardedPacket{ForwardedPacket: cloneForwardedPacket(packet)}}
+	envelope := &ClusterEnvelope{Body: &ClusterEnvelope_ForwardedPacket{ForwardedPacket: packet}}
 	return r.sendEnvelopeCtx(ctx, adj.Conn, envelope, r.helloTimeout)
 }
 
@@ -547,10 +556,11 @@ func (r *Runtime) bestAdjacency(nextHopNodeID int64, transport TransportKind) *A
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	candidates := r.adjByRoute[routeAdjacencyKey{nodeID: nextHopNodeID, transport: transport}]
 	var best *Adjacency
 	var bestScore int64
-	for _, adj := range r.adjByConn {
-		if adj == nil || adj.RemoteNodeID != nextHopNodeID || adj.Transport != transport {
+	for _, adj := range candidates {
+		if adj == nil {
 			continue
 		}
 		adj.mu.Lock()
@@ -578,15 +588,15 @@ func (r *Runtime) handleLocalForwardedPacket(ctx context.Context, packet *Forwar
 			return err
 		}
 		if r.envelopeHandler != nil {
-			return r.envelopeHandler(ctx, cloneForwardedPacket(packet), proto.Clone(envelope).(*ClusterEnvelope))
+			return r.envelopeHandler(ctx, packet, envelope)
 		}
 		if packet.TrafficClass == TrafficControlQuery && r.queryHandler != nil {
-			return r.queryHandler(ctx, cloneForwardedPacket(packet), proto.Clone(envelope).(*ClusterEnvelope))
+			return r.queryHandler(ctx, packet, envelope)
 		}
 		return nil
 	}
 	if r.forwardedPacketHandler != nil {
-		return r.forwardedPacketHandler(ctx, cloneForwardedPacket(packet))
+		return r.forwardedPacketHandler(ctx, packet)
 	}
 	return nil
 }
@@ -959,6 +969,8 @@ func (r *Runtime) registerAdjacency(conn TransportConn, kind TransportKind, hell
 		r.adjByKey[key] = conns
 	}
 	conns[conn] = adj
+	routeKey := routeAdjacencyKey{nodeID: hello.NodeId, transport: kind}
+	r.adjByRoute[routeKey] = append(r.adjByRoute[routeKey], adj)
 	return adj
 }
 
@@ -973,6 +985,7 @@ func (r *Runtime) onAdjacencyLost(adj *Adjacency) {
 				delete(r.adjByKey, key)
 			}
 		}
+		r.removeAdjacencyFromRouteIndexLocked(adj)
 	}
 	// Queue an explicit tombstone for this link so the next publication
 	// announces the loss before the link disappears entirely.
@@ -1041,6 +1054,28 @@ func (r *Runtime) readLoop(ctx context.Context, adj *Adjacency) {
 	}
 }
 
+func (r *Runtime) removeAdjacencyFromRouteIndexLocked(adj *Adjacency) {
+	if r == nil || adj == nil {
+		return
+	}
+	key := routeAdjacencyKey{nodeID: adj.RemoteNodeID, transport: adj.Transport}
+	candidates := r.adjByRoute[key]
+	if len(candidates) == 0 {
+		return
+	}
+	filtered := candidates[:0]
+	for _, candidate := range candidates {
+		if candidate != nil && candidate != adj {
+			filtered = append(filtered, candidate)
+		}
+	}
+	if len(filtered) == 0 {
+		delete(r.adjByRoute, key)
+		return
+	}
+	r.adjByRoute[key] = filtered
+}
+
 func (r *Runtime) dispatchEnvelope(ctx context.Context, adj *Adjacency, envelope *ClusterEnvelope) {
 	switch body := envelope.Body.(type) {
 	case *ClusterEnvelope_TimeSyncRequest:
@@ -1062,9 +1097,8 @@ func (r *Runtime) dispatchEnvelope(ctx context.Context, adj *Adjacency, envelope
 		if body.ForwardedPacket == nil || r.engine == nil {
 			return
 		}
-		packet := cloneForwardedPacket(body.ForwardedPacket)
-		packet.IngressTransport = adj.Transport
-		_ = r.engine.HandleInbound(ctx, packet)
+		body.ForwardedPacket.IngressTransport = adj.Transport
+		_ = r.engine.HandleInbound(ctx, body.ForwardedPacket)
 	default:
 		// Other envelope types are handled by later phases.
 	}

@@ -186,6 +186,7 @@ func (h *HTTP) routes() {
 	h.mux.HandleFunc("GET "+clientWSPath, h.handleClientWebSocket)
 	h.mux.HandleFunc("GET "+clientRealtimeWSPath, h.handleRealtimeWebSocket)
 	h.mux.HandleFunc("POST /auth/login", h.handleLogin)
+	h.mux.HandleFunc("GET /users", h.handleListUsers)
 	h.mux.HandleFunc("POST /users", h.handleCreateUser)
 	h.mux.HandleFunc("GET /nodes/{node_id}/users/{user_id}", h.handleGetUser)
 	h.mux.HandleFunc("PATCH /nodes/{node_id}/users/{user_id}", h.handleUpdateUser)
@@ -316,6 +317,24 @@ func (h *HTTP) handleGetUser(w http.ResponseWriter, r *http.Request) {
 	h.invalidateTargetRoleCache(user.Key())
 
 	writeJSON(w, http.StatusOK, userResponseFromStore(user))
+}
+
+func (h *HTTP) handleListUsers(w http.ResponseWriter, r *http.Request) {
+	if _, ok := h.requireAdmin(w, r); !ok {
+		return
+	}
+
+	users, err := h.service.ListUsers(r.Context())
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+
+	resp := make([]userResponse, 0, len(users))
+	for _, user := range users {
+		resp = append(resp, userResponseFromStore(user))
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (h *HTTP) handleUpdateUser(w http.ResponseWriter, r *http.Request) {

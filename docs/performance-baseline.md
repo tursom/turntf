@@ -23,7 +23,7 @@
 - `BenchmarkMeshReplicationPebbleLinear3Nodes`：3 节点线性拓扑下的持久消息复制，校验最远端节点已应用且源节点已收到 `Ack`。
 - `BenchmarkMeshQueryLoggedInUsersPebbleLinear`：3 节点 / 7 节点线性拓扑下的多跳在线用户查询，校验返回条数和代表性 payload。
 - `BenchmarkMeshTransientRoutePebbleLinear`：3 节点 / 7 节点线性拓扑下的瞬时包多跳转发，校验 `packet_id`、payload 和最终 TTL。
-- `BenchmarkMeshTransientPointToPointThroughput`：服务端 transient 数据面点对点吞吐；默认覆盖单节点、本机 WebSocket 直连、libp2p 直连和 `ws -> libp2p` 桥接；带 `-tags zeromq` 时追加 ZeroMQ 直连与 `ws -> zeromq` 桥接。
+- `BenchmarkMeshTransientPointToPointThroughput`：服务端 transient 数据面点对点吞吐；覆盖单节点、2 节点纯协议直连、7 节点纯协议线性 `WebSocket/libp2p/ZeroMQ`，以及 `3/5` 节点 mixed bridge（`ws -> libp2p`、`ws -> zeromq`）。
 - `BenchmarkMeshSnapshotRepairPebbleLinear3Nodes`：3 节点线性拓扑下的 snapshot repair，校验目标节点通过快照修复收敛。
 - `BenchmarkMeshTruncatedCatchupRepairPebble`：retention 截断后的 truncated pull + snapshot repair 恢复路径。
 - `BenchmarkStoreCreateMessage`：`SQLite` / `Pebble` 下直接消息写入；`Pebble` 子场景会继续细分 `balanced/throughput` 与 `no_sync/force_sync`。
@@ -36,11 +36,12 @@
 - `BenchmarkClientWebSocketTransientSendMessageAuthenticated`：带鉴权的 `WS /ws/client` transient `SendMessage` RPC，发送端校验 `TransientAccepted`，接收端校验 `PacketPushed`，并确认消息未落盘。
 - `BenchmarkClientWebSocketTransientSendMessageAuthenticatedLinearMesh`：3 节点 / 7 节点线性拓扑下的带鉴权 `WS /ws/client` transient `SendMessage` RPC，发送端连接源节点 API，接收端连接目标节点 API，校验多跳 mesh 后的 `TransientAccepted` / `PacketPushed` 端到端路径。
 - `BenchmarkClientWebSocketTransientSendMessageAuthenticatedLinearMeshWithOnlineUsers`：在 3 节点 / 7 节点线性拓扑下先建立大批已登录 WebSocket 会话，再测一条跨节点 transient `SendMessage`，用于观察更贴近稳态在线连接负载下的端到端延迟。
-- `BenchmarkClientWebSocketTransientSendMessageAuthenticatedPointToPointThroughput`：客户端 transient 端到端点对点吞吐；固定使用 SQLite，只覆盖单节点、本协议 2 节点直连；带 `-tags zeromq` 时追加 ZeroMQ 直连。这里刻意不做桥接，因为当前桥接拓扑不支持复制，源节点无法按真实语义解析目标用户。
+- `BenchmarkClientWebSocketTransientSendMessageAuthenticatedPointToPointThroughput`：客户端 transient 端到端点对点吞吐；固定使用 SQLite，覆盖单节点、2 节点纯协议直连，以及 7 节点纯协议线性 `WebSocket/libp2p/ZeroMQ`。这里刻意不做 mixed bridge，因为当前桥接拓扑不支持复制，源节点无法按真实语义解析目标用户。这两组点对点吞吐 benchmark 不再切 `tmp/disk` 子场景。
 
 ## 采集策略
 
 - benchmark 名称现在会显式带上介质 mode：`/tmp/...` 或 `/disk/...`。
+- 例外：两组点对点 transient 吞吐 benchmark 不再切 `tmp/disk`，输出名称也不会带 `/tmp` 或 `/disk`。
 - `tmp` 子场景始终运行，继续使用默认临时目录语义。
 - 如果默认临时目录所在文件系统是内存文件系统，例如当前机器的 `/tmp` 是 `tmpfs`，同一条 `go test` 命令会自动补跑 `disk` 子场景。
 - `disk` 子场景固定写入仓库根目录下的 `./.benchdata`。
@@ -71,6 +72,8 @@ go test -tags zeromq ./internal/cluster -run '^$' -bench 'BenchmarkMeshTransient
 go test -tags zeromq ./internal/api -run '^$' -bench 'BenchmarkClientWebSocketTransientSendMessageAuthenticatedPointToPointThroughput' -benchmem -count=1
 ```
 
+这两组点对点吞吐 benchmark 现在固定只跑一组临时目录场景，因此结果名称不会再出现 `/tmp` 或 `/disk`。
+
 `store/api` benchmark：
 
 ```bash
@@ -85,7 +88,7 @@ go test ./internal/store -run '^$' -bench 'BenchmarkDegradationStore(ListMessage
 
 这组 benchmark 主要用来看“规模增长时慢了多少”，默认不并入上面的常规 `store/api` 基线命令。
 
-以上命令保持不变；是否额外出现 `/disk/...` 子场景，由 benchmark 在运行时按文件系统类型自动决定。
+除点对点吞吐 benchmark 外，以上命令保持不变；是否额外出现 `/disk/...` 子场景，由 benchmark 在运行时按文件系统类型自动决定。
 
 回归命令：
 

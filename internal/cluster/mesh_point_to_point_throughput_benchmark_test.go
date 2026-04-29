@@ -12,15 +12,15 @@ import (
 
 	"github.com/tursom/turntf/internal/mesh"
 	"github.com/tursom/turntf/internal/store"
-	"github.com/tursom/turntf/internal/testutil/benchroot"
 )
 
 type transientPointToPointBenchmarkScenario struct {
 	name  string
-	build func(testing.TB, benchroot.Mode) *transientPointToPointBenchmarkTopology
+	build func(testing.TB) *transientPointToPointBenchmarkTopology
 }
 
 const transientPointToPointBenchmarkPacketIDBase = uint64(1) << 62
+const transientPointToPointBenchmarkTimeout = 5 * time.Second
 
 type transientPointToPointBenchmarkTopology struct {
 	source          *Manager
@@ -49,37 +49,34 @@ func BenchmarkMeshTransientPointToPointThroughput(b *testing.B) {
 	scenarios := append([]transientPointToPointBenchmarkScenario{
 		{name: "single-node/local", build: buildTransientPointToPointSingleNodeTopology},
 		{name: "websocket/direct-2nodes", build: buildTransientPointToPointWebSocketDirectTopology},
+		{name: "websocket/linear-7nodes", build: buildTransientPointToPointWebSocketLinear7NodesTopology},
 		{name: "libp2p/direct-2nodes", build: buildTransientPointToPointLibP2PDirectTopology},
+		{name: "libp2p/linear-7nodes", build: buildTransientPointToPointLibP2PLinear7NodesTopology},
 		{name: "bridge/websocket-libp2p/3nodes", build: buildTransientPointToPointWebSocketLibP2PBridgeTopology},
+		{name: "bridge/websocket-libp2p/5nodes", build: buildTransientPointToPointWebSocketLibP2PBridge5NodesTopology},
 	}, transientPointToPointBenchmarkExtraScenarios()...)
 
-	for _, mode := range benchroot.Modes(b) {
-		mode := mode
-		b.Run(mode.Name(), func(b *testing.B) {
-			for _, scenario := range scenarios {
-				scenario := scenario
-				for _, tc := range []struct {
-					name        string
-					payloadSize int
-				}{
-					{name: "256B", payloadSize: 256},
-					{name: "4KiB", payloadSize: 4 << 10},
-				} {
-					b.Run(fmt.Sprintf("%s/%s", scenario.name, tc.name), func(b *testing.B) {
-						benchmarkMeshTransientPointToPointThroughput(b, mode, scenario, tc.payloadSize)
-					})
-				}
-			}
-		})
+	for _, scenario := range scenarios {
+		for _, tc := range []struct {
+			name        string
+			payloadSize int
+		}{
+			{name: "256B", payloadSize: 256},
+			{name: "4KiB", payloadSize: 4 << 10},
+		} {
+			b.Run(fmt.Sprintf("%s/%s", scenario.name, tc.name), func(b *testing.B) {
+				benchmarkMeshTransientPointToPointThroughput(b, scenario, tc.payloadSize)
+			})
+		}
 	}
 }
 
-func benchmarkMeshTransientPointToPointThroughput(b *testing.B, mode benchroot.Mode, scenario transientPointToPointBenchmarkScenario, payloadSize int) {
+func benchmarkMeshTransientPointToPointThroughput(b *testing.B, scenario transientPointToPointBenchmarkScenario, payloadSize int) {
 	ctx := context.Background()
 	b.StopTimer()
 	silenceClusterLogs(b)
 
-	topology := scenario.build(b, mode)
+	topology := scenario.build(b)
 	b.Cleanup(topology.Close)
 
 	payload := bytes.Repeat([]byte("t"), payloadSize)
@@ -246,11 +243,10 @@ func runTransientPointToPointBenchmarkDelivery(tb testing.TB, ctx context.Contex
 	}
 }
 
-func buildTransientPointToPointSingleNodeTopology(tb testing.TB, mode benchroot.Mode) *transientPointToPointBenchmarkTopology {
+func buildTransientPointToPointSingleNodeTopology(tb testing.TB) *transientPointToPointBenchmarkTopology {
 	tb.Helper()
 
-	deliveryTimeout := benchmarkTimeout(mode, 5*time.Second, 30*time.Second)
-	st, closeStore := openBenchmarkSQLiteClusterStore(tb, mode, "bench-p2p-single-node", 1)
+	st, closeStore := openBenchmarkSQLiteClusterStore(tb, "bench-p2p-single-node", 1)
 	mgr, _, closeManager := openBenchmarkMixedTransportManager(tb, mixedTransportBaseConfig(1), st)
 	waiter := newTransientPointToPointDeliveryWaiter()
 	mgr.SetTransientHandler(waiter.handle)
@@ -260,21 +256,19 @@ func buildTransientPointToPointSingleNodeTopology(tb testing.TB, mode benchroot.
 		sourceNodeID:    testNodeID(1),
 		targetNodeID:    testNodeID(1),
 		hopCount:        0,
-		deliveryTimeout: deliveryTimeout,
+		deliveryTimeout: transientPointToPointBenchmarkTimeout,
 		waiter:          waiter,
 		closeFns:        []func(){closeStore, closeManager},
 	}
 }
 
-func buildTransientPointToPointWebSocketDirectTopology(tb testing.TB, mode benchroot.Mode) *transientPointToPointBenchmarkTopology {
+func buildTransientPointToPointWebSocketDirectTopology(tb testing.TB) *transientPointToPointBenchmarkTopology {
 	tb.Helper()
 
-	deliveryTimeout := benchmarkTimeout(mode, 5*time.Second, 30*time.Second)
-
-	targetStore, closeTargetStore := openBenchmarkSQLiteClusterStore(tb, mode, "bench-p2p-websocket-target", 2)
+	targetStore, closeTargetStore := openBenchmarkSQLiteClusterStore(tb, "bench-p2p-websocket-target", 2)
 	targetMgr, targetURL, closeTargetMgr := openBenchmarkMixedTransportManager(tb, mixedTransportBaseConfig(2), targetStore)
 
-	sourceStore, closeSourceStore := openBenchmarkSQLiteClusterStore(tb, mode, "bench-p2p-websocket-source", 1)
+	sourceStore, closeSourceStore := openBenchmarkSQLiteClusterStore(tb, "bench-p2p-websocket-source", 1)
 	sourceCfg := mixedTransportBaseConfig(1)
 	sourceCfg.Peers = []Peer{{URL: websocketURL(targetURL) + websocketPath}}
 	sourceMgr, _, closeSourceMgr := openBenchmarkMixedTransportManager(tb, sourceCfg, sourceStore)
@@ -288,24 +282,69 @@ func buildTransientPointToPointWebSocketDirectTopology(tb testing.TB, mode bench
 		sourceNodeID:    testNodeID(1),
 		targetNodeID:    testNodeID(2),
 		hopCount:        1,
-		deliveryTimeout: deliveryTimeout,
+		deliveryTimeout: transientPointToPointBenchmarkTimeout,
 		waiter:          waiter,
 		closeFns:        []func(){closeTargetStore, closeTargetMgr, closeSourceStore, closeSourceMgr},
 	}
 }
 
-func buildTransientPointToPointLibP2PDirectTopology(tb testing.TB, mode benchroot.Mode) *transientPointToPointBenchmarkTopology {
+func buildTransientPointToPointWebSocketLinear7NodesTopology(tb testing.TB) *transientPointToPointBenchmarkTopology {
+	tb.Helper()
+	return buildTransientPointToPointLinearWebSocketTopology(tb, 7)
+}
+
+func buildTransientPointToPointLinearWebSocketTopology(tb testing.TB, nodeCount int) *transientPointToPointBenchmarkTopology {
+	tb.Helper()
+	if nodeCount < 2 {
+		tb.Fatalf("websocket linear throughput topology requires at least 2 nodes, got %d", nodeCount)
+	}
+
+	managers := make([]*Manager, 0, nodeCount)
+	closeFns := make([]func(), 0, nodeCount*2)
+	serverURLs := make([]string, 0, nodeCount)
+	for idx := 0; idx < nodeCount; idx++ {
+		nodeSlot := uint16(idx + 1)
+		st, closeStore := openBenchmarkSQLiteClusterStore(tb, fmt.Sprintf("bench-p2p-websocket-linear-%d", idx+1), nodeSlot)
+		closeFns = append(closeFns, closeStore)
+
+		cfg := mixedTransportBaseConfig(nodeSlot)
+		if idx > 0 {
+			cfg.Peers = []Peer{{URL: websocketURL(serverURLs[idx-1]) + websocketPath}}
+		}
+		mgr, serverURL, closeMgr := openBenchmarkMixedTransportManager(tb, cfg, st)
+		closeFns = append(closeFns, closeMgr)
+		managers = append(managers, mgr)
+		serverURLs = append(serverURLs, serverURL)
+	}
+
+	source := managers[0]
+	target := managers[len(managers)-1]
+	targetNodeID := testNodeID(uint16(nodeCount))
+	waitForMeshRouteDecision(tb, source, targetNodeID, mesh.TrafficTransientInteractive, testNodeID(2), mesh.TransportWebSocket)
+
+	waiter := newTransientPointToPointDeliveryWaiter()
+	target.SetTransientHandler(waiter.handle)
+	return &transientPointToPointBenchmarkTopology{
+		source:          source,
+		sourceNodeID:    testNodeID(1),
+		targetNodeID:    targetNodeID,
+		hopCount:        int32(nodeCount - 1),
+		deliveryTimeout: transientPointToPointBenchmarkTimeout,
+		waiter:          waiter,
+		closeFns:        closeFns,
+	}
+}
+
+func buildTransientPointToPointLibP2PDirectTopology(tb testing.TB) *transientPointToPointBenchmarkTopology {
 	tb.Helper()
 
-	deliveryTimeout := benchmarkTimeout(mode, 5*time.Second, 30*time.Second)
-
-	targetStore, closeTargetStore := openBenchmarkSQLiteClusterStore(tb, mode, "bench-p2p-libp2p-target", 2)
+	targetStore, closeTargetStore := openBenchmarkSQLiteClusterStore(tb, "bench-p2p-libp2p-target", 2)
 	targetCfg := mixedTransportBaseConfig(2)
 	targetCfg.LibP2P = mixedTransportLibP2PConfig(tb, "bench-p2p-libp2p-target")
 	targetMgr, _, closeTargetMgr := openBenchmarkMixedTransportManager(tb, targetCfg, targetStore)
 	targetPeerURL := firstLibP2PListenAddr(tb, targetMgr)
 
-	sourceStore, closeSourceStore := openBenchmarkSQLiteClusterStore(tb, mode, "bench-p2p-libp2p-source", 1)
+	sourceStore, closeSourceStore := openBenchmarkSQLiteClusterStore(tb, "bench-p2p-libp2p-source", 1)
 	sourceCfg := mixedTransportBaseConfig(1)
 	sourceCfg.LibP2P = mixedTransportLibP2PConfig(tb, "bench-p2p-libp2p-source")
 	sourceCfg.Peers = []Peer{{URL: targetPeerURL}}
@@ -320,27 +359,73 @@ func buildTransientPointToPointLibP2PDirectTopology(tb testing.TB, mode benchroo
 		sourceNodeID:    testNodeID(1),
 		targetNodeID:    testNodeID(2),
 		hopCount:        1,
-		deliveryTimeout: deliveryTimeout,
+		deliveryTimeout: transientPointToPointBenchmarkTimeout,
 		waiter:          waiter,
 		closeFns:        []func(){closeTargetStore, closeTargetMgr, closeSourceStore, closeSourceMgr},
 	}
 }
 
-func buildTransientPointToPointWebSocketLibP2PBridgeTopology(tb testing.TB, mode benchroot.Mode) *transientPointToPointBenchmarkTopology {
+func buildTransientPointToPointLibP2PLinear7NodesTopology(tb testing.TB) *transientPointToPointBenchmarkTopology {
+	tb.Helper()
+	return buildTransientPointToPointLinearLibP2PTopology(tb, 7)
+}
+
+func buildTransientPointToPointLinearLibP2PTopology(tb testing.TB, nodeCount int) *transientPointToPointBenchmarkTopology {
+	tb.Helper()
+	if nodeCount < 2 {
+		tb.Fatalf("libp2p linear throughput topology requires at least 2 nodes, got %d", nodeCount)
+	}
+
+	managers := make([]*Manager, 0, nodeCount)
+	closeFns := make([]func(), 0, nodeCount*2)
+	peerURLs := make([]string, 0, nodeCount)
+	for idx := 0; idx < nodeCount; idx++ {
+		nodeSlot := uint16(idx + 1)
+		st, closeStore := openBenchmarkSQLiteClusterStore(tb, fmt.Sprintf("bench-p2p-libp2p-linear-%d", idx+1), nodeSlot)
+		closeFns = append(closeFns, closeStore)
+
+		cfg := mixedTransportBaseConfig(nodeSlot)
+		cfg.LibP2P = mixedTransportLibP2PConfig(tb, fmt.Sprintf("bench-p2p-libp2p-linear-%d", idx+1))
+		if idx > 0 {
+			cfg.Peers = []Peer{{URL: peerURLs[idx-1]}}
+		}
+		mgr, _, closeMgr := openBenchmarkMixedTransportManager(tb, cfg, st)
+		closeFns = append(closeFns, closeMgr)
+		managers = append(managers, mgr)
+		peerURLs = append(peerURLs, firstLibP2PListenAddr(tb, mgr))
+	}
+
+	source := managers[0]
+	target := managers[len(managers)-1]
+	targetNodeID := testNodeID(uint16(nodeCount))
+	waitForMeshRouteDecision(tb, source, targetNodeID, mesh.TrafficTransientInteractive, testNodeID(2), mesh.TransportLibP2P)
+
+	waiter := newTransientPointToPointDeliveryWaiter()
+	target.SetTransientHandler(waiter.handle)
+	return &transientPointToPointBenchmarkTopology{
+		source:          source,
+		sourceNodeID:    testNodeID(1),
+		targetNodeID:    targetNodeID,
+		hopCount:        int32(nodeCount - 1),
+		deliveryTimeout: transientPointToPointBenchmarkTimeout,
+		waiter:          waiter,
+		closeFns:        closeFns,
+	}
+}
+
+func buildTransientPointToPointWebSocketLibP2PBridgeTopology(tb testing.TB) *transientPointToPointBenchmarkTopology {
 	tb.Helper()
 
-	deliveryTimeout := benchmarkTimeout(mode, 5*time.Second, 30*time.Second)
-
-	targetStore, closeTargetStore := openBenchmarkSQLiteClusterStore(tb, mode, "bench-p2p-bridge-libp2p-target", 3)
+	targetStore, closeTargetStore := openBenchmarkSQLiteClusterStore(tb, "bench-p2p-bridge-libp2p-target", 3)
 	targetCfg := mixedTransportBaseConfig(3)
 	targetCfg.LibP2P = mixedTransportLibP2PConfig(tb, "bench-p2p-bridge-libp2p-target")
 	targetMgr, _, closeTargetMgr := openBenchmarkMixedTransportManager(tb, targetCfg, targetStore)
 	targetPeerURL := firstLibP2PListenAddr(tb, targetMgr)
 
-	sourceStore, closeSourceStore := openBenchmarkSQLiteClusterStore(tb, mode, "bench-p2p-bridge-libp2p-source", 1)
+	sourceStore, closeSourceStore := openBenchmarkSQLiteClusterStore(tb, "bench-p2p-bridge-libp2p-source", 1)
 	sourceMgr, sourceURL, closeSourceMgr := openBenchmarkMixedTransportManager(tb, mixedTransportBaseConfig(1), sourceStore)
 
-	bridgeStore, closeBridgeStore := openBenchmarkSQLiteClusterStore(tb, mode, "bench-p2p-bridge-libp2p-bridge", 2)
+	bridgeStore, closeBridgeStore := openBenchmarkSQLiteClusterStore(tb, "bench-p2p-bridge-libp2p-bridge", 2)
 	bridgeCfg := mixedTransportBaseConfig(2)
 	bridgeCfg.LibP2P = mixedTransportLibP2PConfig(tb, "bench-p2p-bridge-libp2p-bridge")
 	bridgeCfg.Peers = []Peer{
@@ -359,32 +444,98 @@ func buildTransientPointToPointWebSocketLibP2PBridgeTopology(tb testing.TB, mode
 		sourceNodeID:    testNodeID(1),
 		targetNodeID:    testNodeID(3),
 		hopCount:        2,
-		deliveryTimeout: deliveryTimeout,
+		deliveryTimeout: transientPointToPointBenchmarkTimeout,
 		waiter:          waiter,
 		closeFns:        []func(){closeTargetStore, closeTargetMgr, closeSourceStore, closeSourceMgr, closeBridgeStore, closeBridgeMgr},
 	}
 }
 
-func openBenchmarkSQLiteClusterStore(tb testing.TB, mode benchroot.Mode, nodeID string, slot uint16) (*store.Store, func()) {
+func buildTransientPointToPointWebSocketLibP2PBridge5NodesTopology(tb testing.TB) *transientPointToPointBenchmarkTopology {
 	tb.Helper()
 
-	dir, cleanupDir := mode.MkdirTemp(tb, "turntf-cluster-p2p-bench-*")
+	managers := make([]*Manager, 5)
+	closeFns := make([]func(), 0, 10)
+
+	st5, closeStore5 := openBenchmarkSQLiteClusterStore(tb, "bench-p2p-bridge-libp2p-large-5", 5)
+	closeFns = append(closeFns, closeStore5)
+	cfg5 := mixedTransportBaseConfig(5)
+	cfg5.LibP2P = mixedTransportLibP2PConfig(tb, "bench-p2p-bridge-libp2p-large-5")
+	mgr5, _, closeMgr5 := openBenchmarkMixedTransportManager(tb, cfg5, st5)
+	closeFns = append(closeFns, closeMgr5)
+	managers[4] = mgr5
+	node5LibP2PURL := firstLibP2PListenAddr(tb, mgr5)
+
+	st3, closeStore3 := openBenchmarkSQLiteClusterStore(tb, "bench-p2p-bridge-libp2p-large-3", 3)
+	closeFns = append(closeFns, closeStore3)
+	cfg3 := mixedTransportBaseConfig(3)
+	cfg3.LibP2P = mixedTransportLibP2PConfig(tb, "bench-p2p-bridge-libp2p-large-3")
+	mgr3, serverURL3, closeMgr3 := openBenchmarkMixedTransportManager(tb, cfg3, st3)
+	closeFns = append(closeFns, closeMgr3)
+	managers[2] = mgr3
+	node3LibP2PURL := firstLibP2PListenAddr(tb, mgr3)
+
+	st1, closeStore1 := openBenchmarkSQLiteClusterStore(tb, "bench-p2p-bridge-libp2p-large-1", 1)
+	closeFns = append(closeFns, closeStore1)
+	mgr1, serverURL1, closeMgr1 := openBenchmarkMixedTransportManager(tb, mixedTransportBaseConfig(1), st1)
+	closeFns = append(closeFns, closeMgr1)
+	managers[0] = mgr1
+
+	st2, closeStore2 := openBenchmarkSQLiteClusterStore(tb, "bench-p2p-bridge-libp2p-large-2", 2)
+	closeFns = append(closeFns, closeStore2)
+	cfg2 := mixedTransportBaseConfig(2)
+	cfg2.LibP2P = mixedTransportLibP2PConfig(tb, "bench-p2p-bridge-libp2p-large-2")
+	cfg2.Peers = []Peer{
+		{URL: websocketURL(serverURL1) + websocketPath},
+		{URL: node3LibP2PURL},
+	}
+	mgr2, _, closeMgr2 := openBenchmarkMixedTransportManager(tb, cfg2, st2)
+	closeFns = append(closeFns, closeMgr2)
+	managers[1] = mgr2
+
+	st4, closeStore4 := openBenchmarkSQLiteClusterStore(tb, "bench-p2p-bridge-libp2p-large-4", 4)
+	closeFns = append(closeFns, closeStore4)
+	cfg4 := mixedTransportBaseConfig(4)
+	cfg4.LibP2P = mixedTransportLibP2PConfig(tb, "bench-p2p-bridge-libp2p-large-4")
+	cfg4.Peers = []Peer{
+		{URL: websocketURL(serverURL3) + websocketPath},
+		{URL: node5LibP2PURL},
+	}
+	mgr4, _, closeMgr4 := openBenchmarkMixedTransportManager(tb, cfg4, st4)
+	closeFns = append(closeFns, closeMgr4)
+	managers[3] = mgr4
+
+	waitForMeshRouteDecision(tb, mgr1, testNodeID(5), mesh.TrafficTransientInteractive, testNodeID(2), mesh.TransportWebSocket)
+
+	waiter := newTransientPointToPointDeliveryWaiter()
+	mgr5.SetTransientHandler(waiter.handle)
+	return &transientPointToPointBenchmarkTopology{
+		source:          mgr1,
+		sourceNodeID:    testNodeID(1),
+		targetNodeID:    testNodeID(5),
+		hopCount:        4,
+		deliveryTimeout: transientPointToPointBenchmarkTimeout,
+		waiter:          waiter,
+		closeFns:        closeFns,
+	}
+}
+
+func openBenchmarkSQLiteClusterStore(tb testing.TB, nodeID string, slot uint16) (*store.Store, func()) {
+	tb.Helper()
+
+	dir := tb.TempDir()
 	st, err := store.Open(filepath.Join(dir, nodeID+".db"), store.Options{
 		NodeID:                     testNodeID(slot),
 		MessageWindowSize:          store.DefaultMessageWindowSize,
 		EventLogMaxEventsPerOrigin: store.DefaultEventLogMaxEventsPerOrigin,
 	})
 	if err != nil {
-		cleanupDir()
 		tb.Fatalf("open throughput benchmark sqlite store: %v", err)
 	}
 	if err := st.Init(context.Background()); err != nil {
 		_ = st.Close()
-		cleanupDir()
 		tb.Fatalf("init throughput benchmark sqlite store: %v", err)
 	}
 	return st, func() {
 		_ = st.Close()
-		cleanupDir()
 	}
 }

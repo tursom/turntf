@@ -16,21 +16,24 @@ import (
 	"github.com/tursom/turntf/internal/mesh"
 	internalproto "github.com/tursom/turntf/internal/proto"
 	"github.com/tursom/turntf/internal/store"
-	"github.com/tursom/turntf/internal/testutil/benchroot"
 )
 
 type clientTransientPointToPointThroughputScenario struct {
 	name  string
-	build func(testing.TB, benchroot.Mode) *clientTransientPointToPointThroughputTopology
+	build func(testing.TB) *clientTransientPointToPointThroughputTopology
 }
 
+const clientTransientPointToPointThroughputTimeout = 5 * time.Second
+
 type clientTransientPointToPointThroughputTopology struct {
-	source            benchmarkLinearMeshAPINode
-	target            benchmarkLinearMeshAPINode
-	local             bool
-	expectedTransport mesh.TransportKind
-	deliveryTimeout   time.Duration
-	closeFns          []func()
+	source               benchmarkLinearMeshAPINode
+	target               benchmarkLinearMeshAPINode
+	local                bool
+	expectedTransport    mesh.TransportKind
+	sourceNextHopNodeID  int64
+	reverseNextHopNodeID int64
+	deliveryTimeout      time.Duration
+	closeFns             []func()
 }
 
 type clientTransientPointToPointThroughputWorker struct {
@@ -43,45 +46,42 @@ func BenchmarkClientWebSocketTransientSendMessageAuthenticatedPointToPointThroug
 	scenarios := append([]clientTransientPointToPointThroughputScenario{
 		{name: "single-node/local", build: buildClientTransientPointToPointSingleNodeTopology},
 		{name: "websocket/direct-2nodes", build: buildClientTransientPointToPointWebSocketDirectTopology},
+		{name: "websocket/linear-7nodes", build: buildClientTransientPointToPointWebSocketLinear7NodesTopology},
 		{name: "libp2p/direct-2nodes", build: buildClientTransientPointToPointLibP2PDirectTopology},
+		{name: "libp2p/linear-7nodes", build: buildClientTransientPointToPointLibP2PLinear7NodesTopology},
 	}, clientTransientPointToPointThroughputExtraScenarios()...)
 
-	for _, mode := range benchroot.Modes(b) {
-		mode := mode
-		b.Run(mode.Name(), func(b *testing.B) {
-			for _, scenario := range scenarios {
-				scenario := scenario
-				for _, tc := range []struct {
-					name        string
-					payloadSize int
-				}{
-					{name: "256B", payloadSize: 256},
-					{name: "4KiB", payloadSize: 4 << 10},
-				} {
-					b.Run(fmt.Sprintf("%s/%s", scenario.name, tc.name), func(b *testing.B) {
-						benchmarkClientWebSocketTransientSendMessageAuthenticatedPointToPointThroughput(b, mode, scenario, tc.payloadSize)
-					})
-				}
-			}
-		})
+	for _, scenario := range scenarios {
+		scenario := scenario
+		for _, tc := range []struct {
+			name        string
+			payloadSize int
+		}{
+			{name: "256B", payloadSize: 256},
+			{name: "4KiB", payloadSize: 4 << 10},
+		} {
+			b.Run(fmt.Sprintf("%s/%s", scenario.name, tc.name), func(b *testing.B) {
+				benchmarkClientWebSocketTransientSendMessageAuthenticatedPointToPointThroughput(b, scenario, tc.payloadSize)
+			})
+		}
 	}
 }
 
-func benchmarkClientWebSocketTransientSendMessageAuthenticatedPointToPointThroughput(b *testing.B, mode benchroot.Mode, scenario clientTransientPointToPointThroughputScenario, payloadSize int) {
+func benchmarkClientWebSocketTransientSendMessageAuthenticatedPointToPointThroughput(b *testing.B, scenario clientTransientPointToPointThroughputScenario, payloadSize int) {
 	b.StopTimer()
 	silenceAPIBenchmarkLogs(b)
 
 	ctx := context.Background()
-	timeout := benchmarkAPIClientTimeout(mode, 5*time.Second, 30*time.Second)
-	topology := scenario.build(b, mode)
+	timeout := clientTransientPointToPointThroughputTimeout
+	topology := scenario.build(b)
 	b.Cleanup(topology.Close)
 
 	if !topology.local {
-		waitForAPIBenchmarkMeshRouteDecision(b, topology.source.manager, topology.target.nodeID, mesh.TrafficTransientInteractive, topology.target.nodeID, topology.expectedTransport, timeout)
-		waitForAPIBenchmarkMeshRouteDecision(b, topology.source.manager, topology.target.nodeID, mesh.TrafficControlCritical, topology.target.nodeID, topology.expectedTransport, timeout)
-		waitForAPIBenchmarkMeshRouteDecision(b, topology.source.manager, topology.target.nodeID, mesh.TrafficControlQuery, topology.target.nodeID, topology.expectedTransport, timeout)
-		waitForAPIBenchmarkMeshRouteDecision(b, topology.target.manager, topology.source.nodeID, mesh.TrafficControlCritical, topology.source.nodeID, topology.expectedTransport, timeout)
-		waitForAPIBenchmarkMeshRouteDecision(b, topology.target.manager, topology.source.nodeID, mesh.TrafficReplicationStream, topology.source.nodeID, topology.expectedTransport, timeout)
+		waitForAPIBenchmarkMeshRouteDecision(b, topology.source.manager, topology.target.nodeID, mesh.TrafficTransientInteractive, topology.sourceNextHopNodeID, topology.expectedTransport, timeout)
+		waitForAPIBenchmarkMeshRouteDecision(b, topology.source.manager, topology.target.nodeID, mesh.TrafficControlCritical, topology.sourceNextHopNodeID, topology.expectedTransport, timeout)
+		waitForAPIBenchmarkMeshRouteDecision(b, topology.source.manager, topology.target.nodeID, mesh.TrafficControlQuery, topology.sourceNextHopNodeID, topology.expectedTransport, timeout)
+		waitForAPIBenchmarkMeshRouteDecision(b, topology.target.manager, topology.source.nodeID, mesh.TrafficControlCritical, topology.reverseNextHopNodeID, topology.expectedTransport, timeout)
+		waitForAPIBenchmarkMeshRouteDecision(b, topology.target.manager, topology.source.nodeID, mesh.TrafficReplicationStream, topology.reverseNextHopNodeID, topology.expectedTransport, timeout)
 	}
 
 	workerCount := runtime.GOMAXPROCS(0)
@@ -192,57 +192,136 @@ func (t *clientTransientPointToPointThroughputTopology) Close() {
 	}
 }
 
-func buildClientTransientPointToPointSingleNodeTopology(tb testing.TB, mode benchroot.Mode) *clientTransientPointToPointThroughputTopology {
+func buildClientTransientPointToPointSingleNodeTopology(tb testing.TB) *clientTransientPointToPointThroughputTopology {
 	tb.Helper()
 
-	node, closeNode := openBenchmarkAuthenticatedPointToPointAPINode(tb, mode, "bench-api-p2p-local", 1, nil)
+	node, closeNode := openBenchmarkAuthenticatedPointToPointAPINode(tb, "bench-api-p2p-local", 1, nil)
 	return &clientTransientPointToPointThroughputTopology{
 		source:          node,
 		target:          node,
 		local:           true,
-		deliveryTimeout: benchmarkAPIClientTimeout(mode, 5*time.Second, 30*time.Second),
+		deliveryTimeout: clientTransientPointToPointThroughputTimeout,
 		closeFns:        []func(){closeNode},
 	}
 }
 
-func buildClientTransientPointToPointWebSocketDirectTopology(tb testing.TB, mode benchroot.Mode) *clientTransientPointToPointThroughputTopology {
+func buildClientTransientPointToPointWebSocketDirectTopology(tb testing.TB) *clientTransientPointToPointThroughputTopology {
 	tb.Helper()
 
 	targetCfg := benchmarkAPIClusterBaseConfig(2)
-	targetNode, closeTarget := openBenchmarkAuthenticatedPointToPointAPINode(tb, mode, "bench-api-p2p-websocket-target", 2, &targetCfg)
+	targetNode, closeTarget := openBenchmarkAuthenticatedPointToPointAPINode(tb, "bench-api-p2p-websocket-target", 2, &targetCfg)
 
 	sourceCfg := benchmarkAPIClusterBaseConfig(1)
 	sourceCfg.Peers = []cluster.Peer{{URL: benchmarkWebSocketURL(targetNode.serverURL) + cluster.WebSocketPath}}
-	sourceNode, closeSource := openBenchmarkAuthenticatedPointToPointAPINode(tb, mode, "bench-api-p2p-websocket-source", 1, &sourceCfg)
+	sourceNode, closeSource := openBenchmarkAuthenticatedPointToPointAPINode(tb, "bench-api-p2p-websocket-source", 1, &sourceCfg)
 
 	return &clientTransientPointToPointThroughputTopology{
-		source:            sourceNode,
-		target:            targetNode,
-		expectedTransport: mesh.TransportWebSocket,
-		deliveryTimeout:   benchmarkAPIClientTimeout(mode, 5*time.Second, 30*time.Second),
-		closeFns:          []func(){closeTarget, closeSource},
+		source:               sourceNode,
+		target:               targetNode,
+		expectedTransport:    mesh.TransportWebSocket,
+		sourceNextHopNodeID:  targetNode.nodeID,
+		reverseNextHopNodeID: sourceNode.nodeID,
+		deliveryTimeout:      clientTransientPointToPointThroughputTimeout,
+		closeFns:             []func(){closeTarget, closeSource},
 	}
 }
 
-func buildClientTransientPointToPointLibP2PDirectTopology(tb testing.TB, mode benchroot.Mode) *clientTransientPointToPointThroughputTopology {
+func buildClientTransientPointToPointWebSocketLinear7NodesTopology(tb testing.TB) *clientTransientPointToPointThroughputTopology {
+	tb.Helper()
+	return buildClientTransientPointToPointLinearWebSocketTopology(tb, 7)
+}
+
+func buildClientTransientPointToPointLinearWebSocketTopology(tb testing.TB, nodeCount int) *clientTransientPointToPointThroughputTopology {
+	tb.Helper()
+	if nodeCount < 2 {
+		tb.Fatalf("websocket linear point-to-point throughput topology requires at least 2 nodes, got %d", nodeCount)
+	}
+
+	nodes := make([]benchmarkLinearMeshAPINode, 0, nodeCount)
+	closeFns := make([]func(), 0, nodeCount)
+	serverURLs := make([]string, 0, nodeCount)
+	for idx := 0; idx < nodeCount; idx++ {
+		nodeSlot := uint16(idx + 1)
+		cfg := benchmarkAPIClusterBaseConfig(nodeSlot)
+		if idx > 0 {
+			cfg.Peers = []cluster.Peer{{URL: benchmarkWebSocketURL(serverURLs[idx-1]) + cluster.WebSocketPath}}
+		}
+		node, closeNode := openBenchmarkAuthenticatedPointToPointAPINode(tb, fmt.Sprintf("bench-api-p2p-websocket-linear-%d", idx+1), nodeSlot, &cfg)
+		nodes = append(nodes, node)
+		closeFns = append(closeFns, closeNode)
+		serverURLs = append(serverURLs, node.serverURL)
+	}
+
+	return &clientTransientPointToPointThroughputTopology{
+		source:               nodes[0],
+		target:               nodes[len(nodes)-1],
+		expectedTransport:    mesh.TransportWebSocket,
+		sourceNextHopNodeID:  nodes[1].nodeID,
+		reverseNextHopNodeID: nodes[len(nodes)-2].nodeID,
+		deliveryTimeout:      clientTransientPointToPointThroughputTimeout,
+		closeFns:             closeFns,
+	}
+}
+
+func buildClientTransientPointToPointLibP2PDirectTopology(tb testing.TB) *clientTransientPointToPointThroughputTopology {
 	tb.Helper()
 
 	targetCfg := benchmarkAPIClusterBaseConfig(2)
 	targetCfg.LibP2P = benchmarkPointToPointAPILibP2PConfig(tb, "bench-api-p2p-libp2p-target")
-	targetNode, closeTarget := openBenchmarkAuthenticatedPointToPointAPINode(tb, mode, "bench-api-p2p-libp2p-target", 2, &targetCfg)
+	targetNode, closeTarget := openBenchmarkAuthenticatedPointToPointAPINode(tb, "bench-api-p2p-libp2p-target", 2, &targetCfg)
 	targetPeerURL := benchmarkPointToPointAPIFirstLibP2PListenAddr(tb, targetNode.manager)
 
 	sourceCfg := benchmarkAPIClusterBaseConfig(1)
 	sourceCfg.LibP2P = benchmarkPointToPointAPILibP2PConfig(tb, "bench-api-p2p-libp2p-source")
 	sourceCfg.Peers = []cluster.Peer{{URL: targetPeerURL}}
-	sourceNode, closeSource := openBenchmarkAuthenticatedPointToPointAPINode(tb, mode, "bench-api-p2p-libp2p-source", 1, &sourceCfg)
+	sourceNode, closeSource := openBenchmarkAuthenticatedPointToPointAPINode(tb, "bench-api-p2p-libp2p-source", 1, &sourceCfg)
 
 	return &clientTransientPointToPointThroughputTopology{
-		source:            sourceNode,
-		target:            targetNode,
-		expectedTransport: mesh.TransportLibP2P,
-		deliveryTimeout:   benchmarkAPIClientTimeout(mode, 5*time.Second, 30*time.Second),
-		closeFns:          []func(){closeTarget, closeSource},
+		source:               sourceNode,
+		target:               targetNode,
+		expectedTransport:    mesh.TransportLibP2P,
+		sourceNextHopNodeID:  targetNode.nodeID,
+		reverseNextHopNodeID: sourceNode.nodeID,
+		deliveryTimeout:      clientTransientPointToPointThroughputTimeout,
+		closeFns:             []func(){closeTarget, closeSource},
+	}
+}
+
+func buildClientTransientPointToPointLibP2PLinear7NodesTopology(tb testing.TB) *clientTransientPointToPointThroughputTopology {
+	tb.Helper()
+	return buildClientTransientPointToPointLinearLibP2PTopology(tb, 7)
+}
+
+func buildClientTransientPointToPointLinearLibP2PTopology(tb testing.TB, nodeCount int) *clientTransientPointToPointThroughputTopology {
+	tb.Helper()
+	if nodeCount < 2 {
+		tb.Fatalf("libp2p linear point-to-point throughput topology requires at least 2 nodes, got %d", nodeCount)
+	}
+
+	nodes := make([]benchmarkLinearMeshAPINode, 0, nodeCount)
+	closeFns := make([]func(), 0, nodeCount)
+	peerURLs := make([]string, 0, nodeCount)
+	for idx := 0; idx < nodeCount; idx++ {
+		nodeSlot := uint16(idx + 1)
+		cfg := benchmarkAPIClusterBaseConfig(nodeSlot)
+		cfg.LibP2P = benchmarkPointToPointAPILibP2PConfig(tb, fmt.Sprintf("bench-api-p2p-libp2p-linear-%d", idx+1))
+		if idx > 0 {
+			cfg.Peers = []cluster.Peer{{URL: peerURLs[idx-1]}}
+		}
+		node, closeNode := openBenchmarkAuthenticatedPointToPointAPINode(tb, fmt.Sprintf("bench-api-p2p-libp2p-linear-%d", idx+1), nodeSlot, &cfg)
+		nodes = append(nodes, node)
+		closeFns = append(closeFns, closeNode)
+		peerURLs = append(peerURLs, benchmarkPointToPointAPIFirstLibP2PListenAddr(tb, node.manager))
+	}
+
+	return &clientTransientPointToPointThroughputTopology{
+		source:               nodes[0],
+		target:               nodes[len(nodes)-1],
+		expectedTransport:    mesh.TransportLibP2P,
+		sourceNextHopNodeID:  nodes[1].nodeID,
+		reverseNextHopNodeID: nodes[len(nodes)-2].nodeID,
+		deliveryTimeout:      clientTransientPointToPointThroughputTimeout,
+		closeFns:             closeFns,
 	}
 }
 
@@ -358,11 +437,10 @@ func waitForAPIBenchmarkMeshRouteDecision(tb testing.TB, manager *cluster.Manage
 	}
 }
 
-func openBenchmarkAuthenticatedPointToPointAPINode(tb testing.TB, mode benchroot.Mode, name string, nodeSlot uint16, cfg *cluster.Config) (benchmarkLinearMeshAPINode, func()) {
+func openBenchmarkAuthenticatedPointToPointAPINode(tb testing.TB, name string, nodeSlot uint16, cfg *cluster.Config) (benchmarkLinearMeshAPINode, func()) {
 	tb.Helper()
 
-	scenario := apiBenchmarkEngineScenario{name: store.EngineSQLite, engine: store.EngineSQLite}
-	st, closeStore := openBenchmarkAPIClusterStore(tb, mode, scenario, name, nodeSlot)
+	st, closeStore := openBenchmarkPointToPointAPIStore(tb, name, nodeSlot)
 
 	signer, err := auth.NewSigner("token-secret")
 	if err != nil {
@@ -453,4 +531,31 @@ func benchmarkPointToPointAPIFirstLibP2PListenAddr(tb testing.TB, manager *clust
 		}
 	}
 	return status.Discovery.LibP2PListenAddrs[0]
+}
+
+func openBenchmarkPointToPointAPIStore(tb testing.TB, name string, nodeSlot uint16) (*store.Store, func()) {
+	tb.Helper()
+
+	dir := tb.TempDir()
+	st, err := store.Open(filepath.Join(dir, name+".db"), store.Options{
+		NodeID: testNodeID(nodeSlot),
+		Engine: store.EngineSQLite,
+	})
+	if err != nil {
+		tb.Fatalf("open point-to-point benchmark api store: %v", err)
+	}
+	if err := st.Init(context.Background()); err != nil {
+		_ = st.Close()
+		tb.Fatalf("init point-to-point benchmark api store: %v", err)
+	}
+	if err := st.EnsureBootstrapAdmin(context.Background(), store.BootstrapAdminConfig{
+		Username:     "root",
+		PasswordHash: benchmarkMustHashPassword(tb, "root-password"),
+	}); err != nil {
+		_ = st.Close()
+		tb.Fatalf("ensure point-to-point benchmark bootstrap admin: %v", err)
+	}
+	return st, func() {
+		_ = st.Close()
+	}
 }

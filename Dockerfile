@@ -1,3 +1,5 @@
+# syntax=docker/dockerfile:1.7
+
 FROM golang:1.26-alpine3.22 AS builder
 
 WORKDIR /src
@@ -21,7 +23,9 @@ RUN set -eu; \
     if [ "${ENABLE_ZEROMQ}" = "true" ]; then retry apk add --no-cache zeromq-dev; fi
 
 COPY go.mod go.sum ./
-RUN set -eu; \
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    set -eu; \
     retry() { \
         n=0; \
         until "$@"; do \
@@ -34,9 +38,13 @@ RUN set -eu; \
     }; \
     retry go mod download
 
-COPY . .
+COPY cmd ./cmd
+COPY internal ./internal
+COPY proto ./proto
 
-RUN set -eu; \
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    set -eu; \
     BUILD_TAGS=""; \
     if [ "${ENABLE_ZEROMQ}" = "true" ]; then BUILD_TAGS="-tags zeromq"; fi; \
     CGO_ENABLED=1 CGO_CFLAGS="-D_LARGEFILE64_SOURCE -D_GNU_SOURCE" GOOS=${TARGETOS} GOARCH=${TARGETARCH} \

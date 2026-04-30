@@ -9,6 +9,10 @@ on:
       - "v*"
   workflow_dispatch:
 
+concurrency:
+  group: docker-publish-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
 permissions:
   contents: read
   packages: write
@@ -17,7 +21,36 @@ env:
   REGISTRY: ghcr.io
 
 jobs:
-  verify:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.image.outputs.ref }}
+      tags: ${{ steps.meta.outputs.tags }}
+      labels: ${{ steps.meta.outputs.labels }}
+      metadata_json: ${{ steps.meta.outputs.json }}
+
+    steps:
+      - name: Normalize image name
+        id: image
+        run: |
+          name="${GITHUB_REPOSITORY,,}"
+          echo "name=${name}" >> "$GITHUB_OUTPUT"
+          echo "ref=${{ env.REGISTRY }}/${name}" >> "$GITHUB_OUTPUT"
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.image.outputs.ref }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=tag
+            type=sha
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' }}
+
+  go-test:
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -34,19 +67,56 @@ jobs:
       - name: Run Go tests
         run: go test ./... -count=1
 
-      - name: Run smoke flow
-        run: ./scripts/smoke.sh
-
-  docker:
-    needs: verify
+  smoke:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GOCACHE: ${{ runner.temp }}/go-build-cache
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build smoke binary
+        run: go build -trimpath -o "${RUNNER_TEMP}/turntf" ./cmd/turntf
+
+      - name: Run smoke flow
+        run: ./scripts/smoke.sh "${RUNNER_TEMP}/turntf"
+
+  build:
+    needs:
+      - prepare
+      - go-test
+      - smoke
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            platform_id: linux-amd64
+            artifact_suffix: amd64
+            setup_qemu: false
+          - platform: linux/arm64
+            platform_id: linux-arm64
+            artifact_suffix: arm64
+            setup_qemu: true
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Set up QEMU
+        if: ${{ matrix.setup_qemu }}
         uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -58,30 +128,95 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Normalize image name
-        id: image
-        run: echo "name=${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
-
-      - name: Extract Docker metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ steps.image.outputs.name }}
-          labels: |
-            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-          tags: |
-            type=ref,event=branch
-            type=ref,event=tag
-            type=ref,event=pr
-            type=sha
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' }}
-
-      - name: Build and push Docker image
+      - name: Build and push Docker image by digest
+        id: build
         uses: docker/build-push-action@v6
         with:
           context: .
           file: ./Dockerfile
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          platforms: ${{ matrix.platform }}
+          labels: ${{ needs.prepare.outputs.labels }}
+          outputs: type=image,push-by-digest=true,name-canonical=true,push=true
+          tags: ${{ needs.prepare.outputs.image }}
+          cache-from: type=gha,scope=turntf-docker-${{ matrix.platform_id }}
+          cache-to: type=gha,mode=max,scope=turntf-docker-${{ matrix.platform_id }}
+
+      - name: Export image digest
+        run: |
+          mkdir -p "${RUNNER_TEMP}/digests"
+          digest="${{ steps.build.outputs.digest }}"
+          touch "${RUNNER_TEMP}/digests/${digest#sha256:}"
+
+      - name: Upload image digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ matrix.artifact_suffix }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  manifest:
+    needs:
+      - prepare
+      - build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download image digests
+        uses: actions/download-artifact@v4
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digests-*
+          merge-multiple: true
+
+      - name: Create multi-platform manifest
+        env:
+          IMAGE_NAME: ${{ needs.prepare.outputs.image }}
+          METADATA_JSON: ${{ needs.prepare.outputs.metadata_json }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+
+          mapfile -t tags < <(python3 -c 'import json, os; [print(tag) for tag in json.loads(os.environ["METADATA_JSON"])["tags"]]')
+          tag_args=()
+          for tag in "${tags[@]}"; do
+            if [[ -n "${tag}" ]]; then
+              tag_args+=("-t" "${tag}")
+            fi
+          done
+
+          digest_refs=()
+          for digest_path in "${RUNNER_TEMP}/digests"/*; do
+            digest_refs+=("${IMAGE_NAME}@sha256:$(basename "${digest_path}")")
+          done
+
+          if [[ ${#digest_refs[@]} -eq 0 ]]; then
+            echo "no image digests downloaded" >&2
+            exit 1
+          fi
+
+          docker buildx imagetools create "${tag_args[@]}" "${digest_refs[@]}"
+
+      - name: Inspect published manifest
+        env:
+          METADATA_JSON: ${{ needs.prepare.outputs.metadata_json }}
+        run: |
+          set -euo pipefail
+          first_tag="$(python3 -c 'import json, os; tags = json.loads(os.environ["METADATA_JSON"])["tags"]; print(tags[0] if tags else "")')"
+          if [[ -n "${first_tag}" ]]; then
+            docker buildx imagetools inspect "${first_tag}"
+            exit 0
+          fi
+
+          echo "no tags available to inspect" >&2
+          exit 1

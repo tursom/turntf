@@ -68,6 +68,8 @@ message ReplicatedEvent {
     MessageCreatedEvent message_created = 10;
     UserAttachmentUpsertedEvent user_attachment_upserted = 11;
     UserAttachmentDeletedEvent user_attachment_deleted = 12;
+    UserMetadataUpsertedEvent user_metadata_upserted = 13;
+    UserMetadataDeletedEvent user_metadata_deleted = 14;
   }
 }
 
@@ -146,6 +148,22 @@ message UserAttachmentDeletedEvent {
   int64 origin_node_id = 7;
 }
 
+message UserMetadataUpsertedEvent {
+  ClusterUserRef owner = 1;
+  string key = 2;
+  bytes value = 3;
+  string updated_at_hlc = 4;
+  string expires_at = 5;
+  int64 origin_node_id = 6;
+}
+
+message UserMetadataDeletedEvent {
+  ClusterUserRef owner = 1;
+  string key = 2;
+  string deleted_at_hlc = 3;
+  int64 origin_node_id = 4;
+}
+
 message PullEvents {
   int64 origin_node_id = 1;
   uint64 after_event_id = 2;
@@ -171,6 +189,7 @@ enum SnapshotPartitionKind {
   SNAPSHOT_PARTITION_KIND_USERS = 1;
   SNAPSHOT_PARTITION_KIND_MESSAGES = 2;
   SNAPSHOT_PARTITION_KIND_ATTACHMENTS = 3;
+  SNAPSHOT_PARTITION_KIND_USER_METADATA = 4;
 }
 
 message SnapshotPartitionDigest {
@@ -186,6 +205,7 @@ message SnapshotRow {
     SnapshotTombstoneRow tombstone = 2;
     SnapshotMessageRow message = 3;
     SnapshotAttachmentRow attachment = 4;
+    SnapshotUserMetadataRow user_metadata = 5;
   }
 }
 
@@ -232,6 +252,16 @@ message SnapshotAttachmentRow {
   string config_json = 4;
   string attached_at_hlc = 5;
   string deleted_at_hlc = 6;
+  int64 origin_node_id = 7;
+}
+
+message SnapshotUserMetadataRow {
+  ClusterUserRef owner = 1;
+  string key = 2;
+  bytes value = 3;
+  string updated_at_hlc = 4;
+  string deleted_at_hlc = 5;
+  string expires_at = 6;
   int64 origin_node_id = 7;
 }
 

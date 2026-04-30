@@ -169,6 +169,28 @@ func TestReplicatedEventTypedBodyHelpers(t *testing.T) {
 			},
 			eventType: "user_attachment_deleted",
 		},
+		{
+			name: "user_metadata_upserted",
+			body: &UserMetadataUpsertedEvent{
+				Owner:        &ClusterUserRef{NodeId: testNodeID, UserId: 1001},
+				Key:          "session:web:1",
+				Value:        []byte{0x00, 0xfe},
+				UpdatedAtHlc: "1740000000000-00008-0000000000000004096",
+				ExpiresAt:    "2026-01-02T03:04:05.000000000Z",
+				OriginNodeId: testNodeID,
+			},
+			eventType: "user_metadata_upserted",
+		},
+		{
+			name: "user_metadata_deleted",
+			body: &UserMetadataDeletedEvent{
+				Owner:        &ClusterUserRef{NodeId: testNodeID, UserId: 1001},
+				Key:          "session:web:1",
+				DeletedAtHlc: "1740000000000-00009-0000000000000004096",
+				OriginNodeId: testNodeID,
+			},
+			eventType: "user_metadata_deleted",
+		},
 	}
 
 	for _, tc := range tests {
@@ -325,5 +347,49 @@ func TestSnapshotAttachmentRowRoundTrip(t *testing.T) {
 	attachment := decoded.GetSnapshotChunk().GetRows()[0].GetAttachment()
 	if attachment.GetOwner().GetUserId() != 42 || attachment.GetSubject().GetUserId() != 99 {
 		t.Fatalf("unexpected snapshot attachment: %+v", attachment)
+	}
+}
+
+func TestSnapshotUserMetadataRowRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	envelope := &Envelope{
+		NodeId: testNodeID,
+		Body: &Envelope_SnapshotChunk{
+			SnapshotChunk: &SnapshotChunk{
+				SnapshotVersion: SnapshotVersion,
+				Partition:       "user_metadata/full",
+				Kind:            SnapshotPartitionKind_SNAPSHOT_PARTITION_KIND_USER_METADATA,
+				Rows: []*SnapshotRow{
+					{
+						Body: &SnapshotRow_UserMetadata{
+							UserMetadata: &SnapshotUserMetadataRow{
+								Owner:        &ClusterUserRef{NodeId: testNodeID, UserId: 42},
+								Key:          "session:web:1",
+								Value:        []byte{0xff, 0x00, 'm'},
+								UpdatedAtHlc: "1740000000000-00001-0000000000000004096",
+								ExpiresAt:    "2026-01-02T03:04:05.000000000Z",
+								OriginNodeId: testNodeID,
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	data, err := gproto.Marshal(envelope)
+	if err != nil {
+		t.Fatalf("marshal envelope: %v", err)
+	}
+
+	var decoded Envelope
+	if err := gproto.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal envelope: %v", err)
+	}
+
+	metadata := decoded.GetSnapshotChunk().GetRows()[0].GetUserMetadata()
+	if metadata.GetOwner().GetUserId() != 42 || metadata.GetKey() != "session:web:1" || string(metadata.GetValue()) != string([]byte{0xff, 0x00, 'm'}) {
+		t.Fatalf("unexpected snapshot metadata: %+v", metadata)
 	}
 }

@@ -14,6 +14,8 @@ const (
 	EventTypeMessageCreated         EventType = "message_created"
 	EventTypeUserAttachmentUpserted EventType = "user_attachment_upserted"
 	EventTypeUserAttachmentDeleted  EventType = "user_attachment_deleted"
+	EventTypeUserMetadataUpserted   EventType = "user_metadata_upserted"
+	EventTypeUserMetadataDeleted    EventType = "user_metadata_deleted"
 )
 
 func eventTypeOf(body internalproto.EventBody) EventType {
@@ -106,6 +108,32 @@ func userAttachmentDeletedProtoFromAttachment(attachment Attachment) *internalpr
 	}
 	if attachment.DeletedAt != nil {
 		event.DeletedAtHlc = attachment.DeletedAt.String()
+	}
+	return event
+}
+
+func userMetadataUpsertedProtoFromUserMetadata(metadata UserMetadata) *internalproto.UserMetadataUpsertedEvent {
+	event := &internalproto.UserMetadataUpsertedEvent{
+		Owner:        &internalproto.ClusterUserRef{NodeId: metadata.Owner.NodeID, UserId: metadata.Owner.UserID},
+		Key:          metadata.Key,
+		Value:        append([]byte(nil), metadata.Value...),
+		UpdatedAtHlc: metadata.UpdatedAt.String(),
+		OriginNodeId: metadata.OriginNodeID,
+	}
+	if metadata.ExpiresAt != nil {
+		event.ExpiresAt = FormatUserMetadataExpiresAt(*metadata.ExpiresAt)
+	}
+	return event
+}
+
+func userMetadataDeletedProtoFromUserMetadata(metadata UserMetadata) *internalproto.UserMetadataDeletedEvent {
+	event := &internalproto.UserMetadataDeletedEvent{
+		Owner:        &internalproto.ClusterUserRef{NodeId: metadata.Owner.NodeID, UserId: metadata.Owner.UserID},
+		Key:          metadata.Key,
+		OriginNodeId: metadata.OriginNodeID,
+	}
+	if metadata.DeletedAt != nil {
+		event.DeletedAtHlc = metadata.DeletedAt.String()
 	}
 	return event
 }

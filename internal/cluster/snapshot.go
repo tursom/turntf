@@ -144,6 +144,19 @@ func (m *Manager) handleSnapshotDigest(sess *session, envelope *internalproto.En
 		m.requestSnapshotPartition(sess, remoteAttachments)
 		return nil
 	}
+	remoteMetadata, ok := remote[store.SnapshotUserMetadataPartition]
+	if !ok {
+		return fmt.Errorf("snapshot digest missing %s partition", store.SnapshotUserMetadataPartition)
+	}
+	if !snapshotPartitionDigestEqual(local[store.SnapshotUserMetadataPartition], remoteMetadata) {
+		m.logSessionEvent("snapshot_partition_mismatch", sess).
+			Str("partition", remoteMetadata.Partition).
+			Stringer("kind", remoteMetadata.Kind).
+			Uint64("row_count", remoteMetadata.RowCount).
+			Msg("snapshot partition mismatch detected")
+		m.requestSnapshotPartition(sess, remoteMetadata)
+		return nil
+	}
 	if sess.remoteMessageWindowSize != m.cfg.MessageWindowSize {
 		return nil
 	}
@@ -154,6 +167,9 @@ func (m *Manager) handleSnapshotDigest(sess *session, envelope *internalproto.En
 			continue
 		}
 		if partition == store.SnapshotAttachmentsPartition {
+			continue
+		}
+		if partition == store.SnapshotUserMetadataPartition {
 			continue
 		}
 		partitions = append(partitions, partition)
@@ -319,6 +335,10 @@ func (m *Manager) requestSnapshotRepairForOrigin(sess *session, originNodeID int
 		{
 			Partition: store.SnapshotAttachmentsPartition,
 			Kind:      internalproto.SnapshotPartitionKind_SNAPSHOT_PARTITION_KIND_ATTACHMENTS,
+		},
+		{
+			Partition: store.SnapshotUserMetadataPartition,
+			Kind:      internalproto.SnapshotPartitionKind_SNAPSHOT_PARTITION_KIND_USER_METADATA,
 		},
 	}
 	if sess.remoteMessageWindowSize == m.cfg.MessageWindowSize {

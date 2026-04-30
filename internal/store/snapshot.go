@@ -20,10 +20,12 @@ import (
 const (
 	SnapshotUsersPartition          = "users/full"
 	SnapshotAttachmentsPartition    = "attachments/full"
+	SnapshotUserMetadataPartition   = "user_metadata/full"
 	SnapshotMessagesPrefix          = "messages/"
 	snapshotPartitionKindUsers      = clusterproto.SnapshotPartitionKind_SNAPSHOT_PARTITION_KIND_USERS
 	snapshotPartitionKindMessage    = clusterproto.SnapshotPartitionKind_SNAPSHOT_PARTITION_KIND_MESSAGES
 	snapshotPartitionKindAttachment = clusterproto.SnapshotPartitionKind_SNAPSHOT_PARTITION_KIND_ATTACHMENTS
+	snapshotPartitionKindMetadata   = clusterproto.SnapshotPartitionKind_SNAPSHOT_PARTITION_KIND_USER_METADATA
 )
 
 func MessageSnapshotPartition(originNodeID int64) string {
@@ -61,6 +63,21 @@ func (s *Store) BuildSnapshotDigest(ctx context.Context, producerNodeIDs []int64
 		Kind:      snapshotPartitionKindAttachment,
 		RowCount:  uint64(len(attachmentRows)),
 		Hash:      attachmentHash,
+	})
+
+	metadataRows, err := s.buildUserMetadataSnapshotRows(ctx)
+	if err != nil {
+		return nil, err
+	}
+	metadataHash, err := hashSnapshotRows(metadataRows)
+	if err != nil {
+		return nil, err
+	}
+	partitions = append(partitions, &clusterproto.SnapshotPartitionDigest{
+		Partition: SnapshotUserMetadataPartition,
+		Kind:      snapshotPartitionKindMetadata,
+		RowCount:  uint64(len(metadataRows)),
+		Hash:      metadataHash,
 	})
 
 	for _, producer := range normalizeProducerNodeIDs(producerNodeIDs) {
@@ -104,6 +121,16 @@ func (s *Store) BuildSnapshotChunk(ctx context.Context, partition string) (*clus
 		return &clusterproto.SnapshotChunk{
 			Partition: partition,
 			Kind:      snapshotPartitionKindAttachment,
+			Rows:      rows,
+		}, nil
+	case partition == SnapshotUserMetadataPartition:
+		rows, err := s.buildUserMetadataSnapshotRows(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return &clusterproto.SnapshotChunk{
+			Partition: partition,
+			Kind:      snapshotPartitionKindMetadata,
 			Rows:      rows,
 		}, nil
 	case strings.HasPrefix(partition, SnapshotMessagesPrefix):
@@ -160,6 +187,15 @@ func (s *Store) ApplySnapshotChunk(ctx context.Context, chunk *clusterproto.Snap
 		}
 		for _, row := range chunk.Rows {
 			if err := s.applyAttachmentSnapshotRowTx(ctx, tx, row); err != nil {
+				return err
+			}
+		}
+	case partition == SnapshotUserMetadataPartition:
+		if chunk.Kind != snapshotPartitionKindMetadata {
+			return fmt.Errorf("%w: metadata snapshot chunk has kind %s", ErrInvalidInput, chunk.Kind)
+		}
+		for _, row := range chunk.Rows {
+			if err := s.applyUserMetadataSnapshotRowTx(ctx, tx, row); err != nil {
 				return err
 			}
 		}
@@ -265,6 +301,21 @@ func MaxSnapshotChunkTimestamp(chunk *clusterproto.SnapshotChunk) (clock.Timesta
 			record(ts)
 			if strings.TrimSpace(attachmentRow.DeletedAtHlc) != "" {
 				ts, err := parseRequiredTimestamp(attachmentRow.DeletedAtHlc, "snapshot attachment deleted_at")
+				if err != nil {
+					return clock.Timestamp{}, err
+				}
+				record(ts)
+			}
+			continue
+		}
+		if metadataRow := row.GetUserMetadata(); metadataRow != nil {
+			ts, err := parseRequiredTimestamp(metadataRow.UpdatedAtHlc, "snapshot metadata updated_at")
+			if err != nil {
+				return clock.Timestamp{}, err
+			}
+			record(ts)
+			if strings.TrimSpace(metadataRow.DeletedAtHlc) != "" {
+				ts, err := parseRequiredTimestamp(metadataRow.DeletedAtHlc, "snapshot metadata deleted_at")
 				if err != nil {
 					return clock.Timestamp{}, err
 				}
@@ -385,6 +436,31 @@ ORDER BY owner_node_id ASC, owner_user_id ASC, attachment_type ASC, subject_node
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate snapshot attachments: %w", err)
+	}
+	return snapshotRows, nil
+}
+
+func (s *Store) buildUserMetadataSnapshotRows(ctx context.Context) ([]*clusterproto.SnapshotRow, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT owner_node_id, owner_user_id, key, value, updated_at_hlc, deleted_at_hlc, expires_at, origin_node_id
+FROM user_metadata
+ORDER BY owner_node_id ASC, owner_user_id ASC, key ASC
+`)
+	if err != nil {
+		return nil, fmt.Errorf("query snapshot user metadata: %w", err)
+	}
+	defer rows.Close()
+
+	snapshotRows := make([]*clusterproto.SnapshotRow, 0)
+	for rows.Next() {
+		metadata, err := scanUserMetadata(rows)
+		if err != nil {
+			return nil, err
+		}
+		snapshotRows = append(snapshotRows, snapshotRowFromUserMetadata(metadata))
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate snapshot user metadata: %w", err)
 	}
 	return snapshotRows, nil
 }
@@ -513,6 +589,40 @@ func (s *Store) applyAttachmentSnapshotRowTx(ctx context.Context, tx *sql.Tx, ro
 	return s.upsertAttachmentTx(ctx, tx, attachment)
 }
 
+func (s *Store) applyUserMetadataSnapshotRowTx(ctx context.Context, tx *sql.Tx, row *clusterproto.SnapshotRow) error {
+	if row == nil {
+		return fmt.Errorf("%w: snapshot row cannot be nil", ErrInvalidInput)
+	}
+	metadataRow := row.GetUserMetadata()
+	if metadataRow == nil {
+		return fmt.Errorf("%w: metadata snapshot contains non-metadata row", ErrInvalidInput)
+	}
+	metadata, err := userMetadataFromSnapshotRow(metadataRow)
+	if err != nil {
+		return err
+	}
+	if metadata.DeletedAt == nil {
+		if err := s.validateUserMetadataOwnerTx(ctx, tx, metadata.Owner); err != nil {
+			return err
+		}
+	} else {
+		owner, err := s.getUserByIDTx(ctx, tx, metadata.Owner, false)
+		if err != nil {
+			if errors.Is(err, ErrNotFound) {
+				return nil
+			}
+			return err
+		}
+		if err := validateUserMetadataOwner(owner); err != nil {
+			if errors.Is(err, ErrInvalidInput) {
+				return nil
+			}
+			return err
+		}
+	}
+	return s.upsertUserMetadataTx(ctx, tx, metadata)
+}
+
 func snapshotRowFromUser(user User) *clusterproto.SnapshotRow {
 	return &clusterproto.SnapshotRow{
 		Body: &clusterproto.SnapshotRow_User{
@@ -568,6 +678,27 @@ func snapshotRowFromAttachment(attachment Attachment) *clusterproto.SnapshotRow 
 	return &clusterproto.SnapshotRow{
 		Body: &clusterproto.SnapshotRow_Attachment{
 			Attachment: row,
+		},
+	}
+}
+
+func snapshotRowFromUserMetadata(metadata UserMetadata) *clusterproto.SnapshotRow {
+	row := &clusterproto.SnapshotUserMetadataRow{
+		Owner:        &clusterproto.ClusterUserRef{NodeId: metadata.Owner.NodeID, UserId: metadata.Owner.UserID},
+		Key:          metadata.Key,
+		Value:        append([]byte(nil), metadata.Value...),
+		UpdatedAtHlc: metadata.UpdatedAt.String(),
+		OriginNodeId: metadata.OriginNodeID,
+	}
+	if metadata.DeletedAt != nil {
+		row.DeletedAtHlc = metadata.DeletedAt.String()
+	}
+	if metadata.ExpiresAt != nil {
+		row.ExpiresAt = FormatUserMetadataExpiresAt(*metadata.ExpiresAt)
+	}
+	return &clusterproto.SnapshotRow{
+		Body: &clusterproto.SnapshotRow_UserMetadata{
+			UserMetadata: row,
 		},
 	}
 }
@@ -645,6 +776,13 @@ func attachmentFromSnapshotRow(row *clusterproto.SnapshotAttachmentRow) (Attachm
 		return Attachment{}, fmt.Errorf("%w: snapshot attachment cannot be nil", ErrInvalidInput)
 	}
 	return attachmentFromData(row.Owner, row.Subject, row.AttachmentType, row.ConfigJson, row.AttachedAtHlc, row.DeletedAtHlc, row.OriginNodeId)
+}
+
+func userMetadataFromSnapshotRow(row *clusterproto.SnapshotUserMetadataRow) (UserMetadata, error) {
+	if row == nil {
+		return UserMetadata{}, fmt.Errorf("%w: snapshot metadata cannot be nil", ErrInvalidInput)
+	}
+	return userMetadataFromData(row.Owner, row.Key, row.Value, row.UpdatedAtHlc, row.DeletedAtHlc, row.ExpiresAt, row.OriginNodeId)
 }
 
 func timestampSnapshotString(ts *clock.Timestamp) string {

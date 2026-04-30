@@ -283,6 +283,129 @@ func (s *clientWSSession) handleListMessages(ctx context.Context, req *internalp
 	})
 }
 
+func (s *clientWSSession) handleGetUserMetadata(ctx context.Context, req *internalproto.GetUserMetadataRequest) error {
+	if req == nil {
+		return s.writeError("invalid_request", "get_user_metadata cannot be empty", 0)
+	}
+	owner, err := userKeyFromProto(req.Owner)
+	if err != nil {
+		return s.writeStoreOrRequestError(req.RequestId, err)
+	}
+	if err := s.requireSelfOrAdminPrincipal(owner); err != nil {
+		return s.writeStoreOrRequestError(req.RequestId, err)
+	}
+	metadata, err := s.http.service.GetUserMetadata(ctx, owner, req.Key)
+	if err != nil {
+		return s.writeStoreOrRequestError(req.RequestId, err)
+	}
+	return s.writeEnvelope(&internalproto.ServerEnvelope{
+		Body: &internalproto.ServerEnvelope_GetUserMetadataResponse{
+			GetUserMetadataResponse: &internalproto.GetUserMetadataResponse{
+				RequestId: req.RequestId,
+				Metadata:  clientProtoUserMetadata(metadata),
+			},
+		},
+	})
+}
+
+func (s *clientWSSession) handleUpsertUserMetadata(ctx context.Context, req *internalproto.UpsertUserMetadataRequest) error {
+	if req == nil {
+		return s.writeError("invalid_request", "upsert_user_metadata cannot be empty", 0)
+	}
+	owner, err := userKeyFromProto(req.Owner)
+	if err != nil {
+		return s.writeStoreOrRequestError(req.RequestId, err)
+	}
+	if err := s.requireSelfOrAdminPrincipal(owner); err != nil {
+		return s.writeStoreOrRequestError(req.RequestId, err)
+	}
+	expiresAt, err := parseOptionalMetadataExpiresAt(stringPtrValue(req.ExpiresAt))
+	if err != nil {
+		return s.writeStoreOrRequestError(req.RequestId, err)
+	}
+	metadata, _, err := s.http.service.UpsertUserMetadata(ctx, store.UpsertUserMetadataParams{
+		Owner:     owner,
+		Key:       req.Key,
+		Value:     req.Value,
+		ExpiresAt: expiresAt,
+	})
+	if err != nil {
+		return s.writeStoreOrRequestError(req.RequestId, err)
+	}
+	return s.writeEnvelope(&internalproto.ServerEnvelope{
+		Body: &internalproto.ServerEnvelope_UpsertUserMetadataResponse{
+			UpsertUserMetadataResponse: &internalproto.UpsertUserMetadataResponse{
+				RequestId: req.RequestId,
+				Metadata:  clientProtoUserMetadata(metadata),
+			},
+		},
+	})
+}
+
+func (s *clientWSSession) handleDeleteUserMetadata(ctx context.Context, req *internalproto.DeleteUserMetadataRequest) error {
+	if req == nil {
+		return s.writeError("invalid_request", "delete_user_metadata cannot be empty", 0)
+	}
+	owner, err := userKeyFromProto(req.Owner)
+	if err != nil {
+		return s.writeStoreOrRequestError(req.RequestId, err)
+	}
+	if err := s.requireSelfOrAdminPrincipal(owner); err != nil {
+		return s.writeStoreOrRequestError(req.RequestId, err)
+	}
+	metadata, _, err := s.http.service.DeleteUserMetadata(ctx, store.DeleteUserMetadataParams{
+		Owner: owner,
+		Key:   req.Key,
+	})
+	if err != nil {
+		return s.writeStoreOrRequestError(req.RequestId, err)
+	}
+	return s.writeEnvelope(&internalproto.ServerEnvelope{
+		Body: &internalproto.ServerEnvelope_DeleteUserMetadataResponse{
+			DeleteUserMetadataResponse: &internalproto.DeleteUserMetadataResponse{
+				RequestId: req.RequestId,
+				Metadata:  clientProtoUserMetadata(metadata),
+			},
+		},
+	})
+}
+
+func (s *clientWSSession) handleScanUserMetadata(ctx context.Context, req *internalproto.ScanUserMetadataRequest) error {
+	if req == nil {
+		return s.writeError("invalid_request", "scan_user_metadata cannot be empty", 0)
+	}
+	owner, err := userKeyFromProto(req.Owner)
+	if err != nil {
+		return s.writeStoreOrRequestError(req.RequestId, err)
+	}
+	if err := s.requireSelfOrAdminPrincipal(owner); err != nil {
+		return s.writeStoreOrRequestError(req.RequestId, err)
+	}
+	result, err := s.http.service.ScanUserMetadata(ctx, store.ScanUserMetadataParams{
+		Owner:  owner,
+		Prefix: req.Prefix,
+		After:  req.After,
+		Limit:  int(req.Limit),
+	})
+	if err != nil {
+		return s.writeStoreOrRequestError(req.RequestId, err)
+	}
+	items := make([]*internalproto.UserMetadata, 0, len(result.Items))
+	for _, item := range result.Items {
+		items = append(items, clientProtoUserMetadata(item))
+	}
+	return s.writeEnvelope(&internalproto.ServerEnvelope{
+		Body: &internalproto.ServerEnvelope_ScanUserMetadataResponse{
+			ScanUserMetadataResponse: &internalproto.ScanUserMetadataResponse{
+				RequestId: req.RequestId,
+				Items:     items,
+				Count:     int32(len(items)),
+				NextAfter: result.NextAfter,
+			},
+		},
+	})
+}
+
 func (s *clientWSSession) handleUpsertUserAttachment(ctx context.Context, req *internalproto.UpsertUserAttachmentRequest) error {
 	if req == nil {
 		return s.writeError("invalid_request", "upsert_user_attachment cannot be empty", 0)

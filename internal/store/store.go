@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/cockroachdb/pebble"
 	sqlite3 "github.com/mattn/go-sqlite3"
@@ -73,7 +74,7 @@ const (
 	BroadcastUserID                     = int64(2)
 	NodeIngressUserID                   = int64(3)
 	ReservedUserIDMax                   = int64(1024)
-	defaultSchemaVersion                = "15"
+	defaultSchemaVersion                = "16"
 	schemaMetaNodeIDKey                 = "node_id"
 	schemaMetaMeshTopologyGenerationKey = "mesh_topology_generation"
 )
@@ -183,6 +184,16 @@ type Attachment struct {
 	ConfigJSON   string           `json:"config_json"`
 	AttachedAt   clock.Timestamp  `json:"attached_at"`
 	DeletedAt    *clock.Timestamp `json:"deleted_at,omitempty"`
+	OriginNodeID int64            `json:"origin_node_id"`
+}
+
+type UserMetadata struct {
+	Owner        UserKey          `json:"owner"`
+	Key          string           `json:"key"`
+	Value        []byte           `json:"value"`
+	UpdatedAt    clock.Timestamp  `json:"updated_at"`
+	DeletedAt    *clock.Timestamp `json:"deleted_at,omitempty"`
+	ExpiresAt    *time.Time       `json:"expires_at,omitempty"`
 	OriginNodeID int64            `json:"origin_node_id"`
 }
 
@@ -355,6 +366,30 @@ type DeleteAttachmentParams struct {
 	Owner   UserKey
 	Subject UserKey
 	Type    AttachmentType
+}
+
+type UpsertUserMetadataParams struct {
+	Owner     UserKey
+	Key       string
+	Value     []byte
+	ExpiresAt *time.Time
+}
+
+type DeleteUserMetadataParams struct {
+	Owner UserKey
+	Key   string
+}
+
+type ScanUserMetadataParams struct {
+	Owner  UserKey
+	Prefix string
+	After  string
+	Limit  int
+}
+
+type UserMetadataScanResult struct {
+	Items     []UserMetadata
+	NextAfter string
 }
 
 type BootstrapAdminConfig struct {

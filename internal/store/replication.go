@@ -75,6 +75,10 @@ func (s *Store) ApplyReplicatedEvent(ctx context.Context, event *internalproto.R
 		if err := s.applyReplicatedAttachment(ctx, tx, body, decoded.OriginNodeID); err != nil {
 			return err
 		}
+	case *internalproto.UserMetadataUpsertedEvent, *internalproto.UserMetadataDeletedEvent:
+		if err := s.applyReplicatedUserMetadata(ctx, tx, body, decoded.OriginNodeID); err != nil {
+			return err
+		}
 	default:
 		return fmt.Errorf("%w: unsupported replicated event body %T", ErrInvalidInput, decoded.Body)
 	}
@@ -237,6 +241,47 @@ func attachmentFromEventBody(body internalproto.EventBody) (Attachment, error) {
 	}
 }
 
+func (s *Store) applyReplicatedUserMetadata(ctx context.Context, tx *sql.Tx, body internalproto.EventBody, originNodeID int64) error {
+	metadata, err := userMetadataFromEventBody(body)
+	if err != nil {
+		return err
+	}
+	if originNodeID != 0 && originNodeID != metadata.OriginNodeID {
+		return fmt.Errorf("%w: metadata origin node id %d does not match event origin %d", ErrInvalidInput, metadata.OriginNodeID, originNodeID)
+	}
+	if metadata.DeletedAt == nil {
+		if err := s.validateUserMetadataOwnerTx(ctx, tx, metadata.Owner); err != nil {
+			return err
+		}
+	} else {
+		owner, err := s.getUserByIDTx(ctx, tx, metadata.Owner, false)
+		if err != nil {
+			if errors.Is(err, ErrNotFound) {
+				return nil
+			}
+			return err
+		}
+		if err := validateUserMetadataOwner(owner); err != nil {
+			if errors.Is(err, ErrInvalidInput) {
+				return nil
+			}
+			return err
+		}
+	}
+	return s.upsertUserMetadataTx(ctx, tx, metadata)
+}
+
+func userMetadataFromEventBody(body internalproto.EventBody) (UserMetadata, error) {
+	switch typed := body.(type) {
+	case *internalproto.UserMetadataUpsertedEvent:
+		return userMetadataFromData(typed.Owner, typed.Key, typed.Value, typed.UpdatedAtHlc, "", typed.ExpiresAt, typed.OriginNodeId)
+	case *internalproto.UserMetadataDeletedEvent:
+		return userMetadataFromData(typed.Owner, typed.Key, nil, "", typed.DeletedAtHlc, "", typed.OriginNodeId)
+	default:
+		return UserMetadata{}, fmt.Errorf("%w: unsupported metadata body %T", ErrInvalidInput, body)
+	}
+}
+
 func attachmentFromData(ownerRef, subjectRef *internalproto.ClusterUserRef, rawType, rawConfig, attachedAtRaw, deletedAtRaw string, originNodeID int64) (Attachment, error) {
 	if ownerRef == nil {
 		return Attachment{}, fmt.Errorf("%w: owner cannot be empty", ErrInvalidInput)
@@ -281,6 +326,51 @@ func attachmentFromData(ownerRef, subjectRef *internalproto.ClusterUserRef, rawT
 		return Attachment{}, fmt.Errorf("%w: attachment origin node id is required", ErrInvalidInput)
 	}
 	return attachment, nil
+}
+
+func userMetadataFromData(ownerRef *internalproto.ClusterUserRef, rawKey string, value []byte, updatedAtRaw, deletedAtRaw, expiresAtRaw string, originNodeID int64) (UserMetadata, error) {
+	if ownerRef == nil {
+		return UserMetadata{}, fmt.Errorf("%w: owner cannot be empty", ErrInvalidInput)
+	}
+	key, err := NormalizeUserMetadataKey(rawKey)
+	if err != nil {
+		return UserMetadata{}, err
+	}
+	metadata := UserMetadata{
+		Owner:        UserKey{NodeID: ownerRef.NodeId, UserID: ownerRef.UserId},
+		Key:          key,
+		Value:        append([]byte(nil), value...),
+		OriginNodeID: originNodeID,
+	}
+	if err := metadata.Owner.Validate(); err != nil {
+		return UserMetadata{}, err
+	}
+	if strings.TrimSpace(updatedAtRaw) != "" {
+		updatedAt, err := parseRequiredTimestamp(updatedAtRaw, "metadata updated_at")
+		if err != nil {
+			return UserMetadata{}, err
+		}
+		metadata.UpdatedAt = updatedAt
+	}
+	if strings.TrimSpace(deletedAtRaw) != "" {
+		deletedAt, err := parseRequiredTimestamp(deletedAtRaw, "metadata deleted_at")
+		if err != nil {
+			return UserMetadata{}, err
+		}
+		metadata.DeletedAt = &deletedAt
+	}
+	expiresAt, err := ParseUserMetadataExpiresAt(expiresAtRaw)
+	if err != nil {
+		return UserMetadata{}, err
+	}
+	metadata.ExpiresAt = expiresAt
+	if metadata.OriginNodeID <= 0 {
+		return UserMetadata{}, fmt.Errorf("%w: metadata origin node id is required", ErrInvalidInput)
+	}
+	if metadata.DeletedAt == nil && metadata.UpdatedAt == (clock.Timestamp{}) {
+		return UserMetadata{}, fmt.Errorf("%w: metadata updated_at is required", ErrInvalidInput)
+	}
+	return metadata, nil
 }
 
 func (s *Store) isEventAppliedTx(ctx context.Context, tx *sql.Tx, sourceNodeID, eventID int64) (bool, error) {

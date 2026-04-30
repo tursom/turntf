@@ -66,6 +66,19 @@ CREATE TABLE IF NOT EXISTS user_attachments (
     PRIMARY KEY(owner_node_id, owner_user_id, subject_node_id, subject_user_id, attachment_type)
 );
 
+CREATE TABLE IF NOT EXISTS user_metadata (
+    owner_node_id INTEGER NOT NULL,
+    owner_user_id INTEGER NOT NULL,
+    key TEXT NOT NULL,
+    value BLOB NOT NULL,
+    updated_at_hlc TEXT NOT NULL,
+    deleted_at_hlc TEXT,
+    expires_at TEXT,
+    origin_node_id INTEGER NOT NULL,
+    FOREIGN KEY(owner_node_id, owner_user_id) REFERENCES users(node_id, user_id),
+    PRIMARY KEY(owner_node_id, owner_user_id, key)
+);
+
 CREATE TABLE IF NOT EXISTS event_log (
     sequence INTEGER PRIMARY KEY AUTOINCREMENT,
     event_id INTEGER NOT NULL,
@@ -180,6 +193,7 @@ CREATE INDEX IF NOT EXISTS idx_messages_user_created ON messages(user_node_id, u
 CREATE INDEX IF NOT EXISTS idx_messages_node ON messages(node_id, user_node_id, user_id, seq);
 CREATE INDEX IF NOT EXISTS idx_user_attachments_owner_type ON user_attachments(owner_node_id, owner_user_id, attachment_type, deleted_at_hlc);
 CREATE INDEX IF NOT EXISTS idx_user_attachments_subject_type ON user_attachments(subject_node_id, subject_user_id, attachment_type, deleted_at_hlc);
+CREATE INDEX IF NOT EXISTS idx_user_metadata_owner_key ON user_metadata(owner_node_id, owner_user_id, key, deleted_at_hlc, expires_at);
 CREATE INDEX IF NOT EXISTS idx_event_log_origin_event ON event_log(origin_node_id, event_id);
 CREATE INDEX IF NOT EXISTS idx_pending_projections_failed ON pending_projections(last_failed_at_hlc, origin_node_id, event_id);
 CREATE INDEX IF NOT EXISTS idx_discovered_peers_url ON discovered_peers(url);

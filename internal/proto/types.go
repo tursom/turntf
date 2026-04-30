@@ -1,9 +1,9 @@
 package proto
 
-const ProtocolVersion = "v1alpha13"
+const ProtocolVersion = "v1alpha14"
 
-const SnapshotVersion = "snapshot-v1alpha9"
+const SnapshotVersion = "snapshot-v1alpha10"
 
-const ClientProtocolVersion = "client-v1alpha2"
+const ClientProtocolVersion = "client-v1alpha3"
 
 const ZeroMQMuxProtocolVersion = "zeromq-mux-v1"

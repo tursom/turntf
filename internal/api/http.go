@@ -102,6 +102,11 @@ type attachmentRequest struct {
 	ConfigJSON json.RawMessage `json:"config_json"`
 }
 
+type userMetadataRequest struct {
+	Value     []byte  `json:"value"`
+	ExpiresAt *string `json:"expires_at,omitempty"`
+}
+
 type loginRequest struct {
 	NodeID   int64  `json:"node_id"`
 	UserID   int64  `json:"user_id"`
@@ -193,6 +198,10 @@ func (h *HTTP) routes() {
 	h.mux.HandleFunc("DELETE /nodes/{node_id}/users/{user_id}", h.handleDeleteUser)
 	h.mux.HandleFunc("GET /nodes/{node_id}/users/{user_id}/messages", h.handleListMessagesByUser)
 	h.mux.HandleFunc("POST /nodes/{node_id}/users/{user_id}/messages", h.handleCreateMessage)
+	h.mux.HandleFunc("GET /nodes/{node_id}/users/{user_id}/metadata", h.handleScanUserMetadata)
+	h.mux.HandleFunc("GET /nodes/{node_id}/users/{user_id}/metadata/{key}", h.handleGetUserMetadata)
+	h.mux.HandleFunc("PUT /nodes/{node_id}/users/{user_id}/metadata/{key}", h.handleUpsertUserMetadata)
+	h.mux.HandleFunc("DELETE /nodes/{node_id}/users/{user_id}/metadata/{key}", h.handleDeleteUserMetadata)
 	h.mux.HandleFunc("GET /nodes/{node_id}/users/{user_id}/attachments", h.handleListUserAttachments)
 	h.mux.HandleFunc("PUT /nodes/{node_id}/users/{user_id}/attachments/{attachment_type}/{subject_node_id}/{subject_user_id}", h.handleUpsertUserAttachment)
 	h.mux.HandleFunc("DELETE /nodes/{node_id}/users/{user_id}/attachments/{attachment_type}/{subject_node_id}/{subject_user_id}", h.handleDeleteUserAttachment)
@@ -608,6 +617,107 @@ func (h *HTTP) handleListUserAttachments(w http.ResponseWriter, r *http.Request)
 	})
 }
 
+func (h *HTTP) handleGetUserMetadata(w http.ResponseWriter, r *http.Request) {
+	owner, key, ok := h.parseUserMetadataKeyRequest(w, r)
+	if !ok {
+		return
+	}
+	if _, ok := h.requireSelfOrAdmin(w, r, owner); !ok {
+		return
+	}
+	metadata, err := h.service.GetUserMetadata(r.Context(), owner, key)
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, userMetadataResponseFromStore(metadata))
+}
+
+func (h *HTTP) handleUpsertUserMetadata(w http.ResponseWriter, r *http.Request) {
+	owner, key, ok := h.parseUserMetadataKeyRequest(w, r)
+	if !ok {
+		return
+	}
+	if _, ok := h.requireSelfOrAdmin(w, r, owner); !ok {
+		return
+	}
+
+	var req userMetadataRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	expiresAt, err := parseOptionalMetadataExpiresAt(req.ExpiresAt)
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	metadata, _, err := h.service.UpsertUserMetadata(r.Context(), store.UpsertUserMetadataParams{
+		Owner:     owner,
+		Key:       key,
+		Value:     req.Value,
+		ExpiresAt: expiresAt,
+	})
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, userMetadataResponseFromStore(metadata))
+}
+
+func (h *HTTP) handleDeleteUserMetadata(w http.ResponseWriter, r *http.Request) {
+	owner, key, ok := h.parseUserMetadataKeyRequest(w, r)
+	if !ok {
+		return
+	}
+	if _, ok := h.requireSelfOrAdmin(w, r, owner); !ok {
+		return
+	}
+	metadata, _, err := h.service.DeleteUserMetadata(r.Context(), store.DeleteUserMetadataParams{
+		Owner: owner,
+		Key:   key,
+	})
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, userMetadataResponseFromStore(metadata))
+}
+
+func (h *HTTP) handleScanUserMetadata(w http.ResponseWriter, r *http.Request) {
+	owner, ok := parsePathUserKey(w, r)
+	if !ok {
+		return
+	}
+	if _, ok := h.requireSelfOrAdmin(w, r, owner); !ok {
+		return
+	}
+	limit, err := metadataScanLimitFromQuery(r)
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	result, err := h.service.ScanUserMetadata(r.Context(), store.ScanUserMetadataParams{
+		Owner:  owner,
+		Prefix: strings.TrimSpace(r.URL.Query().Get("prefix")),
+		After:  strings.TrimSpace(r.URL.Query().Get("after")),
+		Limit:  limit,
+	})
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	items := make([]userMetadataResponse, 0, len(result.Items))
+	for _, item := range result.Items {
+		items = append(items, userMetadataResponseFromStore(item))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"items":      items,
+		"count":      len(items),
+		"next_after": result.NextAfter,
+	})
+}
+
 func (h *HTTP) handleUpsertUserAttachment(w http.ResponseWriter, r *http.Request) {
 	owner, attachmentType, subject, principal, ok := h.parseAttachmentWriteRequest(w, r)
 	if !ok {
@@ -954,6 +1064,16 @@ type attachmentResponse struct {
 	OriginNodeID   int64           `json:"origin_node_id"`
 }
 
+type userMetadataResponse struct {
+	Owner        store.UserKey `json:"owner"`
+	Key          string        `json:"key"`
+	Value        []byte        `json:"value"`
+	UpdatedAt    string        `json:"updated_at"`
+	DeletedAt    string        `json:"deleted_at,omitempty"`
+	ExpiresAt    string        `json:"expires_at,omitempty"`
+	OriginNodeID int64         `json:"origin_node_id"`
+}
+
 type subscriptionResponse struct {
 	Subscriber   store.UserKey `json:"subscriber"`
 	Channel      store.UserKey `json:"channel"`
@@ -1030,6 +1150,23 @@ func attachmentResponseFromStore(attachment store.Attachment) attachmentResponse
 	}
 	if attachment.DeletedAt != nil {
 		response.DeletedAt = attachment.DeletedAt.String()
+	}
+	return response
+}
+
+func userMetadataResponseFromStore(metadata store.UserMetadata) userMetadataResponse {
+	response := userMetadataResponse{
+		Owner:        metadata.Owner,
+		Key:          metadata.Key,
+		Value:        append([]byte(nil), metadata.Value...),
+		UpdatedAt:    metadata.UpdatedAt.String(),
+		OriginNodeID: metadata.OriginNodeID,
+	}
+	if metadata.DeletedAt != nil {
+		response.DeletedAt = metadata.DeletedAt.String()
+	}
+	if metadata.ExpiresAt != nil {
+		response.ExpiresAt = store.FormatUserMetadataExpiresAt(*metadata.ExpiresAt)
 	}
 	return response
 }
@@ -1392,6 +1529,25 @@ func normalizeJSONValue(raw json.RawMessage, defaultValue string) (string, error
 	return string(trimmed), nil
 }
 
+func parseOptionalMetadataExpiresAt(raw *string) (*time.Time, error) {
+	if raw == nil {
+		return nil, nil
+	}
+	return store.ParseUserMetadataExpiresAt(*raw)
+}
+
+func metadataScanLimitFromQuery(r *http.Request) (int, error) {
+	raw := strings.TrimSpace(r.URL.Query().Get("limit"))
+	if raw == "" {
+		return 0, nil
+	}
+	limit, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, fmt.Errorf("%w: limit must be an integer", store.ErrInvalidInput)
+	}
+	return limit, nil
+}
+
 func attachmentTypeFromQuery(r *http.Request) (store.AttachmentType, error) {
 	if r == nil {
 		return "", nil
@@ -1401,6 +1557,27 @@ func attachmentTypeFromQuery(r *http.Request) (store.AttachmentType, error) {
 		return "", nil
 	}
 	return store.NormalizeAttachmentType(raw)
+}
+
+func userMetadataKeyFromPath(w http.ResponseWriter, r *http.Request) (string, bool) {
+	key := r.PathValue("key")
+	if key == "" {
+		writeStoreError(w, fmt.Errorf("%w: key cannot be empty", store.ErrInvalidInput))
+		return "", false
+	}
+	return key, true
+}
+
+func (h *HTTP) parseUserMetadataKeyRequest(w http.ResponseWriter, r *http.Request) (store.UserKey, string, bool) {
+	owner, ok := parsePathUserKey(w, r)
+	if !ok {
+		return store.UserKey{}, "", false
+	}
+	key, ok := userMetadataKeyFromPath(w, r)
+	if !ok {
+		return store.UserKey{}, "", false
+	}
+	return owner, key, true
 }
 
 func attachmentTypeFromPath(w http.ResponseWriter, r *http.Request) (store.AttachmentType, bool) {

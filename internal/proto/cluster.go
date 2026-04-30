@@ -16,6 +16,12 @@ func (*UserAttachmentUpsertedEvent) eventType() string {
 func (*UserAttachmentDeletedEvent) eventType() string {
 	return "user_attachment_deleted"
 }
+func (*UserMetadataUpsertedEvent) eventType() string {
+	return "user_metadata_upserted"
+}
+func (*UserMetadataDeletedEvent) eventType() string {
+	return "user_metadata_deleted"
+}
 
 func EventTypeFromBody(body EventBody) string {
 	if body == nil {
@@ -41,6 +47,10 @@ func (e *ReplicatedEvent) GetTypedBody() EventBody {
 		return body.UserAttachmentUpserted
 	case *ReplicatedEvent_UserAttachmentDeleted:
 		return body.UserAttachmentDeleted
+	case *ReplicatedEvent_UserMetadataUpserted:
+		return body.UserMetadataUpserted
+	case *ReplicatedEvent_UserMetadataDeleted:
+		return body.UserMetadataDeleted
 	default:
 		return nil
 	}
@@ -65,6 +75,10 @@ func (e *ReplicatedEvent) SetTypedBody(body EventBody) error {
 		e.Body = &ReplicatedEvent_UserAttachmentUpserted{UserAttachmentUpserted: typed}
 	case *UserAttachmentDeletedEvent:
 		e.Body = &ReplicatedEvent_UserAttachmentDeleted{UserAttachmentDeleted: typed}
+	case *UserMetadataUpsertedEvent:
+		e.Body = &ReplicatedEvent_UserMetadataUpserted{UserMetadataUpserted: typed}
+	case *UserMetadataDeletedEvent:
+		e.Body = &ReplicatedEvent_UserMetadataDeleted{UserMetadataDeleted: typed}
 	default:
 		return fmt.Errorf("unsupported event body %T", body)
 	}

@@ -83,6 +83,23 @@ func clientProtoResolvedSession(session store.OnlineSession) *internalproto.Reso
 	}
 }
 
+func clientProtoUserMetadata(metadata store.UserMetadata) *internalproto.UserMetadata {
+	item := &internalproto.UserMetadata{
+		Owner:        &internalproto.UserRef{NodeId: metadata.Owner.NodeID, UserId: metadata.Owner.UserID},
+		Key:          metadata.Key,
+		Value:        append([]byte(nil), metadata.Value...),
+		UpdatedAt:    metadata.UpdatedAt.String(),
+		OriginNodeId: metadata.OriginNodeID,
+	}
+	if metadata.DeletedAt != nil {
+		item.DeletedAt = metadata.DeletedAt.String()
+	}
+	if metadata.ExpiresAt != nil {
+		item.ExpiresAt = store.FormatUserMetadataExpiresAt(*metadata.ExpiresAt)
+	}
+	return item
+}
+
 func attachmentTypeFromProto(kind internalproto.AttachmentType) (store.AttachmentType, error) {
 	switch kind {
 	case internalproto.AttachmentType_ATTACHMENT_TYPE_CHANNEL_MANAGER:

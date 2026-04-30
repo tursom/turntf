@@ -245,6 +245,10 @@ type ClientEnvelope struct {
 	//	*ClientEnvelope_ListClusterNodes
 	//	*ClientEnvelope_ListNodeLoggedInUsers
 	//	*ClientEnvelope_ResolveUserSessions
+	//	*ClientEnvelope_GetUserMetadata
+	//	*ClientEnvelope_UpsertUserMetadata
+	//	*ClientEnvelope_DeleteUserMetadata
+	//	*ClientEnvelope_ScanUserMetadata
 	Body          isClientEnvelope_Body `protobuf_oneof:"body"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -449,6 +453,42 @@ func (x *ClientEnvelope) GetResolveUserSessions() *ResolveUserSessionsRequest {
 	return nil
 }
 
+func (x *ClientEnvelope) GetGetUserMetadata() *GetUserMetadataRequest {
+	if x != nil {
+		if x, ok := x.Body.(*ClientEnvelope_GetUserMetadata); ok {
+			return x.GetUserMetadata
+		}
+	}
+	return nil
+}
+
+func (x *ClientEnvelope) GetUpsertUserMetadata() *UpsertUserMetadataRequest {
+	if x != nil {
+		if x, ok := x.Body.(*ClientEnvelope_UpsertUserMetadata); ok {
+			return x.UpsertUserMetadata
+		}
+	}
+	return nil
+}
+
+func (x *ClientEnvelope) GetDeleteUserMetadata() *DeleteUserMetadataRequest {
+	if x != nil {
+		if x, ok := x.Body.(*ClientEnvelope_DeleteUserMetadata); ok {
+			return x.DeleteUserMetadata
+		}
+	}
+	return nil
+}
+
+func (x *ClientEnvelope) GetScanUserMetadata() *ScanUserMetadataRequest {
+	if x != nil {
+		if x, ok := x.Body.(*ClientEnvelope_ScanUserMetadata); ok {
+			return x.ScanUserMetadata
+		}
+	}
+	return nil
+}
+
 type isClientEnvelope_Body interface {
 	isClientEnvelope_Body()
 }
@@ -525,6 +565,22 @@ type ClientEnvelope_ResolveUserSessions struct {
 	ResolveUserSessions *ResolveUserSessionsRequest `protobuf:"bytes,18,opt,name=resolve_user_sessions,json=resolveUserSessions,proto3,oneof"`
 }
 
+type ClientEnvelope_GetUserMetadata struct {
+	GetUserMetadata *GetUserMetadataRequest `protobuf:"bytes,19,opt,name=get_user_metadata,json=getUserMetadata,proto3,oneof"`
+}
+
+type ClientEnvelope_UpsertUserMetadata struct {
+	UpsertUserMetadata *UpsertUserMetadataRequest `protobuf:"bytes,20,opt,name=upsert_user_metadata,json=upsertUserMetadata,proto3,oneof"`
+}
+
+type ClientEnvelope_DeleteUserMetadata struct {
+	DeleteUserMetadata *DeleteUserMetadataRequest `protobuf:"bytes,21,opt,name=delete_user_metadata,json=deleteUserMetadata,proto3,oneof"`
+}
+
+type ClientEnvelope_ScanUserMetadata struct {
+	ScanUserMetadata *ScanUserMetadataRequest `protobuf:"bytes,22,opt,name=scan_user_metadata,json=scanUserMetadata,proto3,oneof"`
+}
+
 func (*ClientEnvelope_Login) isClientEnvelope_Body() {}
 
 func (*ClientEnvelope_SendMessage) isClientEnvelope_Body() {}
@@ -561,6 +617,14 @@ func (*ClientEnvelope_ListNodeLoggedInUsers) isClientEnvelope_Body() {}
 
 func (*ClientEnvelope_ResolveUserSessions) isClientEnvelope_Body() {}
 
+func (*ClientEnvelope_GetUserMetadata) isClientEnvelope_Body() {}
+
+func (*ClientEnvelope_UpsertUserMetadata) isClientEnvelope_Body() {}
+
+func (*ClientEnvelope_DeleteUserMetadata) isClientEnvelope_Body() {}
+
+func (*ClientEnvelope_ScanUserMetadata) isClientEnvelope_Body() {}
+
 type ServerEnvelope struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Types that are valid to be assigned to Body:
@@ -585,6 +649,10 @@ type ServerEnvelope struct {
 	//	*ServerEnvelope_ListClusterNodesResponse
 	//	*ServerEnvelope_ListNodeLoggedInUsersResponse
 	//	*ServerEnvelope_ResolveUserSessionsResponse
+	//	*ServerEnvelope_GetUserMetadataResponse
+	//	*ServerEnvelope_UpsertUserMetadataResponse
+	//	*ServerEnvelope_DeleteUserMetadataResponse
+	//	*ServerEnvelope_ScanUserMetadataResponse
 	Body          isServerEnvelope_Body `protobuf_oneof:"body"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -807,6 +875,42 @@ func (x *ServerEnvelope) GetResolveUserSessionsResponse() *ResolveUserSessionsRe
 	return nil
 }
 
+func (x *ServerEnvelope) GetGetUserMetadataResponse() *GetUserMetadataResponse {
+	if x != nil {
+		if x, ok := x.Body.(*ServerEnvelope_GetUserMetadataResponse); ok {
+			return x.GetUserMetadataResponse
+		}
+	}
+	return nil
+}
+
+func (x *ServerEnvelope) GetUpsertUserMetadataResponse() *UpsertUserMetadataResponse {
+	if x != nil {
+		if x, ok := x.Body.(*ServerEnvelope_UpsertUserMetadataResponse); ok {
+			return x.UpsertUserMetadataResponse
+		}
+	}
+	return nil
+}
+
+func (x *ServerEnvelope) GetDeleteUserMetadataResponse() *DeleteUserMetadataResponse {
+	if x != nil {
+		if x, ok := x.Body.(*ServerEnvelope_DeleteUserMetadataResponse); ok {
+			return x.DeleteUserMetadataResponse
+		}
+	}
+	return nil
+}
+
+func (x *ServerEnvelope) GetScanUserMetadataResponse() *ScanUserMetadataResponse {
+	if x != nil {
+		if x, ok := x.Body.(*ServerEnvelope_ScanUserMetadataResponse); ok {
+			return x.ScanUserMetadataResponse
+		}
+	}
+	return nil
+}
+
 type isServerEnvelope_Body interface {
 	isServerEnvelope_Body()
 }
@@ -891,6 +995,22 @@ type ServerEnvelope_ResolveUserSessionsResponse struct {
 	ResolveUserSessionsResponse *ResolveUserSessionsResponse `protobuf:"bytes,20,opt,name=resolve_user_sessions_response,json=resolveUserSessionsResponse,proto3,oneof"`
 }
 
+type ServerEnvelope_GetUserMetadataResponse struct {
+	GetUserMetadataResponse *GetUserMetadataResponse `protobuf:"bytes,21,opt,name=get_user_metadata_response,json=getUserMetadataResponse,proto3,oneof"`
+}
+
+type ServerEnvelope_UpsertUserMetadataResponse struct {
+	UpsertUserMetadataResponse *UpsertUserMetadataResponse `protobuf:"bytes,22,opt,name=upsert_user_metadata_response,json=upsertUserMetadataResponse,proto3,oneof"`
+}
+
+type ServerEnvelope_DeleteUserMetadataResponse struct {
+	DeleteUserMetadataResponse *DeleteUserMetadataResponse `protobuf:"bytes,23,opt,name=delete_user_metadata_response,json=deleteUserMetadataResponse,proto3,oneof"`
+}
+
+type ServerEnvelope_ScanUserMetadataResponse struct {
+	ScanUserMetadataResponse *ScanUserMetadataResponse `protobuf:"bytes,24,opt,name=scan_user_metadata_response,json=scanUserMetadataResponse,proto3,oneof"`
+}
+
 func (*ServerEnvelope_LoginResponse) isServerEnvelope_Body() {}
 
 func (*ServerEnvelope_MessagePushed) isServerEnvelope_Body() {}
@@ -930,6 +1050,14 @@ func (*ServerEnvelope_ListClusterNodesResponse) isServerEnvelope_Body() {}
 func (*ServerEnvelope_ListNodeLoggedInUsersResponse) isServerEnvelope_Body() {}
 
 func (*ServerEnvelope_ResolveUserSessionsResponse) isServerEnvelope_Body() {}
+
+func (*ServerEnvelope_GetUserMetadataResponse) isServerEnvelope_Body() {}
+
+func (*ServerEnvelope_UpsertUserMetadataResponse) isServerEnvelope_Body() {}
+
+func (*ServerEnvelope_DeleteUserMetadataResponse) isServerEnvelope_Body() {}
+
+func (*ServerEnvelope_ScanUserMetadataResponse) isServerEnvelope_Body() {}
 
 type LoginRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -3237,6 +3365,502 @@ func (x *ResolveUserSessionsResponse) GetCount() int32 {
 	return 0
 }
 
+type GetUserMetadataRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	RequestId     uint64                 `protobuf:"varint,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
+	Owner         *UserRef               `protobuf:"bytes,2,opt,name=owner,proto3" json:"owner,omitempty"`
+	Key           string                 `protobuf:"bytes,3,opt,name=key,proto3" json:"key,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetUserMetadataRequest) Reset() {
+	*x = GetUserMetadataRequest{}
+	mi := &file_client_proto_msgTypes[41]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetUserMetadataRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetUserMetadataRequest) ProtoMessage() {}
+
+func (x *GetUserMetadataRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_client_proto_msgTypes[41]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetUserMetadataRequest.ProtoReflect.Descriptor instead.
+func (*GetUserMetadataRequest) Descriptor() ([]byte, []int) {
+	return file_client_proto_rawDescGZIP(), []int{41}
+}
+
+func (x *GetUserMetadataRequest) GetRequestId() uint64 {
+	if x != nil {
+		return x.RequestId
+	}
+	return 0
+}
+
+func (x *GetUserMetadataRequest) GetOwner() *UserRef {
+	if x != nil {
+		return x.Owner
+	}
+	return nil
+}
+
+func (x *GetUserMetadataRequest) GetKey() string {
+	if x != nil {
+		return x.Key
+	}
+	return ""
+}
+
+type UpsertUserMetadataRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	RequestId     uint64                 `protobuf:"varint,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
+	Owner         *UserRef               `protobuf:"bytes,2,opt,name=owner,proto3" json:"owner,omitempty"`
+	Key           string                 `protobuf:"bytes,3,opt,name=key,proto3" json:"key,omitempty"`
+	Value         []byte                 `protobuf:"bytes,4,opt,name=value,proto3" json:"value,omitempty"`
+	ExpiresAt     *StringField           `protobuf:"bytes,5,opt,name=expires_at,json=expiresAt,proto3" json:"expires_at,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *UpsertUserMetadataRequest) Reset() {
+	*x = UpsertUserMetadataRequest{}
+	mi := &file_client_proto_msgTypes[42]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UpsertUserMetadataRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UpsertUserMetadataRequest) ProtoMessage() {}
+
+func (x *UpsertUserMetadataRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_client_proto_msgTypes[42]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UpsertUserMetadataRequest.ProtoReflect.Descriptor instead.
+func (*UpsertUserMetadataRequest) Descriptor() ([]byte, []int) {
+	return file_client_proto_rawDescGZIP(), []int{42}
+}
+
+func (x *UpsertUserMetadataRequest) GetRequestId() uint64 {
+	if x != nil {
+		return x.RequestId
+	}
+	return 0
+}
+
+func (x *UpsertUserMetadataRequest) GetOwner() *UserRef {
+	if x != nil {
+		return x.Owner
+	}
+	return nil
+}
+
+func (x *UpsertUserMetadataRequest) GetKey() string {
+	if x != nil {
+		return x.Key
+	}
+	return ""
+}
+
+func (x *UpsertUserMetadataRequest) GetValue() []byte {
+	if x != nil {
+		return x.Value
+	}
+	return nil
+}
+
+func (x *UpsertUserMetadataRequest) GetExpiresAt() *StringField {
+	if x != nil {
+		return x.ExpiresAt
+	}
+	return nil
+}
+
+type DeleteUserMetadataRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	RequestId     uint64                 `protobuf:"varint,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
+	Owner         *UserRef               `protobuf:"bytes,2,opt,name=owner,proto3" json:"owner,omitempty"`
+	Key           string                 `protobuf:"bytes,3,opt,name=key,proto3" json:"key,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeleteUserMetadataRequest) Reset() {
+	*x = DeleteUserMetadataRequest{}
+	mi := &file_client_proto_msgTypes[43]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteUserMetadataRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteUserMetadataRequest) ProtoMessage() {}
+
+func (x *DeleteUserMetadataRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_client_proto_msgTypes[43]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteUserMetadataRequest.ProtoReflect.Descriptor instead.
+func (*DeleteUserMetadataRequest) Descriptor() ([]byte, []int) {
+	return file_client_proto_rawDescGZIP(), []int{43}
+}
+
+func (x *DeleteUserMetadataRequest) GetRequestId() uint64 {
+	if x != nil {
+		return x.RequestId
+	}
+	return 0
+}
+
+func (x *DeleteUserMetadataRequest) GetOwner() *UserRef {
+	if x != nil {
+		return x.Owner
+	}
+	return nil
+}
+
+func (x *DeleteUserMetadataRequest) GetKey() string {
+	if x != nil {
+		return x.Key
+	}
+	return ""
+}
+
+type ScanUserMetadataRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	RequestId     uint64                 `protobuf:"varint,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
+	Owner         *UserRef               `protobuf:"bytes,2,opt,name=owner,proto3" json:"owner,omitempty"`
+	Prefix        string                 `protobuf:"bytes,3,opt,name=prefix,proto3" json:"prefix,omitempty"`
+	After         string                 `protobuf:"bytes,4,opt,name=after,proto3" json:"after,omitempty"`
+	Limit         int32                  `protobuf:"varint,5,opt,name=limit,proto3" json:"limit,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ScanUserMetadataRequest) Reset() {
+	*x = ScanUserMetadataRequest{}
+	mi := &file_client_proto_msgTypes[44]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ScanUserMetadataRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ScanUserMetadataRequest) ProtoMessage() {}
+
+func (x *ScanUserMetadataRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_client_proto_msgTypes[44]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ScanUserMetadataRequest.ProtoReflect.Descriptor instead.
+func (*ScanUserMetadataRequest) Descriptor() ([]byte, []int) {
+	return file_client_proto_rawDescGZIP(), []int{44}
+}
+
+func (x *ScanUserMetadataRequest) GetRequestId() uint64 {
+	if x != nil {
+		return x.RequestId
+	}
+	return 0
+}
+
+func (x *ScanUserMetadataRequest) GetOwner() *UserRef {
+	if x != nil {
+		return x.Owner
+	}
+	return nil
+}
+
+func (x *ScanUserMetadataRequest) GetPrefix() string {
+	if x != nil {
+		return x.Prefix
+	}
+	return ""
+}
+
+func (x *ScanUserMetadataRequest) GetAfter() string {
+	if x != nil {
+		return x.After
+	}
+	return ""
+}
+
+func (x *ScanUserMetadataRequest) GetLimit() int32 {
+	if x != nil {
+		return x.Limit
+	}
+	return 0
+}
+
+type GetUserMetadataResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	RequestId     uint64                 `protobuf:"varint,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
+	Metadata      *UserMetadata          `protobuf:"bytes,2,opt,name=metadata,proto3" json:"metadata,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetUserMetadataResponse) Reset() {
+	*x = GetUserMetadataResponse{}
+	mi := &file_client_proto_msgTypes[45]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetUserMetadataResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetUserMetadataResponse) ProtoMessage() {}
+
+func (x *GetUserMetadataResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_client_proto_msgTypes[45]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetUserMetadataResponse.ProtoReflect.Descriptor instead.
+func (*GetUserMetadataResponse) Descriptor() ([]byte, []int) {
+	return file_client_proto_rawDescGZIP(), []int{45}
+}
+
+func (x *GetUserMetadataResponse) GetRequestId() uint64 {
+	if x != nil {
+		return x.RequestId
+	}
+	return 0
+}
+
+func (x *GetUserMetadataResponse) GetMetadata() *UserMetadata {
+	if x != nil {
+		return x.Metadata
+	}
+	return nil
+}
+
+type UpsertUserMetadataResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	RequestId     uint64                 `protobuf:"varint,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
+	Metadata      *UserMetadata          `protobuf:"bytes,2,opt,name=metadata,proto3" json:"metadata,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *UpsertUserMetadataResponse) Reset() {
+	*x = UpsertUserMetadataResponse{}
+	mi := &file_client_proto_msgTypes[46]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UpsertUserMetadataResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UpsertUserMetadataResponse) ProtoMessage() {}
+
+func (x *UpsertUserMetadataResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_client_proto_msgTypes[46]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UpsertUserMetadataResponse.ProtoReflect.Descriptor instead.
+func (*UpsertUserMetadataResponse) Descriptor() ([]byte, []int) {
+	return file_client_proto_rawDescGZIP(), []int{46}
+}
+
+func (x *UpsertUserMetadataResponse) GetRequestId() uint64 {
+	if x != nil {
+		return x.RequestId
+	}
+	return 0
+}
+
+func (x *UpsertUserMetadataResponse) GetMetadata() *UserMetadata {
+	if x != nil {
+		return x.Metadata
+	}
+	return nil
+}
+
+type DeleteUserMetadataResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	RequestId     uint64                 `protobuf:"varint,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
+	Metadata      *UserMetadata          `protobuf:"bytes,2,opt,name=metadata,proto3" json:"metadata,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeleteUserMetadataResponse) Reset() {
+	*x = DeleteUserMetadataResponse{}
+	mi := &file_client_proto_msgTypes[47]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteUserMetadataResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteUserMetadataResponse) ProtoMessage() {}
+
+func (x *DeleteUserMetadataResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_client_proto_msgTypes[47]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteUserMetadataResponse.ProtoReflect.Descriptor instead.
+func (*DeleteUserMetadataResponse) Descriptor() ([]byte, []int) {
+	return file_client_proto_rawDescGZIP(), []int{47}
+}
+
+func (x *DeleteUserMetadataResponse) GetRequestId() uint64 {
+	if x != nil {
+		return x.RequestId
+	}
+	return 0
+}
+
+func (x *DeleteUserMetadataResponse) GetMetadata() *UserMetadata {
+	if x != nil {
+		return x.Metadata
+	}
+	return nil
+}
+
+type ScanUserMetadataResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	RequestId     uint64                 `protobuf:"varint,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
+	Items         []*UserMetadata        `protobuf:"bytes,2,rep,name=items,proto3" json:"items,omitempty"`
+	Count         int32                  `protobuf:"varint,3,opt,name=count,proto3" json:"count,omitempty"`
+	NextAfter     string                 `protobuf:"bytes,4,opt,name=next_after,json=nextAfter,proto3" json:"next_after,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ScanUserMetadataResponse) Reset() {
+	*x = ScanUserMetadataResponse{}
+	mi := &file_client_proto_msgTypes[48]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ScanUserMetadataResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ScanUserMetadataResponse) ProtoMessage() {}
+
+func (x *ScanUserMetadataResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_client_proto_msgTypes[48]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ScanUserMetadataResponse.ProtoReflect.Descriptor instead.
+func (*ScanUserMetadataResponse) Descriptor() ([]byte, []int) {
+	return file_client_proto_rawDescGZIP(), []int{48}
+}
+
+func (x *ScanUserMetadataResponse) GetRequestId() uint64 {
+	if x != nil {
+		return x.RequestId
+	}
+	return 0
+}
+
+func (x *ScanUserMetadataResponse) GetItems() []*UserMetadata {
+	if x != nil {
+		return x.Items
+	}
+	return nil
+}
+
+func (x *ScanUserMetadataResponse) GetCount() int32 {
+	if x != nil {
+		return x.Count
+	}
+	return 0
+}
+
+func (x *ScanUserMetadataResponse) GetNextAfter() string {
+	if x != nil {
+		return x.NextAfter
+	}
+	return ""
+}
+
 type ClusterNode struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	NodeId        int64                  `protobuf:"varint,1,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
@@ -3249,7 +3873,7 @@ type ClusterNode struct {
 
 func (x *ClusterNode) Reset() {
 	*x = ClusterNode{}
-	mi := &file_client_proto_msgTypes[41]
+	mi := &file_client_proto_msgTypes[49]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3261,7 +3885,7 @@ func (x *ClusterNode) String() string {
 func (*ClusterNode) ProtoMessage() {}
 
 func (x *ClusterNode) ProtoReflect() protoreflect.Message {
-	mi := &file_client_proto_msgTypes[41]
+	mi := &file_client_proto_msgTypes[49]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3274,7 +3898,7 @@ func (x *ClusterNode) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ClusterNode.ProtoReflect.Descriptor instead.
 func (*ClusterNode) Descriptor() ([]byte, []int) {
-	return file_client_proto_rawDescGZIP(), []int{41}
+	return file_client_proto_rawDescGZIP(), []int{49}
 }
 
 func (x *ClusterNode) GetNodeId() int64 {
@@ -3316,7 +3940,7 @@ type LoggedInUser struct {
 
 func (x *LoggedInUser) Reset() {
 	*x = LoggedInUser{}
-	mi := &file_client_proto_msgTypes[42]
+	mi := &file_client_proto_msgTypes[50]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3328,7 +3952,7 @@ func (x *LoggedInUser) String() string {
 func (*LoggedInUser) ProtoMessage() {}
 
 func (x *LoggedInUser) ProtoReflect() protoreflect.Message {
-	mi := &file_client_proto_msgTypes[42]
+	mi := &file_client_proto_msgTypes[50]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3341,7 +3965,7 @@ func (x *LoggedInUser) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LoggedInUser.ProtoReflect.Descriptor instead.
 func (*LoggedInUser) Descriptor() ([]byte, []int) {
-	return file_client_proto_rawDescGZIP(), []int{42}
+	return file_client_proto_rawDescGZIP(), []int{50}
 }
 
 func (x *LoggedInUser) GetNodeId() int64 {
@@ -3375,7 +3999,7 @@ type SessionRef struct {
 
 func (x *SessionRef) Reset() {
 	*x = SessionRef{}
-	mi := &file_client_proto_msgTypes[43]
+	mi := &file_client_proto_msgTypes[51]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3387,7 +4011,7 @@ func (x *SessionRef) String() string {
 func (*SessionRef) ProtoMessage() {}
 
 func (x *SessionRef) ProtoReflect() protoreflect.Message {
-	mi := &file_client_proto_msgTypes[43]
+	mi := &file_client_proto_msgTypes[51]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3400,7 +4024,7 @@ func (x *SessionRef) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SessionRef.ProtoReflect.Descriptor instead.
 func (*SessionRef) Descriptor() ([]byte, []int) {
-	return file_client_proto_rawDescGZIP(), []int{43}
+	return file_client_proto_rawDescGZIP(), []int{51}
 }
 
 func (x *SessionRef) GetServingNodeId() int64 {
@@ -3428,7 +4052,7 @@ type OnlineNodePresence struct {
 
 func (x *OnlineNodePresence) Reset() {
 	*x = OnlineNodePresence{}
-	mi := &file_client_proto_msgTypes[44]
+	mi := &file_client_proto_msgTypes[52]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3440,7 +4064,7 @@ func (x *OnlineNodePresence) String() string {
 func (*OnlineNodePresence) ProtoMessage() {}
 
 func (x *OnlineNodePresence) ProtoReflect() protoreflect.Message {
-	mi := &file_client_proto_msgTypes[44]
+	mi := &file_client_proto_msgTypes[52]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3453,7 +4077,7 @@ func (x *OnlineNodePresence) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OnlineNodePresence.ProtoReflect.Descriptor instead.
 func (*OnlineNodePresence) Descriptor() ([]byte, []int) {
-	return file_client_proto_rawDescGZIP(), []int{44}
+	return file_client_proto_rawDescGZIP(), []int{52}
 }
 
 func (x *OnlineNodePresence) GetServingNodeId() int64 {
@@ -3488,7 +4112,7 @@ type ResolvedSession struct {
 
 func (x *ResolvedSession) Reset() {
 	*x = ResolvedSession{}
-	mi := &file_client_proto_msgTypes[45]
+	mi := &file_client_proto_msgTypes[53]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3500,7 +4124,7 @@ func (x *ResolvedSession) String() string {
 func (*ResolvedSession) ProtoMessage() {}
 
 func (x *ResolvedSession) ProtoReflect() protoreflect.Message {
-	mi := &file_client_proto_msgTypes[45]
+	mi := &file_client_proto_msgTypes[53]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3513,7 +4137,7 @@ func (x *ResolvedSession) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResolvedSession.ProtoReflect.Descriptor instead.
 func (*ResolvedSession) Descriptor() ([]byte, []int) {
-	return file_client_proto_rawDescGZIP(), []int{45}
+	return file_client_proto_rawDescGZIP(), []int{53}
 }
 
 func (x *ResolvedSession) GetSession() *SessionRef {
@@ -3546,7 +4170,7 @@ type StringField struct {
 
 func (x *StringField) Reset() {
 	*x = StringField{}
-	mi := &file_client_proto_msgTypes[46]
+	mi := &file_client_proto_msgTypes[54]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3558,7 +4182,7 @@ func (x *StringField) String() string {
 func (*StringField) ProtoMessage() {}
 
 func (x *StringField) ProtoReflect() protoreflect.Message {
-	mi := &file_client_proto_msgTypes[46]
+	mi := &file_client_proto_msgTypes[54]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3571,7 +4195,7 @@ func (x *StringField) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StringField.ProtoReflect.Descriptor instead.
 func (*StringField) Descriptor() ([]byte, []int) {
-	return file_client_proto_rawDescGZIP(), []int{46}
+	return file_client_proto_rawDescGZIP(), []int{54}
 }
 
 func (x *StringField) GetValue() string {
@@ -3590,7 +4214,7 @@ type BytesField struct {
 
 func (x *BytesField) Reset() {
 	*x = BytesField{}
-	mi := &file_client_proto_msgTypes[47]
+	mi := &file_client_proto_msgTypes[55]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3602,7 +4226,7 @@ func (x *BytesField) String() string {
 func (*BytesField) ProtoMessage() {}
 
 func (x *BytesField) ProtoReflect() protoreflect.Message {
-	mi := &file_client_proto_msgTypes[47]
+	mi := &file_client_proto_msgTypes[55]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3615,7 +4239,7 @@ func (x *BytesField) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BytesField.ProtoReflect.Descriptor instead.
 func (*BytesField) Descriptor() ([]byte, []int) {
-	return file_client_proto_rawDescGZIP(), []int{47}
+	return file_client_proto_rawDescGZIP(), []int{55}
 }
 
 func (x *BytesField) GetValue() []byte {
@@ -3635,7 +4259,7 @@ type MessageCursor struct {
 
 func (x *MessageCursor) Reset() {
 	*x = MessageCursor{}
-	mi := &file_client_proto_msgTypes[48]
+	mi := &file_client_proto_msgTypes[56]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3647,7 +4271,7 @@ func (x *MessageCursor) String() string {
 func (*MessageCursor) ProtoMessage() {}
 
 func (x *MessageCursor) ProtoReflect() protoreflect.Message {
-	mi := &file_client_proto_msgTypes[48]
+	mi := &file_client_proto_msgTypes[56]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3660,7 +4284,7 @@ func (x *MessageCursor) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MessageCursor.ProtoReflect.Descriptor instead.
 func (*MessageCursor) Descriptor() ([]byte, []int) {
-	return file_client_proto_rawDescGZIP(), []int{48}
+	return file_client_proto_rawDescGZIP(), []int{56}
 }
 
 func (x *MessageCursor) GetNodeId() int64 {
@@ -3687,7 +4311,7 @@ type UserRef struct {
 
 func (x *UserRef) Reset() {
 	*x = UserRef{}
-	mi := &file_client_proto_msgTypes[49]
+	mi := &file_client_proto_msgTypes[57]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3699,7 +4323,7 @@ func (x *UserRef) String() string {
 func (*UserRef) ProtoMessage() {}
 
 func (x *UserRef) ProtoReflect() protoreflect.Message {
-	mi := &file_client_proto_msgTypes[49]
+	mi := &file_client_proto_msgTypes[57]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3712,7 +4336,7 @@ func (x *UserRef) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UserRef.ProtoReflect.Descriptor instead.
 func (*UserRef) Descriptor() ([]byte, []int) {
-	return file_client_proto_rawDescGZIP(), []int{49}
+	return file_client_proto_rawDescGZIP(), []int{57}
 }
 
 func (x *UserRef) GetNodeId() int64 {
@@ -3746,7 +4370,7 @@ type User struct {
 
 func (x *User) Reset() {
 	*x = User{}
-	mi := &file_client_proto_msgTypes[50]
+	mi := &file_client_proto_msgTypes[58]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3758,7 +4382,7 @@ func (x *User) String() string {
 func (*User) ProtoMessage() {}
 
 func (x *User) ProtoReflect() protoreflect.Message {
-	mi := &file_client_proto_msgTypes[50]
+	mi := &file_client_proto_msgTypes[58]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3771,7 +4395,7 @@ func (x *User) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use User.ProtoReflect.Descriptor instead.
 func (*User) Descriptor() ([]byte, []int) {
-	return file_client_proto_rawDescGZIP(), []int{50}
+	return file_client_proto_rawDescGZIP(), []int{58}
 }
 
 func (x *User) GetNodeId() int64 {
@@ -3851,7 +4475,7 @@ type Message struct {
 
 func (x *Message) Reset() {
 	*x = Message{}
-	mi := &file_client_proto_msgTypes[51]
+	mi := &file_client_proto_msgTypes[59]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3863,7 +4487,7 @@ func (x *Message) String() string {
 func (*Message) ProtoMessage() {}
 
 func (x *Message) ProtoReflect() protoreflect.Message {
-	mi := &file_client_proto_msgTypes[51]
+	mi := &file_client_proto_msgTypes[59]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3876,7 +4500,7 @@ func (x *Message) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Message.ProtoReflect.Descriptor instead.
 func (*Message) Descriptor() ([]byte, []int) {
-	return file_client_proto_rawDescGZIP(), []int{51}
+	return file_client_proto_rawDescGZIP(), []int{59}
 }
 
 func (x *Message) GetRecipient() *UserRef {
@@ -3937,7 +4561,7 @@ type Packet struct {
 
 func (x *Packet) Reset() {
 	*x = Packet{}
-	mi := &file_client_proto_msgTypes[52]
+	mi := &file_client_proto_msgTypes[60]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3949,7 +4573,7 @@ func (x *Packet) String() string {
 func (*Packet) ProtoMessage() {}
 
 func (x *Packet) ProtoReflect() protoreflect.Message {
-	mi := &file_client_proto_msgTypes[52]
+	mi := &file_client_proto_msgTypes[60]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3962,7 +4586,7 @@ func (x *Packet) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Packet.ProtoReflect.Descriptor instead.
 func (*Packet) Descriptor() ([]byte, []int) {
-	return file_client_proto_rawDescGZIP(), []int{52}
+	return file_client_proto_rawDescGZIP(), []int{60}
 }
 
 func (x *Packet) GetPacketId() uint64 {
@@ -4036,7 +4660,7 @@ type Attachment struct {
 
 func (x *Attachment) Reset() {
 	*x = Attachment{}
-	mi := &file_client_proto_msgTypes[53]
+	mi := &file_client_proto_msgTypes[61]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4048,7 +4672,7 @@ func (x *Attachment) String() string {
 func (*Attachment) ProtoMessage() {}
 
 func (x *Attachment) ProtoReflect() protoreflect.Message {
-	mi := &file_client_proto_msgTypes[53]
+	mi := &file_client_proto_msgTypes[61]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4061,7 +4685,7 @@ func (x *Attachment) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Attachment.ProtoReflect.Descriptor instead.
 func (*Attachment) Descriptor() ([]byte, []int) {
-	return file_client_proto_rawDescGZIP(), []int{53}
+	return file_client_proto_rawDescGZIP(), []int{61}
 }
 
 func (x *Attachment) GetOwner() *UserRef {
@@ -4113,6 +4737,98 @@ func (x *Attachment) GetOriginNodeId() int64 {
 	return 0
 }
 
+type UserMetadata struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Owner         *UserRef               `protobuf:"bytes,1,opt,name=owner,proto3" json:"owner,omitempty"`
+	Key           string                 `protobuf:"bytes,2,opt,name=key,proto3" json:"key,omitempty"`
+	Value         []byte                 `protobuf:"bytes,3,opt,name=value,proto3" json:"value,omitempty"`
+	UpdatedAt     string                 `protobuf:"bytes,4,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
+	DeletedAt     string                 `protobuf:"bytes,5,opt,name=deleted_at,json=deletedAt,proto3" json:"deleted_at,omitempty"`
+	ExpiresAt     string                 `protobuf:"bytes,6,opt,name=expires_at,json=expiresAt,proto3" json:"expires_at,omitempty"`
+	OriginNodeId  int64                  `protobuf:"varint,7,opt,name=origin_node_id,json=originNodeId,proto3" json:"origin_node_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *UserMetadata) Reset() {
+	*x = UserMetadata{}
+	mi := &file_client_proto_msgTypes[62]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UserMetadata) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UserMetadata) ProtoMessage() {}
+
+func (x *UserMetadata) ProtoReflect() protoreflect.Message {
+	mi := &file_client_proto_msgTypes[62]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UserMetadata.ProtoReflect.Descriptor instead.
+func (*UserMetadata) Descriptor() ([]byte, []int) {
+	return file_client_proto_rawDescGZIP(), []int{62}
+}
+
+func (x *UserMetadata) GetOwner() *UserRef {
+	if x != nil {
+		return x.Owner
+	}
+	return nil
+}
+
+func (x *UserMetadata) GetKey() string {
+	if x != nil {
+		return x.Key
+	}
+	return ""
+}
+
+func (x *UserMetadata) GetValue() []byte {
+	if x != nil {
+		return x.Value
+	}
+	return nil
+}
+
+func (x *UserMetadata) GetUpdatedAt() string {
+	if x != nil {
+		return x.UpdatedAt
+	}
+	return ""
+}
+
+func (x *UserMetadata) GetDeletedAt() string {
+	if x != nil {
+		return x.DeletedAt
+	}
+	return ""
+}
+
+func (x *UserMetadata) GetExpiresAt() string {
+	if x != nil {
+		return x.ExpiresAt
+	}
+	return ""
+}
+
+func (x *UserMetadata) GetOriginNodeId() int64 {
+	if x != nil {
+		return x.OriginNodeId
+	}
+	return 0
+}
+
 type Event struct {
 	state           protoimpl.MessageState `protogen:"open.v1"`
 	Sequence        int64                  `protobuf:"varint,1,opt,name=sequence,proto3" json:"sequence,omitempty"`
@@ -4130,7 +4846,7 @@ type Event struct {
 
 func (x *Event) Reset() {
 	*x = Event{}
-	mi := &file_client_proto_msgTypes[54]
+	mi := &file_client_proto_msgTypes[63]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4142,7 +4858,7 @@ func (x *Event) String() string {
 func (*Event) ProtoMessage() {}
 
 func (x *Event) ProtoReflect() protoreflect.Message {
-	mi := &file_client_proto_msgTypes[54]
+	mi := &file_client_proto_msgTypes[63]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4155,7 +4871,7 @@ func (x *Event) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Event.ProtoReflect.Descriptor instead.
 func (*Event) Descriptor() ([]byte, []int) {
-	return file_client_proto_rawDescGZIP(), []int{54}
+	return file_client_proto_rawDescGZIP(), []int{63}
 }
 
 func (x *Event) GetSequence() int64 {
@@ -4238,7 +4954,7 @@ type OperationsStatus struct {
 
 func (x *OperationsStatus) Reset() {
 	*x = OperationsStatus{}
-	mi := &file_client_proto_msgTypes[55]
+	mi := &file_client_proto_msgTypes[64]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4250,7 +4966,7 @@ func (x *OperationsStatus) String() string {
 func (*OperationsStatus) ProtoMessage() {}
 
 func (x *OperationsStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_client_proto_msgTypes[55]
+	mi := &file_client_proto_msgTypes[64]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4263,7 +4979,7 @@ func (x *OperationsStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OperationsStatus.ProtoReflect.Descriptor instead.
 func (*OperationsStatus) Descriptor() ([]byte, []int) {
-	return file_client_proto_rawDescGZIP(), []int{55}
+	return file_client_proto_rawDescGZIP(), []int{64}
 }
 
 func (x *OperationsStatus) GetNodeId() int64 {
@@ -4339,7 +5055,7 @@ type MessageTrimStatus struct {
 
 func (x *MessageTrimStatus) Reset() {
 	*x = MessageTrimStatus{}
-	mi := &file_client_proto_msgTypes[56]
+	mi := &file_client_proto_msgTypes[65]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4351,7 +5067,7 @@ func (x *MessageTrimStatus) String() string {
 func (*MessageTrimStatus) ProtoMessage() {}
 
 func (x *MessageTrimStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_client_proto_msgTypes[56]
+	mi := &file_client_proto_msgTypes[65]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4364,7 +5080,7 @@ func (x *MessageTrimStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MessageTrimStatus.ProtoReflect.Descriptor instead.
 func (*MessageTrimStatus) Descriptor() ([]byte, []int) {
-	return file_client_proto_rawDescGZIP(), []int{56}
+	return file_client_proto_rawDescGZIP(), []int{65}
 }
 
 func (x *MessageTrimStatus) GetTrimmedTotal() int64 {
@@ -4391,7 +5107,7 @@ type EventLogTrimStatus struct {
 
 func (x *EventLogTrimStatus) Reset() {
 	*x = EventLogTrimStatus{}
-	mi := &file_client_proto_msgTypes[57]
+	mi := &file_client_proto_msgTypes[66]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4403,7 +5119,7 @@ func (x *EventLogTrimStatus) String() string {
 func (*EventLogTrimStatus) ProtoMessage() {}
 
 func (x *EventLogTrimStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_client_proto_msgTypes[57]
+	mi := &file_client_proto_msgTypes[66]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4416,7 +5132,7 @@ func (x *EventLogTrimStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EventLogTrimStatus.ProtoReflect.Descriptor instead.
 func (*EventLogTrimStatus) Descriptor() ([]byte, []int) {
-	return file_client_proto_rawDescGZIP(), []int{57}
+	return file_client_proto_rawDescGZIP(), []int{66}
 }
 
 func (x *EventLogTrimStatus) GetTrimmedTotal() int64 {
@@ -4443,7 +5159,7 @@ type ProjectionStatus struct {
 
 func (x *ProjectionStatus) Reset() {
 	*x = ProjectionStatus{}
-	mi := &file_client_proto_msgTypes[58]
+	mi := &file_client_proto_msgTypes[67]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4455,7 +5171,7 @@ func (x *ProjectionStatus) String() string {
 func (*ProjectionStatus) ProtoMessage() {}
 
 func (x *ProjectionStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_client_proto_msgTypes[58]
+	mi := &file_client_proto_msgTypes[67]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4468,7 +5184,7 @@ func (x *ProjectionStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ProjectionStatus.ProtoReflect.Descriptor instead.
 func (*ProjectionStatus) Descriptor() ([]byte, []int) {
-	return file_client_proto_rawDescGZIP(), []int{58}
+	return file_client_proto_rawDescGZIP(), []int{67}
 }
 
 func (x *ProjectionStatus) GetPendingTotal() int64 {
@@ -4500,7 +5216,7 @@ type PeerOriginStatus struct {
 
 func (x *PeerOriginStatus) Reset() {
 	*x = PeerOriginStatus{}
-	mi := &file_client_proto_msgTypes[59]
+	mi := &file_client_proto_msgTypes[68]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4512,7 +5228,7 @@ func (x *PeerOriginStatus) String() string {
 func (*PeerOriginStatus) ProtoMessage() {}
 
 func (x *PeerOriginStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_client_proto_msgTypes[59]
+	mi := &file_client_proto_msgTypes[68]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4525,7 +5241,7 @@ func (x *PeerOriginStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PeerOriginStatus.ProtoReflect.Descriptor instead.
 func (*PeerOriginStatus) Descriptor() ([]byte, []int) {
-	return file_client_proto_rawDescGZIP(), []int{59}
+	return file_client_proto_rawDescGZIP(), []int{68}
 }
 
 func (x *PeerOriginStatus) GetOriginNodeId() int64 {
@@ -4607,7 +5323,7 @@ type PeerStatus struct {
 
 func (x *PeerStatus) Reset() {
 	*x = PeerStatus{}
-	mi := &file_client_proto_msgTypes[60]
+	mi := &file_client_proto_msgTypes[69]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4619,7 +5335,7 @@ func (x *PeerStatus) String() string {
 func (*PeerStatus) ProtoMessage() {}
 
 func (x *PeerStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_client_proto_msgTypes[60]
+	mi := &file_client_proto_msgTypes[69]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4632,7 +5348,7 @@ func (x *PeerStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PeerStatus.ProtoReflect.Descriptor instead.
 func (*PeerStatus) Descriptor() ([]byte, []int) {
-	return file_client_proto_rawDescGZIP(), []int{60}
+	return file_client_proto_rawDescGZIP(), []int{69}
 }
 
 func (x *PeerStatus) GetNodeId() int64 {
@@ -4793,7 +5509,7 @@ var File_client_proto protoreflect.FileDescriptor
 
 const file_client_proto_rawDesc = "" +
 	"\n" +
-	"\fclient.proto\x12\x12notifier.client.v1\"\xd0\v\n" +
+	"\fclient.proto\x12\x12notifier.client.v1\"\xcd\x0e\n" +
 	"\x0eClientEnvelope\x128\n" +
 	"\x05login\x18\x01 \x01(\v2 .notifier.client.v1.LoginRequestH\x00R\x05login\x12K\n" +
 	"\fsend_message\x18\x02 \x01(\v2&.notifier.client.v1.SendMessageRequestH\x00R\vsendMessage\x12A\n" +
@@ -4818,8 +5534,12 @@ const file_client_proto_rawDesc = "" +
 	"\ametrics\x18\x0f \x01(\v2\".notifier.client.v1.MetricsRequestH\x00R\ametrics\x12[\n" +
 	"\x12list_cluster_nodes\x18\x10 \x01(\v2+.notifier.client.v1.ListClusterNodesRequestH\x00R\x10listClusterNodes\x12l\n" +
 	"\x19list_node_logged_in_users\x18\x11 \x01(\v20.notifier.client.v1.ListNodeLoggedInUsersRequestH\x00R\x15listNodeLoggedInUsers\x12d\n" +
-	"\x15resolve_user_sessions\x18\x12 \x01(\v2..notifier.client.v1.ResolveUserSessionsRequestH\x00R\x13resolveUserSessionsB\x06\n" +
-	"\x04body\"\xf5\x0e\n" +
+	"\x15resolve_user_sessions\x18\x12 \x01(\v2..notifier.client.v1.ResolveUserSessionsRequestH\x00R\x13resolveUserSessions\x12X\n" +
+	"\x11get_user_metadata\x18\x13 \x01(\v2*.notifier.client.v1.GetUserMetadataRequestH\x00R\x0fgetUserMetadata\x12a\n" +
+	"\x14upsert_user_metadata\x18\x14 \x01(\v2-.notifier.client.v1.UpsertUserMetadataRequestH\x00R\x12upsertUserMetadata\x12a\n" +
+	"\x14delete_user_metadata\x18\x15 \x01(\v2-.notifier.client.v1.DeleteUserMetadataRequestH\x00R\x12deleteUserMetadata\x12[\n" +
+	"\x12scan_user_metadata\x18\x16 \x01(\v2+.notifier.client.v1.ScanUserMetadataRequestH\x00R\x10scanUserMetadataB\x06\n" +
+	"\x04body\"\xba\x12\n" +
 	"\x0eServerEnvelope\x12J\n" +
 	"\x0elogin_response\x18\x01 \x01(\v2!.notifier.client.v1.LoginResponseH\x00R\rloginResponse\x12J\n" +
 	"\x0emessage_pushed\x18\x02 \x01(\v2!.notifier.client.v1.MessagePushedH\x00R\rmessagePushed\x12]\n" +
@@ -4841,7 +5561,11 @@ const file_client_proto_rawDesc = "" +
 	"\x10metrics_response\x18\x11 \x01(\v2#.notifier.client.v1.MetricsResponseH\x00R\x0fmetricsResponse\x12m\n" +
 	"\x1blist_cluster_nodes_response\x18\x12 \x01(\v2,.notifier.client.v1.ListClusterNodesResponseH\x00R\x18listClusterNodesResponse\x12~\n" +
 	"\"list_node_logged_in_users_response\x18\x13 \x01(\v21.notifier.client.v1.ListNodeLoggedInUsersResponseH\x00R\x1dlistNodeLoggedInUsersResponse\x12v\n" +
-	"\x1eresolve_user_sessions_response\x18\x14 \x01(\v2/.notifier.client.v1.ResolveUserSessionsResponseH\x00R\x1bresolveUserSessionsResponseB\x06\n" +
+	"\x1eresolve_user_sessions_response\x18\x14 \x01(\v2/.notifier.client.v1.ResolveUserSessionsResponseH\x00R\x1bresolveUserSessionsResponse\x12j\n" +
+	"\x1aget_user_metadata_response\x18\x15 \x01(\v2+.notifier.client.v1.GetUserMetadataResponseH\x00R\x17getUserMetadataResponse\x12s\n" +
+	"\x1dupsert_user_metadata_response\x18\x16 \x01(\v2..notifier.client.v1.UpsertUserMetadataResponseH\x00R\x1aupsertUserMetadataResponse\x12s\n" +
+	"\x1ddelete_user_metadata_response\x18\x17 \x01(\v2..notifier.client.v1.DeleteUserMetadataResponseH\x00R\x1adeleteUserMetadataResponse\x12m\n" +
+	"\x1bscan_user_metadata_response\x18\x18 \x01(\v2,.notifier.client.v1.ScanUserMetadataResponseH\x00R\x18scanUserMetadataResponseB\x06\n" +
 	"\x04body\"\xca\x01\n" +
 	"\fLoginRequest\x12/\n" +
 	"\x04user\x18\x01 \x01(\v2\x1b.notifier.client.v1.UserRefR\x04user\x12\x1a\n" +
@@ -5031,7 +5755,51 @@ const file_client_proto_rawDesc = "" +
 	"\x04user\x18\x02 \x01(\v2\x1b.notifier.client.v1.UserRefR\x04user\x12B\n" +
 	"\bpresence\x18\x03 \x03(\v2&.notifier.client.v1.OnlineNodePresenceR\bpresence\x129\n" +
 	"\x05items\x18\x04 \x03(\v2#.notifier.client.v1.ResolvedSessionR\x05items\x12\x14\n" +
-	"\x05count\x18\x05 \x01(\x05R\x05count\"\x80\x01\n" +
+	"\x05count\x18\x05 \x01(\x05R\x05count\"|\n" +
+	"\x16GetUserMetadataRequest\x12\x1d\n" +
+	"\n" +
+	"request_id\x18\x01 \x01(\x04R\trequestId\x121\n" +
+	"\x05owner\x18\x02 \x01(\v2\x1b.notifier.client.v1.UserRefR\x05owner\x12\x10\n" +
+	"\x03key\x18\x03 \x01(\tR\x03key\"\xd5\x01\n" +
+	"\x19UpsertUserMetadataRequest\x12\x1d\n" +
+	"\n" +
+	"request_id\x18\x01 \x01(\x04R\trequestId\x121\n" +
+	"\x05owner\x18\x02 \x01(\v2\x1b.notifier.client.v1.UserRefR\x05owner\x12\x10\n" +
+	"\x03key\x18\x03 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x04 \x01(\fR\x05value\x12>\n" +
+	"\n" +
+	"expires_at\x18\x05 \x01(\v2\x1f.notifier.client.v1.StringFieldR\texpiresAt\"\x7f\n" +
+	"\x19DeleteUserMetadataRequest\x12\x1d\n" +
+	"\n" +
+	"request_id\x18\x01 \x01(\x04R\trequestId\x121\n" +
+	"\x05owner\x18\x02 \x01(\v2\x1b.notifier.client.v1.UserRefR\x05owner\x12\x10\n" +
+	"\x03key\x18\x03 \x01(\tR\x03key\"\xaf\x01\n" +
+	"\x17ScanUserMetadataRequest\x12\x1d\n" +
+	"\n" +
+	"request_id\x18\x01 \x01(\x04R\trequestId\x121\n" +
+	"\x05owner\x18\x02 \x01(\v2\x1b.notifier.client.v1.UserRefR\x05owner\x12\x16\n" +
+	"\x06prefix\x18\x03 \x01(\tR\x06prefix\x12\x14\n" +
+	"\x05after\x18\x04 \x01(\tR\x05after\x12\x14\n" +
+	"\x05limit\x18\x05 \x01(\x05R\x05limit\"v\n" +
+	"\x17GetUserMetadataResponse\x12\x1d\n" +
+	"\n" +
+	"request_id\x18\x01 \x01(\x04R\trequestId\x12<\n" +
+	"\bmetadata\x18\x02 \x01(\v2 .notifier.client.v1.UserMetadataR\bmetadata\"y\n" +
+	"\x1aUpsertUserMetadataResponse\x12\x1d\n" +
+	"\n" +
+	"request_id\x18\x01 \x01(\x04R\trequestId\x12<\n" +
+	"\bmetadata\x18\x02 \x01(\v2 .notifier.client.v1.UserMetadataR\bmetadata\"y\n" +
+	"\x1aDeleteUserMetadataResponse\x12\x1d\n" +
+	"\n" +
+	"request_id\x18\x01 \x01(\x04R\trequestId\x12<\n" +
+	"\bmetadata\x18\x02 \x01(\v2 .notifier.client.v1.UserMetadataR\bmetadata\"\xa6\x01\n" +
+	"\x18ScanUserMetadataResponse\x12\x1d\n" +
+	"\n" +
+	"request_id\x18\x01 \x01(\x04R\trequestId\x126\n" +
+	"\x05items\x18\x02 \x03(\v2 .notifier.client.v1.UserMetadataR\x05items\x12\x14\n" +
+	"\x05count\x18\x03 \x01(\x05R\x05count\x12\x1d\n" +
+	"\n" +
+	"next_after\x18\x04 \x01(\tR\tnextAfter\"\x80\x01\n" +
 	"\vClusterNode\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\x03R\x06nodeId\x12\x19\n" +
 	"\bis_local\x18\x02 \x01(\bR\aisLocal\x12%\n" +
@@ -5104,6 +5872,17 @@ const file_client_proto_rawDesc = "" +
 	"attachedAt\x12\x1d\n" +
 	"\n" +
 	"deleted_at\x18\x06 \x01(\tR\tdeletedAt\x12$\n" +
+	"\x0eorigin_node_id\x18\a \x01(\x03R\foriginNodeId\"\xec\x01\n" +
+	"\fUserMetadata\x121\n" +
+	"\x05owner\x18\x01 \x01(\v2\x1b.notifier.client.v1.UserRefR\x05owner\x12\x10\n" +
+	"\x03key\x18\x02 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x03 \x01(\fR\x05value\x12\x1d\n" +
+	"\n" +
+	"updated_at\x18\x04 \x01(\tR\tupdatedAt\x12\x1d\n" +
+	"\n" +
+	"deleted_at\x18\x05 \x01(\tR\tdeletedAt\x12\x1d\n" +
+	"\n" +
+	"expires_at\x18\x06 \x01(\tR\texpiresAt\x12$\n" +
 	"\x0eorigin_node_id\x18\a \x01(\x03R\foriginNodeId\"\xa1\x02\n" +
 	"\x05Event\x12\x1a\n" +
 	"\bsequence\x18\x01 \x01(\x03R\bsequence\x12\x19\n" +
@@ -5203,7 +5982,7 @@ func file_client_proto_rawDescGZIP() []byte {
 }
 
 var file_client_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
-var file_client_proto_msgTypes = make([]protoimpl.MessageInfo, 61)
+var file_client_proto_msgTypes = make([]protoimpl.MessageInfo, 70)
 var file_client_proto_goTypes = []any{
 	(ClientDeliveryKind)(0),               // 0: notifier.client.v1.ClientDeliveryKind
 	(ClientDeliveryMode)(0),               // 1: notifier.client.v1.ClientDeliveryMode
@@ -5250,26 +6029,35 @@ var file_client_proto_goTypes = []any{
 	(*ListNodeLoggedInUsersResponse)(nil), // 42: notifier.client.v1.ListNodeLoggedInUsersResponse
 	(*ResolveUserSessionsRequest)(nil),    // 43: notifier.client.v1.ResolveUserSessionsRequest
 	(*ResolveUserSessionsResponse)(nil),   // 44: notifier.client.v1.ResolveUserSessionsResponse
-	(*ClusterNode)(nil),                   // 45: notifier.client.v1.ClusterNode
-	(*LoggedInUser)(nil),                  // 46: notifier.client.v1.LoggedInUser
-	(*SessionRef)(nil),                    // 47: notifier.client.v1.SessionRef
-	(*OnlineNodePresence)(nil),            // 48: notifier.client.v1.OnlineNodePresence
-	(*ResolvedSession)(nil),               // 49: notifier.client.v1.ResolvedSession
-	(*StringField)(nil),                   // 50: notifier.client.v1.StringField
-	(*BytesField)(nil),                    // 51: notifier.client.v1.BytesField
-	(*MessageCursor)(nil),                 // 52: notifier.client.v1.MessageCursor
-	(*UserRef)(nil),                       // 53: notifier.client.v1.UserRef
-	(*User)(nil),                          // 54: notifier.client.v1.User
-	(*Message)(nil),                       // 55: notifier.client.v1.Message
-	(*Packet)(nil),                        // 56: notifier.client.v1.Packet
-	(*Attachment)(nil),                    // 57: notifier.client.v1.Attachment
-	(*Event)(nil),                         // 58: notifier.client.v1.Event
-	(*OperationsStatus)(nil),              // 59: notifier.client.v1.OperationsStatus
-	(*MessageTrimStatus)(nil),             // 60: notifier.client.v1.MessageTrimStatus
-	(*EventLogTrimStatus)(nil),            // 61: notifier.client.v1.EventLogTrimStatus
-	(*ProjectionStatus)(nil),              // 62: notifier.client.v1.ProjectionStatus
-	(*PeerOriginStatus)(nil),              // 63: notifier.client.v1.PeerOriginStatus
-	(*PeerStatus)(nil),                    // 64: notifier.client.v1.PeerStatus
+	(*GetUserMetadataRequest)(nil),        // 45: notifier.client.v1.GetUserMetadataRequest
+	(*UpsertUserMetadataRequest)(nil),     // 46: notifier.client.v1.UpsertUserMetadataRequest
+	(*DeleteUserMetadataRequest)(nil),     // 47: notifier.client.v1.DeleteUserMetadataRequest
+	(*ScanUserMetadataRequest)(nil),       // 48: notifier.client.v1.ScanUserMetadataRequest
+	(*GetUserMetadataResponse)(nil),       // 49: notifier.client.v1.GetUserMetadataResponse
+	(*UpsertUserMetadataResponse)(nil),    // 50: notifier.client.v1.UpsertUserMetadataResponse
+	(*DeleteUserMetadataResponse)(nil),    // 51: notifier.client.v1.DeleteUserMetadataResponse
+	(*ScanUserMetadataResponse)(nil),      // 52: notifier.client.v1.ScanUserMetadataResponse
+	(*ClusterNode)(nil),                   // 53: notifier.client.v1.ClusterNode
+	(*LoggedInUser)(nil),                  // 54: notifier.client.v1.LoggedInUser
+	(*SessionRef)(nil),                    // 55: notifier.client.v1.SessionRef
+	(*OnlineNodePresence)(nil),            // 56: notifier.client.v1.OnlineNodePresence
+	(*ResolvedSession)(nil),               // 57: notifier.client.v1.ResolvedSession
+	(*StringField)(nil),                   // 58: notifier.client.v1.StringField
+	(*BytesField)(nil),                    // 59: notifier.client.v1.BytesField
+	(*MessageCursor)(nil),                 // 60: notifier.client.v1.MessageCursor
+	(*UserRef)(nil),                       // 61: notifier.client.v1.UserRef
+	(*User)(nil),                          // 62: notifier.client.v1.User
+	(*Message)(nil),                       // 63: notifier.client.v1.Message
+	(*Packet)(nil),                        // 64: notifier.client.v1.Packet
+	(*Attachment)(nil),                    // 65: notifier.client.v1.Attachment
+	(*UserMetadata)(nil),                  // 66: notifier.client.v1.UserMetadata
+	(*Event)(nil),                         // 67: notifier.client.v1.Event
+	(*OperationsStatus)(nil),              // 68: notifier.client.v1.OperationsStatus
+	(*MessageTrimStatus)(nil),             // 69: notifier.client.v1.MessageTrimStatus
+	(*EventLogTrimStatus)(nil),            // 70: notifier.client.v1.EventLogTrimStatus
+	(*ProjectionStatus)(nil),              // 71: notifier.client.v1.ProjectionStatus
+	(*PeerOriginStatus)(nil),              // 72: notifier.client.v1.PeerOriginStatus
+	(*PeerStatus)(nil),                    // 73: notifier.client.v1.PeerStatus
 }
 var file_client_proto_depIdxs = []int32{
 	6,   // 0: notifier.client.v1.ClientEnvelope.login:type_name -> notifier.client.v1.LoginRequest
@@ -5290,95 +6078,113 @@ var file_client_proto_depIdxs = []int32{
 	39,  // 15: notifier.client.v1.ClientEnvelope.list_cluster_nodes:type_name -> notifier.client.v1.ListClusterNodesRequest
 	41,  // 16: notifier.client.v1.ClientEnvelope.list_node_logged_in_users:type_name -> notifier.client.v1.ListNodeLoggedInUsersRequest
 	43,  // 17: notifier.client.v1.ClientEnvelope.resolve_user_sessions:type_name -> notifier.client.v1.ResolveUserSessionsRequest
-	7,   // 18: notifier.client.v1.ServerEnvelope.login_response:type_name -> notifier.client.v1.LoginResponse
-	10,  // 19: notifier.client.v1.ServerEnvelope.message_pushed:type_name -> notifier.client.v1.MessagePushed
-	9,   // 20: notifier.client.v1.ServerEnvelope.send_message_response:type_name -> notifier.client.v1.SendMessageResponse
-	16,  // 21: notifier.client.v1.ServerEnvelope.error:type_name -> notifier.client.v1.Error
-	15,  // 22: notifier.client.v1.ServerEnvelope.pong:type_name -> notifier.client.v1.Pong
-	11,  // 23: notifier.client.v1.ServerEnvelope.packet_pushed:type_name -> notifier.client.v1.PacketPushed
-	28,  // 24: notifier.client.v1.ServerEnvelope.create_user_response:type_name -> notifier.client.v1.CreateUserResponse
-	29,  // 25: notifier.client.v1.ServerEnvelope.get_user_response:type_name -> notifier.client.v1.GetUserResponse
-	30,  // 26: notifier.client.v1.ServerEnvelope.update_user_response:type_name -> notifier.client.v1.UpdateUserResponse
-	31,  // 27: notifier.client.v1.ServerEnvelope.delete_user_response:type_name -> notifier.client.v1.DeleteUserResponse
-	32,  // 28: notifier.client.v1.ServerEnvelope.list_messages_response:type_name -> notifier.client.v1.ListMessagesResponse
-	33,  // 29: notifier.client.v1.ServerEnvelope.upsert_user_attachment_response:type_name -> notifier.client.v1.UpsertUserAttachmentResponse
-	34,  // 30: notifier.client.v1.ServerEnvelope.delete_user_attachment_response:type_name -> notifier.client.v1.DeleteUserAttachmentResponse
-	35,  // 31: notifier.client.v1.ServerEnvelope.list_user_attachments_response:type_name -> notifier.client.v1.ListUserAttachmentsResponse
-	36,  // 32: notifier.client.v1.ServerEnvelope.list_events_response:type_name -> notifier.client.v1.ListEventsResponse
-	37,  // 33: notifier.client.v1.ServerEnvelope.operations_status_response:type_name -> notifier.client.v1.OperationsStatusResponse
-	38,  // 34: notifier.client.v1.ServerEnvelope.metrics_response:type_name -> notifier.client.v1.MetricsResponse
-	40,  // 35: notifier.client.v1.ServerEnvelope.list_cluster_nodes_response:type_name -> notifier.client.v1.ListClusterNodesResponse
-	42,  // 36: notifier.client.v1.ServerEnvelope.list_node_logged_in_users_response:type_name -> notifier.client.v1.ListNodeLoggedInUsersResponse
-	44,  // 37: notifier.client.v1.ServerEnvelope.resolve_user_sessions_response:type_name -> notifier.client.v1.ResolveUserSessionsResponse
-	53,  // 38: notifier.client.v1.LoginRequest.user:type_name -> notifier.client.v1.UserRef
-	52,  // 39: notifier.client.v1.LoginRequest.seen_messages:type_name -> notifier.client.v1.MessageCursor
-	54,  // 40: notifier.client.v1.LoginResponse.user:type_name -> notifier.client.v1.User
-	47,  // 41: notifier.client.v1.LoginResponse.session_ref:type_name -> notifier.client.v1.SessionRef
-	53,  // 42: notifier.client.v1.SendMessageRequest.target:type_name -> notifier.client.v1.UserRef
-	0,   // 43: notifier.client.v1.SendMessageRequest.delivery_kind:type_name -> notifier.client.v1.ClientDeliveryKind
-	1,   // 44: notifier.client.v1.SendMessageRequest.delivery_mode:type_name -> notifier.client.v1.ClientDeliveryMode
-	2,   // 45: notifier.client.v1.SendMessageRequest.sync_mode:type_name -> notifier.client.v1.ClientMessageSyncMode
-	47,  // 46: notifier.client.v1.SendMessageRequest.target_session:type_name -> notifier.client.v1.SessionRef
-	55,  // 47: notifier.client.v1.SendMessageResponse.message:type_name -> notifier.client.v1.Message
-	12,  // 48: notifier.client.v1.SendMessageResponse.transient_accepted:type_name -> notifier.client.v1.TransientAccepted
-	55,  // 49: notifier.client.v1.MessagePushed.message:type_name -> notifier.client.v1.Message
-	56,  // 50: notifier.client.v1.PacketPushed.packet:type_name -> notifier.client.v1.Packet
-	53,  // 51: notifier.client.v1.TransientAccepted.recipient:type_name -> notifier.client.v1.UserRef
-	1,   // 52: notifier.client.v1.TransientAccepted.delivery_mode:type_name -> notifier.client.v1.ClientDeliveryMode
-	47,  // 53: notifier.client.v1.TransientAccepted.target_session:type_name -> notifier.client.v1.SessionRef
-	52,  // 54: notifier.client.v1.AckMessage.cursor:type_name -> notifier.client.v1.MessageCursor
-	53,  // 55: notifier.client.v1.GetUserRequest.user:type_name -> notifier.client.v1.UserRef
-	53,  // 56: notifier.client.v1.UpdateUserRequest.user:type_name -> notifier.client.v1.UserRef
-	50,  // 57: notifier.client.v1.UpdateUserRequest.username:type_name -> notifier.client.v1.StringField
-	50,  // 58: notifier.client.v1.UpdateUserRequest.password:type_name -> notifier.client.v1.StringField
-	51,  // 59: notifier.client.v1.UpdateUserRequest.profile_json:type_name -> notifier.client.v1.BytesField
-	50,  // 60: notifier.client.v1.UpdateUserRequest.role:type_name -> notifier.client.v1.StringField
-	53,  // 61: notifier.client.v1.DeleteUserRequest.user:type_name -> notifier.client.v1.UserRef
-	53,  // 62: notifier.client.v1.ListMessagesRequest.user:type_name -> notifier.client.v1.UserRef
-	53,  // 63: notifier.client.v1.UpsertUserAttachmentRequest.owner:type_name -> notifier.client.v1.UserRef
-	53,  // 64: notifier.client.v1.UpsertUserAttachmentRequest.subject:type_name -> notifier.client.v1.UserRef
-	3,   // 65: notifier.client.v1.UpsertUserAttachmentRequest.attachment_type:type_name -> notifier.client.v1.AttachmentType
-	53,  // 66: notifier.client.v1.DeleteUserAttachmentRequest.owner:type_name -> notifier.client.v1.UserRef
-	53,  // 67: notifier.client.v1.DeleteUserAttachmentRequest.subject:type_name -> notifier.client.v1.UserRef
-	3,   // 68: notifier.client.v1.DeleteUserAttachmentRequest.attachment_type:type_name -> notifier.client.v1.AttachmentType
-	53,  // 69: notifier.client.v1.ListUserAttachmentsRequest.owner:type_name -> notifier.client.v1.UserRef
-	3,   // 70: notifier.client.v1.ListUserAttachmentsRequest.attachment_type:type_name -> notifier.client.v1.AttachmentType
-	54,  // 71: notifier.client.v1.CreateUserResponse.user:type_name -> notifier.client.v1.User
-	54,  // 72: notifier.client.v1.GetUserResponse.user:type_name -> notifier.client.v1.User
-	54,  // 73: notifier.client.v1.UpdateUserResponse.user:type_name -> notifier.client.v1.User
-	53,  // 74: notifier.client.v1.DeleteUserResponse.user:type_name -> notifier.client.v1.UserRef
-	55,  // 75: notifier.client.v1.ListMessagesResponse.items:type_name -> notifier.client.v1.Message
-	57,  // 76: notifier.client.v1.UpsertUserAttachmentResponse.attachment:type_name -> notifier.client.v1.Attachment
-	57,  // 77: notifier.client.v1.DeleteUserAttachmentResponse.attachment:type_name -> notifier.client.v1.Attachment
-	57,  // 78: notifier.client.v1.ListUserAttachmentsResponse.items:type_name -> notifier.client.v1.Attachment
-	58,  // 79: notifier.client.v1.ListEventsResponse.items:type_name -> notifier.client.v1.Event
-	59,  // 80: notifier.client.v1.OperationsStatusResponse.status:type_name -> notifier.client.v1.OperationsStatus
-	45,  // 81: notifier.client.v1.ListClusterNodesResponse.items:type_name -> notifier.client.v1.ClusterNode
-	46,  // 82: notifier.client.v1.ListNodeLoggedInUsersResponse.items:type_name -> notifier.client.v1.LoggedInUser
-	53,  // 83: notifier.client.v1.ResolveUserSessionsRequest.user:type_name -> notifier.client.v1.UserRef
-	53,  // 84: notifier.client.v1.ResolveUserSessionsResponse.user:type_name -> notifier.client.v1.UserRef
-	48,  // 85: notifier.client.v1.ResolveUserSessionsResponse.presence:type_name -> notifier.client.v1.OnlineNodePresence
-	49,  // 86: notifier.client.v1.ResolveUserSessionsResponse.items:type_name -> notifier.client.v1.ResolvedSession
-	47,  // 87: notifier.client.v1.ResolvedSession.session:type_name -> notifier.client.v1.SessionRef
-	53,  // 88: notifier.client.v1.Message.recipient:type_name -> notifier.client.v1.UserRef
-	53,  // 89: notifier.client.v1.Message.sender:type_name -> notifier.client.v1.UserRef
-	53,  // 90: notifier.client.v1.Packet.recipient:type_name -> notifier.client.v1.UserRef
-	53,  // 91: notifier.client.v1.Packet.sender:type_name -> notifier.client.v1.UserRef
-	1,   // 92: notifier.client.v1.Packet.delivery_mode:type_name -> notifier.client.v1.ClientDeliveryMode
-	47,  // 93: notifier.client.v1.Packet.target_session:type_name -> notifier.client.v1.SessionRef
-	53,  // 94: notifier.client.v1.Attachment.owner:type_name -> notifier.client.v1.UserRef
-	53,  // 95: notifier.client.v1.Attachment.subject:type_name -> notifier.client.v1.UserRef
-	3,   // 96: notifier.client.v1.Attachment.attachment_type:type_name -> notifier.client.v1.AttachmentType
-	60,  // 97: notifier.client.v1.OperationsStatus.message_trim:type_name -> notifier.client.v1.MessageTrimStatus
-	62,  // 98: notifier.client.v1.OperationsStatus.projection:type_name -> notifier.client.v1.ProjectionStatus
-	64,  // 99: notifier.client.v1.OperationsStatus.peers:type_name -> notifier.client.v1.PeerStatus
-	61,  // 100: notifier.client.v1.OperationsStatus.event_log_trim:type_name -> notifier.client.v1.EventLogTrimStatus
-	63,  // 101: notifier.client.v1.PeerStatus.origins:type_name -> notifier.client.v1.PeerOriginStatus
-	102, // [102:102] is the sub-list for method output_type
-	102, // [102:102] is the sub-list for method input_type
-	102, // [102:102] is the sub-list for extension type_name
-	102, // [102:102] is the sub-list for extension extendee
-	0,   // [0:102] is the sub-list for field type_name
+	45,  // 18: notifier.client.v1.ClientEnvelope.get_user_metadata:type_name -> notifier.client.v1.GetUserMetadataRequest
+	46,  // 19: notifier.client.v1.ClientEnvelope.upsert_user_metadata:type_name -> notifier.client.v1.UpsertUserMetadataRequest
+	47,  // 20: notifier.client.v1.ClientEnvelope.delete_user_metadata:type_name -> notifier.client.v1.DeleteUserMetadataRequest
+	48,  // 21: notifier.client.v1.ClientEnvelope.scan_user_metadata:type_name -> notifier.client.v1.ScanUserMetadataRequest
+	7,   // 22: notifier.client.v1.ServerEnvelope.login_response:type_name -> notifier.client.v1.LoginResponse
+	10,  // 23: notifier.client.v1.ServerEnvelope.message_pushed:type_name -> notifier.client.v1.MessagePushed
+	9,   // 24: notifier.client.v1.ServerEnvelope.send_message_response:type_name -> notifier.client.v1.SendMessageResponse
+	16,  // 25: notifier.client.v1.ServerEnvelope.error:type_name -> notifier.client.v1.Error
+	15,  // 26: notifier.client.v1.ServerEnvelope.pong:type_name -> notifier.client.v1.Pong
+	11,  // 27: notifier.client.v1.ServerEnvelope.packet_pushed:type_name -> notifier.client.v1.PacketPushed
+	28,  // 28: notifier.client.v1.ServerEnvelope.create_user_response:type_name -> notifier.client.v1.CreateUserResponse
+	29,  // 29: notifier.client.v1.ServerEnvelope.get_user_response:type_name -> notifier.client.v1.GetUserResponse
+	30,  // 30: notifier.client.v1.ServerEnvelope.update_user_response:type_name -> notifier.client.v1.UpdateUserResponse
+	31,  // 31: notifier.client.v1.ServerEnvelope.delete_user_response:type_name -> notifier.client.v1.DeleteUserResponse
+	32,  // 32: notifier.client.v1.ServerEnvelope.list_messages_response:type_name -> notifier.client.v1.ListMessagesResponse
+	33,  // 33: notifier.client.v1.ServerEnvelope.upsert_user_attachment_response:type_name -> notifier.client.v1.UpsertUserAttachmentResponse
+	34,  // 34: notifier.client.v1.ServerEnvelope.delete_user_attachment_response:type_name -> notifier.client.v1.DeleteUserAttachmentResponse
+	35,  // 35: notifier.client.v1.ServerEnvelope.list_user_attachments_response:type_name -> notifier.client.v1.ListUserAttachmentsResponse
+	36,  // 36: notifier.client.v1.ServerEnvelope.list_events_response:type_name -> notifier.client.v1.ListEventsResponse
+	37,  // 37: notifier.client.v1.ServerEnvelope.operations_status_response:type_name -> notifier.client.v1.OperationsStatusResponse
+	38,  // 38: notifier.client.v1.ServerEnvelope.metrics_response:type_name -> notifier.client.v1.MetricsResponse
+	40,  // 39: notifier.client.v1.ServerEnvelope.list_cluster_nodes_response:type_name -> notifier.client.v1.ListClusterNodesResponse
+	42,  // 40: notifier.client.v1.ServerEnvelope.list_node_logged_in_users_response:type_name -> notifier.client.v1.ListNodeLoggedInUsersResponse
+	44,  // 41: notifier.client.v1.ServerEnvelope.resolve_user_sessions_response:type_name -> notifier.client.v1.ResolveUserSessionsResponse
+	49,  // 42: notifier.client.v1.ServerEnvelope.get_user_metadata_response:type_name -> notifier.client.v1.GetUserMetadataResponse
+	50,  // 43: notifier.client.v1.ServerEnvelope.upsert_user_metadata_response:type_name -> notifier.client.v1.UpsertUserMetadataResponse
+	51,  // 44: notifier.client.v1.ServerEnvelope.delete_user_metadata_response:type_name -> notifier.client.v1.DeleteUserMetadataResponse
+	52,  // 45: notifier.client.v1.ServerEnvelope.scan_user_metadata_response:type_name -> notifier.client.v1.ScanUserMetadataResponse
+	61,  // 46: notifier.client.v1.LoginRequest.user:type_name -> notifier.client.v1.UserRef
+	60,  // 47: notifier.client.v1.LoginRequest.seen_messages:type_name -> notifier.client.v1.MessageCursor
+	62,  // 48: notifier.client.v1.LoginResponse.user:type_name -> notifier.client.v1.User
+	55,  // 49: notifier.client.v1.LoginResponse.session_ref:type_name -> notifier.client.v1.SessionRef
+	61,  // 50: notifier.client.v1.SendMessageRequest.target:type_name -> notifier.client.v1.UserRef
+	0,   // 51: notifier.client.v1.SendMessageRequest.delivery_kind:type_name -> notifier.client.v1.ClientDeliveryKind
+	1,   // 52: notifier.client.v1.SendMessageRequest.delivery_mode:type_name -> notifier.client.v1.ClientDeliveryMode
+	2,   // 53: notifier.client.v1.SendMessageRequest.sync_mode:type_name -> notifier.client.v1.ClientMessageSyncMode
+	55,  // 54: notifier.client.v1.SendMessageRequest.target_session:type_name -> notifier.client.v1.SessionRef
+	63,  // 55: notifier.client.v1.SendMessageResponse.message:type_name -> notifier.client.v1.Message
+	12,  // 56: notifier.client.v1.SendMessageResponse.transient_accepted:type_name -> notifier.client.v1.TransientAccepted
+	63,  // 57: notifier.client.v1.MessagePushed.message:type_name -> notifier.client.v1.Message
+	64,  // 58: notifier.client.v1.PacketPushed.packet:type_name -> notifier.client.v1.Packet
+	61,  // 59: notifier.client.v1.TransientAccepted.recipient:type_name -> notifier.client.v1.UserRef
+	1,   // 60: notifier.client.v1.TransientAccepted.delivery_mode:type_name -> notifier.client.v1.ClientDeliveryMode
+	55,  // 61: notifier.client.v1.TransientAccepted.target_session:type_name -> notifier.client.v1.SessionRef
+	60,  // 62: notifier.client.v1.AckMessage.cursor:type_name -> notifier.client.v1.MessageCursor
+	61,  // 63: notifier.client.v1.GetUserRequest.user:type_name -> notifier.client.v1.UserRef
+	61,  // 64: notifier.client.v1.UpdateUserRequest.user:type_name -> notifier.client.v1.UserRef
+	58,  // 65: notifier.client.v1.UpdateUserRequest.username:type_name -> notifier.client.v1.StringField
+	58,  // 66: notifier.client.v1.UpdateUserRequest.password:type_name -> notifier.client.v1.StringField
+	59,  // 67: notifier.client.v1.UpdateUserRequest.profile_json:type_name -> notifier.client.v1.BytesField
+	58,  // 68: notifier.client.v1.UpdateUserRequest.role:type_name -> notifier.client.v1.StringField
+	61,  // 69: notifier.client.v1.DeleteUserRequest.user:type_name -> notifier.client.v1.UserRef
+	61,  // 70: notifier.client.v1.ListMessagesRequest.user:type_name -> notifier.client.v1.UserRef
+	61,  // 71: notifier.client.v1.UpsertUserAttachmentRequest.owner:type_name -> notifier.client.v1.UserRef
+	61,  // 72: notifier.client.v1.UpsertUserAttachmentRequest.subject:type_name -> notifier.client.v1.UserRef
+	3,   // 73: notifier.client.v1.UpsertUserAttachmentRequest.attachment_type:type_name -> notifier.client.v1.AttachmentType
+	61,  // 74: notifier.client.v1.DeleteUserAttachmentRequest.owner:type_name -> notifier.client.v1.UserRef
+	61,  // 75: notifier.client.v1.DeleteUserAttachmentRequest.subject:type_name -> notifier.client.v1.UserRef
+	3,   // 76: notifier.client.v1.DeleteUserAttachmentRequest.attachment_type:type_name -> notifier.client.v1.AttachmentType
+	61,  // 77: notifier.client.v1.ListUserAttachmentsRequest.owner:type_name -> notifier.client.v1.UserRef
+	3,   // 78: notifier.client.v1.ListUserAttachmentsRequest.attachment_type:type_name -> notifier.client.v1.AttachmentType
+	62,  // 79: notifier.client.v1.CreateUserResponse.user:type_name -> notifier.client.v1.User
+	62,  // 80: notifier.client.v1.GetUserResponse.user:type_name -> notifier.client.v1.User
+	62,  // 81: notifier.client.v1.UpdateUserResponse.user:type_name -> notifier.client.v1.User
+	61,  // 82: notifier.client.v1.DeleteUserResponse.user:type_name -> notifier.client.v1.UserRef
+	63,  // 83: notifier.client.v1.ListMessagesResponse.items:type_name -> notifier.client.v1.Message
+	65,  // 84: notifier.client.v1.UpsertUserAttachmentResponse.attachment:type_name -> notifier.client.v1.Attachment
+	65,  // 85: notifier.client.v1.DeleteUserAttachmentResponse.attachment:type_name -> notifier.client.v1.Attachment
+	65,  // 86: notifier.client.v1.ListUserAttachmentsResponse.items:type_name -> notifier.client.v1.Attachment
+	67,  // 87: notifier.client.v1.ListEventsResponse.items:type_name -> notifier.client.v1.Event
+	68,  // 88: notifier.client.v1.OperationsStatusResponse.status:type_name -> notifier.client.v1.OperationsStatus
+	53,  // 89: notifier.client.v1.ListClusterNodesResponse.items:type_name -> notifier.client.v1.ClusterNode
+	54,  // 90: notifier.client.v1.ListNodeLoggedInUsersResponse.items:type_name -> notifier.client.v1.LoggedInUser
+	61,  // 91: notifier.client.v1.ResolveUserSessionsRequest.user:type_name -> notifier.client.v1.UserRef
+	61,  // 92: notifier.client.v1.ResolveUserSessionsResponse.user:type_name -> notifier.client.v1.UserRef
+	56,  // 93: notifier.client.v1.ResolveUserSessionsResponse.presence:type_name -> notifier.client.v1.OnlineNodePresence
+	57,  // 94: notifier.client.v1.ResolveUserSessionsResponse.items:type_name -> notifier.client.v1.ResolvedSession
+	61,  // 95: notifier.client.v1.GetUserMetadataRequest.owner:type_name -> notifier.client.v1.UserRef
+	61,  // 96: notifier.client.v1.UpsertUserMetadataRequest.owner:type_name -> notifier.client.v1.UserRef
+	58,  // 97: notifier.client.v1.UpsertUserMetadataRequest.expires_at:type_name -> notifier.client.v1.StringField
+	61,  // 98: notifier.client.v1.DeleteUserMetadataRequest.owner:type_name -> notifier.client.v1.UserRef
+	61,  // 99: notifier.client.v1.ScanUserMetadataRequest.owner:type_name -> notifier.client.v1.UserRef
+	66,  // 100: notifier.client.v1.GetUserMetadataResponse.metadata:type_name -> notifier.client.v1.UserMetadata
+	66,  // 101: notifier.client.v1.UpsertUserMetadataResponse.metadata:type_name -> notifier.client.v1.UserMetadata
+	66,  // 102: notifier.client.v1.DeleteUserMetadataResponse.metadata:type_name -> notifier.client.v1.UserMetadata
+	66,  // 103: notifier.client.v1.ScanUserMetadataResponse.items:type_name -> notifier.client.v1.UserMetadata
+	55,  // 104: notifier.client.v1.ResolvedSession.session:type_name -> notifier.client.v1.SessionRef
+	61,  // 105: notifier.client.v1.Message.recipient:type_name -> notifier.client.v1.UserRef
+	61,  // 106: notifier.client.v1.Message.sender:type_name -> notifier.client.v1.UserRef
+	61,  // 107: notifier.client.v1.Packet.recipient:type_name -> notifier.client.v1.UserRef
+	61,  // 108: notifier.client.v1.Packet.sender:type_name -> notifier.client.v1.UserRef
+	1,   // 109: notifier.client.v1.Packet.delivery_mode:type_name -> notifier.client.v1.ClientDeliveryMode
+	55,  // 110: notifier.client.v1.Packet.target_session:type_name -> notifier.client.v1.SessionRef
+	61,  // 111: notifier.client.v1.Attachment.owner:type_name -> notifier.client.v1.UserRef
+	61,  // 112: notifier.client.v1.Attachment.subject:type_name -> notifier.client.v1.UserRef
+	3,   // 113: notifier.client.v1.Attachment.attachment_type:type_name -> notifier.client.v1.AttachmentType
+	61,  // 114: notifier.client.v1.UserMetadata.owner:type_name -> notifier.client.v1.UserRef
+	69,  // 115: notifier.client.v1.OperationsStatus.message_trim:type_name -> notifier.client.v1.MessageTrimStatus
+	71,  // 116: notifier.client.v1.OperationsStatus.projection:type_name -> notifier.client.v1.ProjectionStatus
+	73,  // 117: notifier.client.v1.OperationsStatus.peers:type_name -> notifier.client.v1.PeerStatus
+	70,  // 118: notifier.client.v1.OperationsStatus.event_log_trim:type_name -> notifier.client.v1.EventLogTrimStatus
+	72,  // 119: notifier.client.v1.PeerStatus.origins:type_name -> notifier.client.v1.PeerOriginStatus
+	120, // [120:120] is the sub-list for method output_type
+	120, // [120:120] is the sub-list for method input_type
+	120, // [120:120] is the sub-list for extension type_name
+	120, // [120:120] is the sub-list for extension extendee
+	0,   // [0:120] is the sub-list for field type_name
 }
 
 func init() { file_client_proto_init() }
@@ -5405,6 +6211,10 @@ func file_client_proto_init() {
 		(*ClientEnvelope_ListClusterNodes)(nil),
 		(*ClientEnvelope_ListNodeLoggedInUsers)(nil),
 		(*ClientEnvelope_ResolveUserSessions)(nil),
+		(*ClientEnvelope_GetUserMetadata)(nil),
+		(*ClientEnvelope_UpsertUserMetadata)(nil),
+		(*ClientEnvelope_DeleteUserMetadata)(nil),
+		(*ClientEnvelope_ScanUserMetadata)(nil),
 	}
 	file_client_proto_msgTypes[1].OneofWrappers = []any{
 		(*ServerEnvelope_LoginResponse)(nil),
@@ -5427,6 +6237,10 @@ func file_client_proto_init() {
 		(*ServerEnvelope_ListClusterNodesResponse)(nil),
 		(*ServerEnvelope_ListNodeLoggedInUsersResponse)(nil),
 		(*ServerEnvelope_ResolveUserSessionsResponse)(nil),
+		(*ServerEnvelope_GetUserMetadataResponse)(nil),
+		(*ServerEnvelope_UpsertUserMetadataResponse)(nil),
+		(*ServerEnvelope_DeleteUserMetadataResponse)(nil),
+		(*ServerEnvelope_ScanUserMetadataResponse)(nil),
 	}
 	file_client_proto_msgTypes[5].OneofWrappers = []any{
 		(*SendMessageResponse_Message)(nil),
@@ -5438,7 +6252,7 @@ func file_client_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_client_proto_rawDesc), len(file_client_proto_rawDesc)),
 			NumEnums:      4,
-			NumMessages:   61,
+			NumMessages:   70,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

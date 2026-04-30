@@ -442,6 +442,36 @@ func (s *Service) ListUserAttachments(ctx context.Context, owner store.UserKey, 
 	return s.store.ListUserAttachments(ctx, owner, attachmentType)
 }
 
+func (s *Service) UpsertUserMetadata(ctx context.Context, params store.UpsertUserMetadataParams) (store.UserMetadata, store.Event, error) {
+	if err := s.allowWrite(ctx); err != nil {
+		return store.UserMetadata{}, store.Event{}, err
+	}
+	metadata, event, err := s.store.UpsertUserMetadata(ctx, params)
+	if err == nil {
+		s.eventSink.Publish(event)
+	}
+	return metadata, event, err
+}
+
+func (s *Service) GetUserMetadata(ctx context.Context, owner store.UserKey, key string) (store.UserMetadata, error) {
+	return s.store.GetUserMetadata(ctx, owner, key)
+}
+
+func (s *Service) DeleteUserMetadata(ctx context.Context, params store.DeleteUserMetadataParams) (store.UserMetadata, store.Event, error) {
+	if err := s.allowWrite(ctx); err != nil {
+		return store.UserMetadata{}, store.Event{}, err
+	}
+	metadata, event, err := s.store.DeleteUserMetadata(ctx, params)
+	if err == nil {
+		s.eventSink.Publish(event)
+	}
+	return metadata, event, err
+}
+
+func (s *Service) ScanUserMetadata(ctx context.Context, params store.ScanUserMetadataParams) (store.UserMetadataScanResult, error) {
+	return s.store.ScanUserMetadata(ctx, params)
+}
+
 func (s *Service) IsChannelManager(ctx context.Context, channel, subject store.UserKey) (bool, error) {
 	return s.store.IsChannelManager(ctx, channel, subject)
 }

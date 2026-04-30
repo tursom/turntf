@@ -124,6 +124,68 @@ func (s *clientWSSession) readLoop(ctx context.Context) error {
 			if err := s.handleListMessages(ctx, body.ListMessages); err != nil {
 				return err
 			}
+		case *internalproto.ClientEnvelope_GetUserMetadata:
+			if s.realtimeOnly {
+				if err := s.writeError("invalid_request", "realtime stream does not support get_user_metadata", requestIDForClientEnvelopeBody(body)); err != nil {
+					return err
+				}
+				continue
+			}
+			s.logRequest("get_user_metadata", requestIDForClientEnvelopeBody(body)).
+				Int64("owner_node_id", body.GetUserMetadata.GetOwner().GetNodeId()).
+				Int64("owner_user_id", body.GetUserMetadata.GetOwner().GetUserId()).
+				Str("key", body.GetUserMetadata.GetKey()).
+				Msg("client transport request")
+			if err := s.handleGetUserMetadata(ctx, body.GetUserMetadata); err != nil {
+				return err
+			}
+		case *internalproto.ClientEnvelope_UpsertUserMetadata:
+			if s.realtimeOnly {
+				if err := s.writeError("invalid_request", "realtime stream does not support upsert_user_metadata", requestIDForClientEnvelopeBody(body)); err != nil {
+					return err
+				}
+				continue
+			}
+			s.logRequest("upsert_user_metadata", requestIDForClientEnvelopeBody(body)).
+				Int64("owner_node_id", body.UpsertUserMetadata.GetOwner().GetNodeId()).
+				Int64("owner_user_id", body.UpsertUserMetadata.GetOwner().GetUserId()).
+				Str("key", body.UpsertUserMetadata.GetKey()).
+				Msg("client transport request")
+			if err := s.handleUpsertUserMetadata(ctx, body.UpsertUserMetadata); err != nil {
+				return err
+			}
+		case *internalproto.ClientEnvelope_DeleteUserMetadata:
+			if s.realtimeOnly {
+				if err := s.writeError("invalid_request", "realtime stream does not support delete_user_metadata", requestIDForClientEnvelopeBody(body)); err != nil {
+					return err
+				}
+				continue
+			}
+			s.logRequest("delete_user_metadata", requestIDForClientEnvelopeBody(body)).
+				Int64("owner_node_id", body.DeleteUserMetadata.GetOwner().GetNodeId()).
+				Int64("owner_user_id", body.DeleteUserMetadata.GetOwner().GetUserId()).
+				Str("key", body.DeleteUserMetadata.GetKey()).
+				Msg("client transport request")
+			if err := s.handleDeleteUserMetadata(ctx, body.DeleteUserMetadata); err != nil {
+				return err
+			}
+		case *internalproto.ClientEnvelope_ScanUserMetadata:
+			if s.realtimeOnly {
+				if err := s.writeError("invalid_request", "realtime stream does not support scan_user_metadata", requestIDForClientEnvelopeBody(body)); err != nil {
+					return err
+				}
+				continue
+			}
+			s.logRequest("scan_user_metadata", requestIDForClientEnvelopeBody(body)).
+				Int64("owner_node_id", body.ScanUserMetadata.GetOwner().GetNodeId()).
+				Int64("owner_user_id", body.ScanUserMetadata.GetOwner().GetUserId()).
+				Str("prefix", body.ScanUserMetadata.GetPrefix()).
+				Str("after", body.ScanUserMetadata.GetAfter()).
+				Int32("limit", body.ScanUserMetadata.GetLimit()).
+				Msg("client transport request")
+			if err := s.handleScanUserMetadata(ctx, body.ScanUserMetadata); err != nil {
+				return err
+			}
 		case *internalproto.ClientEnvelope_UpsertUserAttachment:
 			if s.realtimeOnly {
 				if err := s.writeError("invalid_request", "realtime stream does not support upsert_user_attachment", requestIDForClientEnvelopeBody(body)); err != nil {
@@ -283,6 +345,14 @@ func requestIDForClientEnvelopeBody(body any) uint64 {
 		return req.DeleteUser.GetRequestId()
 	case *internalproto.ClientEnvelope_ListMessages:
 		return req.ListMessages.GetRequestId()
+	case *internalproto.ClientEnvelope_GetUserMetadata:
+		return req.GetUserMetadata.GetRequestId()
+	case *internalproto.ClientEnvelope_UpsertUserMetadata:
+		return req.UpsertUserMetadata.GetRequestId()
+	case *internalproto.ClientEnvelope_DeleteUserMetadata:
+		return req.DeleteUserMetadata.GetRequestId()
+	case *internalproto.ClientEnvelope_ScanUserMetadata:
+		return req.ScanUserMetadata.GetRequestId()
 	case *internalproto.ClientEnvelope_UpsertUserAttachment:
 		return req.UpsertUserAttachment.GetRequestId()
 	case *internalproto.ClientEnvelope_DeleteUserAttachment:

@@ -301,6 +301,7 @@ func TestHandleEventBatchTruncatedResponseRequestsSnapshotRepairAndAdvancesCurso
 
 	assertSnapshotRequest(t, sess, store.SnapshotUsersPartition)
 	assertSnapshotRequest(t, sess, store.SnapshotAttachmentsPartition)
+	assertSnapshotRequest(t, sess, store.SnapshotUserMetadataPartition)
 	assertSnapshotRequest(t, sess, store.MessageSnapshotPartition(testNodeID(1)))
 	select {
 	case envelope := <-sess.send:
@@ -362,6 +363,7 @@ func TestHandleEventBatchTruncatedResponseSkipsMessageSnapshotForWindowMismatch(
 
 	assertSnapshotRequest(t, sess, store.SnapshotUsersPartition)
 	assertSnapshotRequest(t, sess, store.SnapshotAttachmentsPartition)
+	assertSnapshotRequest(t, sess, store.SnapshotUserMetadataPartition)
 	select {
 	case envelope := <-sess.send:
 		t.Fatalf("unexpected message snapshot request for mismatched windows: %+v", envelope)

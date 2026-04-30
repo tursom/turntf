@@ -196,10 +196,52 @@ docker run --rm -p 8080:8080 \
   turntf
 ```
 
-或者使用 Compose：
+或者使用 Compose（项目根目录已包含 [docker-compose.yml](/root/dev/sys/turntf/docker-compose.yml)）：
+
+```yaml
+# docker-compose.yml
+services:
+  turntf:
+    build:
+      context: .
+    image: turntf:local
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./config.toml:/app/config.toml:ro
+      - ./data:/app/data
+    restart: unless-stopped
+```
 
 ```bash
-docker compose up --build
+# 本地构建并后台启动
+docker compose up -d --build
+
+# 查看日志
+docker compose logs -f
+
+# 停止
+docker compose down
+```
+
+如果不想本地构建，也可以直接使用预构建镜像：
+
+```bash
+docker pull ghcr.io/tursom/turntf:latest
+```
+
+然后修改 `docker-compose.yml` 使用远程镜像：
+
+```yaml
+services:
+  turntf:
+    image: ghcr.io/tursom/turntf:latest
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./config.toml:/app/config.toml:ro
+      - ./data:/app/data
+    restart: unless-stopped
 ```
 
 ## GitHub Container Registry

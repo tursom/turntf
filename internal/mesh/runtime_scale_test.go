@@ -45,11 +45,14 @@ func TestRuntimeDiamondReRoutesAfterNextHopFailure(t *testing.T) {
 	adapterD.accept <- connDC
 
 	waitForNodes(t, runtimeA, []int64{1, 2, 3, 4}, 5*time.Second)
+	waitForEstablishedLink(t, runtimeA, 2, 4, 10*time.Second)
+	waitForEstablishedLink(t, runtimeA, 3, 4, 10*time.Second)
 	waitForRouteNextHop(t, runtimeA, 4, 2, 5*time.Second)
 
 	if err := connBD.Close(); err != nil {
 		t.Fatalf("close B-D conn: %v", err)
 	}
+	waitForLinkRemoval(t, runtimeA, 2, 4, 10*time.Second)
 	waitForRouteNextHop(t, runtimeA, 4, 3, 5*time.Second)
 }
 
@@ -108,4 +111,32 @@ func waitForRouteNextHop(t *testing.T, runtime *Runtime, destinationNodeID, next
 	}
 	decision, ok := runtime.DescribeRoute(destinationNodeID, TrafficControlCritical)
 	t.Fatalf("timed out waiting for next hop %d to %d; ok=%v decision=%+v", nextHopNodeID, destinationNodeID, ok, decision)
+}
+
+func waitForEstablishedLink(t *testing.T, runtime *Runtime, fromNodeID, toNodeID int64, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		snapshot := runtime.store.Snapshot()
+		if hasLink(snapshot, fromNodeID, toNodeID) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	snapshot := runtime.store.Snapshot()
+	t.Fatalf("timed out waiting for established link %d -> %d; links=%v", fromNodeID, toNodeID, snapshot.Links)
+}
+
+func waitForLinkRemoval(t *testing.T, runtime *Runtime, fromNodeID, toNodeID int64, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		snapshot := runtime.store.Snapshot()
+		if !hasLink(snapshot, fromNodeID, toNodeID) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	snapshot := runtime.store.Snapshot()
+	t.Fatalf("timed out waiting for link removal %d -> %d; links=%v", fromNodeID, toNodeID, snapshot.Links)
 }

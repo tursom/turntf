@@ -70,8 +70,6 @@ jobs:
   smoke:
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    env:
-      GOCACHE: ${{ runner.temp }}/go-build-cache
 
     steps:
       - name: Checkout repository
@@ -84,10 +82,14 @@ jobs:
           cache: true
 
       - name: Build smoke binary
-        run: go build -trimpath -o "${RUNNER_TEMP}/turntf" ./cmd/turntf
+        run: |
+          export GOCACHE="${RUNNER_TEMP}/go-build-cache"
+          go build -trimpath -o "${RUNNER_TEMP}/turntf" ./cmd/turntf
 
       - name: Run smoke flow
-        run: ./scripts/smoke.sh "${RUNNER_TEMP}/turntf"
+        run: |
+          export GOCACHE="${RUNNER_TEMP}/go-build-cache"
+          ./scripts/smoke.sh "${RUNNER_TEMP}/turntf"
 
   build:
     needs:
@@ -143,15 +145,15 @@ jobs:
 
       - name: Export image digest
         run: |
-          mkdir -p "${RUNNER_TEMP}/digests"
+          mkdir -p digests
           digest="${{ steps.build.outputs.digest }}"
-          touch "${RUNNER_TEMP}/digests/${digest#sha256:}"
+          touch "digests/${digest#sha256:}"
 
       - name: Upload image digest
         uses: actions/upload-artifact@v4
         with:
           name: digests-${{ matrix.artifact_suffix }}
-          path: ${{ runner.temp }}/digests/*
+          path: digests/*
           if-no-files-found: error
           retention-days: 1
 
@@ -175,7 +177,7 @@ jobs:
       - name: Download image digests
         uses: actions/download-artifact@v4
         with:
-          path: ${{ runner.temp }}/digests
+          path: digests
           pattern: digests-*
           merge-multiple: true
 
@@ -196,7 +198,7 @@ jobs:
           done
 
           digest_refs=()
-          for digest_path in "${RUNNER_TEMP}/digests"/*; do
+          for digest_path in digests/*; do
             digest_refs+=("${IMAGE_NAME}@sha256:$(basename "${digest_path}")")
           done
 

@@ -36,8 +36,6 @@ jobs:
   smoke:
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    env:
-      GOCACHE: ${{ runner.temp }}/go-build-cache
 
     steps:
       - name: Checkout repository
@@ -50,7 +48,11 @@ jobs:
           cache: true
 
       - name: Build smoke binary
-        run: go build -trimpath -o "${RUNNER_TEMP}/turntf" ./cmd/turntf
+        run: |
+          export GOCACHE="${RUNNER_TEMP}/go-build-cache"
+          go build -trimpath -o "${RUNNER_TEMP}/turntf" ./cmd/turntf
 
       - name: Run smoke flow
-        run: ./scripts/smoke.sh "${RUNNER_TEMP}/turntf"
+        run: |
+          export GOCACHE="${RUNNER_TEMP}/go-build-cache"
+          ./scripts/smoke.sh "${RUNNER_TEMP}/turntf"

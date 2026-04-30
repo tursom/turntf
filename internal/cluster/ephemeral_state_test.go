@@ -1,6 +1,8 @@
 package cluster
 
 import (
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -243,5 +245,52 @@ func TestManagerConnectivityRumorDoesNotCreateSuspicionWhenDirectAdjacencyExists
 	defer mgr.mu.Unlock()
 	if len(mgr.disconnectSuspicions) != 0 {
 		t.Fatalf("expected rumor to be ignored locally while direct adjacency still exists, got %+v", mgr.disconnectSuspicions)
+	}
+}
+
+func TestLogMeshForwardFailureUsesDebugForNoRoute(t *testing.T) {
+	t.Parallel()
+
+	mgr := newHandshakeTestManager(t)
+	logOutput := captureClusterLogs(t)
+	sess := &session{
+		manager:      mgr,
+		conn:         testLegacyTransportConn{},
+		peerID:       testNodeID(2),
+		connectionID: 7,
+	}
+
+	mgr.logMeshForwardFailure("mesh_connectivity_rumor_forward_failed", sess, mesh.ErrNoRoute, "failed to forward connectivity rumor over mesh")
+	output := logOutput.String()
+	if !strings.Contains(output, `"level":"debug"`) {
+		t.Fatalf("expected debug log for no-route forward failure, got %q", output)
+	}
+	if strings.Contains(output, `"level":"warn"`) {
+		t.Fatalf("did not expect warn log for no-route forward failure, got %q", output)
+	}
+	if !strings.Contains(output, `"event":"mesh_connectivity_rumor_forward_failed"`) {
+		t.Fatalf("expected event name in log, got %q", output)
+	}
+}
+
+func TestLogMeshForwardFailureUsesWarnForUnexpectedError(t *testing.T) {
+	t.Parallel()
+
+	mgr := newHandshakeTestManager(t)
+	logOutput := captureClusterLogs(t)
+	sess := &session{
+		manager:      mgr,
+		conn:         testLegacyTransportConn{},
+		peerID:       testNodeID(2),
+		connectionID: 8,
+	}
+
+	mgr.logMeshForwardFailure("mesh_connectivity_rumor_forward_failed", sess, errors.New("boom"), "failed to forward connectivity rumor over mesh")
+	output := logOutput.String()
+	if !strings.Contains(output, `"level":"warn"`) {
+		t.Fatalf("expected warn log for non-route forward failure, got %q", output)
+	}
+	if !strings.Contains(output, `"event":"mesh_connectivity_rumor_forward_failed"`) {
+		t.Fatalf("expected event name in log, got %q", output)
 	}
 }

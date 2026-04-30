@@ -349,8 +349,7 @@ func (m *Manager) sendOnlinePresence(sess *session, snapshot *internalproto.Onli
 		return
 	}
 	if err := m.routeMeshPresenceUpdate(context.Background(), sess.peerID, snapshot); err != nil {
-		m.logSessionWarn("mesh_online_presence_forward_failed", sess, err).
-			Msg("failed to forward online presence snapshot over mesh")
+		m.logMeshForwardFailure("mesh_online_presence_forward_failed", sess, err, "failed to forward online presence snapshot over mesh")
 		if errors.Is(err, mesh.ErrNoRoute) {
 			m.retryOnlinePresenceForward(sess.peerID, snapshot)
 		}

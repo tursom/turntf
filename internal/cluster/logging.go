@@ -1,9 +1,12 @@
 package cluster
 
 import (
+	"errors"
+
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 
+	"github.com/tursom/turntf/internal/mesh"
 	"github.com/tursom/turntf/internal/store"
 )
 
@@ -54,6 +57,20 @@ func (m *Manager) logSessionDebug(event string, sess *session) *zerolog.Event {
 		return e
 	}
 	return addSessionLogFields(e, sess)
+}
+
+func (m *Manager) logMeshForwardFailure(event string, sess *session, err error, message string) {
+	if err == nil {
+		return
+	}
+	if errors.Is(err, mesh.ErrNoRoute) {
+		m.logSessionDebug(event, sess).
+			Err(err).
+			Msg(message)
+		return
+	}
+	m.logSessionWarn(event, sess, err).
+		Msg(message)
 }
 
 func addSessionLogFields(e *zerolog.Event, sess *session) *zerolog.Event {

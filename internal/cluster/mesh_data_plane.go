@@ -118,8 +118,7 @@ func (m *Manager) sendConnectivityRumor(sess *session, rumor *internalproto.Node
 		return
 	}
 	if err := m.routeMeshConnectivityRumor(context.Background(), sess.peerID, rumor); err != nil {
-		m.logSessionWarn("mesh_connectivity_rumor_forward_failed", sess, err).
-			Msg("failed to forward connectivity rumor over mesh")
+		m.logMeshForwardFailure("mesh_connectivity_rumor_forward_failed", sess, err, "failed to forward connectivity rumor over mesh")
 	}
 }
 

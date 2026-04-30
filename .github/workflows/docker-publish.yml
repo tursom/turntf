@@ -96,29 +96,23 @@ jobs:
       - prepare
       - go-test
       - smoke
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - platform: linux/amd64
+            runner: ubuntu-24.04
             platform_id: linux-amd64
             artifact_suffix: amd64
-            setup_qemu: false
           - platform: linux/arm64
+            runner: ubuntu-24.04-arm
             platform_id: linux-arm64
             artifact_suffix: arm64
-            setup_qemu: true
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-
-      - name: Set up QEMU
-        if: ${{ matrix.setup_qemu }}
-        uses: docker/setup-qemu-action@v3
-        with:
-          platforms: arm64
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3

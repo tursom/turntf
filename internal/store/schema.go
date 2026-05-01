@@ -79,6 +79,17 @@ CREATE TABLE IF NOT EXISTS user_metadata (
     PRIMARY KEY(owner_node_id, owner_user_id, key)
 );
 
+CREATE TABLE IF NOT EXISTS user_login_names (
+    login_name TEXT NOT NULL,
+    user_node_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    bound_at_hlc TEXT NOT NULL,
+    deleted_at_hlc TEXT,
+    origin_node_id INTEGER NOT NULL,
+    FOREIGN KEY(user_node_id, user_id) REFERENCES users(node_id, user_id),
+    PRIMARY KEY(login_name)
+);
+
 CREATE TABLE IF NOT EXISTS event_log (
     sequence INTEGER PRIMARY KEY AUTOINCREMENT,
     event_id INTEGER NOT NULL,
@@ -194,6 +205,8 @@ CREATE INDEX IF NOT EXISTS idx_messages_node ON messages(node_id, user_node_id, 
 CREATE INDEX IF NOT EXISTS idx_user_attachments_owner_type ON user_attachments(owner_node_id, owner_user_id, attachment_type, deleted_at_hlc);
 CREATE INDEX IF NOT EXISTS idx_user_attachments_subject_type ON user_attachments(subject_node_id, subject_user_id, attachment_type, deleted_at_hlc);
 CREATE INDEX IF NOT EXISTS idx_user_metadata_owner_key ON user_metadata(owner_node_id, owner_user_id, key, deleted_at_hlc, expires_at);
+CREATE INDEX IF NOT EXISTS idx_user_login_names_user_deleted ON user_login_names(user_node_id, user_id, deleted_at_hlc, bound_at_hlc DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_user_login_names_active_user ON user_login_names(user_node_id, user_id) WHERE deleted_at_hlc IS NULL;
 CREATE INDEX IF NOT EXISTS idx_event_log_origin_event ON event_log(origin_node_id, event_id);
 CREATE INDEX IF NOT EXISTS idx_pending_projections_failed ON pending_projections(last_failed_at_hlc, origin_node_id, event_id);
 CREATE INDEX IF NOT EXISTS idx_discovered_peers_url ON discovered_peers(url);
@@ -292,7 +305,7 @@ WHERE key = 'schema_version'
 	}
 
 	version := strings.TrimSpace(raw)
-	if version == "" || version == defaultSchemaVersion {
+	if version == "" || version == previousSchemaVersion || version == defaultSchemaVersion {
 		return nil
 	}
 	return fmt.Errorf("unsupported schema version %q: rebuild the database with schema version %s", version, defaultSchemaVersion)

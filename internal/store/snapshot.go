@@ -19,6 +19,7 @@ import (
 
 const (
 	SnapshotUsersPartition          = "users/full"
+	SnapshotLoginNamesPartition     = "login_names/full"
 	SnapshotAttachmentsPartition    = "attachments/full"
 	SnapshotUserMetadataPartition   = "user_metadata/full"
 	SnapshotMessagesPrefix          = "messages/"
@@ -26,6 +27,7 @@ const (
 	snapshotPartitionKindMessage    = clusterproto.SnapshotPartitionKind_SNAPSHOT_PARTITION_KIND_MESSAGES
 	snapshotPartitionKindAttachment = clusterproto.SnapshotPartitionKind_SNAPSHOT_PARTITION_KIND_ATTACHMENTS
 	snapshotPartitionKindMetadata   = clusterproto.SnapshotPartitionKind_SNAPSHOT_PARTITION_KIND_USER_METADATA
+	snapshotPartitionKindLoginNames = clusterproto.SnapshotPartitionKind_SNAPSHOT_PARTITION_KIND_LOGIN_NAMES
 )
 
 func MessageSnapshotPartition(originNodeID int64) string {
@@ -48,6 +50,21 @@ func (s *Store) BuildSnapshotDigest(ctx context.Context, producerNodeIDs []int64
 		Kind:      snapshotPartitionKindUsers,
 		RowCount:  uint64(len(userRows)),
 		Hash:      userHash,
+	})
+
+	loginNameRows, err := s.buildLoginNameSnapshotRows(ctx)
+	if err != nil {
+		return nil, err
+	}
+	loginNameHash, err := hashSnapshotRows(loginNameRows)
+	if err != nil {
+		return nil, err
+	}
+	partitions = append(partitions, &clusterproto.SnapshotPartitionDigest{
+		Partition: SnapshotLoginNamesPartition,
+		Kind:      snapshotPartitionKindLoginNames,
+		RowCount:  uint64(len(loginNameRows)),
+		Hash:      loginNameHash,
 	})
 
 	attachmentRows, err := s.buildAttachmentSnapshotRows(ctx)
@@ -123,6 +140,16 @@ func (s *Store) BuildSnapshotChunk(ctx context.Context, partition string) (*clus
 			Kind:      snapshotPartitionKindAttachment,
 			Rows:      rows,
 		}, nil
+	case partition == SnapshotLoginNamesPartition:
+		rows, err := s.buildLoginNameSnapshotRows(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return &clusterproto.SnapshotChunk{
+			Partition: partition,
+			Kind:      snapshotPartitionKindLoginNames,
+			Rows:      rows,
+		}, nil
 	case partition == SnapshotUserMetadataPartition:
 		rows, err := s.buildUserMetadataSnapshotRows(ctx)
 		if err != nil {
@@ -187,6 +214,15 @@ func (s *Store) ApplySnapshotChunk(ctx context.Context, chunk *clusterproto.Snap
 		}
 		for _, row := range chunk.Rows {
 			if err := s.applyAttachmentSnapshotRowTx(ctx, tx, row); err != nil {
+				return err
+			}
+		}
+	case partition == SnapshotLoginNamesPartition:
+		if chunk.Kind != snapshotPartitionKindLoginNames {
+			return fmt.Errorf("%w: login names snapshot chunk has kind %s", ErrInvalidInput, chunk.Kind)
+		}
+		for _, row := range chunk.Rows {
+			if err := s.applyLoginNameSnapshotRowTx(ctx, tx, row); err != nil {
 				return err
 			}
 		}
@@ -323,6 +359,21 @@ func MaxSnapshotChunkTimestamp(chunk *clusterproto.SnapshotChunk) (clock.Timesta
 			}
 			continue
 		}
+		if loginNameRow := row.GetLoginName(); loginNameRow != nil {
+			ts, err := parseRequiredTimestamp(loginNameRow.BoundAtHlc, "snapshot login name bound_at")
+			if err != nil {
+				return clock.Timestamp{}, err
+			}
+			record(ts)
+			if strings.TrimSpace(loginNameRow.DeletedAtHlc) != "" {
+				ts, err := parseRequiredTimestamp(loginNameRow.DeletedAtHlc, "snapshot login name deleted_at")
+				if err != nil {
+					return clock.Timestamp{}, err
+				}
+				record(ts)
+			}
+			continue
+		}
 		return clock.Timestamp{}, fmt.Errorf("%w: snapshot row body cannot be empty", ErrInvalidInput)
 	}
 	return maxTimestamp, nil
@@ -436,6 +487,31 @@ ORDER BY owner_node_id ASC, owner_user_id ASC, attachment_type ASC, subject_node
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate snapshot attachments: %w", err)
+	}
+	return snapshotRows, nil
+}
+
+func (s *Store) buildLoginNameSnapshotRows(ctx context.Context) ([]*clusterproto.SnapshotRow, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT login_name, user_node_id, user_id, bound_at_hlc, deleted_at_hlc, origin_node_id
+FROM user_login_names
+ORDER BY login_name ASC
+`)
+	if err != nil {
+		return nil, fmt.Errorf("query snapshot login names: %w", err)
+	}
+	defer rows.Close()
+
+	snapshotRows := make([]*clusterproto.SnapshotRow, 0)
+	for rows.Next() {
+		item, err := scanUserLoginNameRaw(rows)
+		if err != nil {
+			return nil, err
+		}
+		snapshotRows = append(snapshotRows, snapshotRowFromLoginName(item))
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate snapshot login names: %w", err)
 	}
 	return snapshotRows, nil
 }
@@ -589,6 +665,48 @@ func (s *Store) applyAttachmentSnapshotRowTx(ctx context.Context, tx *sql.Tx, ro
 	return s.upsertAttachmentTx(ctx, tx, attachment)
 }
 
+func (s *Store) applyLoginNameSnapshotRowTx(ctx context.Context, tx *sql.Tx, row *clusterproto.SnapshotRow) error {
+	if row == nil {
+		return fmt.Errorf("%w: snapshot row cannot be nil", ErrInvalidInput)
+	}
+	loginNameRow := row.GetLoginName()
+	if loginNameRow == nil {
+		return fmt.Errorf("%w: login names snapshot contains non-login-name row", ErrInvalidInput)
+	}
+	item, err := userLoginNameFromSnapshotRow(loginNameRow)
+	if err != nil {
+		return err
+	}
+	if item.DeletedAt == nil {
+		user, err := s.getUserByIDTx(ctx, tx, item.User, false)
+		if err != nil {
+			if errors.Is(err, ErrNotFound) {
+				return nil
+			}
+			return err
+		}
+		if err := validateLoginNameUser(user); err != nil {
+			if errors.Is(err, ErrInvalidInput) {
+				return nil
+			}
+			return err
+		}
+		if _, err := s.clearOtherActiveUserLoginNamesTx(ctx, tx, item.User, item.LoginName, item.BoundAt, item.OriginNodeID); err != nil {
+			return err
+		}
+		remaining, err := s.listActiveUserLoginNamesTx(ctx, tx, item.User, item.LoginName)
+		if err != nil {
+			return err
+		}
+		for _, other := range remaining {
+			if other.BoundAt.Compare(item.BoundAt) > 0 {
+				return nil
+			}
+		}
+	}
+	return s.upsertUserLoginNameTx(ctx, tx, item)
+}
+
 func (s *Store) applyUserMetadataSnapshotRowTx(ctx context.Context, tx *sql.Tx, row *clusterproto.SnapshotRow) error {
 	if row == nil {
 		return fmt.Errorf("%w: snapshot row cannot be nil", ErrInvalidInput)
@@ -678,6 +796,24 @@ func snapshotRowFromAttachment(attachment Attachment) *clusterproto.SnapshotRow 
 	return &clusterproto.SnapshotRow{
 		Body: &clusterproto.SnapshotRow_Attachment{
 			Attachment: row,
+		},
+	}
+}
+
+func snapshotRowFromLoginName(item UserLoginName) *clusterproto.SnapshotRow {
+	row := &clusterproto.SnapshotLoginNameRow{
+		LoginName:    item.LoginName,
+		UserNodeId:   item.User.NodeID,
+		UserId:       item.User.UserID,
+		BoundAtHlc:   item.BoundAt.String(),
+		OriginNodeId: item.OriginNodeID,
+	}
+	if item.DeletedAt != nil {
+		row.DeletedAtHlc = item.DeletedAt.String()
+	}
+	return &clusterproto.SnapshotRow{
+		Body: &clusterproto.SnapshotRow_LoginName{
+			LoginName: row,
 		},
 	}
 }
@@ -783,6 +919,13 @@ func userMetadataFromSnapshotRow(row *clusterproto.SnapshotUserMetadataRow) (Use
 		return UserMetadata{}, fmt.Errorf("%w: snapshot metadata cannot be nil", ErrInvalidInput)
 	}
 	return userMetadataFromData(row.Owner, row.Key, row.Value, row.UpdatedAtHlc, row.DeletedAtHlc, row.ExpiresAt, row.OriginNodeId)
+}
+
+func userLoginNameFromSnapshotRow(row *clusterproto.SnapshotLoginNameRow) (UserLoginName, error) {
+	if row == nil {
+		return UserLoginName{}, fmt.Errorf("%w: snapshot login name cannot be nil", ErrInvalidInput)
+	}
+	return userLoginNameFromData(row.LoginName, row.UserNodeId, row.UserId, row.BoundAtHlc, row.DeletedAtHlc, row.OriginNodeId)
 }
 
 func timestampSnapshotString(ts *clock.Timestamp) string {

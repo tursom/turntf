@@ -79,6 +79,10 @@ func (s *Store) ApplyReplicatedEvent(ctx context.Context, event *internalproto.R
 		if err := s.applyReplicatedUserMetadata(ctx, tx, body, decoded.OriginNodeID); err != nil {
 			return err
 		}
+	case *internalproto.UserLoginNameUpsertedEvent, *internalproto.UserLoginNameDeletedEvent:
+		if err := s.applyReplicatedUserLoginName(ctx, tx, body, decoded.OriginNodeID); err != nil {
+			return err
+		}
 	default:
 		return fmt.Errorf("%w: unsupported replicated event body %T", ErrInvalidInput, decoded.Body)
 	}
@@ -282,6 +286,55 @@ func userMetadataFromEventBody(body internalproto.EventBody) (UserMetadata, erro
 	}
 }
 
+func (s *Store) applyReplicatedUserLoginName(ctx context.Context, tx *sql.Tx, body internalproto.EventBody, originNodeID int64) error {
+	binding, err := userLoginNameFromEventBody(body)
+	if err != nil {
+		return err
+	}
+	if originNodeID != 0 && originNodeID != binding.OriginNodeID {
+		return fmt.Errorf("%w: login name origin node id %d does not match event origin %d", ErrInvalidInput, binding.OriginNodeID, originNodeID)
+	}
+	if binding.DeletedAt == nil {
+		user, err := s.getUserByIDTx(ctx, tx, binding.User, false)
+		if err != nil {
+			if errors.Is(err, ErrNotFound) {
+				return nil
+			}
+			return err
+		}
+		if err := validateLoginNameUser(user); err != nil {
+			if errors.Is(err, ErrInvalidInput) {
+				return nil
+			}
+			return err
+		}
+		if _, err := s.clearOtherActiveUserLoginNamesTx(ctx, tx, binding.User, binding.LoginName, binding.BoundAt, binding.OriginNodeID); err != nil {
+			return err
+		}
+		remaining, err := s.listActiveUserLoginNamesTx(ctx, tx, binding.User, binding.LoginName)
+		if err != nil {
+			return err
+		}
+		for _, item := range remaining {
+			if item.BoundAt.Compare(binding.BoundAt) > 0 {
+				return nil
+			}
+		}
+	}
+	return s.upsertUserLoginNameTx(ctx, tx, binding)
+}
+
+func userLoginNameFromEventBody(body internalproto.EventBody) (UserLoginName, error) {
+	switch typed := body.(type) {
+	case *internalproto.UserLoginNameUpsertedEvent:
+		return userLoginNameFromData(typed.LoginName, typed.UserNodeId, typed.UserId, typed.BoundAtHlc, "", typed.OriginNodeId)
+	case *internalproto.UserLoginNameDeletedEvent:
+		return userLoginNameFromData(typed.LoginName, typed.UserNodeId, typed.UserId, typed.BoundAtHlc, typed.DeletedAtHlc, typed.OriginNodeId)
+	default:
+		return UserLoginName{}, fmt.Errorf("%w: unsupported login name body %T", ErrInvalidInput, body)
+	}
+}
+
 func attachmentFromData(ownerRef, subjectRef *internalproto.ClusterUserRef, rawType, rawConfig, attachedAtRaw, deletedAtRaw string, originNodeID int64) (Attachment, error) {
 	if ownerRef == nil {
 		return Attachment{}, fmt.Errorf("%w: owner cannot be empty", ErrInvalidInput)
@@ -371,6 +424,36 @@ func userMetadataFromData(ownerRef *internalproto.ClusterUserRef, rawKey string,
 		return UserMetadata{}, fmt.Errorf("%w: metadata updated_at is required", ErrInvalidInput)
 	}
 	return metadata, nil
+}
+
+func userLoginNameFromData(rawLoginName string, userNodeID, userID int64, boundAtRaw, deletedAtRaw string, originNodeID int64) (UserLoginName, error) {
+	item := UserLoginName{
+		LoginName:    normalizeLoginName(rawLoginName),
+		User:         UserKey{NodeID: userNodeID, UserID: userID},
+		OriginNodeID: originNodeID,
+	}
+	if item.LoginName == "" {
+		return UserLoginName{}, fmt.Errorf("%w: login_name cannot be empty", ErrInvalidInput)
+	}
+	if err := item.User.Validate(); err != nil {
+		return UserLoginName{}, err
+	}
+	boundAt, err := parseRequiredTimestamp(boundAtRaw, "login name bound_at")
+	if err != nil {
+		return UserLoginName{}, err
+	}
+	item.BoundAt = boundAt
+	if strings.TrimSpace(deletedAtRaw) != "" {
+		deletedAt, err := parseRequiredTimestamp(deletedAtRaw, "login name deleted_at")
+		if err != nil {
+			return UserLoginName{}, err
+		}
+		item.DeletedAt = &deletedAt
+	}
+	if item.OriginNodeID <= 0 {
+		return UserLoginName{}, fmt.Errorf("%w: login name origin node id is required", ErrInvalidInput)
+	}
+	return item, nil
 }
 
 func (s *Store) isEventAppliedTx(ctx context.Context, tx *sql.Tx, sourceNodeID, eventID int64) (bool, error) {

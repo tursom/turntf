@@ -10,10 +10,19 @@ import (
 )
 
 func (s *Store) CreateUser(ctx context.Context, params CreateUserParams) (User, Event, error) {
+	user, events, err := s.CreateUserWithEvents(ctx, params)
+	if err != nil {
+		return user, Event{}, err
+	}
+	return user, primaryUserEvent(events), nil
+}
+
+func (s *Store) CreateUserWithEvents(ctx context.Context, params CreateUserParams) (User, []Event, error) {
 	username := strings.TrimSpace(params.Username)
 	if username == "" {
-		return User{}, Event{}, fmt.Errorf("%w: username cannot be empty", ErrInvalidInput)
+		return User{}, nil, fmt.Errorf("%w: username cannot be empty", ErrInvalidInput)
 	}
+	loginName := normalizeLoginName(params.LoginName)
 
 	profile := strings.TrimSpace(params.Profile)
 	if profile == "" {
@@ -21,26 +30,29 @@ func (s *Store) CreateUser(ctx context.Context, params CreateUserParams) (User, 
 	}
 	role, err := normalizeMutableRole(params.Role)
 	if err != nil {
-		return User{}, Event{}, err
+		return User{}, nil, err
 	}
 	passwordHash := strings.TrimSpace(params.PasswordHash)
 	if isLoginRole(role) && passwordHash == "" {
-		return User{}, Event{}, fmt.Errorf("%w: password hash cannot be empty", ErrInvalidInput)
+		return User{}, nil, fmt.Errorf("%w: password hash cannot be empty", ErrInvalidInput)
 	}
 	if !isLoginRole(role) {
 		passwordHash = disabledPasswordHash
 	}
+	if loginName != "" && !isLoginRole(role) {
+		return User{}, nil, fmt.Errorf("%w: login_name requires a login-enabled user", ErrInvalidInput)
+	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return User{}, Event{}, fmt.Errorf("begin create user: %w", err)
+		return User{}, nil, fmt.Errorf("begin create user: %w", err)
 	}
 	defer tx.Rollback()
 
 	now := s.clock.Now()
 	userID, err := s.nextUserIDTx(ctx, tx, s.nodeID)
 	if err != nil {
-		return User{}, Event{}, err
+		return User{}, nil, err
 	}
 	user := User{
 		NodeID:              s.nodeID,
@@ -70,9 +82,10 @@ VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, NULL, ?)
 		user.CreatedAt.String(), user.UpdatedAt.String(), user.VersionUsername.String(),
 		user.VersionPasswordHash.String(), user.VersionProfile.String(), user.VersionRole.String(),
 		user.OriginNodeID); err != nil {
-		return User{}, Event{}, fmt.Errorf("insert user: %w", err)
+		return User{}, nil, fmt.Errorf("insert user: %w", err)
 	}
 
+	events := make([]Event, 0, 2)
 	event, err := s.insertEvent(ctx, tx, Event{
 		EventType:       EventTypeUserCreated,
 		Aggregate:       "user",
@@ -82,71 +95,115 @@ VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, NULL, ?)
 		Body:            userCreatedProtoFromUser(user),
 	})
 	if err != nil {
-		return User{}, Event{}, err
+		return User{}, nil, err
+	}
+	events = append(events, event)
+
+	if loginName != "" {
+		cleared, binding, changed, err := s.bindUserLoginNameTx(ctx, tx, user, loginName, now, s.nodeID)
+		if err != nil {
+			return User{}, nil, err
+		}
+		for _, item := range cleared {
+			loginEvent, err := s.insertEvent(ctx, tx, Event{
+				EventType:       EventTypeUserLoginNameDeleted,
+				Aggregate:       "login_name",
+				AggregateNodeID: item.User.NodeID,
+				AggregateID:     item.User.UserID,
+				HLC:             now,
+				Body:            userLoginNameDeletedProtoFromBinding(item),
+			})
+			if err != nil {
+				return User{}, nil, err
+			}
+			events = append(events, loginEvent)
+		}
+		if changed {
+			loginEvent, err := s.insertEvent(ctx, tx, Event{
+				EventType:       EventTypeUserLoginNameUpserted,
+				Aggregate:       "login_name",
+				AggregateNodeID: binding.User.NodeID,
+				AggregateID:     binding.User.UserID,
+				HLC:             now,
+				Body:            userLoginNameUpsertedProtoFromBinding(binding),
+			})
+			if err != nil {
+				return User{}, nil, err
+			}
+			events = append(events, loginEvent)
+		}
 	}
 
 	if err := tx.Commit(); err != nil {
-		return User{}, Event{}, fmt.Errorf("commit create user: %w", err)
+		return User{}, nil, fmt.Errorf("commit create user: %w", err)
 	}
 	s.cacheUser(user)
-	return user, event, nil
+	return user, events, nil
 }
 
 func (s *Store) UpdateUser(ctx context.Context, params UpdateUserParams) (User, Event, error) {
-	if err := params.Key.Validate(); err != nil {
-		return User{}, Event{}, err
+	user, events, err := s.UpdateUserWithEvents(ctx, params)
+	if err != nil {
+		return user, Event{}, err
 	}
-	if params.Username == nil && params.PasswordHash == nil && params.Profile == nil && params.Role == nil {
-		return User{}, Event{}, fmt.Errorf("%w: at least one field must be updated", ErrInvalidInput)
+	return user, primaryUserEvent(events), nil
+}
+
+func (s *Store) UpdateUserWithEvents(ctx context.Context, params UpdateUserParams) (User, []Event, error) {
+	if err := params.Key.Validate(); err != nil {
+		return User{}, nil, err
+	}
+	if params.Username == nil && params.LoginName == nil && params.PasswordHash == nil && params.Profile == nil && params.Role == nil {
+		return User{}, nil, fmt.Errorf("%w: at least one field must be updated", ErrInvalidInput)
 	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return User{}, Event{}, fmt.Errorf("begin update user: %w", err)
+		return User{}, nil, fmt.Errorf("begin update user: %w", err)
 	}
 	defer tx.Rollback()
 
 	current, err := s.getUserTx(ctx, tx, params.Key, false)
 	if err != nil {
-		return User{}, Event{}, err
+		return User{}, nil, err
 	}
 	if current.isProtectedBroadcastUser() {
-		return User{}, Event{}, fmt.Errorf("%w: broadcast user cannot be updated", ErrForbidden)
+		return User{}, nil, fmt.Errorf("%w: broadcast user cannot be updated", ErrForbidden)
 	}
 	if current.isProtectedNodeIngressUser() {
-		return User{}, Event{}, fmt.Errorf("%w: node ingress user cannot be updated", ErrForbidden)
+		return User{}, nil, fmt.Errorf("%w: node ingress user cannot be updated", ErrForbidden)
 	}
 
 	now := s.clock.Now()
-	changed := false
+	userChanged := false
 
 	if params.Username != nil {
 		if current.isProtectedBootstrapAdmin() {
-			return User{}, Event{}, fmt.Errorf("%w: bootstrap admin username cannot be changed", ErrForbidden)
+			return User{}, nil, fmt.Errorf("%w: bootstrap admin username cannot be changed", ErrForbidden)
 		}
 		nextUsername := strings.TrimSpace(*params.Username)
 		if nextUsername == "" {
-			return User{}, Event{}, fmt.Errorf("%w: username cannot be empty", ErrInvalidInput)
+			return User{}, nil, fmt.Errorf("%w: username cannot be empty", ErrInvalidInput)
 		}
 		if nextUsername != current.Username {
 			current.Username = nextUsername
 			current.VersionUsername = now
-			changed = true
+			userChanged = true
 		}
 	}
 
 	if params.PasswordHash != nil {
 		if !current.CanLogin() {
-			return User{}, Event{}, fmt.Errorf("%w: channel users cannot set passwords", ErrForbidden)
+			return User{}, nil, fmt.Errorf("%w: channel users cannot set passwords", ErrForbidden)
 		}
 		nextHash := strings.TrimSpace(*params.PasswordHash)
 		if nextHash == "" {
-			return User{}, Event{}, fmt.Errorf("%w: password hash cannot be empty", ErrInvalidInput)
+			return User{}, nil, fmt.Errorf("%w: password hash cannot be empty", ErrInvalidInput)
 		}
 		if nextHash != current.PasswordHash {
 			current.PasswordHash = nextHash
 			current.VersionPasswordHash = now
-			changed = true
+			userChanged = true
 		}
 	}
 
@@ -158,93 +215,178 @@ func (s *Store) UpdateUser(ctx context.Context, params UpdateUserParams) (User, 
 		if nextProfile != current.Profile {
 			current.Profile = nextProfile
 			current.VersionProfile = now
-			changed = true
+			userChanged = true
 		}
 	}
 	if params.Role != nil {
 		if current.isProtectedBootstrapAdmin() {
-			return User{}, Event{}, fmt.Errorf("%w: bootstrap admin role cannot be changed", ErrForbidden)
+			return User{}, nil, fmt.Errorf("%w: bootstrap admin role cannot be changed", ErrForbidden)
 		}
 		nextRole, err := normalizeMutableRole(*params.Role)
 		if err != nil {
-			return User{}, Event{}, err
+			return User{}, nil, err
 		}
 		if nextRole != current.Role {
 			if isLoginRole(nextRole) && !isLoginRole(current.Role) && strings.TrimSpace(current.PasswordHash) == disabledPasswordHash {
-				return User{}, Event{}, fmt.Errorf("%w: password hash is required before enabling login", ErrInvalidInput)
+				return User{}, nil, fmt.Errorf("%w: password hash is required before enabling login", ErrInvalidInput)
 			}
 			current.Role = nextRole
 			current.VersionRole = now
-			changed = true
+			userChanged = true
 		}
 	}
 
-	if !changed {
-		return current, Event{}, fmt.Errorf("%w: no changes detected", ErrInvalidInput)
+	desiredLoginName := ""
+	manageLoginName := false
+	clearLoginNames := false
+	if params.LoginName != nil {
+		manageLoginName = true
+		desiredLoginName = normalizeLoginName(*params.LoginName)
+		clearLoginNames = desiredLoginName == ""
+		if desiredLoginName != "" && !current.CanLogin() {
+			return User{}, nil, fmt.Errorf("%w: login_name requires a login-enabled user", ErrInvalidInput)
+		}
+	} else if !current.CanLogin() {
+		clearLoginNames = true
 	}
-	current.UpdatedAt = now
-	current = s.applyReservedUserInvariants(current)
 
-	if _, err := tx.ExecContext(ctx, `
+	events := make([]Event, 0, 3)
+	if userChanged {
+		current.UpdatedAt = now
+		current = s.applyReservedUserInvariants(current)
+
+		if _, err := tx.ExecContext(ctx, `
 UPDATE users
 SET username = ?, password_hash = ?, profile = ?, role = ?, system_reserved = ?, updated_at_hlc = ?,
     version_username = ?, version_password_hash = ?, version_profile = ?, version_role = ?
 WHERE node_id = ? AND user_id = ? AND deleted_at_hlc IS NULL
 `, current.Username, current.PasswordHash, current.Profile, current.Role, boolToInt(current.SystemReserved),
-		current.UpdatedAt.String(), current.VersionUsername.String(), current.VersionPasswordHash.String(),
-		current.VersionProfile.String(), current.VersionRole.String(), current.NodeID, current.ID); err != nil {
-		return User{}, Event{}, fmt.Errorf("update user: %w", err)
+			current.UpdatedAt.String(), current.VersionUsername.String(), current.VersionPasswordHash.String(),
+			current.VersionProfile.String(), current.VersionRole.String(), current.NodeID, current.ID); err != nil {
+			return User{}, nil, fmt.Errorf("update user: %w", err)
+		}
+
+		event, err := s.insertEvent(ctx, tx, Event{
+			EventType:       EventTypeUserUpdated,
+			Aggregate:       "user",
+			AggregateNodeID: current.NodeID,
+			AggregateID:     current.ID,
+			HLC:             now,
+			Body:            userUpdatedProtoFromUser(current),
+		})
+		if err != nil {
+			return User{}, nil, err
+		}
+		events = append(events, event)
+	} else {
+		current = s.applyReservedUserInvariants(current)
 	}
 
-	event, err := s.insertEvent(ctx, tx, Event{
-		EventType:       EventTypeUserUpdated,
-		Aggregate:       "user",
-		AggregateNodeID: current.NodeID,
-		AggregateID:     current.ID,
-		HLC:             now,
-		Body:            userUpdatedProtoFromUser(current),
-	})
-	if err != nil {
-		return User{}, Event{}, err
+	if clearLoginNames {
+		cleared, err := s.clearUserLoginNamesTx(ctx, tx, current.Key(), now, s.nodeID)
+		if err != nil {
+			return User{}, nil, err
+		}
+		for _, item := range cleared {
+			loginEvent, err := s.insertEvent(ctx, tx, Event{
+				EventType:       EventTypeUserLoginNameDeleted,
+				Aggregate:       "login_name",
+				AggregateNodeID: item.User.NodeID,
+				AggregateID:     item.User.UserID,
+				HLC:             now,
+				Body:            userLoginNameDeletedProtoFromBinding(item),
+			})
+			if err != nil {
+				return User{}, nil, err
+			}
+			events = append(events, loginEvent)
+		}
+	}
+	if manageLoginName && desiredLoginName != "" {
+		cleared, binding, changed, err := s.bindUserLoginNameTx(ctx, tx, current, desiredLoginName, now, s.nodeID)
+		if err != nil {
+			return User{}, nil, err
+		}
+		for _, item := range cleared {
+			loginEvent, err := s.insertEvent(ctx, tx, Event{
+				EventType:       EventTypeUserLoginNameDeleted,
+				Aggregate:       "login_name",
+				AggregateNodeID: item.User.NodeID,
+				AggregateID:     item.User.UserID,
+				HLC:             now,
+				Body:            userLoginNameDeletedProtoFromBinding(item),
+			})
+			if err != nil {
+				return User{}, nil, err
+			}
+			events = append(events, loginEvent)
+		}
+		if changed {
+			loginEvent, err := s.insertEvent(ctx, tx, Event{
+				EventType:       EventTypeUserLoginNameUpserted,
+				Aggregate:       "login_name",
+				AggregateNodeID: binding.User.NodeID,
+				AggregateID:     binding.User.UserID,
+				HLC:             now,
+				Body:            userLoginNameUpsertedProtoFromBinding(binding),
+			})
+			if err != nil {
+				return User{}, nil, err
+			}
+			events = append(events, loginEvent)
+		}
+	}
+
+	if !userChanged && len(events) == 0 {
+		return current, nil, fmt.Errorf("%w: no changes detected", ErrInvalidInput)
 	}
 
 	if err := tx.Commit(); err != nil {
-		return User{}, Event{}, fmt.Errorf("commit update user: %w", err)
+		return User{}, nil, fmt.Errorf("commit update user: %w", err)
 	}
 	s.cacheUser(current)
-	return current, event, nil
+	return current, events, nil
 }
 
 func (s *Store) DeleteUser(ctx context.Context, key UserKey) (Event, error) {
-	if err := key.Validate(); err != nil {
+	events, err := s.DeleteUserWithEvents(ctx, key)
+	if err != nil {
 		return Event{}, err
+	}
+	return primaryUserEvent(events), nil
+}
+
+func (s *Store) DeleteUserWithEvents(ctx context.Context, key UserKey) ([]Event, error) {
+	if err := key.Validate(); err != nil {
+		return nil, err
 	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return Event{}, fmt.Errorf("begin delete user: %w", err)
+		return nil, fmt.Errorf("begin delete user: %w", err)
 	}
 	defer tx.Rollback()
 
 	user, err := s.getUserTx(ctx, tx, key, false)
 	if err != nil {
-		return Event{}, err
+		return nil, err
 	}
 	if user.isProtectedBootstrapAdmin() {
-		return Event{}, fmt.Errorf("%w: bootstrap admin cannot be deleted", ErrForbidden)
+		return nil, fmt.Errorf("%w: bootstrap admin cannot be deleted", ErrForbidden)
 	}
 	if user.isProtectedBroadcastUser() {
-		return Event{}, fmt.Errorf("%w: broadcast user cannot be deleted", ErrForbidden)
+		return nil, fmt.Errorf("%w: broadcast user cannot be deleted", ErrForbidden)
 	}
 	if user.isProtectedNodeIngressUser() {
-		return Event{}, fmt.Errorf("%w: node ingress user cannot be deleted", ErrForbidden)
+		return nil, fmt.Errorf("%w: node ingress user cannot be deleted", ErrForbidden)
 	}
 
 	now := s.clock.Now()
 	if err := s.applyUserDeleteTx(ctx, tx, key, now, s.nodeID, true); err != nil {
-		return Event{}, err
+		return nil, err
 	}
 
+	events := make([]Event, 0, 2)
 	event, err := s.insertEvent(ctx, tx, Event{
 		EventType:       EventTypeUserDeleted,
 		Aggregate:       "user",
@@ -254,14 +396,34 @@ func (s *Store) DeleteUser(ctx context.Context, key UserKey) (Event, error) {
 		Body:            userDeletedProtoFromKey(key, now),
 	})
 	if err != nil {
-		return Event{}, err
+		return nil, err
+	}
+	events = append(events, event)
+
+	cleared, err := s.clearUserLoginNamesTx(ctx, tx, key, now, s.nodeID)
+	if err != nil {
+		return nil, err
+	}
+	for _, item := range cleared {
+		loginEvent, err := s.insertEvent(ctx, tx, Event{
+			EventType:       EventTypeUserLoginNameDeleted,
+			Aggregate:       "login_name",
+			AggregateNodeID: item.User.NodeID,
+			AggregateID:     item.User.UserID,
+			HLC:             now,
+			Body:            userLoginNameDeletedProtoFromBinding(item),
+		})
+		if err != nil {
+			return nil, err
+		}
+		events = append(events, loginEvent)
 	}
 
 	if err := tx.Commit(); err != nil {
-		return Event{}, fmt.Errorf("commit delete user: %w", err)
+		return nil, fmt.Errorf("commit delete user: %w", err)
 	}
 	s.invalidateCachedUser(key)
-	return event, nil
+	return events, nil
 }
 
 func (s *Store) GetUser(ctx context.Context, key UserKey) (User, error) {
@@ -358,4 +520,14 @@ func (s *Store) AuthenticateUser(ctx context.Context, key UserKey, password stri
 		return User{}, ErrNotFound
 	}
 	return user, nil
+}
+
+func primaryUserEvent(events []Event) Event {
+	for _, event := range events {
+		switch event.EventType {
+		case EventTypeUserCreated, EventTypeUserUpdated, EventTypeUserDeleted:
+			return event
+		}
+	}
+	return Event{}
 }

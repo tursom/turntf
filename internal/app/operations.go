@@ -96,9 +96,10 @@ type ClusterMeshCostSample struct {
 }
 
 type LoggedInUserSummary struct {
-	NodeID   int64
-	UserID   int64
-	Username string
+	NodeID    int64
+	UserID    int64
+	Username  string
+	LoginName string
 }
 
 type ClusterPeerOriginStatus struct {

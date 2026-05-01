@@ -120,11 +120,11 @@ func (s *Service) CreateUserAs(ctx context.Context, params store.CreateUserParam
 	if err := s.allowWrite(ctx); err != nil {
 		return store.User{}, store.Event{}, err
 	}
-	user, event, err := s.store.CreateUser(ctx, params)
+	user, events, err := s.store.CreateUserWithEvents(ctx, params)
 	if err != nil {
-		return user, event, err
+		return user, store.Event{}, err
 	}
-	s.eventSink.Publish(event)
+	s.publishEvents(events)
 	if params.Role == store.RoleChannel && creator != nil {
 		for _, attachmentType := range []store.AttachmentType{
 			store.AttachmentTypeChannelManager,
@@ -140,29 +140,29 @@ func (s *Service) CreateUserAs(ctx context.Context, params store.CreateUserParam
 			}
 		}
 	}
-	return user, event, err
+	return user, primaryStoreUserEvent(events), nil
 }
 
 func (s *Service) UpdateUser(ctx context.Context, params store.UpdateUserParams) (store.User, store.Event, error) {
 	if err := s.allowWrite(ctx); err != nil {
 		return store.User{}, store.Event{}, err
 	}
-	user, event, err := s.store.UpdateUser(ctx, params)
+	user, events, err := s.store.UpdateUserWithEvents(ctx, params)
 	if err == nil {
-		s.eventSink.Publish(event)
+		s.publishEvents(events)
 	}
-	return user, event, err
+	return user, primaryStoreUserEvent(events), err
 }
 
 func (s *Service) DeleteUser(ctx context.Context, key store.UserKey) (store.Event, error) {
 	if err := s.allowWrite(ctx); err != nil {
 		return store.Event{}, err
 	}
-	event, err := s.store.DeleteUser(ctx, key)
+	events, err := s.store.DeleteUserWithEvents(ctx, key)
 	if err == nil {
-		s.eventSink.Publish(event)
+		s.publishEvents(events)
 	}
-	return event, err
+	return primaryStoreUserEvent(events), err
 }
 
 func (s *Service) GetUser(ctx context.Context, key store.UserKey) (store.User, error) {
@@ -171,6 +171,14 @@ func (s *Service) GetUser(ctx context.Context, key store.UserKey) (store.User, e
 
 func (s *Service) AuthenticateUser(ctx context.Context, key store.UserKey, password string) (store.User, error) {
 	return s.store.AuthenticateUser(ctx, key, password)
+}
+
+func (s *Service) AuthenticateUserByLoginName(ctx context.Context, loginName, password string) (store.User, error) {
+	return s.store.AuthenticateUserByLoginName(ctx, loginName, password)
+}
+
+func (s *Service) GetUserLoginName(ctx context.Context, key store.UserKey) (string, error) {
+	return s.store.GetUserLoginName(ctx, key)
 }
 
 func (s *Service) ListUsers(ctx context.Context) ([]store.User, error) {
@@ -195,6 +203,28 @@ func (s *Service) SetTransientPacketReceiver(receiver TransientPacketReceiver) {
 	s.transientRecvMu.Lock()
 	defer s.transientRecvMu.Unlock()
 	s.transientRecv = receiver
+}
+
+func (s *Service) publishEvents(events []store.Event) {
+	if s == nil || s.eventSink == nil {
+		return
+	}
+	for _, event := range events {
+		if event.EventID <= 0 {
+			continue
+		}
+		s.eventSink.Publish(event)
+	}
+}
+
+func primaryStoreUserEvent(events []store.Event) store.Event {
+	for _, event := range events {
+		switch event.EventType {
+		case store.EventTypeUserCreated, store.EventTypeUserUpdated, store.EventTypeUserDeleted:
+			return event
+		}
+	}
+	return store.Event{}
 }
 
 func (s *Service) SetLoggedInUserProvider(provider LoggedInUserProvider) {

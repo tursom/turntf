@@ -22,6 +22,12 @@ func (*UserMetadataUpsertedEvent) eventType() string {
 func (*UserMetadataDeletedEvent) eventType() string {
 	return "user_metadata_deleted"
 }
+func (*UserLoginNameUpsertedEvent) eventType() string {
+	return "user_login_name_upserted"
+}
+func (*UserLoginNameDeletedEvent) eventType() string {
+	return "user_login_name_deleted"
+}
 
 func EventTypeFromBody(body EventBody) string {
 	if body == nil {
@@ -51,6 +57,10 @@ func (e *ReplicatedEvent) GetTypedBody() EventBody {
 		return body.UserMetadataUpserted
 	case *ReplicatedEvent_UserMetadataDeleted:
 		return body.UserMetadataDeleted
+	case *ReplicatedEvent_UserLoginNameUpserted:
+		return body.UserLoginNameUpserted
+	case *ReplicatedEvent_UserLoginNameDeleted:
+		return body.UserLoginNameDeleted
 	default:
 		return nil
 	}
@@ -79,6 +89,10 @@ func (e *ReplicatedEvent) SetTypedBody(body EventBody) error {
 		e.Body = &ReplicatedEvent_UserMetadataUpserted{UserMetadataUpserted: typed}
 	case *UserMetadataDeletedEvent:
 		e.Body = &ReplicatedEvent_UserMetadataDeleted{UserMetadataDeleted: typed}
+	case *UserLoginNameUpsertedEvent:
+		e.Body = &ReplicatedEvent_UserLoginNameUpserted{UserLoginNameUpserted: typed}
+	case *UserLoginNameDeletedEvent:
+		e.Body = &ReplicatedEvent_UserLoginNameDeleted{UserLoginNameDeleted: typed}
 	default:
 		return fmt.Errorf("unsupported event body %T", body)
 	}

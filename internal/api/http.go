@@ -36,6 +36,7 @@ type clientSessionShard struct {
 
 type onlineUserState struct {
 	Username     string
+	LoginName    string
 	SessionCount int
 }
 
@@ -68,17 +69,19 @@ type HTTPOptions struct {
 }
 
 type createUserRequest struct {
-	Username string          `json:"username"`
-	Password string          `json:"password"`
-	Profile  json.RawMessage `json:"profile,omitempty"`
-	Role     string          `json:"role,omitempty"`
+	Username  string          `json:"username"`
+	LoginName string          `json:"login_name,omitempty"`
+	Password  string          `json:"password"`
+	Profile   json.RawMessage `json:"profile,omitempty"`
+	Role      string          `json:"role,omitempty"`
 }
 
 type updateUserRequest struct {
-	Username *string          `json:"username,omitempty"`
-	Password *string          `json:"password,omitempty"`
-	Profile  *json.RawMessage `json:"profile,omitempty"`
-	Role     *string          `json:"role,omitempty"`
+	Username  *string          `json:"username,omitempty"`
+	LoginName *string          `json:"login_name,omitempty"`
+	Password  *string          `json:"password,omitempty"`
+	Profile   *json.RawMessage `json:"profile,omitempty"`
+	Role      *string          `json:"role,omitempty"`
 }
 
 type createMessageRequest struct {
@@ -108,9 +111,10 @@ type userMetadataRequest struct {
 }
 
 type loginRequest struct {
-	NodeID   int64  `json:"node_id"`
-	UserID   int64  `json:"user_id"`
-	Password string `json:"password"`
+	NodeID    int64  `json:"node_id"`
+	UserID    int64  `json:"user_id"`
+	LoginName string `json:"login_name,omitempty"`
+	Password  string `json:"password"`
 }
 
 type requestPrincipal struct {
@@ -228,14 +232,33 @@ func (h *HTTP) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	key := store.UserKey{NodeID: req.NodeID, UserID: req.UserID}
-	user, err := h.service.AuthenticateUser(r.Context(), key, req.Password)
+	loginName := strings.TrimSpace(req.LoginName)
+	hasIDSelector := req.NodeID > 0 || req.UserID > 0
+	hasLoginNameSelector := loginName != ""
+	if hasIDSelector == hasLoginNameSelector {
+		writeError(w, http.StatusBadRequest, "exactly one of (node_id,user_id) or login_name must be provided")
+		return
+	}
+
+	var user store.User
+	var err error
+	if hasLoginNameSelector {
+		user, err = h.service.AuthenticateUserByLoginName(r.Context(), loginName, req.Password)
+	} else {
+		key := store.UserKey{NodeID: req.NodeID, UserID: req.UserID}
+		user, err = h.service.AuthenticateUser(r.Context(), key, req.Password)
+	}
 	if err != nil {
 		if errors.Is(err, store.ErrInvalidInput) {
 			writeStoreError(w, err)
 			return
 		}
 		writeError(w, http.StatusUnauthorized, "invalid credentials")
+		return
+	}
+	loginName, err = h.service.GetUserLoginName(r.Context(), user.Key())
+	if err != nil {
+		writeStoreError(w, err)
 		return
 	}
 
@@ -258,7 +281,7 @@ func (h *HTTP) handleLogin(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"token":      token,
 		"expires_at": expiresAt.Format(time.RFC3339),
-		"user":       userResponseFromStore(user),
+		"user":       userResponseFromStore(user, loginName),
 	})
 }
 
@@ -296,6 +319,7 @@ func (h *HTTP) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 	}
 	user, _, err := h.service.CreateUserAs(r.Context(), store.CreateUserParams{
 		Username:     req.Username,
+		LoginName:    req.LoginName,
 		PasswordHash: passwordHash,
 		Profile:      profile,
 		Role:         req.Role,
@@ -306,7 +330,12 @@ func (h *HTTP) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 	}
 	h.invalidateTargetRoleCache(user.Key())
 
-	writeJSON(w, http.StatusCreated, userResponseFromStore(user))
+	resp, err := h.buildUserResponse(r.Context(), user)
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, resp)
 }
 
 func (h *HTTP) handleGetUser(w http.ResponseWriter, r *http.Request) {
@@ -325,7 +354,12 @@ func (h *HTTP) handleGetUser(w http.ResponseWriter, r *http.Request) {
 	}
 	h.invalidateTargetRoleCache(user.Key())
 
-	writeJSON(w, http.StatusOK, userResponseFromStore(user))
+	resp, err := h.buildUserResponse(r.Context(), user)
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (h *HTTP) handleListUsers(w http.ResponseWriter, r *http.Request) {
@@ -341,7 +375,12 @@ func (h *HTTP) handleListUsers(w http.ResponseWriter, r *http.Request) {
 
 	resp := make([]userResponse, 0, len(users))
 	for _, user := range users {
-		resp = append(resp, userResponseFromStore(user))
+		item, err := h.buildUserResponse(r.Context(), user)
+		if err != nil {
+			writeStoreError(w, err)
+			return
+		}
+		resp = append(resp, item)
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -389,6 +428,10 @@ func (h *HTTP) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		}
 		passwordHash = &hashed
 	}
+	if req.LoginName != nil && (principal == nil || !isAdminRole(principal.User.Role)) {
+		writeStoreError(w, store.ErrForbidden)
+		return
+	}
 
 	if principal != nil && !isAdminRole(principal.User.Role) && target.Role == store.RoleChannel {
 		if req.Password != nil || req.Role != nil {
@@ -400,6 +443,7 @@ func (h *HTTP) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 	user, _, err := h.service.UpdateUser(r.Context(), store.UpdateUserParams{
 		Key:          key,
 		Username:     req.Username,
+		LoginName:    req.LoginName,
 		PasswordHash: passwordHash,
 		Profile:      profile,
 		Role:         req.Role,
@@ -409,7 +453,12 @@ func (h *HTTP) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, userResponseFromStore(user))
+	resp, err := h.buildUserResponse(r.Context(), user)
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (h *HTTP) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
@@ -1028,6 +1077,7 @@ type userResponse struct {
 	UserID         int64           `json:"user_id"`
 	ID             int64           `json:"id,omitempty"`
 	Username       string          `json:"username"`
+	LoginName      string          `json:"login_name"`
 	Profile        json.RawMessage `json:"profile"`
 	Role           string          `json:"role"`
 	SystemReserved bool            `json:"system_reserved"`
@@ -1102,12 +1152,13 @@ type eventResponse struct {
 	Event           any             `json:"event"`
 }
 
-func userResponseFromStore(user store.User) userResponse {
+func userResponseFromStore(user store.User, loginName string) userResponse {
 	return userResponse{
 		NodeID:         user.NodeID,
 		UserID:         user.ID,
 		ID:             user.ID,
 		Username:       user.Username,
+		LoginName:      loginName,
 		Profile:        json.RawMessage(user.Profile),
 		Role:           user.Role,
 		SystemReserved: user.SystemReserved,
@@ -1115,6 +1166,18 @@ func userResponseFromStore(user store.User) userResponse {
 		UpdatedAt:      user.UpdatedAt.String(),
 		OriginNodeID:   user.OriginNodeID,
 	}
+}
+
+func (h *HTTP) buildUserResponse(ctx context.Context, user store.User) (userResponse, error) {
+	loginName := ""
+	if h != nil && h.service != nil {
+		var err error
+		loginName, err = h.service.GetUserLoginName(ctx, user.Key())
+		if err != nil {
+			return userResponse{}, err
+		}
+	}
+	return userResponseFromStore(user, loginName), nil
 }
 
 func messageResponseFromStore(message store.Message) messageResponse {
@@ -1241,6 +1304,9 @@ func (h *HTTP) registerClientSession(key store.UserKey, sess *clientWSSession) {
 	}
 	if sess.principal != nil && sess.principal.User.Username != "" {
 		state.Username = sess.principal.User.Username
+	}
+	if sess.loginName != "" {
+		state.LoginName = sess.loginName
 	}
 	state.SessionCount++
 	h.onlineUsers[key] = state
@@ -1397,9 +1463,10 @@ func (h *HTTP) ListLoggedInUsers(context.Context) ([]app.LoggedInUserSummary, er
 	users := make([]app.LoggedInUserSummary, 0, int(h.onlineUserCount.Load()))
 	for key, state := range h.onlineUsers {
 		users = append(users, app.LoggedInUserSummary{
-			NodeID:   key.NodeID,
-			UserID:   key.UserID,
-			Username: state.Username,
+			NodeID:    key.NodeID,
+			UserID:    key.UserID,
+			Username:  state.Username,
+			LoginName: state.LoginName,
 		})
 	}
 	h.onlineUsersMu.RUnlock()

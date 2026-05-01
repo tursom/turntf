@@ -116,6 +116,7 @@ func (s *clientWSSession) handleCreateUser(ctx context.Context, req *internalpro
 	}
 	user, _, err := s.http.service.CreateUserAs(ctx, store.CreateUserParams{
 		Username:     req.Username,
+		LoginName:    req.LoginName,
 		PasswordHash: passwordHash,
 		Profile:      profile,
 		Role:         req.Role,
@@ -124,11 +125,15 @@ func (s *clientWSSession) handleCreateUser(ctx context.Context, req *internalpro
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
 	s.http.invalidateTargetRoleCache(user.Key())
+	protoUser, err := s.clientProtoUserForResponse(ctx, user)
+	if err != nil {
+		return s.writeStoreOrRequestError(req.RequestId, err)
+	}
 	return s.writeEnvelope(&internalproto.ServerEnvelope{
 		Body: &internalproto.ServerEnvelope_CreateUserResponse{
 			CreateUserResponse: &internalproto.CreateUserResponse{
 				RequestId: req.RequestId,
-				User:      clientProtoUser(user),
+				User:      protoUser,
 			},
 		},
 	})
@@ -149,11 +154,15 @@ func (s *clientWSSession) handleGetUser(ctx context.Context, req *internalproto.
 	if err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
+	protoUser, err := s.clientProtoUserForResponse(ctx, user)
+	if err != nil {
+		return s.writeStoreOrRequestError(req.RequestId, err)
+	}
 	return s.writeEnvelope(&internalproto.ServerEnvelope{
 		Body: &internalproto.ServerEnvelope_GetUserResponse{
 			GetUserResponse: &internalproto.GetUserResponse{
 				RequestId: req.RequestId,
-				User:      clientProtoUser(user),
+				User:      protoUser,
 			},
 		},
 	})
@@ -192,8 +201,11 @@ func (s *clientWSSession) handleUpdateUser(ctx context.Context, req *internalpro
 		}
 		passwordHash = &hashed
 	}
+	if req.LoginName != nil && !isAdminRole(s.principal.User.Role) {
+		return s.writeStoreOrRequestError(req.RequestId, store.ErrForbidden)
+	}
 	if !isAdminRole(s.principal.User.Role) && target.Role == store.RoleChannel {
-		if passwordHash != nil || req.Role != nil {
+		if passwordHash != nil || req.Role != nil || req.LoginName != nil {
 			return s.writeStoreOrRequestError(req.RequestId, store.ErrForbidden)
 		}
 	}
@@ -201,6 +213,7 @@ func (s *clientWSSession) handleUpdateUser(ctx context.Context, req *internalpro
 	user, _, err := s.http.service.UpdateUser(ctx, store.UpdateUserParams{
 		Key:          key,
 		Username:     stringPtrValue(req.Username),
+		LoginName:    stringPtrValue(req.LoginName),
 		PasswordHash: passwordHash,
 		Profile:      profile,
 		Role:         stringPtrValue(req.Role),
@@ -209,11 +222,15 @@ func (s *clientWSSession) handleUpdateUser(ctx context.Context, req *internalpro
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
 	s.http.invalidateTargetRoleCache(user.Key())
+	protoUser, err := s.clientProtoUserForResponse(ctx, user)
+	if err != nil {
+		return s.writeStoreOrRequestError(req.RequestId, err)
+	}
 	return s.writeEnvelope(&internalproto.ServerEnvelope{
 		Body: &internalproto.ServerEnvelope_UpdateUserResponse{
 			UpdateUserResponse: &internalproto.UpdateUserResponse{
 				RequestId: req.RequestId,
-				User:      clientProtoUser(user),
+				User:      protoUser,
 			},
 		},
 	})
@@ -947,6 +964,17 @@ func clientProtoOperationsStatus(status operationsStatus) *internalproto.Operati
 	}
 }
 
+func (s *clientWSSession) clientProtoUserForResponse(ctx context.Context, user store.User) (*internalproto.User, error) {
+	if s == nil || s.http == nil || s.http.service == nil {
+		return clientProtoUser(user), nil
+	}
+	loginName, err := s.http.service.GetUserLoginName(ctx, user.Key())
+	if err != nil {
+		return nil, err
+	}
+	return clientProtoUserWithLoginName(user, loginName), nil
+}
+
 func clientProtoClusterNode(node clusterNodeResponse) *internalproto.ClusterNode {
 	return &internalproto.ClusterNode{
 		NodeId:        node.NodeID,
@@ -958,9 +986,10 @@ func clientProtoClusterNode(node clusterNodeResponse) *internalproto.ClusterNode
 
 func clientProtoLoggedInUser(user loggedInUserResponse) *internalproto.LoggedInUser {
 	return &internalproto.LoggedInUser{
-		NodeId:   user.NodeID,
-		UserId:   user.UserID,
-		Username: user.Username,
+		NodeId:    user.NodeID,
+		UserId:    user.UserID,
+		Username:  user.Username,
+		LoginName: user.LoginName,
 	}
 }
 

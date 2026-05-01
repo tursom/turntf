@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/rs/zerolog"
@@ -25,6 +26,7 @@ type clientWSSession struct {
 	protocol          string
 	remoteAddr        string
 	sessionRef        store.SessionRef
+	loginName         string
 	principal         *requestPrincipal
 	realtimeOnly      bool
 	transientOnly     bool
@@ -113,13 +115,25 @@ func (s *clientWSSession) login(ctx context.Context) error {
 	if login == nil {
 		return fmt.Errorf("first message must be login")
 	}
-	if login.User == nil {
-		return fmt.Errorf("login user cannot be empty")
+	hasUserSelector := login.User != nil
+	loginName := strings.TrimSpace(login.LoginName)
+	hasLoginNameSelector := loginName != ""
+	if hasUserSelector == hasLoginNameSelector {
+		return fmt.Errorf("exactly one of login user or login_name must be provided")
 	}
-	key := store.UserKey{NodeID: login.User.NodeId, UserID: login.User.UserId}
-	user, err := s.http.service.AuthenticateUser(ctx, key, login.Password)
+	var user store.User
+	if hasLoginNameSelector {
+		user, err = s.http.service.AuthenticateUserByLoginName(ctx, loginName, login.Password)
+	} else {
+		key := store.UserKey{NodeID: login.User.NodeId, UserID: login.User.UserId}
+		user, err = s.http.service.AuthenticateUser(ctx, key, login.Password)
+	}
 	if err != nil {
 		return fmt.Errorf("invalid credentials")
+	}
+	loginName, err = s.http.service.GetUserLoginName(ctx, user.Key())
+	if err != nil {
+		return fmt.Errorf("load login name: %w", err)
 	}
 	for _, cursor := range login.SeenMessages {
 		if cursor == nil || cursor.NodeId <= 0 || cursor.Seq <= 0 {
@@ -136,6 +150,7 @@ func (s *clientWSSession) login(ctx context.Context) error {
 		s.afterSequence = afterSequence
 	}
 	s.sessionRef = s.http.newSessionRef()
+	s.loginName = loginName
 	s.principal = &requestPrincipal{User: user}
 	s.http.registerClientSession(s.principal.User.Key(), s)
 	s.logInfo("client_authenticated").
@@ -145,7 +160,7 @@ func (s *clientWSSession) login(ctx context.Context) error {
 	if err := s.writeEnvelope(&internalproto.ServerEnvelope{
 		Body: &internalproto.ServerEnvelope_LoginResponse{
 			LoginResponse: &internalproto.LoginResponse{
-				User:            clientProtoUser(user),
+				User:            clientProtoUserWithLoginName(user, loginName),
 				ProtocolVersion: internalproto.ClientProtocolVersion,
 				SessionRef:      clientProtoSessionRef(s.sessionRef),
 			},

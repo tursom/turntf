@@ -31,9 +31,10 @@ type clusterNodesResponse struct {
 }
 
 type loggedInUserResponse struct {
-	NodeID   int64  `json:"node_id"`
-	UserID   int64  `json:"user_id"`
-	Username string `json:"username"`
+	NodeID    int64  `json:"node_id"`
+	UserID    int64  `json:"user_id"`
+	Username  string `json:"username"`
+	LoginName string `json:"login_name"`
 }
 
 type nodeLoggedInUsersResponse struct {
@@ -328,9 +329,10 @@ func (s *Service) ListNodeLoggedInUsers(ctx context.Context, nodeID int64) (node
 	items := make([]loggedInUserResponse, 0, len(users))
 	for _, user := range users {
 		items = append(items, loggedInUserResponse{
-			NodeID:   user.NodeID,
-			UserID:   user.UserID,
-			Username: user.Username,
+			NodeID:    user.NodeID,
+			UserID:    user.UserID,
+			Username:  user.Username,
+			LoginName: user.LoginName,
 		})
 	}
 	return nodeLoggedInUsersResponse{

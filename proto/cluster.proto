@@ -70,6 +70,8 @@ message ReplicatedEvent {
     UserAttachmentDeletedEvent user_attachment_deleted = 12;
     UserMetadataUpsertedEvent user_metadata_upserted = 13;
     UserMetadataDeletedEvent user_metadata_deleted = 14;
+    UserLoginNameUpsertedEvent user_login_name_upserted = 15;
+    UserLoginNameDeletedEvent user_login_name_deleted = 16;
   }
 }
 
@@ -164,6 +166,23 @@ message UserMetadataDeletedEvent {
   int64 origin_node_id = 4;
 }
 
+message UserLoginNameUpsertedEvent {
+  string login_name = 1;
+  int64 user_node_id = 2;
+  int64 user_id = 3;
+  string bound_at_hlc = 4;
+  int64 origin_node_id = 5;
+}
+
+message UserLoginNameDeletedEvent {
+  string login_name = 1;
+  int64 user_node_id = 2;
+  int64 user_id = 3;
+  string bound_at_hlc = 4;
+  string deleted_at_hlc = 5;
+  int64 origin_node_id = 6;
+}
+
 message PullEvents {
   int64 origin_node_id = 1;
   uint64 after_event_id = 2;
@@ -190,6 +209,7 @@ enum SnapshotPartitionKind {
   SNAPSHOT_PARTITION_KIND_MESSAGES = 2;
   SNAPSHOT_PARTITION_KIND_ATTACHMENTS = 3;
   SNAPSHOT_PARTITION_KIND_USER_METADATA = 4;
+  SNAPSHOT_PARTITION_KIND_LOGIN_NAMES = 5;
 }
 
 message SnapshotPartitionDigest {
@@ -206,6 +226,7 @@ message SnapshotRow {
     SnapshotMessageRow message = 3;
     SnapshotAttachmentRow attachment = 4;
     SnapshotUserMetadataRow user_metadata = 5;
+    SnapshotLoginNameRow login_name = 6;
   }
 }
 
@@ -265,6 +286,15 @@ message SnapshotUserMetadataRow {
   int64 origin_node_id = 7;
 }
 
+message SnapshotLoginNameRow {
+  string login_name = 1;
+  int64 user_node_id = 2;
+  int64 user_id = 3;
+  string bound_at_hlc = 4;
+  string deleted_at_hlc = 5;
+  int64 origin_node_id = 6;
+}
+
 message TimeSyncRequest {
   uint64 request_id = 1;
   int64 client_send_time_ms = 2;
@@ -317,6 +347,7 @@ message ClusterLoggedInUser {
   int64 node_id = 1;
   int64 user_id = 2;
   string username = 3;
+  string login_name = 4;
 }
 
 message ClusterSessionRef {

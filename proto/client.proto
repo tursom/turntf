@@ -62,6 +62,7 @@ message ServerEnvelope {
 
 message LoginRequest {
   UserRef user = 1;
+  string login_name = 2;
   string password = 3;
   repeated MessageCursor seen_messages = 4;
   bool transient_only = 5;
@@ -132,6 +133,7 @@ message CreateUserRequest {
   string password = 3;
   bytes profile_json = 4;
   string role = 5;
+  string login_name = 6;
 }
 
 message GetUserRequest {
@@ -146,6 +148,7 @@ message UpdateUserRequest {
   StringField password = 4;
   BytesField profile_json = 5;
   StringField role = 6;
+  StringField login_name = 7;
 }
 
 message DeleteUserRequest {
@@ -349,6 +352,7 @@ message LoggedInUser {
   int64 node_id = 1;
   int64 user_id = 2;
   string username = 3;
+  string login_name = 4;
 }
 
 message SessionRef {
@@ -414,6 +418,7 @@ message User {
   string created_at = 7;
   string updated_at = 8;
   int64 origin_node_id = 9;
+  string login_name = 10;
 }
 
 message Message {

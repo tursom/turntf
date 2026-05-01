@@ -16,6 +16,8 @@ const (
 	EventTypeUserAttachmentDeleted  EventType = "user_attachment_deleted"
 	EventTypeUserMetadataUpserted   EventType = "user_metadata_upserted"
 	EventTypeUserMetadataDeleted    EventType = "user_metadata_deleted"
+	EventTypeUserLoginNameUpserted  EventType = "user_login_name_upserted"
+	EventTypeUserLoginNameDeleted   EventType = "user_login_name_deleted"
 )
 
 func eventTypeOf(body internalproto.EventBody) EventType {
@@ -134,6 +136,30 @@ func userMetadataDeletedProtoFromUserMetadata(metadata UserMetadata) *internalpr
 	}
 	if metadata.DeletedAt != nil {
 		event.DeletedAtHlc = metadata.DeletedAt.String()
+	}
+	return event
+}
+
+func userLoginNameUpsertedProtoFromBinding(binding UserLoginName) *internalproto.UserLoginNameUpsertedEvent {
+	return &internalproto.UserLoginNameUpsertedEvent{
+		LoginName:    binding.LoginName,
+		UserNodeId:   binding.User.NodeID,
+		UserId:       binding.User.UserID,
+		BoundAtHlc:   binding.BoundAt.String(),
+		OriginNodeId: binding.OriginNodeID,
+	}
+}
+
+func userLoginNameDeletedProtoFromBinding(binding UserLoginName) *internalproto.UserLoginNameDeletedEvent {
+	event := &internalproto.UserLoginNameDeletedEvent{
+		LoginName:    binding.LoginName,
+		UserNodeId:   binding.User.NodeID,
+		UserId:       binding.User.UserID,
+		BoundAtHlc:   binding.BoundAt.String(),
+		OriginNodeId: binding.OriginNodeID,
+	}
+	if binding.DeletedAt != nil {
+		event.DeletedAtHlc = binding.DeletedAt.String()
 	}
 	return event
 }

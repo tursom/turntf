@@ -1062,6 +1062,7 @@ func (*ServerEnvelope_ScanUserMetadataResponse) isServerEnvelope_Body() {}
 type LoginRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	User          *UserRef               `protobuf:"bytes,1,opt,name=user,proto3" json:"user,omitempty"`
+	LoginName     string                 `protobuf:"bytes,2,opt,name=login_name,json=loginName,proto3" json:"login_name,omitempty"`
 	Password      string                 `protobuf:"bytes,3,opt,name=password,proto3" json:"password,omitempty"`
 	SeenMessages  []*MessageCursor       `protobuf:"bytes,4,rep,name=seen_messages,json=seenMessages,proto3" json:"seen_messages,omitempty"`
 	TransientOnly bool                   `protobuf:"varint,5,opt,name=transient_only,json=transientOnly,proto3" json:"transient_only,omitempty"`
@@ -1104,6 +1105,13 @@ func (x *LoginRequest) GetUser() *UserRef {
 		return x.User
 	}
 	return nil
+}
+
+func (x *LoginRequest) GetLoginName() string {
+	if x != nil {
+		return x.LoginName
+	}
+	return ""
 }
 
 func (x *LoginRequest) GetPassword() string {
@@ -1740,6 +1748,7 @@ type CreateUserRequest struct {
 	Password      string                 `protobuf:"bytes,3,opt,name=password,proto3" json:"password,omitempty"`
 	ProfileJson   []byte                 `protobuf:"bytes,4,opt,name=profile_json,json=profileJson,proto3" json:"profile_json,omitempty"`
 	Role          string                 `protobuf:"bytes,5,opt,name=role,proto3" json:"role,omitempty"`
+	LoginName     string                 `protobuf:"bytes,6,opt,name=login_name,json=loginName,proto3" json:"login_name,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1809,6 +1818,13 @@ func (x *CreateUserRequest) GetRole() string {
 	return ""
 }
 
+func (x *CreateUserRequest) GetLoginName() string {
+	if x != nil {
+		return x.LoginName
+	}
+	return ""
+}
+
 type GetUserRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	RequestId     uint64                 `protobuf:"varint,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
@@ -1869,6 +1885,7 @@ type UpdateUserRequest struct {
 	Password      *StringField           `protobuf:"bytes,4,opt,name=password,proto3" json:"password,omitempty"`
 	ProfileJson   *BytesField            `protobuf:"bytes,5,opt,name=profile_json,json=profileJson,proto3" json:"profile_json,omitempty"`
 	Role          *StringField           `protobuf:"bytes,6,opt,name=role,proto3" json:"role,omitempty"`
+	LoginName     *StringField           `protobuf:"bytes,7,opt,name=login_name,json=loginName,proto3" json:"login_name,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1941,6 +1958,13 @@ func (x *UpdateUserRequest) GetProfileJson() *BytesField {
 func (x *UpdateUserRequest) GetRole() *StringField {
 	if x != nil {
 		return x.Role
+	}
+	return nil
+}
+
+func (x *UpdateUserRequest) GetLoginName() *StringField {
+	if x != nil {
+		return x.LoginName
 	}
 	return nil
 }
@@ -3934,6 +3958,7 @@ type LoggedInUser struct {
 	NodeId        int64                  `protobuf:"varint,1,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
 	UserId        int64                  `protobuf:"varint,2,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
 	Username      string                 `protobuf:"bytes,3,opt,name=username,proto3" json:"username,omitempty"`
+	LoginName     string                 `protobuf:"bytes,4,opt,name=login_name,json=loginName,proto3" json:"login_name,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3985,6 +4010,13 @@ func (x *LoggedInUser) GetUserId() int64 {
 func (x *LoggedInUser) GetUsername() string {
 	if x != nil {
 		return x.Username
+	}
+	return ""
+}
+
+func (x *LoggedInUser) GetLoginName() string {
+	if x != nil {
+		return x.LoginName
 	}
 	return ""
 }
@@ -4364,6 +4396,7 @@ type User struct {
 	CreatedAt      string                 `protobuf:"bytes,7,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
 	UpdatedAt      string                 `protobuf:"bytes,8,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
 	OriginNodeId   int64                  `protobuf:"varint,9,opt,name=origin_node_id,json=originNodeId,proto3" json:"origin_node_id,omitempty"`
+	LoginName      string                 `protobuf:"bytes,10,opt,name=login_name,json=loginName,proto3" json:"login_name,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -4459,6 +4492,13 @@ func (x *User) GetOriginNodeId() int64 {
 		return x.OriginNodeId
 	}
 	return 0
+}
+
+func (x *User) GetLoginName() string {
+	if x != nil {
+		return x.LoginName
+	}
+	return ""
 }
 
 type Message struct {
@@ -5566,9 +5606,11 @@ const file_client_proto_rawDesc = "" +
 	"\x1dupsert_user_metadata_response\x18\x16 \x01(\v2..notifier.client.v1.UpsertUserMetadataResponseH\x00R\x1aupsertUserMetadataResponse\x12s\n" +
 	"\x1ddelete_user_metadata_response\x18\x17 \x01(\v2..notifier.client.v1.DeleteUserMetadataResponseH\x00R\x1adeleteUserMetadataResponse\x12m\n" +
 	"\x1bscan_user_metadata_response\x18\x18 \x01(\v2,.notifier.client.v1.ScanUserMetadataResponseH\x00R\x18scanUserMetadataResponseB\x06\n" +
-	"\x04body\"\xca\x01\n" +
+	"\x04body\"\xe9\x01\n" +
 	"\fLoginRequest\x12/\n" +
-	"\x04user\x18\x01 \x01(\v2\x1b.notifier.client.v1.UserRefR\x04user\x12\x1a\n" +
+	"\x04user\x18\x01 \x01(\v2\x1b.notifier.client.v1.UserRefR\x04user\x12\x1d\n" +
+	"\n" +
+	"login_name\x18\x02 \x01(\tR\tloginName\x12\x1a\n" +
 	"\bpassword\x18\x03 \x01(\tR\bpassword\x12F\n" +
 	"\rseen_messages\x18\x04 \x03(\v2!.notifier.client.v1.MessageCursorR\fseenMessages\x12%\n" +
 	"\x0etransient_only\x18\x05 \x01(\bR\rtransientOnly\"\xa9\x01\n" +
@@ -5616,18 +5658,20 @@ const file_client_proto_rawDesc = "" +
 	"\x04code\x18\x01 \x01(\tR\x04code\x12\x18\n" +
 	"\amessage\x18\x02 \x01(\tR\amessage\x12\x1d\n" +
 	"\n" +
-	"request_id\x18\x03 \x01(\x04R\trequestId\"\xa1\x01\n" +
+	"request_id\x18\x03 \x01(\x04R\trequestId\"\xc0\x01\n" +
 	"\x11CreateUserRequest\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\x04R\trequestId\x12\x1a\n" +
 	"\busername\x18\x02 \x01(\tR\busername\x12\x1a\n" +
 	"\bpassword\x18\x03 \x01(\tR\bpassword\x12!\n" +
 	"\fprofile_json\x18\x04 \x01(\fR\vprofileJson\x12\x12\n" +
-	"\x04role\x18\x05 \x01(\tR\x04role\"`\n" +
+	"\x04role\x18\x05 \x01(\tR\x04role\x12\x1d\n" +
+	"\n" +
+	"login_name\x18\x06 \x01(\tR\tloginName\"`\n" +
 	"\x0eGetUserRequest\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\x04R\trequestId\x12/\n" +
-	"\x04user\x18\x02 \x01(\v2\x1b.notifier.client.v1.UserRefR\x04user\"\xd5\x02\n" +
+	"\x04user\x18\x02 \x01(\v2\x1b.notifier.client.v1.UserRefR\x04user\"\x95\x03\n" +
 	"\x11UpdateUserRequest\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\x04R\trequestId\x12/\n" +
@@ -5635,7 +5679,9 @@ const file_client_proto_rawDesc = "" +
 	"\busername\x18\x03 \x01(\v2\x1f.notifier.client.v1.StringFieldR\busername\x12;\n" +
 	"\bpassword\x18\x04 \x01(\v2\x1f.notifier.client.v1.StringFieldR\bpassword\x12A\n" +
 	"\fprofile_json\x18\x05 \x01(\v2\x1e.notifier.client.v1.BytesFieldR\vprofileJson\x123\n" +
-	"\x04role\x18\x06 \x01(\v2\x1f.notifier.client.v1.StringFieldR\x04role\"c\n" +
+	"\x04role\x18\x06 \x01(\v2\x1f.notifier.client.v1.StringFieldR\x04role\x12>\n" +
+	"\n" +
+	"login_name\x18\a \x01(\v2\x1f.notifier.client.v1.StringFieldR\tloginName\"c\n" +
 	"\x11DeleteUserRequest\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\x04R\trequestId\x12/\n" +
@@ -5804,11 +5850,13 @@ const file_client_proto_rawDesc = "" +
 	"\anode_id\x18\x01 \x01(\x03R\x06nodeId\x12\x19\n" +
 	"\bis_local\x18\x02 \x01(\bR\aisLocal\x12%\n" +
 	"\x0econfigured_url\x18\x03 \x01(\tR\rconfiguredUrl\x12\x16\n" +
-	"\x06source\x18\x04 \x01(\tR\x06source\"\\\n" +
+	"\x06source\x18\x04 \x01(\tR\x06source\"{\n" +
 	"\fLoggedInUser\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\x03R\x06nodeId\x12\x17\n" +
 	"\auser_id\x18\x02 \x01(\x03R\x06userId\x12\x1a\n" +
-	"\busername\x18\x03 \x01(\tR\busername\"S\n" +
+	"\busername\x18\x03 \x01(\tR\busername\x12\x1d\n" +
+	"\n" +
+	"login_name\x18\x04 \x01(\tR\tloginName\"S\n" +
 	"\n" +
 	"SessionRef\x12&\n" +
 	"\x0fserving_node_id\x18\x01 \x01(\x03R\rservingNodeId\x12\x1d\n" +
@@ -5832,7 +5880,7 @@ const file_client_proto_rawDesc = "" +
 	"\x03seq\x18\x02 \x01(\x03R\x03seq\";\n" +
 	"\aUserRef\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\x03R\x06nodeId\x12\x17\n" +
-	"\auser_id\x18\x02 \x01(\x03R\x06userId\"\x98\x02\n" +
+	"\auser_id\x18\x02 \x01(\x03R\x06userId\"\xb7\x02\n" +
 	"\x04User\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\x03R\x06nodeId\x12\x17\n" +
 	"\auser_id\x18\x02 \x01(\x03R\x06userId\x12\x1a\n" +
@@ -5844,7 +5892,10 @@ const file_client_proto_rawDesc = "" +
 	"created_at\x18\a \x01(\tR\tcreatedAt\x12\x1d\n" +
 	"\n" +
 	"updated_at\x18\b \x01(\tR\tupdatedAt\x12$\n" +
-	"\x0eorigin_node_id\x18\t \x01(\x03R\foriginNodeId\"\xde\x01\n" +
+	"\x0eorigin_node_id\x18\t \x01(\x03R\foriginNodeId\x12\x1d\n" +
+	"\n" +
+	"login_name\x18\n" +
+	" \x01(\tR\tloginName\"\xde\x01\n" +
 	"\aMessage\x129\n" +
 	"\trecipient\x18\x01 \x01(\v2\x1b.notifier.client.v1.UserRefR\trecipient\x12\x17\n" +
 	"\anode_id\x18\x03 \x01(\x03R\x06nodeId\x12\x10\n" +
@@ -6129,62 +6180,63 @@ var file_client_proto_depIdxs = []int32{
 	58,  // 66: notifier.client.v1.UpdateUserRequest.password:type_name -> notifier.client.v1.StringField
 	59,  // 67: notifier.client.v1.UpdateUserRequest.profile_json:type_name -> notifier.client.v1.BytesField
 	58,  // 68: notifier.client.v1.UpdateUserRequest.role:type_name -> notifier.client.v1.StringField
-	61,  // 69: notifier.client.v1.DeleteUserRequest.user:type_name -> notifier.client.v1.UserRef
-	61,  // 70: notifier.client.v1.ListMessagesRequest.user:type_name -> notifier.client.v1.UserRef
-	61,  // 71: notifier.client.v1.UpsertUserAttachmentRequest.owner:type_name -> notifier.client.v1.UserRef
-	61,  // 72: notifier.client.v1.UpsertUserAttachmentRequest.subject:type_name -> notifier.client.v1.UserRef
-	3,   // 73: notifier.client.v1.UpsertUserAttachmentRequest.attachment_type:type_name -> notifier.client.v1.AttachmentType
-	61,  // 74: notifier.client.v1.DeleteUserAttachmentRequest.owner:type_name -> notifier.client.v1.UserRef
-	61,  // 75: notifier.client.v1.DeleteUserAttachmentRequest.subject:type_name -> notifier.client.v1.UserRef
-	3,   // 76: notifier.client.v1.DeleteUserAttachmentRequest.attachment_type:type_name -> notifier.client.v1.AttachmentType
-	61,  // 77: notifier.client.v1.ListUserAttachmentsRequest.owner:type_name -> notifier.client.v1.UserRef
-	3,   // 78: notifier.client.v1.ListUserAttachmentsRequest.attachment_type:type_name -> notifier.client.v1.AttachmentType
-	62,  // 79: notifier.client.v1.CreateUserResponse.user:type_name -> notifier.client.v1.User
-	62,  // 80: notifier.client.v1.GetUserResponse.user:type_name -> notifier.client.v1.User
-	62,  // 81: notifier.client.v1.UpdateUserResponse.user:type_name -> notifier.client.v1.User
-	61,  // 82: notifier.client.v1.DeleteUserResponse.user:type_name -> notifier.client.v1.UserRef
-	63,  // 83: notifier.client.v1.ListMessagesResponse.items:type_name -> notifier.client.v1.Message
-	65,  // 84: notifier.client.v1.UpsertUserAttachmentResponse.attachment:type_name -> notifier.client.v1.Attachment
-	65,  // 85: notifier.client.v1.DeleteUserAttachmentResponse.attachment:type_name -> notifier.client.v1.Attachment
-	65,  // 86: notifier.client.v1.ListUserAttachmentsResponse.items:type_name -> notifier.client.v1.Attachment
-	67,  // 87: notifier.client.v1.ListEventsResponse.items:type_name -> notifier.client.v1.Event
-	68,  // 88: notifier.client.v1.OperationsStatusResponse.status:type_name -> notifier.client.v1.OperationsStatus
-	53,  // 89: notifier.client.v1.ListClusterNodesResponse.items:type_name -> notifier.client.v1.ClusterNode
-	54,  // 90: notifier.client.v1.ListNodeLoggedInUsersResponse.items:type_name -> notifier.client.v1.LoggedInUser
-	61,  // 91: notifier.client.v1.ResolveUserSessionsRequest.user:type_name -> notifier.client.v1.UserRef
-	61,  // 92: notifier.client.v1.ResolveUserSessionsResponse.user:type_name -> notifier.client.v1.UserRef
-	56,  // 93: notifier.client.v1.ResolveUserSessionsResponse.presence:type_name -> notifier.client.v1.OnlineNodePresence
-	57,  // 94: notifier.client.v1.ResolveUserSessionsResponse.items:type_name -> notifier.client.v1.ResolvedSession
-	61,  // 95: notifier.client.v1.GetUserMetadataRequest.owner:type_name -> notifier.client.v1.UserRef
-	61,  // 96: notifier.client.v1.UpsertUserMetadataRequest.owner:type_name -> notifier.client.v1.UserRef
-	58,  // 97: notifier.client.v1.UpsertUserMetadataRequest.expires_at:type_name -> notifier.client.v1.StringField
-	61,  // 98: notifier.client.v1.DeleteUserMetadataRequest.owner:type_name -> notifier.client.v1.UserRef
-	61,  // 99: notifier.client.v1.ScanUserMetadataRequest.owner:type_name -> notifier.client.v1.UserRef
-	66,  // 100: notifier.client.v1.GetUserMetadataResponse.metadata:type_name -> notifier.client.v1.UserMetadata
-	66,  // 101: notifier.client.v1.UpsertUserMetadataResponse.metadata:type_name -> notifier.client.v1.UserMetadata
-	66,  // 102: notifier.client.v1.DeleteUserMetadataResponse.metadata:type_name -> notifier.client.v1.UserMetadata
-	66,  // 103: notifier.client.v1.ScanUserMetadataResponse.items:type_name -> notifier.client.v1.UserMetadata
-	55,  // 104: notifier.client.v1.ResolvedSession.session:type_name -> notifier.client.v1.SessionRef
-	61,  // 105: notifier.client.v1.Message.recipient:type_name -> notifier.client.v1.UserRef
-	61,  // 106: notifier.client.v1.Message.sender:type_name -> notifier.client.v1.UserRef
-	61,  // 107: notifier.client.v1.Packet.recipient:type_name -> notifier.client.v1.UserRef
-	61,  // 108: notifier.client.v1.Packet.sender:type_name -> notifier.client.v1.UserRef
-	1,   // 109: notifier.client.v1.Packet.delivery_mode:type_name -> notifier.client.v1.ClientDeliveryMode
-	55,  // 110: notifier.client.v1.Packet.target_session:type_name -> notifier.client.v1.SessionRef
-	61,  // 111: notifier.client.v1.Attachment.owner:type_name -> notifier.client.v1.UserRef
-	61,  // 112: notifier.client.v1.Attachment.subject:type_name -> notifier.client.v1.UserRef
-	3,   // 113: notifier.client.v1.Attachment.attachment_type:type_name -> notifier.client.v1.AttachmentType
-	61,  // 114: notifier.client.v1.UserMetadata.owner:type_name -> notifier.client.v1.UserRef
-	69,  // 115: notifier.client.v1.OperationsStatus.message_trim:type_name -> notifier.client.v1.MessageTrimStatus
-	71,  // 116: notifier.client.v1.OperationsStatus.projection:type_name -> notifier.client.v1.ProjectionStatus
-	73,  // 117: notifier.client.v1.OperationsStatus.peers:type_name -> notifier.client.v1.PeerStatus
-	70,  // 118: notifier.client.v1.OperationsStatus.event_log_trim:type_name -> notifier.client.v1.EventLogTrimStatus
-	72,  // 119: notifier.client.v1.PeerStatus.origins:type_name -> notifier.client.v1.PeerOriginStatus
-	120, // [120:120] is the sub-list for method output_type
-	120, // [120:120] is the sub-list for method input_type
-	120, // [120:120] is the sub-list for extension type_name
-	120, // [120:120] is the sub-list for extension extendee
-	0,   // [0:120] is the sub-list for field type_name
+	58,  // 69: notifier.client.v1.UpdateUserRequest.login_name:type_name -> notifier.client.v1.StringField
+	61,  // 70: notifier.client.v1.DeleteUserRequest.user:type_name -> notifier.client.v1.UserRef
+	61,  // 71: notifier.client.v1.ListMessagesRequest.user:type_name -> notifier.client.v1.UserRef
+	61,  // 72: notifier.client.v1.UpsertUserAttachmentRequest.owner:type_name -> notifier.client.v1.UserRef
+	61,  // 73: notifier.client.v1.UpsertUserAttachmentRequest.subject:type_name -> notifier.client.v1.UserRef
+	3,   // 74: notifier.client.v1.UpsertUserAttachmentRequest.attachment_type:type_name -> notifier.client.v1.AttachmentType
+	61,  // 75: notifier.client.v1.DeleteUserAttachmentRequest.owner:type_name -> notifier.client.v1.UserRef
+	61,  // 76: notifier.client.v1.DeleteUserAttachmentRequest.subject:type_name -> notifier.client.v1.UserRef
+	3,   // 77: notifier.client.v1.DeleteUserAttachmentRequest.attachment_type:type_name -> notifier.client.v1.AttachmentType
+	61,  // 78: notifier.client.v1.ListUserAttachmentsRequest.owner:type_name -> notifier.client.v1.UserRef
+	3,   // 79: notifier.client.v1.ListUserAttachmentsRequest.attachment_type:type_name -> notifier.client.v1.AttachmentType
+	62,  // 80: notifier.client.v1.CreateUserResponse.user:type_name -> notifier.client.v1.User
+	62,  // 81: notifier.client.v1.GetUserResponse.user:type_name -> notifier.client.v1.User
+	62,  // 82: notifier.client.v1.UpdateUserResponse.user:type_name -> notifier.client.v1.User
+	61,  // 83: notifier.client.v1.DeleteUserResponse.user:type_name -> notifier.client.v1.UserRef
+	63,  // 84: notifier.client.v1.ListMessagesResponse.items:type_name -> notifier.client.v1.Message
+	65,  // 85: notifier.client.v1.UpsertUserAttachmentResponse.attachment:type_name -> notifier.client.v1.Attachment
+	65,  // 86: notifier.client.v1.DeleteUserAttachmentResponse.attachment:type_name -> notifier.client.v1.Attachment
+	65,  // 87: notifier.client.v1.ListUserAttachmentsResponse.items:type_name -> notifier.client.v1.Attachment
+	67,  // 88: notifier.client.v1.ListEventsResponse.items:type_name -> notifier.client.v1.Event
+	68,  // 89: notifier.client.v1.OperationsStatusResponse.status:type_name -> notifier.client.v1.OperationsStatus
+	53,  // 90: notifier.client.v1.ListClusterNodesResponse.items:type_name -> notifier.client.v1.ClusterNode
+	54,  // 91: notifier.client.v1.ListNodeLoggedInUsersResponse.items:type_name -> notifier.client.v1.LoggedInUser
+	61,  // 92: notifier.client.v1.ResolveUserSessionsRequest.user:type_name -> notifier.client.v1.UserRef
+	61,  // 93: notifier.client.v1.ResolveUserSessionsResponse.user:type_name -> notifier.client.v1.UserRef
+	56,  // 94: notifier.client.v1.ResolveUserSessionsResponse.presence:type_name -> notifier.client.v1.OnlineNodePresence
+	57,  // 95: notifier.client.v1.ResolveUserSessionsResponse.items:type_name -> notifier.client.v1.ResolvedSession
+	61,  // 96: notifier.client.v1.GetUserMetadataRequest.owner:type_name -> notifier.client.v1.UserRef
+	61,  // 97: notifier.client.v1.UpsertUserMetadataRequest.owner:type_name -> notifier.client.v1.UserRef
+	58,  // 98: notifier.client.v1.UpsertUserMetadataRequest.expires_at:type_name -> notifier.client.v1.StringField
+	61,  // 99: notifier.client.v1.DeleteUserMetadataRequest.owner:type_name -> notifier.client.v1.UserRef
+	61,  // 100: notifier.client.v1.ScanUserMetadataRequest.owner:type_name -> notifier.client.v1.UserRef
+	66,  // 101: notifier.client.v1.GetUserMetadataResponse.metadata:type_name -> notifier.client.v1.UserMetadata
+	66,  // 102: notifier.client.v1.UpsertUserMetadataResponse.metadata:type_name -> notifier.client.v1.UserMetadata
+	66,  // 103: notifier.client.v1.DeleteUserMetadataResponse.metadata:type_name -> notifier.client.v1.UserMetadata
+	66,  // 104: notifier.client.v1.ScanUserMetadataResponse.items:type_name -> notifier.client.v1.UserMetadata
+	55,  // 105: notifier.client.v1.ResolvedSession.session:type_name -> notifier.client.v1.SessionRef
+	61,  // 106: notifier.client.v1.Message.recipient:type_name -> notifier.client.v1.UserRef
+	61,  // 107: notifier.client.v1.Message.sender:type_name -> notifier.client.v1.UserRef
+	61,  // 108: notifier.client.v1.Packet.recipient:type_name -> notifier.client.v1.UserRef
+	61,  // 109: notifier.client.v1.Packet.sender:type_name -> notifier.client.v1.UserRef
+	1,   // 110: notifier.client.v1.Packet.delivery_mode:type_name -> notifier.client.v1.ClientDeliveryMode
+	55,  // 111: notifier.client.v1.Packet.target_session:type_name -> notifier.client.v1.SessionRef
+	61,  // 112: notifier.client.v1.Attachment.owner:type_name -> notifier.client.v1.UserRef
+	61,  // 113: notifier.client.v1.Attachment.subject:type_name -> notifier.client.v1.UserRef
+	3,   // 114: notifier.client.v1.Attachment.attachment_type:type_name -> notifier.client.v1.AttachmentType
+	61,  // 115: notifier.client.v1.UserMetadata.owner:type_name -> notifier.client.v1.UserRef
+	69,  // 116: notifier.client.v1.OperationsStatus.message_trim:type_name -> notifier.client.v1.MessageTrimStatus
+	71,  // 117: notifier.client.v1.OperationsStatus.projection:type_name -> notifier.client.v1.ProjectionStatus
+	73,  // 118: notifier.client.v1.OperationsStatus.peers:type_name -> notifier.client.v1.PeerStatus
+	70,  // 119: notifier.client.v1.OperationsStatus.event_log_trim:type_name -> notifier.client.v1.EventLogTrimStatus
+	72,  // 120: notifier.client.v1.PeerStatus.origins:type_name -> notifier.client.v1.PeerOriginStatus
+	121, // [121:121] is the sub-list for method output_type
+	121, // [121:121] is the sub-list for method input_type
+	121, // [121:121] is the sub-list for extension type_name
+	121, // [121:121] is the sub-list for extension extendee
+	0,   // [0:121] is the sub-list for field type_name
 }
 
 func init() { file_client_proto_init() }

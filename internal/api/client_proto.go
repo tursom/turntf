@@ -9,6 +9,10 @@ import (
 )
 
 func clientProtoUser(user store.User) *internalproto.User {
+	return clientProtoUserWithLoginName(user, "")
+}
+
+func clientProtoUserWithLoginName(user store.User, loginName string) *internalproto.User {
 	return &internalproto.User{
 		NodeId:         user.NodeID,
 		UserId:         user.ID,
@@ -19,6 +23,7 @@ func clientProtoUser(user store.User) *internalproto.User {
 		CreatedAt:      user.CreatedAt.String(),
 		UpdatedAt:      user.UpdatedAt.String(),
 		OriginNodeId:   user.OriginNodeID,
+		LoginName:      loginName,
 	}
 }
 

@@ -74,7 +74,8 @@ const (
 	BroadcastUserID                     = int64(2)
 	NodeIngressUserID                   = int64(3)
 	ReservedUserIDMax                   = int64(1024)
-	defaultSchemaVersion                = "16"
+	defaultSchemaVersion                = "17"
+	previousSchemaVersion               = "16"
 	schemaMetaNodeIDKey                 = "node_id"
 	schemaMetaMeshTopologyGenerationKey = "mesh_topology_generation"
 )
@@ -153,6 +154,14 @@ func (u User) Key() UserKey {
 
 func (u User) CanLogin() bool {
 	return isLoginRole(u.Role)
+}
+
+type UserLoginName struct {
+	LoginName    string           `json:"login_name"`
+	User         UserKey          `json:"user"`
+	BoundAt      clock.Timestamp  `json:"bound_at"`
+	DeletedAt    *clock.Timestamp `json:"deleted_at,omitempty"`
+	OriginNodeID int64            `json:"origin_node_id"`
 }
 
 type Message struct {
@@ -245,6 +254,7 @@ type OriginCursor struct {
 
 type CreateUserParams struct {
 	Username     string
+	LoginName    string
 	PasswordHash string
 	Profile      string
 	Role         string
@@ -253,6 +263,7 @@ type CreateUserParams struct {
 type UpdateUserParams struct {
 	Key          UserKey
 	Username     *string
+	LoginName    *string
 	PasswordHash *string
 	Profile      *string
 	Role         *string

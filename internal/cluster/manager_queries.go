@@ -77,9 +77,10 @@ func clusterLoggedInUsers(users []app.LoggedInUserSummary) []*internalproto.Clus
 	items := make([]*internalproto.ClusterLoggedInUser, 0, len(users))
 	for _, user := range users {
 		items = append(items, &internalproto.ClusterLoggedInUser{
-			NodeId:   user.NodeID,
-			UserId:   user.UserID,
-			Username: user.Username,
+			NodeId:    user.NodeID,
+			UserId:    user.UserID,
+			Username:  user.Username,
+			LoginName: user.LoginName,
 		})
 	}
 	return items
@@ -92,9 +93,10 @@ func loggedInUsersFromCluster(users []*internalproto.ClusterLoggedInUser) []app.
 			continue
 		}
 		items = append(items, app.LoggedInUserSummary{
-			NodeID:   user.NodeId,
-			UserID:   user.UserId,
-			Username: user.Username,
+			NodeID:    user.NodeId,
+			UserID:    user.UserId,
+			Username:  user.Username,
+			LoginName: user.LoginName,
 		})
 	}
 	return normalizeLoggedInUsers(items)
@@ -116,6 +118,7 @@ func normalizeLoggedInUsers(users []app.LoggedInUserSummary) []app.LoggedInUserS
 	normalized := cloneLoggedInUsers(users)
 	for idx := range normalized {
 		normalized[idx].Username = strings.TrimSpace(normalized[idx].Username)
+		normalized[idx].LoginName = strings.TrimSpace(normalized[idx].LoginName)
 	}
 	sort.Slice(normalized, func(i, j int) bool {
 		if normalized[i].NodeID != normalized[j].NodeID {
@@ -124,7 +127,10 @@ func normalizeLoggedInUsers(users []app.LoggedInUserSummary) []app.LoggedInUserS
 		if normalized[i].UserID != normalized[j].UserID {
 			return normalized[i].UserID < normalized[j].UserID
 		}
-		return normalized[i].Username < normalized[j].Username
+		if normalized[i].Username != normalized[j].Username {
+			return normalized[i].Username < normalized[j].Username
+		}
+		return normalized[i].LoginName < normalized[j].LoginName
 	})
 	return normalized
 }

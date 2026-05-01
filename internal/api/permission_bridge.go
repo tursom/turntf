@@ -80,6 +80,35 @@ func (h *HTTP) authorizeDeleteUser(ctx context.Context, principal *requestPrinci
 	})
 }
 
+func (h *HTTP) authorizeCreateMessage(ctx context.Context, principal *requestPrincipal, key store.UserKey) error {
+	return h.authorizeWithPermissions(func() error {
+		actor := actorFromPrincipal(principal)
+		permCtx := permission.CreateMessageContext{
+			Actor:     actor,
+			TargetKey: key,
+		}
+		if actor == nil {
+			return permission.CanCreateMessage(permCtx)
+		}
+		if actor != nil && (permission.IsAdminRole(actor.Role) || actor.Key() == key) {
+			return permission.CanCreateMessage(permCtx)
+		}
+		target, err := h.service.GetUser(ctx, key)
+		if err != nil {
+			return err
+		}
+		permCtx.Target = &target
+		if actor != nil && target.Role == store.RoleChannel {
+			channelWriter, err := h.service.IsChannelWriter(ctx, key, actor.Key())
+			if err != nil {
+				return err
+			}
+			permCtx.ChannelWriter = channelWriter
+		}
+		return permission.CanCreateMessage(permCtx)
+	})
+}
+
 func (h *HTTP) authorizeListMessages(principal *requestPrincipal, target store.User) error {
 	return h.authorizeWithPermissions(func() error {
 		return permission.CanListMessages(permission.ListMessagesContext{
@@ -205,14 +234,14 @@ func (h *HTTP) authorizeListLoggedInUsers(principal *requestPrincipal) error {
 }
 
 func (h *HTTP) channelManagerForTarget(ctx context.Context, principal *requestPrincipal, target store.User) (bool, error) {
-	if principal == nil || isAdminRole(principal.User.Role) || target.Role != store.RoleChannel {
+	if principal == nil || permission.IsAdminRole(principal.User.Role) || target.Role != store.RoleChannel {
 		return false, nil
 	}
 	return h.service.IsChannelManager(ctx, target.Key(), principal.User.Key())
 }
 
 func (h *HTTP) channelManagerForAttachment(ctx context.Context, principal *requestPrincipal, owner store.UserKey, attachmentType store.AttachmentType) (bool, error) {
-	if principal == nil || isAdminRole(principal.User.Role) {
+	if principal == nil || permission.IsAdminRole(principal.User.Role) {
 		return false, nil
 	}
 	switch attachmentType {
@@ -224,7 +253,7 @@ func (h *HTTP) channelManagerForAttachment(ctx context.Context, principal *reque
 }
 
 func (h *HTTP) listAttachmentFacts(ctx context.Context, principal *requestPrincipal, owner store.UserKey, attachmentType store.AttachmentType) (string, bool, error) {
-	if principal == nil || isAdminRole(principal.User.Role) {
+	if principal == nil || permission.IsAdminRole(principal.User.Role) {
 		return "", false, nil
 	}
 	if attachmentType != "" {

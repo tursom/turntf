@@ -181,6 +181,72 @@ func TestAttachmentPermissions(t *testing.T) {
 	}
 }
 
+func TestCanCreateMessage(t *testing.T) {
+	t.Parallel()
+
+	admin := testActor(store.RoleAdmin, 1)
+	alice := testActor(store.RoleUser, 2)
+	bob := testUser(store.RoleUser, 3, false)
+	channel := testUser(store.RoleChannel, 4, false)
+	broadcast := testUser(store.RoleBroadcast, 5, false)
+	node := testUser(store.RoleNode, 6, false)
+
+	if err := CanCreateMessage(CreateMessageContext{
+		Actor:     admin,
+		TargetKey: bob.Key(),
+	}); err != nil {
+		t.Fatalf("admin should send to any target: %v", err)
+	}
+	if err := CanCreateMessage(CreateMessageContext{
+		Actor:     alice,
+		TargetKey: alice.Key(),
+	}); err != nil {
+		t.Fatalf("self send should be allowed: %v", err)
+	}
+	if err := CanCreateMessage(CreateMessageContext{
+		Actor:     alice,
+		TargetKey: bob.Key(),
+		Target:    bob,
+	}); err != nil {
+		t.Fatalf("user should send to login target: %v", err)
+	}
+	if err := CanCreateMessage(CreateMessageContext{
+		Actor:         alice,
+		TargetKey:     channel.Key(),
+		Target:        channel,
+		ChannelWriter: true,
+	}); err != nil {
+		t.Fatalf("channel writer should send to channel: %v", err)
+	}
+	if err := CanCreateMessage(CreateMessageContext{
+		Actor:     alice,
+		TargetKey: channel.Key(),
+		Target:    channel,
+	}); !errors.Is(err, store.ErrForbidden) {
+		t.Fatalf("non-writer channel send should be forbidden: %v", err)
+	}
+	if err := CanCreateMessage(CreateMessageContext{
+		Actor:     alice,
+		TargetKey: broadcast.Key(),
+		Target:    broadcast,
+	}); !errors.Is(err, store.ErrForbidden) {
+		t.Fatalf("broadcast send should be forbidden: %v", err)
+	}
+	if err := CanCreateMessage(CreateMessageContext{
+		Actor:     alice,
+		TargetKey: node.Key(),
+		Target:    node,
+	}); !errors.Is(err, store.ErrForbidden) {
+		t.Fatalf("node send should be forbidden: %v", err)
+	}
+	if err := CanCreateMessage(CreateMessageContext{
+		Actor:     alice,
+		TargetKey: bob.Key(),
+	}); !errors.Is(err, store.ErrInvalidInput) {
+		t.Fatalf("missing target facts should be invalid input: %v", err)
+	}
+}
+
 func testActor(role string, userID int64) *store.User {
 	return testUser(role, userID, false)
 }

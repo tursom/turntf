@@ -566,30 +566,6 @@ func (h *HTTP) handleCreateMessage(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, messageResponseFromStore(message))
 }
 
-func (h *HTTP) authorizeCreateMessage(ctx context.Context, principal *requestPrincipal, key store.UserKey) error {
-	if principal == nil || isAdminRole(principal.User.Role) || principal.User.Key() == key {
-		return nil
-	}
-	target, err := h.service.GetUser(ctx, key)
-	if err != nil {
-		return err
-	}
-	if target.CanLogin() {
-		return nil
-	}
-	if target.Role != store.RoleChannel {
-		return store.ErrForbidden
-	}
-	allowed, err := h.service.IsChannelWriter(ctx, key, principal.User.Key())
-	if err != nil {
-		return err
-	}
-	if !allowed {
-		return store.ErrForbidden
-	}
-	return nil
-}
-
 func (h *HTTP) handleListMessagesByUser(w http.ResponseWriter, r *http.Request) {
 	key, ok := parsePathUserKey(w, r)
 	if !ok {
@@ -1809,10 +1785,6 @@ func (h *HTTP) authenticateRequest(ctx context.Context, r *http.Request) (*reque
 		return nil, err
 	}
 	return &requestPrincipal{User: user, Claims: claims}, nil
-}
-
-func isAdminRole(role string) bool {
-	return role == store.RoleSuperAdmin || role == store.RoleAdmin
 }
 
 func messageSenderFromPrincipal(principal *requestPrincipal) (store.UserKey, error) {

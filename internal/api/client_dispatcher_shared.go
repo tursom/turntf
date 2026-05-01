@@ -7,6 +7,7 @@ import (
 
 	"github.com/rs/zerolog/log"
 
+	"github.com/tursom/turntf/internal/permission"
 	"github.com/tursom/turntf/internal/store"
 )
 
@@ -163,7 +164,7 @@ func (h *HTTP) registerPersistentSession(sess *clientWSSession) {
 	h.startPersistentDispatcher()
 	h.persistentMu.Lock()
 	h.persistent[sess] = struct{}{}
-	if sess.principal != nil && isAdminRole(sess.principal.User.Role) {
+	if sess.principal != nil && permission.IsAdminRole(sess.principal.User.Role) {
 		h.persistentAdmin[sess] = struct{}{}
 	}
 	h.persistentMu.Unlock()

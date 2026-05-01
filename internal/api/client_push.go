@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/tursom/turntf/internal/clock"
+	"github.com/tursom/turntf/internal/permission"
 	internalproto "github.com/tursom/turntf/internal/proto"
 	"github.com/tursom/turntf/internal/store"
 )
@@ -97,7 +98,7 @@ func (s *clientWSSession) handlePersistentDispatchFailure(err error) {
 }
 
 func (s *clientWSSession) canSeeMessage(ctx context.Context, message store.Message) (bool, error) {
-	if isAdminRole(s.principal.User.Role) {
+	if permission.IsAdminRole(s.principal.User.Role) {
 		return true, nil
 	}
 	key := message.UserKey()

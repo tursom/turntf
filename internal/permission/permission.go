@@ -35,6 +35,13 @@ type DeleteUserContext struct {
 	ChannelManager bool
 }
 
+type CreateMessageContext struct {
+	Actor         *store.User
+	TargetKey     store.UserKey
+	Target        *store.User
+	ChannelWriter bool
+}
+
 type ListMessagesContext struct {
 	Actor  *store.User
 	Target store.User
@@ -66,7 +73,7 @@ func CanCreateUser(ctx CreateUserContext) error {
 	if isSuperAdminRole(ctx.Actor.Role) {
 		return nil
 	}
-	if !isAdminRole(ctx.Actor.Role) {
+	if !IsAdminRole(ctx.Actor.Role) {
 		return store.ErrForbidden
 	}
 	if requestsPrivilegedRole(ctx.RequestedRole) {
@@ -89,7 +96,7 @@ func CanUpdateUser(ctx UpdateUserContext) error {
 	if isSuperAdminRole(ctx.Actor.Role) {
 		return nil
 	}
-	if isAdminRole(ctx.Actor.Role) {
+	if IsAdminRole(ctx.Actor.Role) {
 		if isPrivilegedRole(ctx.Target.Role) {
 			return store.ErrForbidden
 		}
@@ -120,7 +127,7 @@ func CanDeleteUser(ctx DeleteUserContext) error {
 	if isSuperAdminRole(ctx.Actor.Role) {
 		return nil
 	}
-	if isAdminRole(ctx.Actor.Role) {
+	if IsAdminRole(ctx.Actor.Role) {
 		if isPrivilegedRole(ctx.Target.Role) {
 			return store.ErrForbidden
 		}
@@ -139,10 +146,32 @@ func CanListMessages(ctx ListMessagesContext) error {
 	if ctx.Actor == nil {
 		return store.ErrForbidden
 	}
-	if isAdminRole(ctx.Actor.Role) || ctx.Actor.Key() == ctx.Target.Key() {
+	if IsAdminRole(ctx.Actor.Role) || ctx.Actor.Key() == ctx.Target.Key() {
 		return nil
 	}
 	return store.ErrForbidden
+}
+
+func CanCreateMessage(ctx CreateMessageContext) error {
+	if ctx.Actor == nil {
+		return store.ErrForbidden
+	}
+	if IsAdminRole(ctx.Actor.Role) || ctx.Actor.Key() == ctx.TargetKey {
+		return nil
+	}
+	if ctx.Target == nil {
+		return store.ErrInvalidInput
+	}
+	if ctx.Target.CanLogin() {
+		return nil
+	}
+	if ctx.Target.Role != store.RoleChannel {
+		return store.ErrForbidden
+	}
+	if !ctx.ChannelWriter {
+		return store.ErrForbidden
+	}
+	return nil
 }
 
 func CanReadUserMetadata(ctx SelfScopedContext) error {
@@ -157,7 +186,7 @@ func CanManageAttachment(ctx ManageAttachmentContext) error {
 	if ctx.Actor == nil {
 		return store.ErrForbidden
 	}
-	if isAdminRole(ctx.Actor.Role) {
+	if IsAdminRole(ctx.Actor.Role) {
 		return nil
 	}
 	switch ctx.AttachmentType {
@@ -180,7 +209,7 @@ func CanListAttachment(ctx ListAttachmentContext) error {
 	if ctx.Actor == nil {
 		return store.ErrForbidden
 	}
-	if isAdminRole(ctx.Actor.Role) {
+	if IsAdminRole(ctx.Actor.Role) {
 		return nil
 	}
 	if ctx.AttachmentType != "" {
@@ -244,7 +273,7 @@ func requireAuthenticated(actor *store.User) error {
 }
 
 func requireAdmin(actor *store.User) error {
-	if actor == nil || !isAdminRole(actor.Role) {
+	if actor == nil || !IsAdminRole(actor.Role) {
 		return store.ErrForbidden
 	}
 	return nil
@@ -254,13 +283,13 @@ func requireSelfOrAdmin(actor *store.User, target store.UserKey) error {
 	if actor == nil {
 		return store.ErrForbidden
 	}
-	if isAdminRole(actor.Role) || actor.Key() == target {
+	if IsAdminRole(actor.Role) || actor.Key() == target {
 		return nil
 	}
 	return store.ErrForbidden
 }
 
-func isAdminRole(role string) bool {
+func IsAdminRole(role string) bool {
 	return role == store.RoleSuperAdmin || role == store.RoleAdmin
 }
 

@@ -5,25 +5,38 @@ import (
 	internalproto "github.com/tursom/turntf/internal/proto"
 )
 
+// EventType 是事件溯源系统中事件的类型枚举，由对应 protobuf 消息类型派生。
 type EventType string
 
 const (
-	EventTypeUserCreated            EventType = "user_created"
-	EventTypeUserUpdated            EventType = "user_updated"
-	EventTypeUserDeleted            EventType = "user_deleted"
-	EventTypeMessageCreated         EventType = "message_created"
+	// EventTypeUserCreated 表示用户创建事件。
+	EventTypeUserCreated EventType = "user_created"
+	// EventTypeUserUpdated 表示用户更新事件。
+	EventTypeUserUpdated EventType = "user_updated"
+	// EventTypeUserDeleted 表示用户删除事件。
+	EventTypeUserDeleted EventType = "user_deleted"
+	// EventTypeMessageCreated 表示消息创建事件。
+	EventTypeMessageCreated EventType = "message_created"
+	// EventTypeUserAttachmentUpserted 表示附件创建或更新事件。
 	EventTypeUserAttachmentUpserted EventType = "user_attachment_upserted"
-	EventTypeUserAttachmentDeleted  EventType = "user_attachment_deleted"
-	EventTypeUserMetadataUpserted   EventType = "user_metadata_upserted"
-	EventTypeUserMetadataDeleted    EventType = "user_metadata_deleted"
-	EventTypeUserLoginNameUpserted  EventType = "user_login_name_upserted"
-	EventTypeUserLoginNameDeleted   EventType = "user_login_name_deleted"
+	// EventTypeUserAttachmentDeleted 表示附件删除事件。
+	EventTypeUserAttachmentDeleted EventType = "user_attachment_deleted"
+	// EventTypeUserMetadataUpserted 表示用户元数据创建或更新事件。
+	EventTypeUserMetadataUpserted EventType = "user_metadata_upserted"
+	// EventTypeUserMetadataDeleted 表示用户元数据删除事件。
+	EventTypeUserMetadataDeleted EventType = "user_metadata_deleted"
+	// EventTypeUserLoginNameUpserted 表示登录名绑定创建或更新事件。
+	EventTypeUserLoginNameUpserted EventType = "user_login_name_upserted"
+	// EventTypeUserLoginNameDeleted 表示登录名绑定删除事件。
+	EventTypeUserLoginNameDeleted EventType = "user_login_name_deleted"
 )
 
+// eventTypeOf 从 protobuf EventBody 提取对应的 EventType。
 func eventTypeOf(body internalproto.EventBody) EventType {
 	return EventType(internalproto.EventTypeFromBody(body))
 }
 
+// userCreatedProtoFromUser 将 User 领域对象转换为 UserCreatedEvent protobuf 消息。
 func userCreatedProtoFromUser(user User) *internalproto.UserCreatedEvent {
 	return &internalproto.UserCreatedEvent{
 		NodeId:              user.NodeID,
@@ -43,6 +56,7 @@ func userCreatedProtoFromUser(user User) *internalproto.UserCreatedEvent {
 	}
 }
 
+// userUpdatedProtoFromUser 将 User 领域对象转换为 UserUpdatedEvent protobuf 消息。
 func userUpdatedProtoFromUser(user User) *internalproto.UserUpdatedEvent {
 	event := &internalproto.UserUpdatedEvent{
 		NodeId:              user.NodeID,
@@ -69,6 +83,7 @@ func userUpdatedProtoFromUser(user User) *internalproto.UserUpdatedEvent {
 	return event
 }
 
+// userDeletedProtoFromKey 从 UserKey 和删除时间戳构造 UserDeletedEvent protobuf 消息。
 func userDeletedProtoFromKey(key UserKey, deletedAt clock.Timestamp) *internalproto.UserDeletedEvent {
 	return &internalproto.UserDeletedEvent{
 		NodeId:       key.NodeID,
@@ -77,6 +92,7 @@ func userDeletedProtoFromKey(key UserKey, deletedAt clock.Timestamp) *internalpr
 	}
 }
 
+// messageCreatedProtoFromMessage 将 Message 领域对象转换为 MessageCreatedEvent protobuf 消息。
 func messageCreatedProtoFromMessage(message Message) *internalproto.MessageCreatedEvent {
 	return &internalproto.MessageCreatedEvent{
 		Recipient:    &internalproto.ClusterUserRef{NodeId: message.Recipient.NodeID, UserId: message.Recipient.UserID},
@@ -88,6 +104,7 @@ func messageCreatedProtoFromMessage(message Message) *internalproto.MessageCreat
 	}
 }
 
+// userAttachmentUpsertedProtoFromAttachment 将 Attachment 转换为 UserAttachmentUpsertedEvent protobuf 消息。
 func userAttachmentUpsertedProtoFromAttachment(attachment Attachment) *internalproto.UserAttachmentUpsertedEvent {
 	return &internalproto.UserAttachmentUpsertedEvent{
 		Owner:          &internalproto.ClusterUserRef{NodeId: attachment.Owner.NodeID, UserId: attachment.Owner.UserID},
@@ -99,6 +116,7 @@ func userAttachmentUpsertedProtoFromAttachment(attachment Attachment) *internalp
 	}
 }
 
+// userAttachmentDeletedProtoFromAttachment 将 Attachment 转换为 UserAttachmentDeletedEvent protobuf 消息。
 func userAttachmentDeletedProtoFromAttachment(attachment Attachment) *internalproto.UserAttachmentDeletedEvent {
 	event := &internalproto.UserAttachmentDeletedEvent{
 		Owner:          &internalproto.ClusterUserRef{NodeId: attachment.Owner.NodeID, UserId: attachment.Owner.UserID},
@@ -114,6 +132,7 @@ func userAttachmentDeletedProtoFromAttachment(attachment Attachment) *internalpr
 	return event
 }
 
+// userMetadataUpsertedProtoFromUserMetadata 将 UserMetadata 转换为 UserMetadataUpsertedEvent protobuf 消息。
 func userMetadataUpsertedProtoFromUserMetadata(metadata UserMetadata) *internalproto.UserMetadataUpsertedEvent {
 	event := &internalproto.UserMetadataUpsertedEvent{
 		Owner:        &internalproto.ClusterUserRef{NodeId: metadata.Owner.NodeID, UserId: metadata.Owner.UserID},
@@ -128,6 +147,7 @@ func userMetadataUpsertedProtoFromUserMetadata(metadata UserMetadata) *internalp
 	return event
 }
 
+// userMetadataDeletedProtoFromUserMetadata 将 UserMetadata 转换为 UserMetadataDeletedEvent protobuf 消息。
 func userMetadataDeletedProtoFromUserMetadata(metadata UserMetadata) *internalproto.UserMetadataDeletedEvent {
 	event := &internalproto.UserMetadataDeletedEvent{
 		Owner:        &internalproto.ClusterUserRef{NodeId: metadata.Owner.NodeID, UserId: metadata.Owner.UserID},
@@ -140,6 +160,7 @@ func userMetadataDeletedProtoFromUserMetadata(metadata UserMetadata) *internalpr
 	return event
 }
 
+// userLoginNameUpsertedProtoFromBinding 将 UserLoginName 转换为 UserLoginNameUpsertedEvent protobuf 消息。
 func userLoginNameUpsertedProtoFromBinding(binding UserLoginName) *internalproto.UserLoginNameUpsertedEvent {
 	return &internalproto.UserLoginNameUpsertedEvent{
 		LoginName:    binding.LoginName,
@@ -150,6 +171,7 @@ func userLoginNameUpsertedProtoFromBinding(binding UserLoginName) *internalproto
 	}
 }
 
+// userLoginNameDeletedProtoFromBinding 将 UserLoginName 转换为 UserLoginNameDeletedEvent protobuf 消息。
 func userLoginNameDeletedProtoFromBinding(binding UserLoginName) *internalproto.UserLoginNameDeletedEvent {
 	event := &internalproto.UserLoginNameDeletedEvent{
 		LoginName:    binding.LoginName,

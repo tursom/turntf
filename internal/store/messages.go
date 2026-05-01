@@ -7,6 +7,7 @@ import (
 	"fmt"
 )
 
+// CreateMessage 创建消息。校验参数后进行黑名单检查，然后通过后端写入事件日志和消息投影。
 func (s *Store) CreateMessage(ctx context.Context, params CreateMessageParams) (Message, Event, error) {
 	if err := params.UserKey.Validate(); err != nil {
 		return Message{}, Event{}, err
@@ -26,14 +27,18 @@ func (s *Store) CreateMessage(ctx context.Context, params CreateMessageParams) (
 	return s.backend.CreateMessage(ctx, s, params)
 }
 
+// nextMessageSeqTx 为给定 (UserKey, nodeID) 对分配下一个消息序列号，委托给后端。
 func (s *Store) nextMessageSeqTx(ctx context.Context, tx *sql.Tx, key UserKey, nodeID int64) (int64, error) {
 	return s.backend.NextMessageSeqTx(ctx, tx, key, nodeID)
 }
 
+// ListMessagesByUser 列出用户最近的消息（来自消息投影）。
 func (s *Store) ListMessagesByUser(ctx context.Context, key UserKey, limit int) ([]Message, error) {
 	return s.backend.MessageProjection().ListMessagesByUser(ctx, key, limit)
 }
 
+// nextSQLiteMessageSeq 在 SQLite 中分配下一个消息序列号。
+// 优先使用 message_sequence_counters 表中的预计算值，回退到 messages 表投影计算。
 func nextSQLiteMessageSeq(ctx context.Context, tx *sql.Tx, key UserKey, nodeID int64) (int64, error) {
 	if err := key.Validate(); err != nil {
 		return 0, err
@@ -63,10 +68,12 @@ ON CONFLICT(user_node_id, user_id, node_id) DO UPDATE SET next_seq = excluded.ne
 	return seq, nil
 }
 
+// sqlQueryRowContext 是 QueryRowContext 的接口窄化，便于测试时替换实现。
 type sqlQueryRowContext interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
 }
 
+// readStoredMessageCounterNextSeq 从 message_sequence_counters 表读取预存的下一个序列号。
 func readStoredMessageCounterNextSeq(ctx context.Context, querier sqlQueryRowContext, key UserKey, nodeID int64) (int64, bool, error) {
 	var seq int64
 	err := querier.QueryRowContext(ctx, `
@@ -84,6 +91,7 @@ WHERE user_node_id = ? AND user_id = ? AND node_id = ?
 	}
 }
 
+// readProjectedMessageNextSeq 从 messages 投影表计算下一个序列号（预存计数器不存在时的回退方案）。
 func readProjectedMessageNextSeq(ctx context.Context, querier sqlQueryRowContext, key UserKey, nodeID int64) (int64, error) {
 	var seq int64
 	if err := querier.QueryRowContext(ctx, `
@@ -96,6 +104,7 @@ WHERE user_node_id = ? AND user_id = ? AND node_id = ?
 	return seq, nil
 }
 
+// validateMessageIdentity 校验消息标识字段：UserKey、nodeID、seq 必须为正且非零。
 func validateMessageIdentity(key UserKey, nodeID int64, seq int64) error {
 	if err := key.Validate(); err != nil {
 		return err

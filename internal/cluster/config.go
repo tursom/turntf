@@ -5,63 +5,115 @@ import (
 	"strings"
 )
 
+// Peer 表示集群中的一个静态配置的对等节点。
 type Peer struct {
-	URL                        string
+	// URL 是对等节点的地址，支持 ws、wss 或 zmq+tcp scheme。
+	URL string
+	// ZeroMQCurveServerPublicKey 是ZeroMQ Curve加密中该对等节点的Z85服务器公钥。
+	// 仅当URL使用 zmq+tcp scheme 且启用了 curve 安全时使用。
 	ZeroMQCurveServerPublicKey string
 }
 
+// LibP2PConfig 包含libp2p传输和发现相关的配置。
 type LibP2PConfig struct {
-	Enabled                   bool
-	PrivateKeyPath            string
-	ListenAddrs               []string
-	BootstrapPeers            []string
-	EnableDHT                 bool
-	EnableMDNS                bool
-	RelayPeers                []string
-	EnableHolePunching        bool
-	GossipSubEnabled          bool
-	NativeRelayClientEnabled  bool
+	// Enabled 是否启用libp2p传输。
+	Enabled bool
+	// PrivateKeyPath 是libp2p节点私钥的文件路径。
+	PrivateKeyPath string
+	// ListenAddrs 是libp2p监听的multiaddr地址列表。
+	ListenAddrs []string
+	// BootstrapPeers 是启动时连接的引导对等节点multiaddr列表。
+	BootstrapPeers []string
+	// EnableDHT 是否启用Kademlia DHT用于对等节点发现。
+	EnableDHT bool
+	// EnableMDNS 是否启用mDNS用于局域网对等节点发现。
+	EnableMDNS bool
+	// RelayPeers 是中继对等节点的multiaddr列表。
+	RelayPeers []string
+	// EnableHolePunching 是否启用NAT穿透。
+	EnableHolePunching bool
+	// GossipSubEnabled 是否启用GossipSub pubsub协议。
+	GossipSubEnabled bool
+	// NativeRelayClientEnabled 是否启用libp2p原生中继客户端。
+	NativeRelayClientEnabled bool
+	// NativeRelayServiceEnabled 是否启用libp2p原生中继服务。
 	NativeRelayServiceEnabled bool
 }
 
+// ZeroMQConfig 包含ZeroMQ传输相关的配置。
 type ZeroMQConfig struct {
-	Enabled           bool
-	BindURL           string
-	Security          string
+	// Enabled 是否启用ZeroMQ传输。
+	Enabled bool
+	// BindURL 是ZeroMQ绑定的TCP地址。
+	BindURL string
+	// Security 是安全模式：none 或 curve。
+	Security string
+	// ForwardingEnabled 控制是否允许通过ZeroMQ进行转发。
+	// nil表示使用Forwarding.Enabled的默认值。
 	ForwardingEnabled *bool
-	Curve             ZeroMQCurveConfig
+	// Curve 包含CurveZMQ安全相关的密钥配置。
+	Curve ZeroMQCurveConfig
 }
 
+// ZeroMQCurveConfig 包含CurveZMQ椭圆曲线加密的密钥配置。
+// 所有密钥均为40字符的Z85编码字符串。
 type ZeroMQCurveConfig struct {
-	ServerPublicKey         string
-	ServerSecretKey         string
-	ClientPublicKey         string
-	ClientSecretKey         string
+	// ServerPublicKey 是服务器端的长期公钥。
+	ServerPublicKey string
+	// ServerSecretKey 是服务器端的长期私钥。
+	ServerSecretKey string
+	// ClientPublicKey 是客户端的长期公钥。
+	ClientPublicKey string
+	// ClientSecretKey 是客户端的长期私钥。
+	ClientSecretKey string
+	// AllowedClientPublicKeys 是允许连接的客户端公钥白名单。
 	AllowedClientPublicKeys []string
 }
 
+// Config 是集群模块的完整配置。
+// 零值字段将在WithDefaults和Validate过程中填充为合理的默认值。
 type Config struct {
-	NodeID                          int64
-	AdvertisePath                   string
-	ClusterSecret                   string
-	DisconnectSuspicionGraceMs      int64
-	Forwarding                      ForwardingConfig
-	ZeroMQ                          ZeroMQConfig
-	LibP2P                          LibP2PConfig
-	Peers                           []Peer
-	DiscoveryDisabled               bool
-	MessageWindowSize               int
-	MaxClockSkewMs                  int64
-	ClockSyncTimeoutMs              int64
-	ClockCredibleRttMs              int64
-	ClockTrustedFreshMs             int64
-	ClockObserveGraceMs             int64
-	ClockWriteGateGraceMs           int64
-	ClockRejectAfterFailures        int
-	ClockRejectAfterSkewSamples     int
+	// NodeID 是当前节点的唯一标识符，必须大于0。
+	NodeID int64
+	// AdvertisePath 是对外通告的HTTP WebSocket路径（如 /internal/cluster/ws）。
+	AdvertisePath string
+	// ClusterSecret 是用于HMAC信封签名的共享密钥。
+	ClusterSecret string
+	// DisconnectSuspicionGraceMs 是断开连接怀疑的容忍期（毫秒）。
+	DisconnectSuspicionGraceMs int64
+	// Forwarding 是网状路由的转发策略配置。
+	Forwarding ForwardingConfig
+	// ZeroMQ 是ZeroMQ传输的配置。
+	ZeroMQ ZeroMQConfig
+	// LibP2P 是libp2p传输的配置。
+	LibP2P LibP2PConfig
+	// Peers 是静态配置的对等节点列表。
+	Peers []Peer
+	// DiscoveryDisabled 是否禁用自动对等节点发现。
+	DiscoveryDisabled bool
+	// MessageWindowSize 是每个事件流保留的最大事件数。
+	MessageWindowSize int
+	// MaxClockSkewMs 是允许的最大时钟偏差（毫秒）。超过此偏差将导致时钟状态变为rejected。
+	MaxClockSkewMs int64
+	// ClockSyncTimeoutMs 是时间同步请求的超时时间（毫秒）。
+	ClockSyncTimeoutMs int64
+	// ClockCredibleRttMs 是判定时钟同步样本可信的RTT上限（毫秒）。
+	ClockCredibleRttMs int64
+	// ClockTrustedFreshMs 是从最近的可信时钟同步到节点时钟变为observing的时间（毫秒）。
+	ClockTrustedFreshMs int64
+	// ClockObserveGraceMs 是从observing状态到降级为degraded的容忍期（毫秒）。
+	ClockObserveGraceMs int64
+	// ClockWriteGateGraceMs 是写门控保持在degraded状态直到变为unwritable的时间（毫秒）。
+	ClockWriteGateGraceMs int64
+	// ClockRejectAfterFailures 是连续的时钟同步失败次数，超过此次数后将拒绝该对等节点。
+	ClockRejectAfterFailures int
+	// ClockRejectAfterSkewSamples 是确认时钟偏差所需的连续异常样本数。
+	ClockRejectAfterSkewSamples int
+	// ClockRecoverAfterHealthySamples 是从observing恢复到trusted所需的连续健康样本数。
 	ClockRecoverAfterHealthySamples int
 }
 
+// 时钟相关配置的默认值（毫秒）。
 const DefaultMaxClockSkewMs int64 = 1000
 const DefaultClockSyncTimeoutMs int64 = 8000
 const DefaultClockCredibleRTTMs int64 = 4000
@@ -74,11 +126,13 @@ const DefaultClockRejectAfterSkewSamples = 3
 const DefaultClockRecoverAfterHealthySamples = 2
 const DefaultLibP2PPrivateKeyPath = "./data/libp2p.key"
 
+// ZeroMQ安全模式常量。
 const (
 	ZeroMQSecurityNone  = "none"
 	ZeroMQSecurityCurve = "curve"
 )
 
+// WithDefaults 返回填充了所有零值字段默认值的Config副本。
 func (c Config) WithDefaults() Config {
 	c.Forwarding = c.Forwarding.withDefaults()
 	if c.ZeroMQ.ForwardingEnabled == nil {
@@ -88,6 +142,7 @@ func (c Config) WithDefaults() Config {
 		if strings.TrimSpace(c.LibP2P.PrivateKeyPath) == "" {
 			c.LibP2P.PrivateKeyPath = DefaultLibP2PPrivateKeyPath
 		}
+		// 如果未显式启用任何libp2p功能，则默认启用DHT、NAT穿透和GossipSub
 		if !c.LibP2P.EnableDHT && !c.LibP2P.EnableMDNS && !c.LibP2P.EnableHolePunching && !c.LibP2P.GossipSubEnabled {
 			c.LibP2P.EnableDHT = true
 			c.LibP2P.EnableHolePunching = true
@@ -124,10 +179,14 @@ func (c Config) WithDefaults() Config {
 	return c
 }
 
+// Enabled 返回集群模式是否已启用。
+// 当设置了集群密钥、配置了对等节点或启用了libp2p时，集群模式生效。
 func (c Config) Enabled() bool {
 	return strings.TrimSpace(c.ClusterSecret) != "" || len(c.Peers) > 0 || c.LibP2P.Enabled
 }
 
+// Validate 验证配置的有效性，并在验证前填充默认值。
+// 它会规范化所有URL、验证密钥格式并检查一致性。
 func (c *Config) Validate() error {
 	if c == nil {
 		return fmt.Errorf("cluster config cannot be nil")
@@ -208,6 +267,7 @@ func (c *Config) Validate() error {
 		return err
 	}
 
+	// 验证对等节点URL并检查重复
 	seenPeers := make(map[string]struct{}, len(c.Peers))
 	for idx := range c.Peers {
 		c.Peers[idx].ZeroMQCurveServerPublicKey = strings.TrimSpace(c.Peers[idx].ZeroMQCurveServerPublicKey)
@@ -238,6 +298,7 @@ func (c *Config) Validate() error {
 	return nil
 }
 
+// normalizeLibP2PConfig 规范化libp2p配置中的字符串字段。
 func normalizeLibP2PConfig(cfg LibP2PConfig) LibP2PConfig {
 	cfg.PrivateKeyPath = strings.TrimSpace(cfg.PrivateKeyPath)
 	cfg.ListenAddrs = trimNonEmptyStrings(cfg.ListenAddrs)
@@ -246,6 +307,7 @@ func normalizeLibP2PConfig(cfg LibP2PConfig) LibP2PConfig {
 	return cfg
 }
 
+// trimNonEmptyStrings 去除字符串切片中的空白，并过滤掉空字符串。
 func trimNonEmptyStrings(values []string) []string {
 	out := make([]string, 0, len(values))
 	for _, value := range values {
@@ -257,6 +319,7 @@ func trimNonEmptyStrings(values []string) []string {
 	return out
 }
 
+// validateLibP2P 验证libp2p配置，规范化监听地址、引导节点和中继节点。
 func (c *Config) validateLibP2P() error {
 	if !c.LibP2P.Enabled {
 		return nil
@@ -276,6 +339,7 @@ func (c *Config) validateLibP2P() error {
 		seenListen[normalized] = struct{}{}
 		c.LibP2P.ListenAddrs[idx] = normalized
 	}
+	// 无监听地址时默认监听随机端口
 	if len(c.LibP2P.ListenAddrs) == 0 {
 		c.LibP2P.ListenAddrs = []string{"/ip4/0.0.0.0/tcp/0"}
 	}
@@ -288,6 +352,7 @@ func (c *Config) validateLibP2P() error {
 	return nil
 }
 
+// normalizeLibP2PPeerList 规范化libp2p对等节点地址列表，检查重复。
 func normalizeLibP2PPeerList(peers []string, label string) error {
 	seen := make(map[string]struct{}, len(peers))
 	for idx, raw := range peers {
@@ -304,14 +369,17 @@ func normalizeLibP2PPeerList(peers []string, label string) error {
 	return nil
 }
 
+// zeroMQDialEnabled 返回是否启用了ZeroMQ出站拨号。
 func (c Config) zeroMQDialEnabled() bool {
 	return c.ZeroMQ.Enabled
 }
 
+// zeroMQListenerEnabled 返回是否启用了ZeroMQ入站监听（需要Enabled且设置了BindURL）。
 func (c Config) zeroMQListenerEnabled() bool {
 	return c.ZeroMQ.Enabled && strings.TrimSpace(c.ZeroMQ.BindURL) != ""
 }
 
+// zeroMQMode 返回ZeroMQ的运行模式：disabled、outbound_only或listening。
 func (c Config) zeroMQMode() string {
 	switch {
 	case !c.ZeroMQ.Enabled:
@@ -323,6 +391,7 @@ func (c Config) zeroMQMode() string {
 	}
 }
 
+// zeroMQSecurity 返回ZeroMQ的安全模式，空值默认为none。
 func (c Config) zeroMQSecurity() string {
 	security := strings.ToLower(strings.TrimSpace(c.ZeroMQ.Security))
 	if security == "" {
@@ -331,10 +400,12 @@ func (c Config) zeroMQSecurity() string {
 	return security
 }
 
+// zeroMQCurveEnabled 返回是否启用了CurveZMQ加密。
 func (c Config) zeroMQCurveEnabled() bool {
 	return c.zeroMQSecurity() == ZeroMQSecurityCurve
 }
 
+// zeroMQCurveServerPublicKey 返回CurveZMQ服务器公钥（仅在启用curve时有效）。
 func (c Config) zeroMQCurveServerPublicKey() string {
 	if !c.zeroMQCurveEnabled() {
 		return ""
@@ -342,6 +413,7 @@ func (c Config) zeroMQCurveServerPublicKey() string {
 	return strings.TrimSpace(c.ZeroMQ.Curve.ServerPublicKey)
 }
 
+// libP2PMode 返回libp2p的运行模式：disabled、outbound_only或listening。
 func (c Config) libP2PMode() string {
 	if !c.LibP2P.Enabled {
 		return "disabled"
@@ -352,6 +424,8 @@ func (c Config) libP2PMode() string {
 	return "listening"
 }
 
+// validateZeroMQSecurity 验证ZeroMQ安全配置。
+// none模式无需额外验证。curve模式需要所有四个密钥和允许的客户端公钥。
 func (c *Config) validateZeroMQSecurity() error {
 	switch c.ZeroMQ.Security {
 	case ZeroMQSecurityNone:
@@ -386,6 +460,7 @@ func (c *Config) validateZeroMQSecurity() error {
 	}
 }
 
+// normalizeZeroMQCurveConfig 规范化CurveZMQ配置中的密钥字段，去重空格。
 func normalizeZeroMQCurveConfig(curve ZeroMQCurveConfig) ZeroMQCurveConfig {
 	curve.ServerPublicKey = strings.TrimSpace(curve.ServerPublicKey)
 	curve.ServerSecretKey = strings.TrimSpace(curve.ServerSecretKey)
@@ -408,6 +483,7 @@ func normalizeZeroMQCurveConfig(curve ZeroMQCurveConfig) ZeroMQCurveConfig {
 	return curve
 }
 
+// validateZeroMQCurveKey 验证Z85密钥：必须非空且长度恰好为40字符。
 func validateZeroMQCurveKey(name, key string) error {
 	if strings.TrimSpace(key) == "" {
 		return fmt.Errorf("%s cannot be empty", name)

@@ -9,6 +9,7 @@ import (
 	"github.com/tursom/turntf/internal/mesh"
 )
 
+// statusTransport 确定对等节点使用的传输类型，优先使用活跃会话的信息。
 func statusTransport(active *session, configuredURL, discoveredURL string) string {
 	if transport := sessionTransport(active); transport != "" {
 		return transport
@@ -19,6 +20,7 @@ func statusTransport(active *session, configuredURL, discoveredURL string) strin
 	return transportForPeerURL(discoveredURL)
 }
 
+// peerURLSchemeLabel 返回对等节点URL的scheme标签。
 func peerURLSchemeLabel(raw string) string {
 	scheme, ok := peerURLScheme(raw)
 	if !ok {
@@ -27,6 +29,8 @@ func peerURLSchemeLabel(raw string) string {
 	return scheme
 }
 
+// Status 构建完整的集群状态快照，包括对等节点状态、发现状态、
+// 网格状态、时钟状态转移和路由信息。
 func (m *Manager) Status(context.Context) (app.ClusterStatus, error) {
 	if m == nil {
 		return app.ClusterStatus{WriteGateReady: true}, nil
@@ -41,6 +45,7 @@ func (m *Manager) Status(context.Context) (app.ClusterStatus, error) {
 	peers := make([]peerSnapshot, 0, len(m.configuredPeers)+len(m.peers))
 	transitions := make([]app.ClockStateTransition, 0, len(m.clockStateTransitions))
 	seen := make(map[int64]struct{}, len(m.peers))
+	// 遍历配置节点
 	for _, configured := range m.configuredPeers {
 		discovery := m.discoveryStateByURLLocked(configured.URL)
 		item := app.ClusterPeerStatus{
@@ -83,6 +88,7 @@ func (m *Manager) Status(context.Context) (app.ClusterStatus, error) {
 		}
 		peers = append(peers, peerSnapshot{status: item, active: active})
 	}
+	// 遍历非配置节点但有活跃peers的节点
 	for nodeID, peer := range m.peers {
 		if _, ok := seen[nodeID]; ok {
 			continue
@@ -119,6 +125,7 @@ func (m *Manager) Status(context.Context) (app.ClusterStatus, error) {
 		}
 		peers = append(peers, peerSnapshot{status: item, active: peer.active})
 	}
+	// 遍历仅有发现状态的节点（无活跃连接）
 	for _, discovered := range m.discoveredPeers {
 		if discovered == nil || discovered.nodeID <= 0 {
 			continue
@@ -217,6 +224,7 @@ func (m *Manager) Status(context.Context) (app.ClusterStatus, error) {
 	return status, nil
 }
 
+// meshStatusSnapshot 构建网格运行时的状态快照。
 func (m *Manager) meshStatusSnapshot() app.ClusterMeshStatus {
 	binding := m.MeshRuntime()
 	if binding == nil {
@@ -317,6 +325,7 @@ func (m *Manager) meshStatusSnapshot() app.ClusterMeshStatus {
 	return status
 }
 
+// libP2PVerifiedAddrsLocked 返回所有经过验证的libp2p地址。
 func (m *Manager) libP2PVerifiedAddrsLocked() []string {
 	seen := make(map[string]struct{})
 	addrs := make([]string, 0)
@@ -347,6 +356,7 @@ func (m *Manager) libP2PVerifiedAddrsLocked() []string {
 	return addrs
 }
 
+// ConfiguredPeerNodeIDs 返回所有已知对等节点的ID列表。
 func (m *Manager) ConfiguredPeerNodeIDs() []int64 {
 	if m == nil {
 		return nil
@@ -389,6 +399,7 @@ func (m *Manager) ConfiguredPeerNodeIDs() []int64 {
 	return ids
 }
 
+// markSnapshotDigestSent 记录快照摘要发送事件。
 func (m *Manager) markSnapshotDigestSent(peerID int64) {
 	m.markSnapshotActivity(peerID, func(peer *peerState, now time.Time) {
 		peer.snapshotDigestsSent++
@@ -396,6 +407,7 @@ func (m *Manager) markSnapshotDigestSent(peerID int64) {
 	})
 }
 
+// markSnapshotDigestReceived 记录快照摘要接收事件。
 func (m *Manager) markSnapshotDigestReceived(peerID int64) {
 	m.markSnapshotActivity(peerID, func(peer *peerState, now time.Time) {
 		peer.snapshotDigestsReceived++
@@ -403,6 +415,7 @@ func (m *Manager) markSnapshotDigestReceived(peerID int64) {
 	})
 }
 
+// markSnapshotChunkSent 记录快照分块发送事件。
 func (m *Manager) markSnapshotChunkSent(peerID int64) {
 	m.markSnapshotActivity(peerID, func(peer *peerState, now time.Time) {
 		peer.snapshotChunksSent++
@@ -410,6 +423,7 @@ func (m *Manager) markSnapshotChunkSent(peerID int64) {
 	})
 }
 
+// markSnapshotChunkReceived 记录快照分块接收事件。
 func (m *Manager) markSnapshotChunkReceived(peerID int64) {
 	m.markSnapshotActivity(peerID, func(peer *peerState, now time.Time) {
 		peer.snapshotChunksReceived++
@@ -417,6 +431,7 @@ func (m *Manager) markSnapshotChunkReceived(peerID int64) {
 	})
 }
 
+// markSnapshotActivity 在给定对等节点上执行快照活动更新。
 func (m *Manager) markSnapshotActivity(peerID int64, update func(*peerState, time.Time)) {
 	if m == nil || update == nil {
 		return
@@ -431,6 +446,7 @@ func (m *Manager) markSnapshotActivity(peerID int64, update func(*peerState, tim
 	update(peer, time.Now().UTC())
 }
 
+// direction 返回会话方向字符串。
 func (s *session) direction() string {
 	if s.outbound {
 		return "outbound"
@@ -438,24 +454,28 @@ func (s *session) direction() string {
 	return "inbound"
 }
 
+// pendingSnapshotCount 返回等待中的快照分区请求数。
 func (s *session) pendingSnapshotCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return len(s.pendingSnapshotParts)
 }
 
+// snapshotVersion 返回对端的快照版本。
 func (s *session) snapshotVersion() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.remoteSnapshotVersion
 }
 
+// messageWindowSize 返回对端的消息窗口大小。
 func (s *session) messageWindowSize() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.remoteMessageWindowSize
 }
 
+// originStatuses 返回会话中各原始节点的事件进度状态。
 func (s *session) originStatuses() []app.ClusterPeerOriginStatus {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -475,6 +495,7 @@ func (s *session) originStatuses() []app.ClusterPeerOriginStatus {
 	return origins
 }
 
+// timePointer 返回非零时间值的UTC指针。
 func timePointer(value time.Time) *time.Time {
 	if value.IsZero() {
 		return nil

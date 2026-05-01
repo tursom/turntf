@@ -19,6 +19,7 @@ const (
 	pebbleThroughputWALMinSyncIntervalDelay = 500 * time.Microsecond
 )
 
+// openPebbleDB 根据 profile 打开 Pebble 数据库。
 func openPebbleDB(path string, profile PebbleProfile) (*pebble.DB, error) {
 	opts, release := newPebbleOptions(profile)
 	if release != nil {
@@ -27,6 +28,9 @@ func openPebbleDB(path string, profile PebbleProfile) (*pebble.DB, error) {
 	return pebble.Open(path, opts)
 }
 
+// newPebbleOptions 根据 profile 构建 Pebble 配置选项。
+// throughput profile 配置大缓存、低 compaction 阈值和多个并发 compaction 以优化写入吞吐。
+// 返回的 release 函数用于释放缓存等资源。
 func newPebbleOptions(profile PebbleProfile) (*pebble.Options, func()) {
 	if profile != PebbleProfileThroughput {
 		return &pebble.Options{}, nil

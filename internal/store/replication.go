@@ -11,6 +11,8 @@ import (
 	internalproto "github.com/tursom/turntf/internal/proto"
 )
 
+// ToReplicatedEvent 将本地 Event 转换为 protobuf ReplicatedEvent 格式，用于跨节点 mesh 传输。
+// 序列化失败时返回 nil。
 func ToReplicatedEvent(event Event) *internalproto.ReplicatedEvent {
 	replicated := &internalproto.ReplicatedEvent{
 		EventId:         event.EventID,
@@ -26,6 +28,8 @@ func ToReplicatedEvent(event Event) *internalproto.ReplicatedEvent {
 	return replicated
 }
 
+// ApplyReplicatedEvent 应用来自 peer 的复制事件。去重后提交到事件日志，并投影副作用
+//（用户 upsert/delete、消息创建、附件 upsert/delete、元数据 upsert/delete、登录名变更）。
 func (s *Store) ApplyReplicatedEvent(ctx context.Context, event *internalproto.ReplicatedEvent) error {
 	if event == nil {
 		return fmt.Errorf("%w: replicated event cannot be nil", ErrInvalidInput)

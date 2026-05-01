@@ -12,6 +12,8 @@ import (
 	"github.com/tursom/turntf/internal/store"
 )
 
+// validateConfiguredTransports 验证配置的传输层是否可用。
+// 检查ZeroMQ和libp2p在需要时是否已编译且配置正确。
 func (m *Manager) validateConfiguredTransports() error {
 	if m == nil {
 		return nil
@@ -35,6 +37,7 @@ func (m *Manager) validateConfiguredTransports() error {
 	return nil
 }
 
+// transportForPeerURL 返回对等节点URL对应的传输类型名称。
 func (m *Manager) transportForPeerURL(peerURL string) (string, error) {
 	transport := transportForPeerURL(peerURL)
 	if transport == "" {
@@ -43,6 +46,8 @@ func (m *Manager) transportForPeerURL(peerURL string) (string, error) {
 	return transport, nil
 }
 
+// canDialPeerURL 判断是否可以向给定URL发起出站连接。
+// WebSocket始终可以拨号；ZeroMQ需要启用且允许转发；libp2p需要启用。
 func (m *Manager) canDialPeerURL(peerURL string) bool {
 	switch transportForPeerURL(peerURL) {
 	case transportWebSocket:
@@ -56,6 +61,8 @@ func (m *Manager) canDialPeerURL(peerURL string) bool {
 	}
 }
 
+// canDialDiscoveredPeer 判断是否可以连接一个动态发现的节点。
+// 额外检查ZeroMQ curve模式下是否有所需的服务器公钥。
 func (m *Manager) canDialDiscoveredPeer(peer *discoveredPeerState) bool {
 	if peer == nil {
 		return false
@@ -69,6 +76,8 @@ func (m *Manager) canDialDiscoveredPeer(peer *discoveredPeerState) bool {
 	return true
 }
 
+// zeroMQCurveServerKeyForPeer 查找指定对等节点的ZeroMQ Curve服务器公钥。
+// 先在配置的对等节点中查找，再在发现的节点中查找。
 func (m *Manager) zeroMQCurveServerKeyForPeer(peerURL string) string {
 	if m == nil || !m.cfg.zeroMQCurveEnabled() {
 		return ""
@@ -93,6 +102,7 @@ func (m *Manager) zeroMQCurveServerKeyForPeer(peerURL string) string {
 	return ""
 }
 
+// dialerForPeerURL 获取用于连接指定URL的Dialer。
 func (m *Manager) dialerForPeerURL(peerURL string) (Dialer, error) {
 	transport, err := m.transportForPeerURL(peerURL)
 	if err != nil {
@@ -105,6 +115,16 @@ func (m *Manager) dialerForPeerURL(peerURL string) (Dialer, error) {
 	return dialer, nil
 }
 
+// Start 启动Manager及其所有后台循环。
+//
+// 初始化流程：
+//  1. 验证传输层配置
+//  2. 启动libp2p（如果已启用）
+//  3. 启动网格运行时（meshruntime）作为主控制面
+//  4. 启动后台循环：publishLoop、snapshotDigestLoop、transientRetryLoop、
+//     meshReplicationLoop、presenceLoop、discoveryLoop
+//
+// Start仅执行一次；重复调用返回第一次调用的结果。
 func (m *Manager) Start(parent context.Context) error {
 	m.startOnce.Do(func() {
 		m.ctx, m.cancel = context.WithCancel(parent)
@@ -122,9 +142,7 @@ func (m *Manager) Start(parent context.Context) error {
 			}
 		}
 
-		// Phase 4.5: start the mesh runtime as the primary control plane.
-		// Inbound libp2p/zeromq/websocket connections now feed the mesh
-		// runtime instead of the legacy session stack.
+		// 启动网格运行时，入站连接将交由网格运行时处理，不再使用传统会话栈。
 		if err := m.StartMeshRuntime(m.ctx); err != nil {
 			m.startErr = err
 			m.logWarn("mesh_runtime_start_failed", err).Msg("mesh runtime failed to start")
@@ -153,6 +171,8 @@ func (m *Manager) Start(parent context.Context) error {
 	return m.startErr
 }
 
+// AcceptLibP2PConn 处理从libp2p传输层接收到的新入站连接。
+// 将连接路由到网格运行时；如果网格运行时不可用则关闭连接。
 func (m *Manager) AcceptLibP2PConn(conn TransportConn) {
 	if conn == nil {
 		return
@@ -173,6 +193,7 @@ func (m *Manager) AcceptLibP2PConn(conn TransportConn) {
 	closeTransport(conn, "mesh runtime unavailable")
 }
 
+// AcceptZeroMQConn 处理从ZeroMQ传输层接收到的新入站连接。
 func (m *Manager) AcceptZeroMQConn(conn TransportConn) {
 	if conn == nil {
 		return
@@ -194,6 +215,7 @@ func (m *Manager) AcceptZeroMQConn(conn TransportConn) {
 	closeTransport(conn, "mesh runtime unavailable")
 }
 
+// SetZeroMQListenerRunning 设置ZeroMQ监听器的运行状态标记。
 func (m *Manager) SetZeroMQListenerRunning(running bool) {
 	if m == nil {
 		return
@@ -203,6 +225,8 @@ func (m *Manager) SetZeroMQListenerRunning(running bool) {
 	m.zeroMQListenerRunning = running
 }
 
+// Close 关闭Manager，停止所有后台循环并断开所有会话。
+// 关闭流程：取消上下文 → 关闭所有活跃会话 → 关闭libp2p → 等待所有goroutine退出 → 关闭网格运行时。
 func (m *Manager) Close() error {
 	m.closeOnce.Do(func() {
 		if m.cancel != nil {
@@ -236,6 +260,8 @@ func (m *Manager) Close() error {
 	return nil
 }
 
+// Publish 将一个存储事件排队以广播给所有已连接的对等节点。
+// 如果事件发布通道已满，则在新的goroutine中异步排队，防止阻塞调用者。
 func (m *Manager) Publish(event store.Event) {
 	if m == nil || m.ctx == nil {
 		return
@@ -254,6 +280,8 @@ func (m *Manager) Publish(event store.Event) {
 	}
 }
 
+// publishLoop 是事件发布的主循环。
+// 从publishCh读取事件并放入批次，同时定期刷新到期的批次。
 func (m *Manager) publishLoop() {
 	defer m.wg.Done()
 	flushTicker := time.NewTicker(maxBatchDelay)
@@ -273,6 +301,7 @@ func (m *Manager) publishLoop() {
 	}
 }
 
+// snapshotDigestLoop 定期扫描所有对等节点，发送脏的快照摘要。
 func (m *Manager) snapshotDigestLoop() {
 	defer m.wg.Done()
 	if m == nil || m.ctx == nil {
@@ -291,6 +320,7 @@ func (m *Manager) snapshotDigestLoop() {
 	}
 }
 
+// transientRetryLoop 定期重试队列中的瞬态数据包。
 func (m *Manager) transientRetryLoop() {
 	defer m.wg.Done()
 
@@ -307,6 +337,8 @@ func (m *Manager) transientRetryLoop() {
 	}
 }
 
+// meshReplicationLoop 是网格复制的主循环。
+// 定期进行数据追赶（catchup）和反熵检查。
 func (m *Manager) meshReplicationLoop() {
 	defer m.wg.Done()
 	if m == nil || m.ctx == nil {
@@ -338,6 +370,7 @@ func (m *Manager) meshReplicationLoop() {
 	}
 }
 
+// activeSessions 返回所有当前活跃的会话。
 func (m *Manager) activeSessions() []*session {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -351,6 +384,8 @@ func (m *Manager) activeSessions() []*session {
 	return sessions
 }
 
+// handleWebSocket 处理HTTP WebSocket升级请求。
+// 升级后立即将连接路由到网格运行时。
 func (m *Manager) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	if m.ctx == nil || m.ctx.Err() != nil {
 		http.Error(w, "cluster manager not started", http.StatusServiceUnavailable)
@@ -378,6 +413,7 @@ func (m *Manager) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	closeTransport(conn, "mesh runtime unavailable")
 }
 
+// newSession 创建一个新的会话对象，分配连接ID并初始化内部状态。
 func (m *Manager) newSession(conn TransportConn, outbound bool, configuredPeer *configuredPeer) *session {
 	m.mu.Lock()
 	m.nextConnectionID++

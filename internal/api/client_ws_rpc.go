@@ -13,6 +13,8 @@ import (
 	"github.com/tursom/turntf/internal/store"
 )
 
+// handleSendMessage 处理客户端发送消息请求，同时支持持久化消息和即时消息（transient）。
+// 即时消息通过 TransientPacketRouter 跨节点投递；持久化消息写入 store 并发布事件。
 func (s *clientWSSession) handleSendMessage(ctx context.Context, req *internalproto.SendMessageRequest) error {
 	if req == nil {
 		return s.writeError("invalid_request", "send_message cannot be empty", 0)
@@ -91,6 +93,7 @@ func (s *clientWSSession) handleSendMessage(ctx context.Context, req *internalpr
 	})
 }
 
+// handleCreateUser 处理创建用户请求。频道用户（RoleChannel）不需要密码，且创建者会自动成为频道管理员。
 func (s *clientWSSession) handleCreateUser(ctx context.Context, req *internalproto.CreateUserRequest) error {
 	if req == nil {
 		return s.writeError("invalid_request", "create_user cannot be empty", 0)
@@ -139,6 +142,7 @@ func (s *clientWSSession) handleCreateUser(ctx context.Context, req *internalpro
 	})
 }
 
+// handleGetUser 处理查询用户请求。
 func (s *clientWSSession) handleGetUser(ctx context.Context, req *internalproto.GetUserRequest) error {
 	if req == nil {
 		return s.writeError("invalid_request", "get_user cannot be empty", 0)
@@ -168,6 +172,7 @@ func (s *clientWSSession) handleGetUser(ctx context.Context, req *internalproto.
 	})
 }
 
+// handleUpdateUser 处理更新用户请求。仅传递非 nil 字段。部分字段的修改需要额外权限验证。
 func (s *clientWSSession) handleUpdateUser(ctx context.Context, req *internalproto.UpdateUserRequest) error {
 	if req == nil {
 		return s.writeError("invalid_request", "update_user cannot be empty", 0)
@@ -227,6 +232,7 @@ func (s *clientWSSession) handleUpdateUser(ctx context.Context, req *internalpro
 	})
 }
 
+// handleDeleteUser 处理删除用户请求。
 func (s *clientWSSession) handleDeleteUser(ctx context.Context, req *internalproto.DeleteUserRequest) error {
 	if req == nil {
 		return s.writeError("invalid_request", "delete_user cannot be empty", 0)
@@ -257,6 +263,7 @@ func (s *clientWSSession) handleDeleteUser(ctx context.Context, req *internalpro
 	})
 }
 
+// handleListMessages 处理查询用户消息列表请求，默认返回最近 100 条。
 func (s *clientWSSession) handleListMessages(ctx context.Context, req *internalproto.ListMessagesRequest) error {
 	if req == nil {
 		return s.writeError("invalid_request", "list_messages cannot be empty", 0)
@@ -295,6 +302,7 @@ func (s *clientWSSession) handleListMessages(ctx context.Context, req *internalp
 	})
 }
 
+// handleGetUserMetadata 处理获取用户元数据请求。
 func (s *clientWSSession) handleGetUserMetadata(ctx context.Context, req *internalproto.GetUserMetadataRequest) error {
 	if req == nil {
 		return s.writeError("invalid_request", "get_user_metadata cannot be empty", 0)
@@ -320,6 +328,7 @@ func (s *clientWSSession) handleGetUserMetadata(ctx context.Context, req *intern
 	})
 }
 
+// handleUpsertUserMetadata 处理创建/更新用户元数据请求。
 func (s *clientWSSession) handleUpsertUserMetadata(ctx context.Context, req *internalproto.UpsertUserMetadataRequest) error {
 	if req == nil {
 		return s.writeError("invalid_request", "upsert_user_metadata cannot be empty", 0)
@@ -354,6 +363,7 @@ func (s *clientWSSession) handleUpsertUserMetadata(ctx context.Context, req *int
 	})
 }
 
+// handleDeleteUserMetadata 处理删除用户元数据请求（软删除）。
 func (s *clientWSSession) handleDeleteUserMetadata(ctx context.Context, req *internalproto.DeleteUserMetadataRequest) error {
 	if req == nil {
 		return s.writeError("invalid_request", "delete_user_metadata cannot be empty", 0)
@@ -382,6 +392,7 @@ func (s *clientWSSession) handleDeleteUserMetadata(ctx context.Context, req *int
 	})
 }
 
+// handleScanUserMetadata 处理按前缀分页扫描用户元数据请求。
 func (s *clientWSSession) handleScanUserMetadata(ctx context.Context, req *internalproto.ScanUserMetadataRequest) error {
 	if req == nil {
 		return s.writeError("invalid_request", "scan_user_metadata cannot be empty", 0)
@@ -418,6 +429,7 @@ func (s *clientWSSession) handleScanUserMetadata(ctx context.Context, req *inter
 	})
 }
 
+// handleUpsertUserAttachment 处理创建/更新附件请求（频道管理、黑名单、订阅等关联关系）。
 func (s *clientWSSession) handleUpsertUserAttachment(ctx context.Context, req *internalproto.UpsertUserAttachmentRequest) error {
 	if req == nil {
 		return s.writeError("invalid_request", "upsert_user_attachment cannot be empty", 0)
@@ -457,6 +469,7 @@ func (s *clientWSSession) handleUpsertUserAttachment(ctx context.Context, req *i
 	})
 }
 
+// handleDeleteUserAttachment 处理删除附件请求。
 func (s *clientWSSession) handleDeleteUserAttachment(ctx context.Context, req *internalproto.DeleteUserAttachmentRequest) error {
 	if req == nil {
 		return s.writeError("invalid_request", "delete_user_attachment cannot be empty", 0)
@@ -495,6 +508,7 @@ func (s *clientWSSession) handleDeleteUserAttachment(ctx context.Context, req *i
 	})
 }
 
+// handleListUserAttachments 处理查询用户附件列表请求。
 func (s *clientWSSession) handleListUserAttachments(ctx context.Context, req *internalproto.ListUserAttachmentsRequest) error {
 	if req == nil {
 		return s.writeError("invalid_request", "list_user_attachments cannot be empty", 0)
@@ -529,6 +543,7 @@ func (s *clientWSSession) handleListUserAttachments(ctx context.Context, req *in
 	})
 }
 
+// handleListEvents 处理查询事件日志请求，从指定序列号之后开始拉取。
 func (s *clientWSSession) handleListEvents(ctx context.Context, req *internalproto.ListEventsRequest) error {
 	if req == nil {
 		return s.writeError("invalid_request", "list_events cannot be empty", 0)
@@ -563,6 +578,7 @@ func (s *clientWSSession) handleListEvents(ctx context.Context, req *internalpro
 	})
 }
 
+// handleOperationsStatus 处理查询集群运维状态请求（时钟、mesh、存储修剪等综合状态）。
 func (s *clientWSSession) handleOperationsStatus(ctx context.Context, req *internalproto.OperationsStatusRequest) error {
 	if req == nil {
 		return s.writeError("invalid_request", "operations_status cannot be empty", 0)
@@ -584,6 +600,7 @@ func (s *clientWSSession) handleOperationsStatus(ctx context.Context, req *inter
 	})
 }
 
+// handleListClusterNodes 处理查询集群节点列表请求。
 func (s *clientWSSession) handleListClusterNodes(ctx context.Context, req *internalproto.ListClusterNodesRequest) error {
 	if req == nil {
 		return s.writeError("invalid_request", "list_cluster_nodes cannot be empty", 0)
@@ -610,6 +627,7 @@ func (s *clientWSSession) handleListClusterNodes(ctx context.Context, req *inter
 	})
 }
 
+// handleListNodeLoggedInUsers 处理查询指定节点已登录用户列表请求。
 func (s *clientWSSession) handleListNodeLoggedInUsers(ctx context.Context, req *internalproto.ListNodeLoggedInUsersRequest) error {
 	if req == nil {
 		return s.writeError("invalid_request", "list_node_logged_in_users cannot be empty", 0)
@@ -637,6 +655,8 @@ func (s *clientWSSession) handleListNodeLoggedInUsers(ctx context.Context, req *
 	})
 }
 
+// handleResolveUserSessions 处理查询用户在线会话请求。返回在线节点存在性信息和详细会话列表。
+// 如果目标用户在本节点但远程查询未返回会话，则回退到本地会话列表。
 func (s *clientWSSession) handleResolveUserSessions(ctx context.Context, req *internalproto.ResolveUserSessionsRequest) error {
 	if req == nil {
 		return s.writeError("invalid_request", "resolve_user_sessions cannot be empty", 0)
@@ -691,6 +711,7 @@ func (s *clientWSSession) handleResolveUserSessions(ctx context.Context, req *in
 	})
 }
 
+// localSessionTransportHint 返回本地会话的传输方式提示：如果所有会话同一种传输方式则返回该方式名，否则返回 "mixed"。
 func localSessionTransportHint(items []store.OnlineSession) string {
 	if len(items) == 0 {
 		return ""
@@ -704,6 +725,7 @@ func localSessionTransportHint(items []store.OnlineSession) string {
 	return hint
 }
 
+// handleMetrics 处理查询 Prometheus 格式指标请求。
 func (s *clientWSSession) handleMetrics(ctx context.Context, req *internalproto.MetricsRequest) error {
 	if req == nil {
 		return s.writeError("invalid_request", "metrics cannot be empty", 0)
@@ -725,6 +747,7 @@ func (s *clientWSSession) handleMetrics(ctx context.Context, req *internalproto.
 	})
 }
 
+// userKeyFromProto 将 protobuf UserRef 转换为 store.UserKey。
 func userKeyFromProto(ref *internalproto.UserRef) (store.UserKey, error) {
 	if ref == nil {
 		return store.UserKey{}, fmt.Errorf("%w: user is required", store.ErrInvalidInput)
@@ -736,6 +759,7 @@ func userKeyFromProto(ref *internalproto.UserRef) (store.UserKey, error) {
 	return key, nil
 }
 
+// stringPtrValue 将 protobuf 的可选字符串字段转为 *string，nil 字段返回 nil。
 func stringPtrValue(field *internalproto.StringField) *string {
 	if field == nil {
 		return nil
@@ -744,6 +768,7 @@ func stringPtrValue(field *internalproto.StringField) *string {
 	return &value
 }
 
+// hashPasswordFromWS 对 WebSocket 客户端提供的明文密码进行哈希处理。
 func hashPasswordFromWS(password string) (string, error) {
 	hashed, err := auth.HashPassword(password)
 	if err != nil {
@@ -752,6 +777,7 @@ func hashPasswordFromWS(password string) (string, error) {
 	return hashed, nil
 }
 
+// clientProtoAttachment 将 store.Attachment 转换为 protobuf Attachment 消息。
 func clientProtoAttachment(attachment store.Attachment) *internalproto.Attachment {
 	item := &internalproto.Attachment{
 		Owner:          &internalproto.UserRef{NodeId: attachment.Owner.NodeID, UserId: attachment.Owner.UserID},
@@ -767,6 +793,7 @@ func clientProtoAttachment(attachment store.Attachment) *internalproto.Attachmen
 	return item
 }
 
+// clientProtoEvent 将 store.Event 转换为 protobuf Event 消息。事件体被序列化为 JSON 字节。
 func clientProtoEvent(event store.Event) (*internalproto.Event, error) {
 	eventJSON, err := json.Marshal(event.Body)
 	if err != nil {
@@ -785,6 +812,7 @@ func clientProtoEvent(event store.Event) (*internalproto.Event, error) {
 	}, nil
 }
 
+// clientProtoOperationsStatus 将 operationsStatus 转换为 protobuf OperationsStatus 消息。
 func clientProtoOperationsStatus(status operationsStatus) *internalproto.OperationsStatus {
 	peers := make([]*internalproto.PeerStatus, 0, len(status.Peers))
 	for _, peer := range status.Peers {
@@ -847,6 +875,7 @@ func clientProtoOperationsStatus(status operationsStatus) *internalproto.Operati
 	}
 }
 
+// clientProtoUserForResponse 查询用户登录名后构造 protobuf User 响应，使返回的用户信息包含 login_name。
 func (s *clientWSSession) clientProtoUserForResponse(ctx context.Context, user store.User) (*internalproto.User, error) {
 	if s == nil || s.http == nil || s.http.service == nil {
 		return clientProtoUser(user), nil
@@ -858,6 +887,7 @@ func (s *clientWSSession) clientProtoUserForResponse(ctx context.Context, user s
 	return clientProtoUserWithLoginName(user, loginName), nil
 }
 
+// clientProtoClusterNode 将 clusterNodeResponse 转换为 protobuf ClusterNode 消息。
 func clientProtoClusterNode(node clusterNodeResponse) *internalproto.ClusterNode {
 	return &internalproto.ClusterNode{
 		NodeId:        node.NodeID,
@@ -867,6 +897,7 @@ func clientProtoClusterNode(node clusterNodeResponse) *internalproto.ClusterNode
 	}
 }
 
+// clientProtoLoggedInUser 将 loggedInUserResponse 转换为 protobuf LoggedInUser 消息。
 func clientProtoLoggedInUser(user loggedInUserResponse) *internalproto.LoggedInUser {
 	return &internalproto.LoggedInUser{
 		NodeId:    user.NodeID,
@@ -876,6 +907,13 @@ func clientProtoLoggedInUser(user loggedInUserResponse) *internalproto.LoggedInU
 	}
 }
 
+// writeStoreOrRequestError 将 store 或 app 层错误映射为客户端可理解的错误码和消息：
+//   - ErrClockNotSynchronized / ErrServiceUnavailable → "service_unavailable"
+//   - ErrBlockedByBlacklist / ErrForbidden → "forbidden"
+//   - ErrInvalidInput → "invalid_request"
+//   - ErrNotFound → "not_found"
+//   - ErrConflict → "conflict"
+//   - 其他 → "internal_error"
 func (s *clientWSSession) writeStoreOrRequestError(requestID uint64, err error) error {
 	code := "internal_error"
 	message := "internal server error"

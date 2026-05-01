@@ -10,6 +10,8 @@ import (
 	"github.com/tursom/turntf/internal/clock"
 )
 
+// Init 初始化 Store：创建所有 SQLite 表、索引和 schema 元数据，支持从前版本迁移。
+// 操作是幂等的（使用 IF NOT EXISTS），可安全地多次调用。
 func (s *Store) Init(ctx context.Context) error {
 	const schema = `
 CREATE TABLE IF NOT EXISTS schema_meta (

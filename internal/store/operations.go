@@ -9,6 +9,7 @@ import (
 	"github.com/tursom/turntf/internal/clock"
 )
 
+// OperationsStats 是 store 运维统计的顶层结构，包含节点信息、peer 状态和裁剪统计。
 type OperationsStats struct {
 	NodeID             int64
 	MessageWindowSize  int
@@ -20,11 +21,13 @@ type OperationsStats struct {
 	Projection         ProjectionStats
 }
 
+// PeerOperationsStats 是某个 peer 的聚合操作统计。
 type PeerOperationsStats struct {
 	PeerNodeID int64
 	Origins    []PeerOriginOperationsStats
 }
 
+// PeerOriginOperationsStats 是 peer 在某个来源节点上的事件确认和应用状态。
 type PeerOriginOperationsStats struct {
 	OriginNodeID      int64
 	AckedEventID      int64
@@ -33,16 +36,19 @@ type PeerOriginOperationsStats struct {
 	UpdatedAt         *clock.Timestamp
 }
 
+// MessageTrimStats 是全局消息裁剪统计。
 type MessageTrimStats struct {
 	TrimmedTotal  int64
 	LastTrimmedAt *clock.Timestamp
 }
 
+// localOriginEventStats 是本地来源事件统计的内部类型。
 type localOriginEventStats struct {
 	LastEventID int64
 	EventCount  int64
 }
 
+// OperationsStats 收集 store 的综合运维统计信息，包括事件序列号、peer 状态、冲突数和裁剪统计。
 func (s *Store) OperationsStats(ctx context.Context, peerNodeIDs []int64) (OperationsStats, error) {
 	lastSequence, err := s.LastEventSequence(ctx)
 	if err != nil {

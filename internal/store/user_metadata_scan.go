@@ -9,6 +9,7 @@ import (
 	"github.com/tursom/turntf/internal/clock"
 )
 
+// scanUserMetadata 从 SQL scanner 扫描一行到 UserMetadata，解析 HLC 时间戳和过期时间。
 func scanUserMetadata(scanner interface{ Scan(...any) error }) (UserMetadata, error) {
 	var (
 		metadata      UserMetadata

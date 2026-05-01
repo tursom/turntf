@@ -9,8 +9,11 @@ import (
 	"github.com/tursom/turntf/internal/mesh"
 )
 
+// meshTransportAcceptQueue 是网格传输适配器接受通道的缓冲区大小。
 const meshTransportAcceptQueue = 128
 
+// LibP2PMeshTransportAdapter 将libp2p传输适配到网格运行时。
+// 创建并管理自己的libp2p主机实例。
 type LibP2PMeshTransportAdapter struct {
 	cfg           LibP2PConfig
 	clusterSecret string
@@ -21,6 +24,7 @@ type LibP2PMeshTransportAdapter struct {
 	closeOnce sync.Once
 }
 
+// ZeroMQMeshTransportAdapter 将ZeroMQ传输适配到网格运行时。
 type ZeroMQMeshTransportAdapter struct {
 	cfg              ZeroMQConfig
 	serverKeyForPeer func(string) string
@@ -31,12 +35,14 @@ type ZeroMQMeshTransportAdapter struct {
 	closeOnce sync.Once
 }
 
+// meshTransportConn 包装TransportConn以适配mesh.TransportConn接口。
 type meshTransportConn struct {
 	conn       TransportConn
 	kind       mesh.TransportKind
 	remoteHint string
 }
 
+// NewMeshTransportAdapters 为所有启用的传输创建适配器。
 func NewMeshTransportAdapters(cfg Config, zeroMQCurveServerKeyForPeer func(string) string) []mesh.TransportAdapter {
 	adapters := make([]mesh.TransportAdapter, 0, 3)
 	if adapter := NewWebSocketMeshTransportAdapter(cfg); adapter != nil {
@@ -51,6 +57,7 @@ func NewMeshTransportAdapters(cfg Config, zeroMQCurveServerKeyForPeer func(strin
 	return adapters
 }
 
+// NewLibP2PMeshTransportAdapter 创建一个libp2p网格传输适配器。
 func NewLibP2PMeshTransportAdapter(cfg Config) *LibP2PMeshTransportAdapter {
 	cfg = cfg.WithDefaults()
 	if !cfg.LibP2P.Enabled {
@@ -63,6 +70,7 @@ func NewLibP2PMeshTransportAdapter(cfg Config) *LibP2PMeshTransportAdapter {
 	}
 }
 
+// NewZeroMQMeshTransportAdapter 创建一个ZeroMQ网格传输适配器。
 func NewZeroMQMeshTransportAdapter(cfg Config, zeroMQCurveServerKeyForPeer func(string) string) *ZeroMQMeshTransportAdapter {
 	cfg = cfg.WithDefaults()
 	if !cfg.ZeroMQ.Enabled || !cfg.ZeroMQForwardingEnabled() {
@@ -75,6 +83,7 @@ func NewZeroMQMeshTransportAdapter(cfg Config, zeroMQCurveServerKeyForPeer func(
 	}
 }
 
+// Start 启动libp2p传输和入站接受循环。
 func (a *LibP2PMeshTransportAdapter) Start(ctx context.Context) error {
 	if a == nil {
 		return nil
@@ -109,6 +118,7 @@ func (a *LibP2PMeshTransportAdapter) Start(ctx context.Context) error {
 	return nil
 }
 
+// Dial 通过libp2p传输向指定端点发起连接。
 func (a *LibP2PMeshTransportAdapter) Dial(ctx context.Context, endpoint string) (mesh.TransportConn, error) {
 	if a == nil {
 		return nil, fmt.Errorf("libp2p mesh transport adapter is nil")
@@ -126,6 +136,7 @@ func (a *LibP2PMeshTransportAdapter) Dial(ctx context.Context, endpoint string) 
 	return wrapMeshTransportConn(mesh.TransportLibP2P, conn), nil
 }
 
+// Accept 返回接受通道。
 func (a *LibP2PMeshTransportAdapter) Accept() <-chan mesh.TransportConn {
 	if a == nil {
 		return nil
@@ -133,10 +144,12 @@ func (a *LibP2PMeshTransportAdapter) Accept() <-chan mesh.TransportConn {
 	return a.acceptCh
 }
 
+// Kind 返回传输类型LibP2P。
 func (a *LibP2PMeshTransportAdapter) Kind() mesh.TransportKind {
 	return mesh.TransportLibP2P
 }
 
+// LocalCapabilities 返回本地传输能力。
 func (a *LibP2PMeshTransportAdapter) LocalCapabilities() *mesh.TransportCapability {
 	if a == nil {
 		return nil
@@ -154,6 +167,7 @@ func (a *LibP2PMeshTransportAdapter) LocalCapabilities() *mesh.TransportCapabili
 	return mesh.CloneCapability(capability)
 }
 
+// Close 关闭libp2p传输。
 func (a *LibP2PMeshTransportAdapter) Close() error {
 	if a == nil {
 		return nil
@@ -171,6 +185,7 @@ func (a *LibP2PMeshTransportAdapter) Close() error {
 	return err
 }
 
+// Start 启动ZeroMQ监听器。
 func (a *ZeroMQMeshTransportAdapter) Start(ctx context.Context) error {
 	if a == nil {
 		return nil
@@ -211,6 +226,7 @@ func (a *ZeroMQMeshTransportAdapter) Start(ctx context.Context) error {
 	return nil
 }
 
+// Dial 通过ZeroMQ传输向指定端点发起连接。
 func (a *ZeroMQMeshTransportAdapter) Dial(ctx context.Context, endpoint string) (mesh.TransportConn, error) {
 	if a == nil {
 		return nil, fmt.Errorf("zeromq mesh transport adapter is nil")
@@ -222,6 +238,7 @@ func (a *ZeroMQMeshTransportAdapter) Dial(ctx context.Context, endpoint string) 
 	return wrapMeshTransportConn(mesh.TransportZeroMQ, conn, endpoint), nil
 }
 
+// Accept 返回接受通道。
 func (a *ZeroMQMeshTransportAdapter) Accept() <-chan mesh.TransportConn {
 	if a == nil {
 		return nil
@@ -229,10 +246,12 @@ func (a *ZeroMQMeshTransportAdapter) Accept() <-chan mesh.TransportConn {
 	return a.acceptCh
 }
 
+// Kind 返回传输类型ZeroMQ。
 func (a *ZeroMQMeshTransportAdapter) Kind() mesh.TransportKind {
 	return mesh.TransportZeroMQ
 }
 
+// LocalCapabilities 返回本地ZeroMQ传输能力。
 func (a *ZeroMQMeshTransportAdapter) LocalCapabilities() *mesh.TransportCapability {
 	if a == nil {
 		return nil
@@ -241,6 +260,7 @@ func (a *ZeroMQMeshTransportAdapter) LocalCapabilities() *mesh.TransportCapabili
 	return mesh.CloneCapability(capability)
 }
 
+// Close 关闭ZeroMQ监听器。
 func (a *ZeroMQMeshTransportAdapter) Close() error {
 	if a == nil {
 		return nil
@@ -258,6 +278,7 @@ func (a *ZeroMQMeshTransportAdapter) Close() error {
 	return err
 }
 
+// enqueueMeshTransportConn 将连接的包装版本放入接受通道。
 func enqueueMeshTransportConn(ctx context.Context, acceptCh chan mesh.TransportConn, kind mesh.TransportKind, conn TransportConn) {
 	wrapped := wrapMeshTransportConn(kind, conn)
 	select {
@@ -269,6 +290,7 @@ func enqueueMeshTransportConn(ctx context.Context, acceptCh chan mesh.TransportC
 	}
 }
 
+// wrapMeshTransportConn 将TransportConn包装为mesh.TransportConn。
 func wrapMeshTransportConn(kind mesh.TransportKind, conn TransportConn, remoteHint ...string) mesh.TransportConn {
 	if kind == mesh.TransportUnspecified {
 		kind = meshTransportKind(conn)
@@ -284,6 +306,7 @@ func wrapMeshTransportConn(kind mesh.TransportKind, conn TransportConn, remoteHi
 	}
 }
 
+// meshTransportKind 从TransportConn推断网格传输类型。
 func meshTransportKind(conn TransportConn) mesh.TransportKind {
 	if conn == nil {
 		return mesh.TransportUnspecified
@@ -298,6 +321,7 @@ func meshTransportKind(conn TransportConn) mesh.TransportKind {
 	}
 }
 
+// libp2pRemoteAddrSuggestsRelay 检查libp2p远程地址是否暗示使用了中继。
 func libp2pRemoteAddrSuggestsRelay(addr string) bool {
 	if addr == "" {
 		return false
@@ -306,10 +330,12 @@ func libp2pRemoteAddrSuggestsRelay(addr string) bool {
 	return strings.Contains(lower, "/p2p-circuit") || strings.Contains(lower, "relay")
 }
 
+// Send 发送消息。
 func (c *meshTransportConn) Send(ctx context.Context, envelope []byte) error {
 	return c.conn.Send(ctx, envelope)
 }
 
+// SendOwned 发送消息（所有权转移版本）。
 func (c *meshTransportConn) SendOwned(ctx context.Context, envelope []byte) error {
 	if sender, ok := c.conn.(interface {
 		SendOwned(context.Context, []byte) error
@@ -319,14 +345,17 @@ func (c *meshTransportConn) SendOwned(ctx context.Context, envelope []byte) erro
 	return c.conn.Send(ctx, envelope)
 }
 
+// Receive 接收消息。
 func (c *meshTransportConn) Receive(ctx context.Context) ([]byte, error) {
 	return c.conn.Receive(ctx)
 }
 
+// Close 关闭连接。
 func (c *meshTransportConn) Close() error {
 	return c.conn.Close()
 }
 
+// RemoteNodeHint 返回远程节点的提示信息。
 func (c *meshTransportConn) RemoteNodeHint() string {
 	if c == nil || c.conn == nil {
 		return ""
@@ -346,6 +375,7 @@ func (c *meshTransportConn) RemoteNodeHint() string {
 	return remoteAddr
 }
 
+// Transport 返回网格传输类型。
 func (c *meshTransportConn) Transport() mesh.TransportKind {
 	if c == nil {
 		return mesh.TransportUnspecified

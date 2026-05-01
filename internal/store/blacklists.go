@@ -8,6 +8,7 @@ import (
 	"github.com/tursom/turntf/internal/clock"
 )
 
+// BlockUser 将用户加入黑名单。底层委托给 UpsertAttachment（AttachmentTypeUserBlacklist）。
 func (s *Store) BlockUser(ctx context.Context, params BlacklistParams) (BlacklistEntry, Event, error) {
 	attachment, event, err := s.UpsertAttachment(ctx, UpsertAttachmentParams{
 		Owner:      params.Owner,
@@ -21,6 +22,7 @@ func (s *Store) BlockUser(ctx context.Context, params BlacklistParams) (Blacklis
 	return blacklistEntryFromAttachment(attachment), event, nil
 }
 
+// UnblockUser 取消拉黑用户。底层委托给 DeleteAttachment（AttachmentTypeUserBlacklist）。
 func (s *Store) UnblockUser(ctx context.Context, params BlacklistParams) (BlacklistEntry, Event, error) {
 	attachment, event, err := s.DeleteAttachment(ctx, DeleteAttachmentParams{
 		Owner:   params.Owner,
@@ -33,6 +35,7 @@ func (s *Store) UnblockUser(ctx context.Context, params BlacklistParams) (Blackl
 	return blacklistEntryFromAttachment(attachment), event, nil
 }
 
+// ListBlockedUsers 列出用户的所有黑名单条目。
 func (s *Store) ListBlockedUsers(ctx context.Context, owner UserKey) ([]BlacklistEntry, error) {
 	if err := owner.Validate(); err != nil {
 		return nil, err
@@ -51,6 +54,8 @@ func (s *Store) ListBlockedUsers(ctx context.Context, owner UserKey) ([]Blacklis
 	return entries, nil
 }
 
+// IsBlockedByRecipient 检查 sender 是否被 recipient 拉黑。
+// 需要双方角色都满足条件（recipient 需可登录，sender 需为普通用户）。
 func (s *Store) IsBlockedByRecipient(ctx context.Context, recipient, sender UserKey) (bool, error) {
 	if err := recipient.Validate(); err != nil {
 		return false, err
@@ -78,6 +83,8 @@ func (s *Store) IsBlockedByRecipient(ctx context.Context, recipient, sender User
 	return s.blacklists.HasActiveBlock(ctx, recipient, sender, nil)
 }
 
+// IsMessageHiddenByBlacklist 检查消息是否因黑名单而应隐藏。
+// 与 IsBlockedByRecipient 不同，此方法根据消息创建时的黑名单状态进行判断（使用 createdAt 时间戳）。
 func (s *Store) IsMessageHiddenByBlacklist(ctx context.Context, owner, sender UserKey, createdAt clock.Timestamp) (bool, error) {
 	if err := owner.Validate(); err != nil {
 		return false, err
@@ -98,6 +105,8 @@ func (s *Store) IsMessageHiddenByBlacklist(ctx context.Context, owner, sender Us
 	return s.blacklists.HasActiveBlock(ctx, owner, sender, &createdAt)
 }
 
+// isBlockedByRecipientTx 在事务中检查 owner 是否拉黑了 blocked 用户。
+// 可选按 attachedAt 时间戳过滤（用于检查历史黑名单状态）。
 func (s *Store) isBlockedByRecipientTx(ctx context.Context, tx *sql.Tx, owner, blocked UserKey, attachedAt *clock.Timestamp) (bool, error) {
 	if err := owner.Validate(); err != nil {
 		return false, err

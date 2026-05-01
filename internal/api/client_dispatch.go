@@ -9,6 +9,10 @@ import (
 	internalproto "github.com/tursom/turntf/internal/proto"
 )
 
+// readLoop 是客户端会话的主事件循环，不断读取 protobuf 信封并按类型分发到对应的 handle* 方法。
+// 支持的消息类型：SendMessage、CreateUser、GetUser、UpdateUser、DeleteUser、ListMessages、
+// 用户元数据 CRUD、附件 CRUD、ListEvents、运维状态、集群节点、在线用户、会话解析、Metrics、Ack、Ping 等。
+// 类型为 ClientEnvelope_Login 的消息在认证后收到会返回错误。
 func (s *clientWSSession) readLoop(ctx context.Context) error {
 	for {
 		select {
@@ -331,6 +335,8 @@ func (s *clientWSSession) readLoop(ctx context.Context) error {
 	}
 }
 
+// requestIDForClientEnvelopeBody 从任意 ClientEnvelope body 类型中提取 request_id 字段。
+// 对于无需 request_id 的类型（如 Ack、Login），返回 0。
 func requestIDForClientEnvelopeBody(body any) uint64 {
 	switch req := body.(type) {
 	case *internalproto.ClientEnvelope_SendMessage:

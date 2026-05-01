@@ -10,6 +10,9 @@ import (
 	"github.com/tursom/turntf/internal/clock"
 )
 
+// EnsureBootstrapAdmin 确保超级管理员用户存在且配置正确。
+// 创建或修复 bootstrap admin、broadcast 和 node-ingress 三个系统用户。
+// 处理多节点场景下超级管理员角色的协调（仅保留一个节点的 admin 为超级管理员）。
 func (s *Store) EnsureBootstrapAdmin(ctx context.Context, cfg BootstrapAdminConfig) error {
 	username := strings.TrimSpace(cfg.Username)
 	passwordHash := strings.TrimSpace(cfg.PasswordHash)

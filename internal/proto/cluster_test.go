@@ -6,8 +6,11 @@ import (
 	gproto "google.golang.org/protobuf/proto"
 )
 
+// testNodeID 是测试中使用的固定节点ID。
 const testNodeID = int64(4096)
 
+// TestEnvelopeBatchRoundTrip 验证包含UserCreatedEvent的Envelope能够
+// 正确地进行protobuf序列化和反序列化往返。
 func TestEnvelopeBatchRoundTrip(t *testing.T) {
 	t.Parallel()
 
@@ -73,10 +76,13 @@ func TestEnvelopeBatchRoundTrip(t *testing.T) {
 	}
 }
 
+// unsupportedEventBody 是用于测试不支持类型拒绝的存根EventBody。
 type unsupportedEventBody struct{}
 
 func (unsupportedEventBody) eventType() string { return "unsupported" }
 
+// TestReplicatedEventTypedBodyHelpers 验证所有10种事件类型的
+// SetTypedBody/GetTypedBody往返和protobuf序列化/反序列化。
 func TestReplicatedEventTypedBodyHelpers(t *testing.T) {
 	t.Parallel()
 
@@ -244,6 +250,8 @@ func TestReplicatedEventTypedBodyHelpers(t *testing.T) {
 	}
 }
 
+// TestReplicatedEventTypedBodyHelpersRejectUnsupportedBody 验证SetTypedBody
+// 拒绝不支持的事件类型，以及nil体正确清除body。
 func TestReplicatedEventTypedBodyHelpersRejectUnsupportedBody(t *testing.T) {
 	t.Parallel()
 
@@ -262,6 +270,8 @@ func TestReplicatedEventTypedBodyHelpersRejectUnsupportedBody(t *testing.T) {
 	}
 }
 
+// TestSnapshotMessageRowRoundTripUsesTripleIdentity 验证快照消息行
+// 的protobuf往返，确保三元组身份(recipient, node_id, seq)保持不变。
 func TestSnapshotMessageRowRoundTripUsesTripleIdentity(t *testing.T) {
 	t.Parallel()
 
@@ -306,6 +316,7 @@ func TestSnapshotMessageRowRoundTripUsesTripleIdentity(t *testing.T) {
 	}
 }
 
+// TestSnapshotAttachmentRowRoundTrip 验证快照附件行的protobuf往返。
 func TestSnapshotAttachmentRowRoundTrip(t *testing.T) {
 	t.Parallel()
 
@@ -350,6 +361,7 @@ func TestSnapshotAttachmentRowRoundTrip(t *testing.T) {
 	}
 }
 
+// TestSnapshotUserMetadataRowRoundTrip 验证快照用户元数据行的protobuf往返。
 func TestSnapshotUserMetadataRowRoundTrip(t *testing.T) {
 	t.Parallel()
 

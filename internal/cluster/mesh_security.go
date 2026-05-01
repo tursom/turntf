@@ -13,14 +13,22 @@ import (
 	"github.com/tursom/turntf/internal/mesh"
 )
 
+// meshMarshalOptions 使用确定性序列化，确保HMAC签名一致。
 var meshMarshalOptions = proto.MarshalOptions{Deterministic: true}
 
+// meshEnvelopeHMACFieldNumber 是ClusterEnvelope中hmac字段的protobuf字段编号。
 const meshEnvelopeHMACFieldNumber = 14
 
+// meshEnvelopeAuthenticator 实现mesh.Signer和mesh.Verifier接口。
+// 使用HMAC-SHA256对网格信封进行签名和验证。
+// 与传统信封签名不同，此实现使用protowire级别操作，
+// 在已序列化的字节流上附加/剥离HMAC字段，避免重新序列化。
 type meshEnvelopeAuthenticator struct {
 	secret []byte
 }
 
+// newMeshEnvelopeAuthenticator 创建网格信封认证器。
+// 如果密钥为空则返回nil。
 func newMeshEnvelopeAuthenticator(secret string) *meshEnvelopeAuthenticator {
 	trimmed := strings.TrimSpace(secret)
 	if trimmed == "" {
@@ -29,6 +37,9 @@ func newMeshEnvelopeAuthenticator(secret string) *meshEnvelopeAuthenticator {
 	return &meshEnvelopeAuthenticator{secret: []byte(trimmed)}
 }
 
+// Sign 对网格信封进行签名。encoded参数是已序列化（不含HMAC）的字节。
+// 如果未提供，则从envelope重新序列化。
+// 返回在末尾附加了HMAC字段的完整字节。
 func (a *meshEnvelopeAuthenticator) Sign(envelope *mesh.ClusterEnvelope, encoded []byte) ([]byte, error) {
 	if envelope == nil {
 		return nil, errors.New("mesh envelope cannot be nil")
@@ -51,6 +62,8 @@ func (a *meshEnvelopeAuthenticator) Sign(envelope *mesh.ClusterEnvelope, encoded
 	return signed, nil
 }
 
+// Verify 验证网格信封的HMAC签名。
+// 从raw字节中剥离HMAC字段，重新计算签名并进行常量时间比较。
 func (a *meshEnvelopeAuthenticator) Verify(envelope *mesh.ClusterEnvelope, raw []byte) error {
 	if envelope == nil {
 		return errors.New("mesh envelope cannot be nil")
@@ -69,6 +82,7 @@ func (a *meshEnvelopeAuthenticator) Verify(envelope *mesh.ClusterEnvelope, raw [
 	return nil
 }
 
+// signatureFor 为给定的网格信封计算HMAC签名。
 func (a *meshEnvelopeAuthenticator) signatureFor(envelope *mesh.ClusterEnvelope) ([]byte, error) {
 	if a == nil {
 		return nil, errors.New("mesh authenticator cannot be nil")
@@ -85,6 +99,7 @@ func (a *meshEnvelopeAuthenticator) signatureFor(envelope *mesh.ClusterEnvelope)
 	return a.signatureForPayload(payload)
 }
 
+// signatureForPayload 为给定的字节负载计算HMAC-SHA256签名。
 func (a *meshEnvelopeAuthenticator) signatureForPayload(payload []byte) ([]byte, error) {
 	if a == nil {
 		return nil, errors.New("mesh authenticator cannot be nil")
@@ -96,6 +111,7 @@ func (a *meshEnvelopeAuthenticator) signatureForPayload(payload []byte) ([]byte,
 	return mac.Sum(nil), nil
 }
 
+// meshEnvelopeBytes 将信封序列化为不含HMAC的原始字节。
 func meshEnvelopeBytes(envelope *mesh.ClusterEnvelope) ([]byte, error) {
 	clone, ok := proto.Clone(envelope).(*mesh.ClusterEnvelope)
 	if !ok {
@@ -109,6 +125,9 @@ func meshEnvelopeBytes(envelope *mesh.ClusterEnvelope) ([]byte, error) {
 	return encoded, nil
 }
 
+// stripMeshEnvelopeHMAC 从序列化的网格信封中剥离HMAC字段。
+// 使用protowire按字段解析，将HMAC字段提取出来，其余字段保持不变。
+// 这避免了反序列化和重新序列化整个消息。
 func stripMeshEnvelopeHMAC(raw []byte) ([]byte, []byte, error) {
 	if len(raw) == 0 {
 		return nil, nil, errors.New("mesh envelope raw bytes cannot be empty")

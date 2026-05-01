@@ -13,17 +13,21 @@ import (
 
 const eventLogTrimStatsScope = "global"
 
+// EventLogTrimStats 是事件日志裁剪统计。
 type EventLogTrimStats struct {
 	TrimmedTotal  int64
 	LastTrimmedAt *clock.Timestamp
 }
 
+// EventLogPruneResult 是单次事件日志裁剪操作的结果。
 type EventLogPruneResult struct {
 	TrimmedEvents      int64
 	OriginsAffected    int
 	MaxEventsPerOrigin int
 }
 
+// PruneEventLogOnce 对所有来源节点执行一次事件日志裁剪。
+// 每个来源最多保留 EventLogMaxEventsPerOrigin 条事件，超出部分按 event_id 升序删除。
 func (s *Store) PruneEventLogOnce(ctx context.Context) (EventLogPruneResult, error) {
 	maxEvents := normalizeEventLogMaxEventsPerOrigin(s.eventLogMaxEventsPerOrigin)
 	progress, err := s.backend.EventLog().ListOriginProgress(ctx)

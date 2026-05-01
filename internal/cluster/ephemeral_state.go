@@ -7,6 +7,7 @@ import (
 	internalproto "github.com/tursom/turntf/internal/proto"
 )
 
+// disconnectSuspicionGrace 返回断开连接怀疑的容忍期。
 func (m *Manager) disconnectSuspicionGrace() time.Duration {
 	if m == nil {
 		return time.Duration(DefaultDisconnectSuspicionGraceMs) * time.Millisecond
@@ -18,6 +19,7 @@ func (m *Manager) disconnectSuspicionGrace() time.Duration {
 	return time.Duration(graceMs) * time.Millisecond
 }
 
+// currentRuntimeEpochForNodeLocked 返回指定节点的当前已知运行时纪元。
 func (m *Manager) currentRuntimeEpochForNodeLocked(nodeID int64) uint64 {
 	if m == nil || nodeID <= 0 {
 		return 0
@@ -32,6 +34,7 @@ func (m *Manager) currentRuntimeEpochForNodeLocked(nodeID int64) uint64 {
 	return current
 }
 
+// rememberRemoteRuntimeEpochLocked 更新远程节点的运行时纪元（仅当大于当前值时）。
 func (m *Manager) rememberRemoteRuntimeEpochLocked(nodeID int64, runtimeEpoch uint64) bool {
 	if m == nil || nodeID <= 0 || nodeID == m.cfg.NodeID || runtimeEpoch == 0 {
 		return false
@@ -47,6 +50,7 @@ func (m *Manager) rememberRemoteRuntimeEpochLocked(nodeID int64, runtimeEpoch ui
 	return true
 }
 
+// rumorObservedAt 提取传闻的观察时间戳。
 func (m *Manager) rumorObservedAt(rumor *internalproto.NodeConnectivityRumor, fallback time.Time) time.Time {
 	if rumor == nil || rumor.GetObservedAtMs() <= 0 {
 		return fallback
@@ -54,6 +58,8 @@ func (m *Manager) rumorObservedAt(rumor *internalproto.NodeConnectivityRumor, fa
 	return time.UnixMilli(rumor.GetObservedAtMs()).UTC()
 }
 
+// markConnectivityRumorSeenLocked 标记连接性传闻已见过，用于去重。
+// 返回是否是新传闻。
 func (m *Manager) markConnectivityRumorSeenLocked(rumor *internalproto.NodeConnectivityRumor, now time.Time) bool {
 	if m == nil || rumor == nil {
 		return false
@@ -75,6 +81,7 @@ func (m *Manager) markConnectivityRumorSeenLocked(rumor *internalproto.NodeConne
 	return true
 }
 
+// pruneSeenConnectivityRumorsLocked 清理过期的已见传闻记录。
 func (m *Manager) pruneSeenConnectivityRumorsLocked(now time.Time) {
 	if m == nil || len(m.seenConnectivityRumors) == 0 {
 		return
@@ -87,6 +94,7 @@ func (m *Manager) pruneSeenConnectivityRumorsLocked(now time.Time) {
 	}
 }
 
+// noteDisconnectSuspicionLocked 记录一个断开连接怀疑。
 func (m *Manager) noteDisconnectSuspicionLocked(rumor *internalproto.NodeConnectivityRumor, now time.Time) {
 	if m == nil || rumor == nil || rumor.GetTargetNodeId() <= 0 || rumor.GetTargetRuntimeEpoch() == 0 {
 		return
@@ -116,6 +124,7 @@ func (m *Manager) noteDisconnectSuspicionLocked(rumor *internalproto.NodeConnect
 	m.disconnectSuspicions[key] = state
 }
 
+// clearDisconnectSuspicionsForNodeLocked 清除指定节点的断开连接怀疑。
 func (m *Manager) clearDisconnectSuspicionsForNodeLocked(nodeID int64, runtimeEpoch uint64) {
 	if m == nil || nodeID <= 0 || len(m.disconnectSuspicions) == 0 {
 		return
@@ -130,6 +139,8 @@ func (m *Manager) clearDisconnectSuspicionsForNodeLocked(nodeID int64, runtimeEp
 	}
 }
 
+// clearEphemeralStateForNode 清除指定节点的所有临时状态。
+// 当节点断连或怀疑得到确认时调用。
 func (m *Manager) clearEphemeralStateForNode(nodeID int64, runtimeEpoch uint64, reason string) {
 	if m == nil || nodeID <= 0 || nodeID == m.cfg.NodeID {
 		return
@@ -145,6 +156,7 @@ func (m *Manager) clearEphemeralStateForNode(nodeID int64, runtimeEpoch uint64, 
 		Msg("cleared remote ephemeral state")
 }
 
+// clearEphemeralStateForNodeLocked 在锁内清除节点的临时状态。
 func (m *Manager) clearEphemeralStateForNodeLocked(nodeID int64, runtimeEpoch uint64) {
 	if m == nil || nodeID <= 0 || nodeID == m.cfg.NodeID {
 		return
@@ -157,6 +169,12 @@ func (m *Manager) clearEphemeralStateForNodeLocked(nodeID int64, runtimeEpoch ui
 	delete(m.loggedInUsersByNode, nodeID)
 }
 
+// expireDisconnectSuspicions 检查过期的断开连接怀疑并清理相关状态。
+//
+// 如果怀疑已过期：
+//   - 如果本节点仍与该节点有直接邻接 → 清除怀疑（节点已恢复）
+//   - 如果纪元已变化 → 清除怀疑（已在新的纪元中重新连接）
+//   - 否则 → 清除临时状态（接受该节点确已断开）
 func (m *Manager) expireDisconnectSuspicions(now time.Time) {
 	if m == nil {
 		return

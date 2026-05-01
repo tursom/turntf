@@ -23,52 +23,62 @@ import (
 	"github.com/tursom/turntf/internal/store"
 )
 
+// clientSessionShardCount 会话分片数量（必须是 2 的幂），用于减少并发竞争。
 const clientSessionShardCount = 256
 
+// clientSessionBucket 同一用户的所有会话集合，按 sessionID 索引，并持有快照供高效遍历。
 type clientSessionBucket struct {
 	bySessionID map[string]*clientWSSession
 	snapshot    []*clientWSSession
 }
 
+// clientSessionShard 一个会话分片，受独立互斥锁保护以降低锁竞争。
 type clientSessionShard struct {
 	mu       sync.RWMutex
 	sessions map[store.UserKey]*clientSessionBucket
 }
 
+// onlineUserState 在线用户的聚合状态（用于 /cluster/nodes/:id/logged-in-users）。
 type onlineUserState struct {
 	Username     string
 	LoginName    string
 	SessionCount int
 }
 
+// HTTP 是 REST API 的核心处理器，管理 HTTP 路由、JWT 认证、客户端会话分片、
+// 持久化事件分发和在线用户统计。它同时实现了 TransientPacketReceiver 和
+// LoggedInUserProvider 接口，桥接 Service 层与集群 mesh 层。
 type HTTP struct {
 	service          *Service
 	authorizer       *permission.Authorizer
 	mux              *http.ServeMux
 	nodeID           int64
-	signer           *auth.Signer
-	tokenTTL         time.Duration
-	sessionShards    [clientSessionShardCount]clientSessionShard
+	signer           *auth.Signer                         // JWT 签名器，nil 表示禁用认证
+	tokenTTL         time.Duration                         // JWT 有效期
+	sessionShards    [clientSessionShardCount]clientSessionShard // 分片会话存储
 	persistentMu     sync.RWMutex
-	persistent       map[*clientWSSession]struct{}
-	persistentAdmin  map[*clientWSSession]struct{}
+	persistent       map[*clientWSSession]struct{}        // 需要持久化推送的会话集合
+	persistentAdmin  map[*clientWSSession]struct{}        // 管理员会话（接收所有消息）
 	onlineUsersMu    sync.RWMutex
-	onlineUsers      map[store.UserKey]onlineUserState
+	onlineUsers      map[store.UserKey]onlineUserState    // 在线用户聚合状态
 	onlineUserCount  atomic.Int64
-	sessionRegistry  OnlineSessionRegistry
-	sessionSequence  atomic.Uint64
+	sessionRegistry  OnlineSessionRegistry                 // 集群会话注册器
+	sessionSequence  atomic.Uint64                         // 会话 ID 自增序列
 	targetRoleMu     sync.Mutex
-	targetRoleCache  map[store.UserKey]clientRoleCacheEntry
+	targetRoleCache  map[store.UserKey]clientRoleCacheEntry // 用户角色缓存
 	dispatcherMu     sync.Mutex
-	dispatcherCancel context.CancelFunc
-	closeOnce        sync.Once
+	dispatcherCancel context.CancelFunc                    // 持久化分发器取消函数
+	closeOnce        sync.Once                             // 确保 Close 只执行一次
 }
 
+// HTTPOptions 配置 HTTP 服务的可选参数。
 type HTTPOptions struct {
 	NodeID   int64
 	Signer   *auth.Signer
 	TokenTTL time.Duration
 }
+
+// -- HTTP JSON 请求类型 --
 
 type createUserRequest struct {
 	Username  string          `json:"username"`
@@ -119,11 +129,13 @@ type loginRequest struct {
 	Password  string `json:"password"`
 }
 
+// requestPrincipal 表示通过认证的请求主体，包含用户信息和 JWT Claims。
 type requestPrincipal struct {
 	User   store.User
 	Claims auth.Claims
 }
 
+// actorFromPrincipal 从 requestPrincipal 中提取 store.User 指针（用于权限检查）。
 func actorFromPrincipal(principal *requestPrincipal) *store.User {
 	if principal == nil {
 		return nil
@@ -131,6 +143,7 @@ func actorFromPrincipal(principal *requestPrincipal) *store.User {
 	return &principal.User
 }
 
+// deliveryKind 消息投递类型：persistent（持久化）或 transient（即时）。
 type deliveryKind string
 
 const (
@@ -138,6 +151,7 @@ const (
 	deliveryKindTransient  deliveryKind = "transient"
 )
 
+// normalizeDeliveryKind 将字符串规范化为 deliveryKind 枚举值。
 func normalizeDeliveryKind(raw string) (deliveryKind, error) {
 	switch deliveryKind(strings.TrimSpace(raw)) {
 	case "", deliveryKindPersistent:
@@ -149,6 +163,7 @@ func normalizeDeliveryKind(raw string) (deliveryKind, error) {
 	}
 }
 
+// NewHTTP 创建 HTTP 服务实例。初始化路由、会话分片、缓存，并将自身注入为 Service 的 TransientPacketReceiver 和 LoggedInUserProvider。
 func NewHTTP(service *Service, opts ...HTTPOptions) *HTTP {
 	var resolved HTTPOptions
 	if len(opts) > 0 {
@@ -184,10 +199,12 @@ func NewHTTP(service *Service, opts ...HTTPOptions) *HTTP {
 	return h
 }
 
+// Handler 返回 http.Handler，用于挂载到 HTTP 服务器。
 func (h *HTTP) Handler() http.Handler {
 	return h.mux
 }
 
+// Close 优雅关闭 HTTP 服务：取消持久化事件分发器。
 func (h *HTTP) Close() error {
 	if h == nil {
 		return nil
@@ -200,6 +217,7 @@ func (h *HTTP) Close() error {
 	return nil
 }
 
+// routes 注册所有 REST API 路由（使用 Go 1.22+ 模式匹配语法）。
 func (h *HTTP) routes() {
 	h.mux.HandleFunc("GET /healthz", h.handleHealth)
 	h.mux.HandleFunc("GET "+clientWSPath, h.handleClientWebSocket)
@@ -1430,6 +1448,8 @@ func (h *HTTP) unregisterClientSession(key store.UserKey, sess *clientWSSession)
 	}
 }
 
+// ReceiveTransientPacket 实现 TransientPacketReceiver 接口。
+// 检查黑名单后，将即时包投递到目标用户在本节点的匹配客户端会话。
 func (h *HTTP) ReceiveTransientPacket(packet store.TransientPacket) bool {
 	blocked, err := h.service.IsBlockedByRecipient(context.Background(), packet.Recipient, packet.Sender)
 	if err == nil && blocked {
@@ -1475,6 +1495,7 @@ func (h *HTTP) ReceiveTransientPacket(packet store.TransientPacket) bool {
 	return delivered
 }
 
+// ListLocalUserSessions 返回指定用户在本节点的所有活跃客户端会话。
 func (h *HTTP) ListLocalUserSessions(_ context.Context, key store.UserKey) ([]store.OnlineSession, error) {
 	if h == nil {
 		return nil, nil
@@ -1502,6 +1523,7 @@ func (h *HTTP) ListLocalUserSessions(_ context.Context, key store.UserKey) ([]st
 	return items, nil
 }
 
+// newSessionRef 生成一个新的全局唯一会话引用。优先使用加密随机 ID，失败时回退到自增序列。
 func (h *HTTP) newSessionRef() store.SessionRef {
 	if h == nil {
 		return store.SessionRef{}
@@ -1519,6 +1541,7 @@ func (h *HTTP) newSessionRef() store.SessionRef {
 	}
 }
 
+// ListLoggedInUsers 实现 LoggedInUserProvider 接口。返回本节点所有已登录用户的摘要列表。
 func (h *HTTP) ListLoggedInUsers(context.Context) ([]app.LoggedInUserSummary, error) {
 	if h == nil {
 		return nil, nil
@@ -1584,6 +1607,7 @@ func eventResponseFromStore(event store.Event) eventResponse {
 	}
 }
 
+// decodeJSON 解码 JSON 请求体，拒绝未知字段以防止客户端拼写错误。
 func decodeJSON(r *http.Request, dst any) error {
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
@@ -1596,16 +1620,19 @@ func decodeJSON(r *http.Request, dst any) error {
 	return nil
 }
 
+// writeJSON 向 HTTP 响应写入 JSON 编码的数据。
 func writeJSON(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(value)
 }
 
+// writeError 写入 JSON 格式的 HTTP 错误响应。
 func writeError(w http.ResponseWriter, status int, message string) {
 	writeJSON(w, status, map[string]string{"error": message})
 }
 
+// writeStoreError 将 store 层或 app 层错误映射为对应的 HTTP 状态码和错误响应。
 func writeStoreError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, app.ErrClockNotSynchronized):
@@ -1627,6 +1654,7 @@ func writeStoreError(w http.ResponseWriter, err error) {
 	}
 }
 
+// parsePathUserKey 从 URL 路径中提取 node_id 和 user_id，组合为 store.UserKey。
 func parsePathUserKey(w http.ResponseWriter, r *http.Request) (store.UserKey, bool) {
 	nodeID, ok := parsePositivePathInt(w, r, "node_id")
 	if !ok {
@@ -1639,6 +1667,7 @@ func parsePathUserKey(w http.ResponseWriter, r *http.Request) (store.UserKey, bo
 	return store.UserKey{NodeID: nodeID, UserID: userID}, true
 }
 
+// parsePositivePathInt 从 URL 路径中解析正整数参数。
 func parsePositivePathInt(w http.ResponseWriter, r *http.Request, name string) (int64, bool) {
 	raw := strings.TrimSpace(r.PathValue(name))
 	value, err := strconv.ParseInt(raw, 10, 64)
@@ -1649,6 +1678,7 @@ func parsePositivePathInt(w http.ResponseWriter, r *http.Request, name string) (
 	return value, true
 }
 
+// normalizeJSONValue 规范化 JSON 字节：空值返回默认值，非法 JSON 返回错误。
 func normalizeJSONValue(raw json.RawMessage, defaultValue string) (string, error) {
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) == 0 {
@@ -1660,6 +1690,7 @@ func normalizeJSONValue(raw json.RawMessage, defaultValue string) (string, error
 	return string(trimmed), nil
 }
 
+// parseOptionalMetadataExpiresAt 解析可选的元数据过期时间字符串。
 func parseOptionalMetadataExpiresAt(raw *string) (*time.Time, error) {
 	if raw == nil {
 		return nil, nil
@@ -1745,6 +1776,7 @@ func (h *HTTP) parseAttachmentWriteRequest(w http.ResponseWriter, r *http.Reques
 	return owner, attachmentType, store.UserKey{NodeID: subjectNodeID, UserID: subjectUserID}, principal, true
 }
 
+// invalidateAttachmentCaches 当附件变更时使相关客户端缓存失效（频道订阅或黑名单）。
 func (h *HTTP) invalidateAttachmentCaches(attachment store.Attachment) {
 	switch attachment.Type {
 	case store.AttachmentTypeChannelSubscription:
@@ -1754,6 +1786,7 @@ func (h *HTTP) invalidateAttachmentCaches(attachment store.Attachment) {
 	}
 }
 
+// requireAuthenticated 验证请求的 Bearer Token 并返回认证主体。如果认证未配置则跳过。
 func (h *HTTP) requireAuthenticated(w http.ResponseWriter, r *http.Request) (*requestPrincipal, bool) {
 	if h.signer == nil {
 		return nil, true
@@ -1766,6 +1799,7 @@ func (h *HTTP) requireAuthenticated(w http.ResponseWriter, r *http.Request) (*re
 	return principal, true
 }
 
+// authenticateRequest 解析并验证 Bearer Token，返回对应的用户身份。
 func (h *HTTP) authenticateRequest(ctx context.Context, r *http.Request) (*requestPrincipal, error) {
 	if h.signer == nil {
 		return nil, errors.New("auth disabled")
@@ -1804,10 +1838,12 @@ func messageSenderFromPrincipal(principal *requestPrincipal) (store.UserKey, err
 	return principal.User.Key(), nil
 }
 
+// formatUserSubject 将 UserKey 格式化 JWT subject 字符串："nodeID:userID"。
 func formatUserSubject(key store.UserKey) string {
 	return strconv.FormatInt(key.NodeID, 10) + ":" + strconv.FormatInt(key.UserID, 10)
 }
 
+// parseUserSubject 从 JWT subject 字符串 "nodeID:userID" 中解析 store.UserKey。
 func parseUserSubject(subject string) (store.UserKey, error) {
 	parts := strings.Split(strings.TrimSpace(subject), ":")
 	if len(parts) != 2 {

@@ -25,27 +25,32 @@ var zeroMQContextConfigOnce sync.Once
 var zeroMQContextConfigErr error
 
 const (
+	// ZeroMQ套接字缓冲区大小（1MB）和连接积压。
 	zeroMQSocketBufferBytes = 1 << 20
 	zeroMQSocketBacklog     = 1024
 )
 
+// zeroMQCurveAuthState 管理全局ZeroMQ Curve认证器的引用计数。
 var zeroMQCurveAuthState struct {
 	sync.Mutex
 	refs int
 	next uint64
 }
 
+// zeroMQDialer 是使用DEALER套接字的ZeroMQ出站拨号器。
 type zeroMQDialer struct {
 	cfg              ZeroMQConfig
 	serverKeyForPeer func(string) string
 }
 
+// zeroMQClusterListener 包装ZeroMQMuxListener以适配Listener接口。
 type zeroMQClusterListener struct {
 	mux *ZeroMQMuxListener
 }
 
-// zeroMQWakePair turns Go-side queue activity into a pollable inproc signal
-// so ROUTER/DEALER loops can block indefinitely without reintroducing 100ms polling.
+// zeroMQWakePair 使用inproc PAIR套接字实现可轮询的唤醒信号。
+// 当Go端队列有活动时，通过此机制通知C端的轮询循环，
+// 避免引入100ms的轮询延迟。
 type zeroMQWakePair struct {
 	recv *zmq4.Socket
 	send *zmq4.Socket
@@ -55,6 +60,9 @@ type zeroMQWakePair struct {
 	closed  bool
 }
 
+// ZeroMQMuxListener 是一个多路复用ZeroMQ ROUTER套接字，
+// 可在同一端口上接受集群连接和客户端连接。
+// 通过hello消息中的角色标识区分连接类型。
 type ZeroMQMuxListener struct {
 	bindURL string
 	cfg     ZeroMQConfig
@@ -74,18 +82,23 @@ type ZeroMQMuxListener struct {
 	waitGroup sync.WaitGroup
 }
 
+// zeroMQRouterOutbound 是ROUTER套接字的一条待发送消息。
 type zeroMQRouterOutbound struct {
 	identityKey string
 	identity    []byte
 	payload     []byte
 }
 
+// zeroMQRouterPeer 表示ROUTER套接字上的一个已连接对等节点。
 type zeroMQRouterPeer struct {
 	identity []byte
 	conn     *zeroMQTransportConn
 	role     internalproto.ZeroMQMuxHello_Role
 }
 
+// zeroMQTransportConn 通过内部通道实现TransportConn接口。
+// DEALER连接通过sendCh/recvCh进行通信；
+// ROUTER连接使用sendFn回调和recvCh。
 type zeroMQTransportConn struct {
 	direction  string
 	localAddr  string
@@ -104,26 +117,32 @@ type zeroMQTransportConn struct {
 	closeErr  error
 }
 
+// zeroMQEnabled 当zeromq编译标签启用时返回true。
 func zeroMQEnabled() bool {
 	return true
 }
 
+// newZeroMQDialer 创建一个ZeroMQ拨号器（默认配置）。
 func newZeroMQDialer() Dialer {
 	return newZeroMQDialerWithConfig(ZeroMQConfig{}, nil)
 }
 
+// newZeroMQDialerWithConfig 使用给定配置创建ZeroMQ拨号器。
 func newZeroMQDialerWithConfig(cfg ZeroMQConfig, serverKeyForPeer func(string) string) Dialer {
 	return &zeroMQDialer{cfg: cfg, serverKeyForPeer: serverKeyForPeer}
 }
 
+// newZeroMQListener 创建一个ZeroMQ集群监听器。
 func newZeroMQListener(bindURL string) Listener {
 	return &zeroMQClusterListener{mux: NewZeroMQMuxListener(bindURL)}
 }
 
+// NewZeroMQMuxListener 创建一个ZeroMQ多路复用监听器。
 func NewZeroMQMuxListener(bindURL string) *ZeroMQMuxListener {
 	return NewZeroMQMuxListenerWithConfig(bindURL, ZeroMQConfig{})
 }
 
+// NewZeroMQMuxListenerWithConfig 使用给定配置创建ZeroMQ多路复用监听器。
 func NewZeroMQMuxListenerWithConfig(bindURL string, cfg ZeroMQConfig) *ZeroMQMuxListener {
 	return &ZeroMQMuxListener{
 		bindURL:      bindURL,
@@ -134,6 +153,7 @@ func NewZeroMQMuxListenerWithConfig(bindURL string, cfg ZeroMQConfig) *ZeroMQMux
 	}
 }
 
+// SetClusterAccept 设置集群连接的回调函数。
 func (l *ZeroMQMuxListener) SetClusterAccept(accept func(TransportConn)) {
 	if l == nil {
 		return
@@ -141,6 +161,7 @@ func (l *ZeroMQMuxListener) SetClusterAccept(accept func(TransportConn)) {
 	l.clusterAccept = accept
 }
 
+// SetClientAccept 设置客户端连接的回调函数。
 func (l *ZeroMQMuxListener) SetClientAccept(accept func(TransportConn)) {
 	if l == nil {
 		return
@@ -148,6 +169,8 @@ func (l *ZeroMQMuxListener) SetClientAccept(accept func(TransportConn)) {
 	l.clientAccept = accept
 }
 
+// Dial 使用DEALER套接字向对等URL发起ZeroMQ连接。
+// 流程：配置运行时 → 创建DEALER → 配置身份和安全 → 连接 → 发送hello消息。
 func (d *zeroMQDialer) Dial(ctx context.Context, peerURL string) (TransportConn, error) {
 	if err := ensureZeroMQRuntimeConfigured(); err != nil {
 		return nil, err
@@ -205,15 +228,19 @@ func (d *zeroMQDialer) Dial(ctx context.Context, peerURL string) (TransportConn,
 	return conn, nil
 }
 
+// Start 启动ZeroMQ监听器。
 func (l *zeroMQClusterListener) Start(ctx context.Context, accept func(TransportConn)) error {
 	l.mux.SetClusterAccept(accept)
 	return l.mux.Start(ctx)
 }
 
+// Close 关闭ZeroMQ监听器。
 func (l *zeroMQClusterListener) Close() error {
 	return l.mux.Close()
 }
 
+// Start 启动ZeroMQ多路复用监听器。
+// 创建ROUTER套接字，配置安全，绑定地址，启动事件循环。
 func (l *ZeroMQMuxListener) Start(ctx context.Context) error {
 	if err := ensureZeroMQRuntimeConfigured(); err != nil {
 		return err
@@ -256,6 +283,7 @@ func (l *ZeroMQMuxListener) Start(ctx context.Context) error {
 	return nil
 }
 
+// Close 关闭多路复用监听器。
 func (l *ZeroMQMuxListener) Close() error {
 	l.closeOnce.Do(func() {
 		close(l.done)
@@ -265,6 +293,7 @@ func (l *ZeroMQMuxListener) Close() error {
 	return nil
 }
 
+// configureClientSecurity 配置DEALER套接字的CurveZMQ客户端安全。
 func (d *zeroMQDialer) configureClientSecurity(socket *zmq4.Socket, peerURL string) error {
 	if zeroMQConfigSecurity(d.cfg) != ZeroMQSecurityCurve {
 		return nil
@@ -291,6 +320,7 @@ func (d *zeroMQDialer) configureClientSecurity(socket *zmq4.Socket, peerURL stri
 	return nil
 }
 
+// configureServerSecurity 配置ROUTER套接字的CurveZMQ服务器安全。
 func (l *ZeroMQMuxListener) configureServerSecurity(socket *zmq4.Socket) error {
 	if zeroMQConfigSecurity(l.cfg) != ZeroMQSecurityCurve {
 		return nil
@@ -319,6 +349,7 @@ func (l *ZeroMQMuxListener) configureServerSecurity(socket *zmq4.Socket) error {
 	return nil
 }
 
+// releaseServerSecurity 释放CurveZMQ认证器资源。
 func (l *ZeroMQMuxListener) releaseServerSecurity() {
 	if !l.curveAuthStarted {
 		return
@@ -328,6 +359,8 @@ func (l *ZeroMQMuxListener) releaseServerSecurity() {
 	l.curveAuthDomain = ""
 }
 
+// acquireZeroMQCurveAuth 全局引用计数管理CurveZMQ认证器。
+// 为每个监听器分配唯一的ZAP域。
 func acquireZeroMQCurveAuth(allowedClientPublicKeys []string) (string, error) {
 	keys := make([]string, 0, len(allowedClientPublicKeys))
 	for _, raw := range allowedClientPublicKeys {
@@ -354,6 +387,8 @@ func acquireZeroMQCurveAuth(allowedClientPublicKeys []string) (string, error) {
 	return domain, nil
 }
 
+// releaseZeroMQCurveAuth 释放一个CurveZMQ认证域。
+// 当引用计数归零时停止认证器。
 func releaseZeroMQCurveAuth(domain string) {
 	zeroMQCurveAuthState.Lock()
 	defer zeroMQCurveAuthState.Unlock()
@@ -365,11 +400,11 @@ func releaseZeroMQCurveAuth(domain string) {
 	}
 	if zeroMQCurveAuthState.refs == 0 {
 		zmq4.AuthStop()
-		// pebbe/zmq4 may release the inproc ZAP endpoint just after AuthStop returns.
 		time.Sleep(100 * time.Millisecond)
 	}
 }
 
+// zeroMQConfigSecurity 返回规范化的ZeroMQ安全模式。
 func zeroMQConfigSecurity(cfg ZeroMQConfig) string {
 	security := strings.ToLower(strings.TrimSpace(cfg.Security))
 	if security == "" {
@@ -378,6 +413,8 @@ func zeroMQConfigSecurity(cfg ZeroMQConfig) string {
 	return security
 }
 
+// configureZeroMQSocket 应用通用的ZeroMQ套接字配置。
+// 包括：linger=0、immediate=true、backlog、缓冲区大小、高水位线、TCP keepalive、最大消息大小。
 func configureZeroMQSocket(socket *zmq4.Socket) error {
 	if err := socket.SetLinger(0); err != nil {
 		return fmt.Errorf("set zeromq linger: %w", err)
@@ -409,6 +446,8 @@ func configureZeroMQSocket(socket *zmq4.Socket) error {
 	return nil
 }
 
+// runZeroMQDealer 运行DEALER套接字的事件循环。
+// 使用零拷贝的zmq4.Poller，通过唤醒对避免忙轮询。
 func runZeroMQDealer(socket *zmq4.Socket, wake *zeroMQWakePair, conn *zeroMQTransportConn) {
 	defer conn.finish(errSessionClosed)
 	if wake != nil {
@@ -487,6 +526,8 @@ func runZeroMQDealer(socket *zmq4.Socket, wake *zeroMQWakePair, conn *zeroMQTran
 	}
 }
 
+// runZeroMQRouter 运行ROUTER套接字的事件循环。
+// 管理对等节点映射，分发入站数据到对应连接，发送出站数据。
 func runZeroMQRouter(ctx context.Context, socket *zmq4.Socket, wake *zeroMQWakePair, listener *ZeroMQMuxListener) {
 	peers := make(map[string]*zeroMQRouterPeer)
 	pending := make([]zeroMQRouterOutbound, 0, outboundQueueSize)
@@ -582,6 +623,7 @@ func runZeroMQRouter(ctx context.Context, socket *zmq4.Socket, wake *zeroMQWakeP
 	}
 }
 
+// acceptHandler 根据hello消息中的角色返回对应的接受回调。
 func (l *ZeroMQMuxListener) acceptHandler(role internalproto.ZeroMQMuxHello_Role) func(TransportConn) {
 	switch role {
 	case internalproto.ZeroMQMuxHello_ZERO_MQ_ROLE_CLUSTER:
@@ -593,6 +635,8 @@ func (l *ZeroMQMuxListener) acceptHandler(role internalproto.ZeroMQMuxHello_Role
 	}
 }
 
+// newInboundConn 创建入站ZeroMQ连接的TransportConn。
+// 使用sendFn回调通过ROUTER套接字发送数据。
 func (l *ZeroMQMuxListener) newInboundConn(identityKey string, identity []byte, accept func(TransportConn)) *zeroMQTransportConn {
 	conn := &zeroMQTransportConn{
 		direction:  "inbound",
@@ -635,14 +679,17 @@ func (l *ZeroMQMuxListener) newInboundConn(identityKey string, identity []byte, 
 	return conn
 }
 
+// Send 发送消息（复制负载数据）。
 func (c *zeroMQTransportConn) Send(ctx context.Context, payload []byte) error {
 	return c.sendQueuedPayload(ctx, cloneBytes(payload))
 }
 
+// SendOwned 发送消息（获取负载数据的所有权，避免复制）。
 func (c *zeroMQTransportConn) SendOwned(ctx context.Context, payload []byte) error {
 	return c.sendQueuedPayload(ctx, payload)
 }
 
+// sendQueuedPayload 将负载排入发送队列并信号通知唤醒。
 func (c *zeroMQTransportConn) sendQueuedPayload(ctx context.Context, payload []byte) error {
 	if ctx == nil {
 		ctx = context.Background()
@@ -668,6 +715,7 @@ func (c *zeroMQTransportConn) sendQueuedPayload(ctx context.Context, payload []b
 	}
 }
 
+// Receive 从接收通道读取下一条消息。
 func (c *zeroMQTransportConn) Receive(ctx context.Context) ([]byte, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -685,27 +733,33 @@ func (c *zeroMQTransportConn) Receive(ctx context.Context) ([]byte, error) {
 	}
 }
 
+// Close 关闭连接。
 func (c *zeroMQTransportConn) Close() error {
 	c.finish(errSessionClosed)
 	return nil
 }
 
+// LocalAddr 返回本地地址。
 func (c *zeroMQTransportConn) LocalAddr() string {
 	return c.localAddr
 }
 
+// RemoteAddr 返回远程地址。
 func (c *zeroMQTransportConn) RemoteAddr() string {
 	return c.remoteAddr
 }
 
+// Direction 返回连接方向：inbound或outbound。
 func (c *zeroMQTransportConn) Direction() string {
 	return c.direction
 }
 
+// Transport 返回传输类型字符串zeromq。
 func (c *zeroMQTransportConn) Transport() string {
 	return transportZeroMQ
 }
 
+// deliver 将负载投递到连接的接收通道。
 func (c *zeroMQTransportConn) deliver(payload []byte) bool {
 	select {
 	case <-c.done:
@@ -715,6 +769,7 @@ func (c *zeroMQTransportConn) deliver(payload []byte) bool {
 	}
 }
 
+// finish 安全关闭连接，通知所有等待的goroutine。
 func (c *zeroMQTransportConn) finish(err error) {
 	c.closeOnce.Do(func() {
 		c.errMu.Lock()
@@ -732,6 +787,7 @@ func (c *zeroMQTransportConn) finish(err error) {
 	})
 }
 
+// closedErr 返回连接的关闭错误。
 func (c *zeroMQTransportConn) closedErr() error {
 	c.errMu.Lock()
 	defer c.errMu.Unlock()
@@ -741,6 +797,7 @@ func (c *zeroMQTransportConn) closedErr() error {
 	return errSessionClosed
 }
 
+// zeroMQDialAddress 将zmq+tcp:// URL转换为ZeroMQ拨号所需的tcp:// URL。
 func zeroMQDialAddress(peerURL string) (string, error) {
 	parsed, err := url.Parse(peerURL)
 	if err != nil {
@@ -750,6 +807,7 @@ func zeroMQDialAddress(peerURL string) (string, error) {
 	return parsed.String(), nil
 }
 
+// writeZeroMQMuxHello 发送ZeroMQ多路复用的hello消息，声明连接角色。
 func writeZeroMQMuxHello(ctx context.Context, conn TransportConn, role internalproto.ZeroMQMuxHello_Role) error {
 	data, err := gproto.Marshal(&internalproto.ZeroMQMuxHello{
 		Role:            role,
@@ -764,6 +822,7 @@ func writeZeroMQMuxHello(ctx context.Context, conn TransportConn, role internalp
 	return nil
 }
 
+// parseZeroMQMuxHello 解析hello消息，提取连接的角色。
 func parseZeroMQMuxHello(payload []byte) (internalproto.ZeroMQMuxHello_Role, error) {
 	var hello internalproto.ZeroMQMuxHello
 	if err := gproto.Unmarshal(payload, &hello); err != nil {
@@ -780,6 +839,7 @@ func parseZeroMQMuxHello(payload []byte) (internalproto.ZeroMQMuxHello_Role, err
 	}
 }
 
+// newZeroMQIdentity 生成16字节的随机十六进制ZeroMQ身份标识。
 func newZeroMQIdentity() (string, error) {
 	buf := make([]byte, 16)
 	if _, err := rand.Read(buf); err != nil {
@@ -788,6 +848,7 @@ func newZeroMQIdentity() (string, error) {
 	return hex.EncodeToString(buf), nil
 }
 
+// shortZeroMQIdentity 返回身份标识的简短版本（用于日志记录）。
 func shortZeroMQIdentity(identity []byte) string {
 	encoded := hex.EncodeToString(identity)
 	if len(encoded) <= 16 {
@@ -796,6 +857,7 @@ func shortZeroMQIdentity(identity []byte) string {
 	return encoded[:16]
 }
 
+// cloneBytes 创建字节切片的副本。
 func cloneBytes(data []byte) []byte {
 	if len(data) == 0 {
 		return nil
@@ -805,6 +867,7 @@ func cloneBytes(data []byte) []byte {
 	return cloned
 }
 
+// newZeroMQWakePair 创建一个PAIR套接字对用于Go端到C端的事件通知。
 func newZeroMQWakePair() (*zeroMQWakePair, error) {
 	if err := ensureZeroMQRuntimeConfigured(); err != nil {
 		return nil, err
@@ -849,6 +912,7 @@ func newZeroMQWakePair() (*zeroMQWakePair, error) {
 	return wake, nil
 }
 
+// configureZeroMQWakeSocket 配置PAIR唤醒套接字。
 func configureZeroMQWakeSocket(socket *zmq4.Socket) error {
 	if err := socket.SetLinger(0); err != nil {
 		return fmt.Errorf("set zeromq wake linger: %w", err)
@@ -862,6 +926,7 @@ func configureZeroMQWakeSocket(socket *zmq4.Socket) error {
 	return nil
 }
 
+// Signal 通过PAIR套接字发送唤醒信号。
 func (w *zeroMQWakePair) Signal() {
 	if w == nil {
 		return
@@ -876,6 +941,7 @@ func (w *zeroMQWakePair) Signal() {
 	}
 }
 
+// Drain 排空PAIR套接字中的所有待处理唤醒信号。
 func (w *zeroMQWakePair) Drain() {
 	if w == nil || w.recv == nil {
 		return
@@ -890,6 +956,7 @@ func (w *zeroMQWakePair) Drain() {
 	}
 }
 
+// Reset 重置待处理标记。
 func (w *zeroMQWakePair) Reset() {
 	if w == nil {
 		return
@@ -899,6 +966,7 @@ func (w *zeroMQWakePair) Reset() {
 	w.mu.Unlock()
 }
 
+// Close 关闭PAIR套接字对。
 func (w *zeroMQWakePair) Close() {
 	if w == nil {
 		return
@@ -918,6 +986,7 @@ func (w *zeroMQWakePair) Close() {
 	}
 }
 
+// signalWake 发送ROUTER监听器的唤醒信号。
 func (l *ZeroMQMuxListener) signalWake() {
 	if l == nil || l.wake == nil {
 		return
@@ -925,6 +994,7 @@ func (l *ZeroMQMuxListener) signalWake() {
 	l.wake.Signal()
 }
 
+// signalWake 发送连接的唤醒信号。
 func (c *zeroMQTransportConn) signalWake() {
 	if c == nil || c.wake == nil {
 		return
@@ -932,6 +1002,7 @@ func (c *zeroMQTransportConn) signalWake() {
 	c.wake.Signal()
 }
 
+// zeroMQDrainBytesQueue 非阻塞地将通道中的所有待发送字节排入pending切片。
 func zeroMQDrainBytesQueue(ch <-chan []byte, pending *[][]byte) {
 	for {
 		select {
@@ -943,6 +1014,7 @@ func zeroMQDrainBytesQueue(ch <-chan []byte, pending *[][]byte) {
 	}
 }
 
+// zeroMQDrainRouterControlQueues 非阻塞地排空ROUTER套接字的控制队列。
 func zeroMQDrainRouterControlQueues(listener *ZeroMQMuxListener, pending *[]zeroMQRouterOutbound, closePeer func(string)) {
 	if listener == nil {
 		return
@@ -959,6 +1031,7 @@ func zeroMQDrainRouterControlQueues(listener *ZeroMQMuxListener, pending *[]zero
 	}
 }
 
+// zeroMQFlushDealerMessages 非阻塞地将待发送消息写入DEALER套接字。
 func zeroMQFlushDealerMessages(socket *zmq4.Socket, conn *zeroMQTransportConn, pending *[][]byte) bool {
 	for len(*pending) > 0 {
 		payload := (*pending)[0]
@@ -975,6 +1048,7 @@ func zeroMQFlushDealerMessages(socket *zmq4.Socket, conn *zeroMQTransportConn, p
 	return true
 }
 
+// zeroMQReceiveDealerMessages 从DEALER套接字接收所有可用消息。
 func zeroMQReceiveDealerMessages(socket *zmq4.Socket, conn *zeroMQTransportConn) bool {
 	for {
 		payload, err := zeroMQReceiveLastFrame(socket)
@@ -994,6 +1068,9 @@ func zeroMQReceiveDealerMessages(socket *zmq4.Socket, conn *zeroMQTransportConn)
 	}
 }
 
+// zeroMQReceiveRouterMessages 从ROUTER套接字接收消息。
+// 对于未知身份的消息，解析hello并创建新对等节点；
+// 对于已知身份的消息，投递到对应的连接。
 func zeroMQReceiveRouterMessages(socket *zmq4.Socket, listener *ZeroMQMuxListener, peers map[string]*zeroMQRouterPeer, closePeer func(string)) bool {
 	for {
 		identity, payload, err := zeroMQReceiveRouterMessage(socket)
@@ -1033,6 +1110,7 @@ func zeroMQReceiveRouterMessages(socket *zmq4.Socket, listener *ZeroMQMuxListene
 	}
 }
 
+// zeroMQFlushRouterMessages 将待发送消息刷新到ROUTER套接字。
 func zeroMQFlushRouterMessages(socket *zmq4.Socket, peers map[string]*zeroMQRouterPeer, closePeer func(string), pending *[]zeroMQRouterOutbound) bool {
 	for len(*pending) > 0 {
 		outbound := (*pending)[0]
@@ -1061,6 +1139,7 @@ func zeroMQFlushRouterMessages(socket *zmq4.Socket, peers map[string]*zeroMQRout
 	return true
 }
 
+// zeroMQReceiveLastFrame 接收多部分消息的最后一帧。
 func zeroMQReceiveLastFrame(socket *zmq4.Socket) ([]byte, error) {
 	payload, err := socket.RecvBytes(zmq4.DONTWAIT)
 	if err != nil {
@@ -1083,6 +1162,7 @@ func zeroMQReceiveLastFrame(socket *zmq4.Socket) ([]byte, error) {
 	return payload, nil
 }
 
+// zeroMQReceiveRouterMessage 接收ROUTER多部分消息（身份 + 负载）。
 func zeroMQReceiveRouterMessage(socket *zmq4.Socket) ([]byte, []byte, error) {
 	identity, err := socket.RecvBytes(zmq4.DONTWAIT)
 	if err != nil {
@@ -1116,10 +1196,13 @@ func zeroMQReceiveRouterMessage(socket *zmq4.Socket) ([]byte, []byte, error) {
 	return identity, payload, nil
 }
 
+// zeroMQWouldBlock 检查ZeroMQ错误是否为EAGAIN（操作会阻塞）。
 func zeroMQWouldBlock(err error) bool {
 	return zmq4.AsErrno(err) == zmq4.Errno(syscall.EAGAIN)
 }
 
+// ensureZeroMQRuntimeConfigured 初始化全局ZeroMQ上下文。
+// I/O线程数设置为GOMAXPROCS/2，最少1个最多4个。
 func ensureZeroMQRuntimeConfigured() error {
 	zeroMQContextConfigOnce.Do(func() {
 		threads := runtime.GOMAXPROCS(0) / 2

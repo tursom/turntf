@@ -14,6 +14,8 @@ import (
 	"github.com/tursom/turntf/internal/store"
 )
 
+// buildSnapshotDigestEnvelope 构建包含本地存储快照摘要的Envelope。
+// 摘要包含各分区的行数和哈希，用于快速比较节点间状态是否一致。
 func (m *Manager) buildSnapshotDigestEnvelope() (*internalproto.Envelope, error) {
 	if m.store == nil {
 		return nil, errors.New("snapshot digest requires store")
@@ -31,6 +33,8 @@ func (m *Manager) buildSnapshotDigestEnvelope() (*internalproto.Envelope, error)
 	}, nil
 }
 
+// sendSnapshotDigest 向对等节点发送快照摘要。
+// 在发送前检查：复制就绪、无等待中的Pull、无等待中的快照请求、时钟保护。
 func (m *Manager) sendSnapshotDigest(sess *session) bool {
 	if m.store == nil || sess == nil || sess.peerID == 0 {
 		return false
@@ -78,6 +82,12 @@ func (m *Manager) sendSnapshotDigest(sess *session) bool {
 	return true
 }
 
+// handleSnapshotDigest 处理接收到的快照摘要。
+//
+// 比较流程：
+//  1. 检查预定义分区（users、attachments、login_names、user_metadata）的哈希
+//  2. 对任何不匹配的分区，请求完整快照分块
+//  3. 然后比较消息分区（仅当消息窗口大小匹配时）
 func (m *Manager) handleSnapshotDigest(sess *session, envelope *internalproto.Envelope) error {
 	if !sess.isReplicationReady() {
 		return nil
@@ -116,8 +126,10 @@ func (m *Manager) handleSnapshotDigest(sess *session, envelope *internalproto.En
 		return err
 	}
 
+	// 将分区摘要转为map便于比较
 	local := snapshotDigestByPartition(localDigest.GetPartitions())
 	remote := snapshotDigestByPartition(digest.GetPartitions())
+	// 比较四个核心分区
 	remoteUsers, ok := remote[store.SnapshotUsersPartition]
 	if !ok {
 		return fmt.Errorf("snapshot digest missing %s partition", store.SnapshotUsersPartition)
@@ -170,6 +182,7 @@ func (m *Manager) handleSnapshotDigest(sess *session, envelope *internalproto.En
 		m.requestSnapshotPartition(sess, remoteMetadata)
 		return nil
 	}
+	// 仅当消息窗口大小相同时比较消息分区
 	if sess.remoteMessageWindowSize != m.cfg.MessageWindowSize {
 		return nil
 	}
@@ -209,6 +222,11 @@ func (m *Manager) handleSnapshotDigest(sess *session, envelope *internalproto.En
 	return nil
 }
 
+// handleSnapshotChunk 处理接收到的快照分块。
+//
+// 两种情况：
+//  1. Request=true：对端请求本节点发送快照分块 → 构建并发送
+//  2. Request=false：对端发送了本节点请求的数据 → 应用分块
 func (m *Manager) handleSnapshotChunk(sess *session, envelope *internalproto.Envelope) error {
 	if !sess.isReplicationReady() {
 		return nil
@@ -241,6 +259,7 @@ func (m *Manager) handleSnapshotChunk(sess *session, envelope *internalproto.Env
 		return errors.New("snapshot chunk partition cannot be empty")
 	}
 
+	// 对端请求本节点的快照分块
 	if chunk.Request {
 		m.logSessionEvent("snapshot_partition_requested", sess).
 			Str("partition", chunk.Partition).
@@ -269,11 +288,13 @@ func (m *Manager) handleSnapshotChunk(sess *session, envelope *internalproto.Env
 		return nil
 	}
 
+	// 接收对端发送的快照分块数据
 	defer sess.completeSnapshotRequest(chunk.Partition)
 	maxTimestamp, err := store.MaxSnapshotChunkTimestamp(chunk)
 	if err != nil {
 		return err
 	}
+	// HLC时间戳验证
 	if m.cfg.MaxClockSkewMs > 0 && maxTimestamp != (clock.Timestamp{}) {
 		maxAllowedWallTime := m.clock.WallTimeMs() + m.cfg.MaxClockSkewMs
 		if maxTimestamp.WallTimeMs > maxAllowedWallTime {
@@ -292,6 +313,7 @@ func (m *Manager) handleSnapshotChunk(sess *session, envelope *internalproto.Env
 	return nil
 }
 
+// requestSnapshotPartition 向对等节点请求快照分区的完整数据。
 func (m *Manager) requestSnapshotPartition(sess *session, partition *internalproto.SnapshotPartitionDigest) {
 	if partition == nil {
 		return
@@ -338,6 +360,7 @@ func (m *Manager) requestSnapshotPartition(sess *session, partition *internalpro
 	})
 }
 
+// requestSnapshotRepairForOrigin 当追赶超出保留窗口时，请求所有分区的快照修复。
 func (m *Manager) requestSnapshotRepairForOrigin(sess *session, originNodeID int64) {
 	if sess == nil || originNodeID <= 0 {
 		return
@@ -372,6 +395,8 @@ func (m *Manager) requestSnapshotRepairForOrigin(sess *session, originNodeID int
 	}
 }
 
+// markSnapshotDigestDirty 标记对等节点的快照摘要需要重新发送。
+// immediate=true表示在修复后立即发送。
 func (m *Manager) markSnapshotDigestDirty(peerID int64, immediate bool) {
 	if m == nil || peerID <= 0 {
 		return
@@ -389,6 +414,7 @@ func (m *Manager) markSnapshotDigestDirty(peerID int64, immediate bool) {
 	}
 }
 
+// clearSnapshotDigestDirty 清除快照摘要的脏标记。
 func (m *Manager) clearSnapshotDigestDirty(peerID int64) {
 	if m == nil || peerID <= 0 {
 		return
@@ -404,12 +430,15 @@ func (m *Manager) clearSnapshotDigestDirty(peerID int64) {
 	peer.snapshotDigestImmediate = false
 }
 
+// markSnapshotDigestQueued 更新快照摘要的最后排队时间。
 func (m *Manager) markSnapshotDigestQueued(peerID int64, queuedAt time.Time) {
 	m.markSnapshotActivity(peerID, func(peer *peerState, _ time.Time) {
 		peer.lastSnapshotDigestQueuedAt = queuedAt
 	})
 }
 
+// flushSnapshotDigestsDue 扫描所有有脏标记的对等节点，发送快照摘要。
+// 受最小间隔（snapshotDigestMinInterval=250ms）限制，防止频繁发送。
 func (m *Manager) flushSnapshotDigestsDue(now time.Time) {
 	if m == nil || m.store == nil {
 		return
@@ -459,6 +488,7 @@ func (m *Manager) flushSnapshotDigestsDue(now time.Time) {
 	}
 }
 
+// snapshotProducerNodeIDs 返回需要纳入快照的生产者节点ID列表。
 func (m *Manager) snapshotProducerNodeIDs() []int64 {
 	producers := make([]int64, 0, 1+len(m.peers))
 	producers = append(producers, m.cfg.NodeID)
@@ -470,6 +500,7 @@ func (m *Manager) snapshotProducerNodeIDs() []int64 {
 	return producers
 }
 
+// snapShotDigestByPartition 将分区摘要切片转换为按分区名索引的map。
 func snapshotDigestByPartition(partitions []*internalproto.SnapshotPartitionDigest) map[string]*internalproto.SnapshotPartitionDigest {
 	index := make(map[string]*internalproto.SnapshotPartitionDigest, len(partitions))
 	for _, partition := range partitions {
@@ -481,6 +512,8 @@ func snapshotDigestByPartition(partitions []*internalproto.SnapshotPartitionDige
 	return index
 }
 
+// snapShotPartitionDigestEqual 比较两个快照分区摘要是否相等。
+// 比较类型、行数和哈希值。
 func snapshotPartitionDigestEqual(local, remote *internalproto.SnapshotPartitionDigest) bool {
 	if local == nil || remote == nil {
 		return local == remote

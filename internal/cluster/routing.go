@@ -10,6 +10,8 @@ import (
 	"github.com/tursom/turntf/internal/store"
 )
 
+// queueTransientPacket 将瞬时数据包放入重试队列，等待投递或重试。
+// 如果已在队列中则保留原有的尝试次数和时间信息。
 func (m *Manager) queueTransientPacket(packet store.TransientPacket) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -31,6 +33,7 @@ func (m *Manager) queueTransientPacket(packet store.TransientPacket) {
 		Msg("queued transient packet for retry")
 }
 
+// removeQueuedTransientPacket 从重试队列中移除数据包。
 func (m *Manager) removeQueuedTransientPacket(packet store.TransientPacket) {
 	if m == nil {
 		return
@@ -40,6 +43,12 @@ func (m *Manager) removeQueuedTransientPacket(packet store.TransientPacket) {
 	delete(m.retryQueue, packetCacheKey(packet.SourceNodeID, packet.PacketID))
 }
 
+// retryTransientPackets 重试所有到期的队列数据包。
+//
+// 淘汰策略：
+//   - TTL过期（routeRetryTTL=3秒）：丢弃
+//   - 重试次数达到10次：丢弃
+//   - 下一次尝试时间尚未到达：跳过
 func (m *Manager) retryTransientPackets() {
 	m.mu.Lock()
 	if len(m.retryQueue) == 0 {
@@ -78,6 +87,7 @@ func (m *Manager) retryTransientPackets() {
 	}
 }
 
+// deliverTransientLocal 将瞬时数据包投递给本节点的瞬态处理器。
 func (m *Manager) deliverTransientLocal(packet store.TransientPacket) bool {
 	m.mu.Lock()
 	handler := m.transientHandler
@@ -99,6 +109,8 @@ func (m *Manager) deliverTransientLocal(packet store.TransientPacket) bool {
 	return delivered
 }
 
+// ensurePeerLocked 确保peers映射中存在指定对等节点的peerState。
+// 如果不存在则创建新的peerState。
 func (m *Manager) ensurePeerLocked(peerID int64) *peerState {
 	peer := m.peers[peerID]
 	if peer == nil {
@@ -113,6 +125,7 @@ func (m *Manager) ensurePeerLocked(peerID int64) *peerState {
 	return peer
 }
 
+// transientPacketProto 将存储层的瞬时数据包转换为protobuf格式。
 func transientPacketProto(packet store.TransientPacket) *internalproto.TransientPacket {
 	return &internalproto.TransientPacket{
 		PacketId:      packet.PacketID,
@@ -127,6 +140,7 @@ func transientPacketProto(packet store.TransientPacket) *internalproto.Transient
 	}
 }
 
+// transientPacketFromProto 将protobuf的瞬时数据包（及可选的转发信息）转换为存储层格式。
 func transientPacketFromProto(packet *internalproto.TransientPacket, forwarded *mesh.ForwardedPacket) (store.TransientPacket, error) {
 	if packet == nil {
 		return store.TransientPacket{}, fmt.Errorf("transient packet cannot be empty")
@@ -148,6 +162,7 @@ func transientPacketFromProto(packet *internalproto.TransientPacket, forwarded *
 		TTLHops:       int32(packet.GetTtlHops()),
 		TargetSession: clusterSessionRefToStore(packet.GetTargetSession()),
 	}
+	// 如果存在转发信息，使用转发后的路由元数据覆盖原始值
 	if forwarded == nil {
 		return transient, nil
 	}
@@ -158,11 +173,13 @@ func transientPacketFromProto(packet *internalproto.TransientPacket, forwarded *
 	return transient, nil
 }
 
+// cloneTransientPacket 创建瞬时数据包的深拷贝（复制Body切片）。
 func cloneTransientPacket(packet store.TransientPacket) store.TransientPacket {
 	packet.Body = append([]byte(nil), packet.Body...)
 	return packet
 }
 
+// storeSessionRefToCluster 将存储层的会话引用转换为protobuf格式。
 func storeSessionRefToCluster(ref store.SessionRef) *internalproto.ClusterSessionRef {
 	if !ref.Valid() {
 		return nil
@@ -173,6 +190,7 @@ func storeSessionRefToCluster(ref store.SessionRef) *internalproto.ClusterSessio
 	}
 }
 
+// clusterSessionRefToStore 将protobuf的会话引用转换为存储层格式。
 func clusterSessionRefToStore(ref *internalproto.ClusterSessionRef) store.SessionRef {
 	if ref == nil {
 		return store.SessionRef{}
@@ -183,6 +201,7 @@ func clusterSessionRefToStore(ref *internalproto.ClusterSessionRef) store.Sessio
 	}
 }
 
+// storeDeliveryModeToCluster 将存储层的投递模式转换为protobuf格式。
 func storeDeliveryModeToCluster(mode store.DeliveryMode) internalproto.ClusterDeliveryMode {
 	switch mode {
 	case store.DeliveryModeRouteRetry:
@@ -192,6 +211,7 @@ func storeDeliveryModeToCluster(mode store.DeliveryMode) internalproto.ClusterDe
 	}
 }
 
+// clusterDeliveryModeToStore 将protobuf的投递模式转换为存储层格式。
 func clusterDeliveryModeToStore(mode internalproto.ClusterDeliveryMode) store.DeliveryMode {
 	switch mode {
 	case internalproto.ClusterDeliveryMode_CLUSTER_DELIVERY_MODE_ROUTE_RETRY:
@@ -201,10 +221,12 @@ func clusterDeliveryModeToStore(mode internalproto.ClusterDeliveryMode) store.De
 	}
 }
 
+// packetCacheKey 为数据包生成唯一的队列键：(sourceNodeID:packetID)。
 func packetCacheKey(sourceNodeID int64, packetID uint64) string {
 	return fmt.Sprintf("%d:%d", sourceNodeID, packetID)
 }
 
+// maxInt64 返回两个int64中的较大值。
 func maxInt64(v, fallback int64) int64 {
 	if v < fallback {
 		return fallback
@@ -212,6 +234,7 @@ func maxInt64(v, fallback int64) int64 {
 	return v
 }
 
+// 编译时检查Manager实现了RouteTransientPacket方法。
 var _ interface {
 	RouteTransientPacket(context.Context, store.TransientPacket) error
 } = (*Manager)(nil)

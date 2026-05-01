@@ -9,6 +9,7 @@ import (
 	"github.com/tursom/turntf/internal/clock"
 )
 
+// DiscoveredPeer 代表通过 mesh 发现协议探测到的对等节点。
 type DiscoveredPeer struct {
 	NodeID                     int64
 	URL                        string
@@ -22,6 +23,7 @@ type DiscoveredPeer struct {
 	Generation                 uint64
 }
 
+// ListDiscoveredPeers 列出所有已发现的 peer 记录。
 func (s *Store) ListDiscoveredPeers(ctx context.Context) ([]DiscoveredPeer, error) {
 	rows, err := s.db.QueryContext(ctx, `
 SELECT node_id, url, zeromq_curve_server_public_key, source_peer_node_id, state, first_seen_at_hlc, last_seen_at_hlc, last_connected_at_hlc, last_error, generation
@@ -47,6 +49,7 @@ ORDER BY node_id ASC, url ASC
 	return peers, nil
 }
 
+// UpsertDiscoveredPeer 创建或更新一个发现 peer 记录。
 func (s *Store) UpsertDiscoveredPeer(ctx context.Context, peer DiscoveredPeer) error {
 	if peer.NodeID <= 0 {
 		return fmt.Errorf("%w: discovered peer node id cannot be empty", ErrInvalidInput)
@@ -98,6 +101,7 @@ ON CONFLICT(node_id, url) DO UPDATE SET
 	return nil
 }
 
+// RecordDiscoveredPeerState 更新已发现 peer 的状态和最后连接/错误信息。
 func (s *Store) RecordDiscoveredPeerState(ctx context.Context, nodeID int64, rawURL, state, lastError string, connected bool) error {
 	if nodeID <= 0 {
 		return fmt.Errorf("%w: discovered peer node id cannot be empty", ErrInvalidInput)
@@ -127,6 +131,7 @@ WHERE node_id = ? AND url = ?
 	return nil
 }
 
+// scanDiscoveredPeer 从 SQL scanner 扫描一行到 DiscoveredPeer，解析 HLC 时间戳。
 func scanDiscoveredPeer(scanner interface {
 	Scan(dest ...any) error
 }) (DiscoveredPeer, error) {

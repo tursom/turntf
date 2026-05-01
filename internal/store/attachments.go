@@ -8,6 +8,8 @@ import (
 	"github.com/tursom/turntf/internal/clock"
 )
 
+// UpsertAttachment 创建或重新激活一个附件关系。如果已存在（包括已删除的），则更新并恢复。
+// 校验 owner 和 subject 的角色兼容性后写入，并生成 UserAttachmentUpserted 事件。
 func (s *Store) UpsertAttachment(ctx context.Context, params UpsertAttachmentParams) (Attachment, Event, error) {
 	if err := params.Owner.Validate(); err != nil {
 		return Attachment{}, Event{}, err
@@ -74,6 +76,8 @@ func (s *Store) UpsertAttachment(ctx context.Context, params UpsertAttachmentPar
 	return attachment, event, nil
 }
 
+// DeleteAttachment 软删除一个附件关系，生成 UserAttachmentDeleted 事件。
+// 对 channel_manager 类型有保护：不允许删除最后一个管理员。
 func (s *Store) DeleteAttachment(ctx context.Context, params DeleteAttachmentParams) (Attachment, Event, error) {
 	if err := params.Owner.Validate(); err != nil {
 		return Attachment{}, Event{}, err
@@ -133,6 +137,7 @@ func (s *Store) DeleteAttachment(ctx context.Context, params DeleteAttachmentPar
 	return current, event, nil
 }
 
+// ListUserAttachments 列出用户的所有活跃附件关系，可按类型过滤（空类型返回全部）。
 func (s *Store) ListUserAttachments(ctx context.Context, owner UserKey, attachmentType AttachmentType) ([]Attachment, error) {
 	if err := owner.Validate(); err != nil {
 		return nil, err
@@ -148,14 +153,19 @@ func (s *Store) ListUserAttachments(ctx context.Context, owner UserKey, attachme
 	return s.attachments.ListActiveByOwner(ctx, owner, attachmentType)
 }
 
+// IsChannelManager 检查 subject 是否为 channel 的管理员。
 func (s *Store) IsChannelManager(ctx context.Context, channel, subject UserKey) (bool, error) {
 	return s.attachments.HasActive(ctx, channel, subject, AttachmentTypeChannelManager, nil)
 }
 
+// IsChannelWriter 检查 subject 是否为 channel 的写入者。
 func (s *Store) IsChannelWriter(ctx context.Context, channel, subject UserKey) (bool, error) {
 	return s.attachments.HasActive(ctx, channel, subject, AttachmentTypeChannelWriter, nil)
 }
 
+// validateAttachmentUsersTx 在事务中校验附件操作的角色兼容性。
+// 不同附件类型有不同的角色要求：例如 channel 管理员要求 owner 是 channel 角色，
+// subject 是登录用户；黑名单要求 owner 是登录用户，subject 是普通用户等。
 func (s *Store) validateAttachmentUsersTx(ctx context.Context, tx *sql.Tx, ownerKey, subjectKey UserKey, attachmentType AttachmentType) error {
 	owner, err := s.getUserByIDTx(ctx, tx, ownerKey, false)
 	if err != nil {
@@ -200,6 +210,7 @@ func (s *Store) validateAttachmentUsersTx(ctx context.Context, tx *sql.Tx, owner
 	return nil
 }
 
+// getAttachmentTx 在事务中按复合键（owner、subject、type）获取单个附件行。
 func (s *Store) getAttachmentTx(ctx context.Context, tx *sql.Tx, owner, subject UserKey, attachmentType AttachmentType) (Attachment, error) {
 	row := tx.QueryRowContext(ctx, `
 SELECT owner_node_id, owner_user_id, subject_node_id, subject_user_id, attachment_type, config_json, attached_at_hlc, deleted_at_hlc, origin_node_id
@@ -216,6 +227,9 @@ WHERE owner_node_id = ? AND owner_user_id = ? AND subject_node_id = ? AND subjec
 	return attachment, nil
 }
 
+// upsertAttachmentTx 在事务中执行 CRDT 风格的附件 upsert。
+// 使用 HLC 时间戳比较：新插入（DeletedAt 为空）仅当新 attached_at >= 已有 attached_at
+// 且（无删除或新绑定在删除之后）时才覆盖。删除操作（DeletedAt 非空）在时间戳更新时覆盖。
 func (s *Store) upsertAttachmentTx(ctx context.Context, tx *sql.Tx, attachment Attachment) error {
 	if err := attachment.Owner.Validate(); err != nil {
 		return err
@@ -285,6 +299,7 @@ ON CONFLICT(owner_node_id, owner_user_id, subject_node_id, subject_user_id, atta
 	return nil
 }
 
+// countActiveAttachmentsByOwnerTx 在事务中统计所有者的活跃附件数量。
 func (s *Store) countActiveAttachmentsByOwnerTx(ctx context.Context, tx *sql.Tx, owner UserKey, attachmentType AttachmentType) (int, error) {
 	if err := owner.Validate(); err != nil {
 		return 0, err

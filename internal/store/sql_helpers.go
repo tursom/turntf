@@ -10,6 +10,7 @@ import (
 	"github.com/tursom/turntf/internal/clock"
 )
 
+// activeUsernameExists 检查用户名是否已被其他活跃用户占用。
 func activeUsernameExists(ctx context.Context, tx *sql.Tx, username string, excludeUserID int64) (bool, error) {
 	var count int
 	if err := tx.QueryRowContext(ctx, `
@@ -79,6 +80,7 @@ ON CONFLICT(entity_type, entity_node_id, entity_id) DO UPDATE SET
 	return nil
 }
 
+// applyUserDeleteTx 在事务中执行用户软删除：更新 deleted_at 和 version_deleted，记录 tombstone。
 func (s *Store) applyUserDeleteTx(ctx context.Context, tx *sql.Tx, key UserKey, deletedAt clock.Timestamp, originNodeID int64, requireActive bool) error {
 	user, err := s.getUserByIDTx(ctx, tx, key, true)
 	switch {
@@ -137,6 +139,7 @@ WHERE node_id = ? AND user_id = ?
 	return nil
 }
 
+// nullIfEmpty 空字符串转为 SQL NULL。
 func nullIfEmpty(value string) any {
 	if strings.TrimSpace(value) == "" {
 		return nil
@@ -144,6 +147,7 @@ func nullIfEmpty(value string) any {
 	return value
 }
 
+// boolToInt 布尔值转为 SQL 整数 (0/1)。
 func boolToInt(value bool) int {
 	if value {
 		return 1
@@ -151,6 +155,7 @@ func boolToInt(value bool) int {
 	return 0
 }
 
+// trimMessagesForUserTx 在事务中裁剪用户消息，保留最近 messageWindowSize 条。
 func (s *Store) trimMessagesForUserTx(ctx context.Context, tx *sql.Tx, key UserKey) error {
 	if err := key.Validate(); err != nil {
 		return err

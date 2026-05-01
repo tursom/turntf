@@ -1,11 +1,14 @@
+// Package proto 包含集群协议的protobuf生成代码及辅助工具。
 package proto
 
 import "fmt"
 
+// EventBody 是复制事件体的统一接口，每种事件类型实现eventType()返回类型名称。
 type EventBody interface {
 	eventType() string
 }
 
+// 各事件类型实现EventBody接口。
 func (*UserCreatedEvent) eventType() string    { return "user_created" }
 func (*UserUpdatedEvent) eventType() string    { return "user_updated" }
 func (*UserDeletedEvent) eventType() string    { return "user_deleted" }
@@ -29,6 +32,7 @@ func (*UserLoginNameDeletedEvent) eventType() string {
 	return "user_login_name_deleted"
 }
 
+// EventTypeFromBody 从EventBody中提取事件类型字符串。nil安全。
 func EventTypeFromBody(body EventBody) string {
 	if body == nil {
 		return ""
@@ -36,6 +40,8 @@ func EventTypeFromBody(body EventBody) string {
 	return body.eventType()
 }
 
+// GetTypedBody 将ReplicatedEvent的oneof body解包为类型化的EventBody接口。
+// 支持所有10种事件类型。
 func (e *ReplicatedEvent) GetTypedBody() EventBody {
 	if e == nil {
 		return nil
@@ -66,6 +72,8 @@ func (e *ReplicatedEvent) GetTypedBody() EventBody {
 	}
 }
 
+// SetTypedBody 将类型化的EventBody设置到ReplicatedEvent的oneof body中。
+// 传入nil则清除body；不支持的类型返回错误。
 func (e *ReplicatedEvent) SetTypedBody(body EventBody) error {
 	if e == nil {
 		return fmt.Errorf("replicated event cannot be nil")

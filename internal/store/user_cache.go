@@ -6,6 +6,8 @@ import (
 	"sync"
 )
 
+// cachedUserRepository 是 UserRepository 的内存缓存装饰器。
+// 缓存 GetUser 和 ListBroadcastUserKeys 的结果，写操作时通过 StoreUser/InvalidateUser 主动失效。
 type cachedUserRepository struct {
 	delegate UserRepository
 
@@ -14,11 +16,13 @@ type cachedUserRepository struct {
 	broadcastUserKeys []UserKey
 }
 
+// userCacheKey 区分 includeDeleted 标记的两个缓存条目。
 type userCacheKey struct {
 	key            UserKey
 	includeDeleted bool
 }
 
+// newCachedUserRepository 创建带缓存的 UserRepository 装饰器。
 func newCachedUserRepository(delegate UserRepository) *cachedUserRepository {
 	return &cachedUserRepository{
 		delegate: delegate,
@@ -74,6 +78,7 @@ func (r *cachedUserRepository) ListBroadcastUserKeys(ctx context.Context) ([]Use
 	return cloneUserKeys(keys), nil
 }
 
+// StoreUser 将用户写入缓存，同时失效旧的 includeDeleted 条目。
 func (r *cachedUserRepository) StoreUser(user User) {
 	key := user.Key()
 
@@ -89,6 +94,7 @@ func (r *cachedUserRepository) StoreUser(user User) {
 	r.invalidateBroadcastUserKeysLocked()
 }
 
+// InvalidateUser 从缓存中移除指定用户的所有条目。
 func (r *cachedUserRepository) InvalidateUser(key UserKey) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -98,6 +104,7 @@ func (r *cachedUserRepository) InvalidateUser(key UserKey) {
 	r.invalidateBroadcastUserKeysLocked()
 }
 
+// InvalidateAll 清空所有缓存条目。
 func (r *cachedUserRepository) InvalidateAll() {
 	r.mu.Lock()
 	defer r.mu.Unlock()

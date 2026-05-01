@@ -12,9 +12,9 @@ import (
 	internalproto "github.com/tursom/turntf/internal/proto"
 )
 
-// MeshRuntimeBinding owns a mesh.Runtime that reuses the Manager's
-// transports. Inbound connections are pushed via the adapters'
-// InjectInbound method; outbound dials reuse the Manager's dialers.
+// MeshRuntimeBinding 拥有一个mesh.Runtime并复用Manager的传输层。
+// 入站连接通过适配器的InjectInbound方法推送；
+// 出站拨号复用Manager的拨号器。
 type MeshRuntimeBinding struct {
 	runtime  *mesh.Runtime
 	store    mesh.TopologyStore
@@ -24,8 +24,7 @@ type MeshRuntimeBinding struct {
 	started bool
 }
 
-// StartMeshRuntime builds and starts the mesh runtime, attaching it to
-// the Manager so Close also tears it down.
+// StartMeshRuntime 构建并启动网格运行时，将其附加到Manager以便Close时一并清理。
 func (m *Manager) StartMeshRuntime(ctx context.Context) error {
 	if m == nil {
 		return fmt.Errorf("mesh: manager is nil")
@@ -50,7 +49,7 @@ func (m *Manager) StartMeshRuntime(ctx context.Context) error {
 	return nil
 }
 
-// MeshRuntime returns the attached mesh runtime binding.
+// MeshRuntime 返回已附加的网格运行时绑定。
 func (m *Manager) MeshRuntime() *MeshRuntimeBinding {
 	if m == nil {
 		return nil
@@ -60,9 +59,8 @@ func (m *Manager) MeshRuntime() *MeshRuntimeBinding {
 	return m.meshRuntime
 }
 
-// BuildMeshRuntime constructs a MeshRuntimeBinding reusing the Manager's
-// transports. Static peers and currently-dialable discovered peers are
-// converted to dial seeds.
+// BuildMeshRuntime 构建MeshRuntimeBinding，复用Manager的传输层。
+// 将静态对等节点和当前可拨号的发现节点转换为拨号种子。
 func (m *Manager) BuildMeshRuntime() (*MeshRuntimeBinding, error) {
 	if m == nil {
 		return nil, fmt.Errorf("mesh: manager is nil")
@@ -104,6 +102,7 @@ func (m *Manager) BuildMeshRuntime() (*MeshRuntimeBinding, error) {
 	return &MeshRuntimeBinding{runtime: runtime, store: store, adapters: adapters}, nil
 }
 
+// buildMeshInboundAdapters 为每种启用的传输类型构建入站适配器。
 func (m *Manager) buildMeshInboundAdapters() map[mesh.TransportKind]*meshInboundAdapter {
 	out := make(map[mesh.TransportKind]*meshInboundAdapter, 3)
 
@@ -149,8 +148,7 @@ func (m *Manager) buildMeshInboundAdapters() map[mesh.TransportKind]*meshInbound
 	return out
 }
 
-// InboundAdapter returns the inbound adapter for the given transport
-// kind, or nil if none.
+// InboundAdapter 返回指定传输类型的入站适配器。
 func (b *MeshRuntimeBinding) InboundAdapter(kind mesh.TransportKind) *meshInboundAdapter {
 	if b == nil {
 		return nil
@@ -158,10 +156,8 @@ func (b *MeshRuntimeBinding) InboundAdapter(kind mesh.TransportKind) *meshInboun
 	return b.adapters[kind]
 }
 
-// routeInboundToMesh forwards a raw inbound connection into the mesh
-// runtime if it is attached and has an adapter for the transport kind.
-// Returns true when the connection has been handed off; the caller must
-// not use the connection afterwards.
+// routeInboundToMesh 将原始入站连接转发到网格运行时（如果有适配器）。
+// 返回true表示连接已被接管，调用者不应再使用该连接。
 func (m *Manager) routeInboundToMesh(kind mesh.TransportKind, conn TransportConn) bool {
 	if m == nil || conn == nil {
 		return false
@@ -179,7 +175,7 @@ func (m *Manager) routeInboundToMesh(kind mesh.TransportKind, conn TransportConn
 	return adapter.InjectInbound(conn)
 }
 
-// Runtime exposes the underlying mesh.Runtime.
+// Runtime 暴露底层的mesh.Runtime。
 func (b *MeshRuntimeBinding) Runtime() *mesh.Runtime {
 	if b == nil {
 		return nil
@@ -187,7 +183,7 @@ func (b *MeshRuntimeBinding) Runtime() *mesh.Runtime {
 	return b.runtime
 }
 
-// TopologyStore exposes the store the runtime writes snapshots into.
+// TopologyStore 暴露运行时写入快照的拓扑存储。
 func (b *MeshRuntimeBinding) TopologyStore() mesh.TopologyStore {
 	if b == nil {
 		return nil
@@ -195,7 +191,7 @@ func (b *MeshRuntimeBinding) TopologyStore() mesh.TopologyStore {
 	return b.store
 }
 
-// Start starts the runtime (once).
+// Start 启动运行时（仅一次）。
 func (b *MeshRuntimeBinding) Start(ctx context.Context) error {
 	if b == nil {
 		return fmt.Errorf("mesh: binding is nil")
@@ -210,7 +206,7 @@ func (b *MeshRuntimeBinding) Start(ctx context.Context) error {
 	return b.runtime.Start(ctx)
 }
 
-// Close stops the runtime.
+// Close 停止运行时。
 func (b *MeshRuntimeBinding) Close() error {
 	if b == nil || b.runtime == nil {
 		return nil
@@ -218,7 +214,7 @@ func (b *MeshRuntimeBinding) Close() error {
 	return b.runtime.Close()
 }
 
-// AddDialSeed schedules a mesh-runtime dial for a newly discovered peer.
+// AddDialSeed 为新发现的节点添加一个网格运行时拨号种子。
 func (b *MeshRuntimeBinding) AddDialSeed(seed mesh.DialSeed) error {
 	if b == nil || b.runtime == nil {
 		return fmt.Errorf("mesh: runtime is not attached")
@@ -226,7 +222,7 @@ func (b *MeshRuntimeBinding) AddDialSeed(seed mesh.DialSeed) error {
 	return b.runtime.AddDialSeed(seed)
 }
 
-// RemoveDialSeed stops a previously registered mesh-runtime dial seed.
+// RemoveDialSeed 移除一个之前注册的网格运行时拨号种子。
 func (b *MeshRuntimeBinding) RemoveDialSeed(seed mesh.DialSeed) error {
 	if b == nil || b.runtime == nil {
 		return fmt.Errorf("mesh: runtime is not attached")
@@ -234,6 +230,7 @@ func (b *MeshRuntimeBinding) RemoveDialSeed(seed mesh.DialSeed) error {
 	return b.runtime.RemoveDialSeed(seed)
 }
 
+// RouteEnvelope 通过网格路由一个ClusterEnvelope。
 func (b *MeshRuntimeBinding) RouteEnvelope(ctx context.Context, targetNodeID int64, envelope *mesh.ClusterEnvelope) error {
 	if b == nil || b.runtime == nil {
 		return fmt.Errorf("mesh: runtime is not attached")
@@ -241,6 +238,7 @@ func (b *MeshRuntimeBinding) RouteEnvelope(ctx context.Context, targetNodeID int
 	return b.runtime.RouteEnvelope(ctx, targetNodeID, envelope)
 }
 
+// ForwardPacket 通过网格转发一个数据包。
 func (b *MeshRuntimeBinding) ForwardPacket(ctx context.Context, packet *mesh.ForwardedPacket) error {
 	if b == nil || b.runtime == nil {
 		return fmt.Errorf("mesh: runtime is not attached")
@@ -248,6 +246,7 @@ func (b *MeshRuntimeBinding) ForwardPacket(ctx context.Context, packet *mesh.For
 	return b.runtime.ForwardPacket(ctx, packet)
 }
 
+// observeMeshTimeSync 处理网格时间同步观测结果，仅更新RTT信号。
 func (m *Manager) observeMeshTimeSync(observation mesh.TimeSyncObservation) {
 	if m == nil || observation.RemoteNodeID <= 0 || observation.RemoteNodeID == m.cfg.NodeID {
 		return
@@ -257,11 +256,11 @@ func (m *Manager) observeMeshTimeSync(observation mesh.TimeSyncObservation) {
 		return
 	}
 	rttMs := maxInt64(observation.RTTMs, 0)
-	// Mesh time sync is runtime link measurement only; keep it out of the
-	// legacy clock write gate and retain just the RTT status signal here.
 	sess.observeRTT(rttMs)
 }
 
+// observeMeshAdjacency 处理网格邻接观测（连接建立或断开）。
+// 更新发现状态、动态节点信息、邻接计数，并在需要时广播在线状态和连接性传闻。
 func (m *Manager) observeMeshAdjacency(observation mesh.AdjacencyObservation) {
 	if m == nil || observation.RemoteNodeID <= 0 || observation.RemoteNodeID == m.cfg.NodeID {
 		return
@@ -275,6 +274,7 @@ func (m *Manager) observeMeshAdjacency(observation mesh.AdjacencyObservation) {
 	if observation.Hello != nil {
 		m.rememberRemoteRuntimeEpochLocked(observation.RemoteNodeID, observation.Hello.GetRuntimeEpoch())
 	}
+	// 更新匹配的配置节点和动态节点
 	for _, peer := range m.configuredPeers {
 		if configuredPeerMatchesMeshObservation(peer, observation) {
 			peer.nodeID = observation.RemoteNodeID
@@ -324,6 +324,7 @@ func (m *Manager) observeMeshAdjacency(observation mesh.AdjacencyObservation) {
 		discovered.lastError = "mesh adjacency lost"
 		failedSnapshots = append(failedSnapshots, *discovered)
 	}
+	// 更新直接邻接计数
 	prevDirectAdjacencyCount := m.directAdjacencyCounts[observation.RemoteNodeID]
 	if observation.Established {
 		m.directAdjacencyCounts[observation.RemoteNodeID] = prevDirectAdjacencyCount + 1
@@ -367,6 +368,7 @@ func (m *Manager) observeMeshAdjacency(observation mesh.AdjacencyObservation) {
 	}
 }
 
+// DescribeRoute 返回到目标节点的路由决策。
 func (b *MeshRuntimeBinding) DescribeRoute(destinationNodeID int64, trafficClass mesh.TrafficClass) (mesh.RouteDecision, bool) {
 	if b == nil || b.runtime == nil {
 		return mesh.RouteDecision{}, false
@@ -374,6 +376,7 @@ func (b *MeshRuntimeBinding) DescribeRoute(destinationNodeID int64, trafficClass
 	return b.runtime.DescribeRoute(destinationNodeID, trafficClass)
 }
 
+// startMeshDialSeed 为动态发现的节点启动网格拨号。
 func (m *Manager) startMeshDialSeed(peer *configuredPeer) error {
 	if peer == nil {
 		return nil
@@ -391,6 +394,7 @@ func (m *Manager) startMeshDialSeed(peer *configuredPeer) error {
 	return binding.AddDialSeed(seed)
 }
 
+// stopMeshDialSeed 停止网格拨号。
 func (m *Manager) stopMeshDialSeed(peer *configuredPeer) error {
 	if peer == nil {
 		return nil
@@ -408,6 +412,7 @@ func (m *Manager) stopMeshDialSeed(peer *configuredPeer) error {
 	return binding.RemoveDialSeed(seed)
 }
 
+// collectDialSeeds 从配置节点和可拨号的发现节点中收集拨号种子。
 func (m *Manager) collectDialSeeds() []mesh.DialSeed {
 	m.mu.Lock()
 	peers := append([]*configuredPeer(nil), m.configuredPeers...)
@@ -443,6 +448,7 @@ func (m *Manager) collectDialSeeds() []mesh.DialSeed {
 	return seeds
 }
 
+// configuredPeerMatchesMeshObservation 检查配置节点是否匹配邻接观测。
 func configuredPeerMatchesMeshObservation(peer *configuredPeer, observation mesh.AdjacencyObservation) bool {
 	if peer == nil {
 		return false
@@ -462,6 +468,7 @@ func configuredPeerMatchesMeshObservation(peer *configuredPeer, observation mesh
 	return meshObservationAdvertisesURL(observation, peer.URL)
 }
 
+// discoveredPeerMatchesMeshObservation 检查发现节点是否匹配邻接观测。
 func discoveredPeerMatchesMeshObservation(peer *discoveredPeerState, observation mesh.AdjacencyObservation) bool {
 	if peer == nil {
 		return false
@@ -478,6 +485,7 @@ func discoveredPeerMatchesMeshObservation(peer *discoveredPeerState, observation
 	return meshObservationAdvertisesURL(observation, peer.url)
 }
 
+// meshObservationAdvertisesURL 检查观测中的Hello是否通告了给定的对等URL。
 func meshObservationAdvertisesURL(observation mesh.AdjacencyObservation, peerURL string) bool {
 	hello := observation.Hello
 	if hello == nil {
@@ -496,6 +504,7 @@ func meshObservationAdvertisesURL(observation mesh.AdjacencyObservation, peerURL
 	return false
 }
 
+// meshObservationEndpointMatchesPeerURL 检查端点是否匹配对等URL。
 func meshObservationEndpointMatchesPeerURL(transport mesh.TransportKind, endpoint, peerURL string) bool {
 	if normalized, ok := normalizedMeshObservationHint(endpoint); ok && normalized == peerURL {
 		return true
@@ -518,6 +527,7 @@ func meshObservationEndpointMatchesPeerURL(transport mesh.TransportKind, endpoin
 	return parsed.Path == endpoint
 }
 
+// normalizedMeshObservationHint 规范化网格观测的远程提示。
 func normalizedMeshObservationHint(raw string) (string, bool) {
 	normalized, err := normalizePeerURL(strings.TrimSpace(raw))
 	if err != nil {
@@ -526,6 +536,7 @@ func normalizedMeshObservationHint(raw string) (string, bool) {
 	return normalized, true
 }
 
+// transportKindForPeerURL 将对等URL映射到网格传输类型。
 func transportKindForPeerURL(peerURL string) mesh.TransportKind {
 	switch transportForPeerURL(strings.TrimSpace(peerURL)) {
 	case transportWebSocket:
@@ -539,6 +550,7 @@ func transportKindForPeerURL(peerURL string) mesh.TransportKind {
 	}
 }
 
+// dialSeedForURL 从对等URL构建网格拨号种子。
 func dialSeedForURL(peerURL string) (mesh.DialSeed, bool) {
 	trimmed := strings.TrimSpace(peerURL)
 	if trimmed == "" {

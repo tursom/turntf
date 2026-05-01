@@ -13,11 +13,13 @@ import (
 	"github.com/tursom/turntf/internal/store"
 )
 
+// 网格查询类型常量。
 const (
 	meshQueryResolveUserSessionsRequestKind  = "resolve_user_sessions.request"
 	meshQueryResolveUserSessionsResponseKind = "resolve_user_sessions.response"
 )
 
+// routeMeshResolveUserSessionsRequest 通过网格路由用户会话解析请求。
 func (m *Manager) routeMeshResolveUserSessionsRequest(ctx context.Context, req *internalproto.QueryResolveUserSessionsRequest) error {
 	if req == nil {
 		return errors.New("query resolve user sessions request cannot be empty")
@@ -38,6 +40,7 @@ func (m *Manager) routeMeshResolveUserSessionsRequest(ctx context.Context, req *
 	return m.routeMeshEnvelope(ctx, req.TargetNodeId, mesh.TrafficControlQuery, envelope)
 }
 
+// routeMeshResolveUserSessionsResponse 通过网格路由用户会话解析响应。
 func (m *Manager) routeMeshResolveUserSessionsResponse(ctx context.Context, resp *internalproto.QueryResolveUserSessionsResponse) error {
 	if resp == nil {
 		return errors.New("query resolve user sessions response cannot be empty")
@@ -58,6 +61,7 @@ func (m *Manager) routeMeshResolveUserSessionsResponse(ctx context.Context, resp
 	return m.routeMeshEnvelope(ctx, resp.OriginNodeId, mesh.TrafficControlQuery, envelope)
 }
 
+// routeMeshMembershipUpdate 通过网格路由成员资格更新（control_critical流量类别）。
 func (m *Manager) routeMeshMembershipUpdate(ctx context.Context, targetNodeID int64, update *internalproto.MembershipUpdate) error {
 	if update == nil {
 		return errors.New("membership update cannot be empty")
@@ -71,6 +75,7 @@ func (m *Manager) routeMeshMembershipUpdate(ctx context.Context, targetNodeID in
 	})
 }
 
+// routeMeshPresenceUpdate 通过网格路由在线状态快照更新。
 func (m *Manager) routeMeshPresenceUpdate(ctx context.Context, targetNodeID int64, snapshot *internalproto.OnlinePresenceSnapshot) error {
 	if snapshot == nil {
 		return errors.New("online presence snapshot cannot be empty")
@@ -84,6 +89,7 @@ func (m *Manager) routeMeshPresenceUpdate(ctx context.Context, targetNodeID int6
 	})
 }
 
+// routeMeshConnectivityRumor 通过网格路由连接性传闻。
 func (m *Manager) routeMeshConnectivityRumor(ctx context.Context, targetNodeID int64, rumor *internalproto.NodeConnectivityRumor) error {
 	if rumor == nil {
 		return errors.New("connectivity rumor cannot be empty")
@@ -97,10 +103,12 @@ func (m *Manager) routeMeshConnectivityRumor(ctx context.Context, targetNodeID i
 	})
 }
 
+// broadcastConnectivityRumor 向所有本地对等节点广播连接性传闻。
 func (m *Manager) broadcastConnectivityRumor(rumor *internalproto.NodeConnectivityRumor) {
 	m.forwardConnectivityRumor(rumor, 0)
 }
 
+// forwardConnectivityRumor 向所有本地活跃会话转发连接性传闻。
 func (m *Manager) forwardConnectivityRumor(rumor *internalproto.NodeConnectivityRumor, excludePeerNodeID int64) {
 	if m == nil || rumor == nil {
 		return
@@ -113,6 +121,7 @@ func (m *Manager) forwardConnectivityRumor(rumor *internalproto.NodeConnectivity
 	}
 }
 
+// sendConnectivityRumor 向单个会话发送连接性传闻。
 func (m *Manager) sendConnectivityRumor(sess *session, rumor *internalproto.NodeConnectivityRumor) {
 	if m == nil || sess == nil || rumor == nil || sess.isClosed() || m.MeshRuntime() == nil {
 		return
@@ -122,6 +131,7 @@ func (m *Manager) sendConnectivityRumor(sess *session, rumor *internalproto.Node
 	}
 }
 
+// handleMeshQueryEnvelope 处理网格查询请求或响应。
 func (m *Manager) handleMeshQueryEnvelope(ctx context.Context, packet *mesh.ForwardedPacket, envelope *mesh.ClusterEnvelope) error {
 	if m == nil || envelope == nil {
 		return nil
@@ -142,6 +152,10 @@ func (m *Manager) handleMeshQueryEnvelope(ctx context.Context, packet *mesh.Forw
 	}
 }
 
+// handleMeshEnvelope 是网格信封的中央分发器。
+// 根据信封的oneof类型将请求路由到对应的处理函数。
+// 支持的9种信封类型：查询、复制批次、拉取请求、复制确认、
+// 快照清单、快照分块、成员资格更新、在线状态更新、连接性传闻。
 func (m *Manager) handleMeshEnvelope(ctx context.Context, packet *mesh.ForwardedPacket, envelope *mesh.ClusterEnvelope) error {
 	if m == nil || envelope == nil {
 		return nil
@@ -170,6 +184,7 @@ func (m *Manager) handleMeshEnvelope(ctx context.Context, packet *mesh.Forwarded
 	}
 }
 
+// routeMeshReplicationBatch 通过网格路由复制事件批次（replication_stream流量类别）。
 func (m *Manager) routeMeshReplicationBatch(ctx context.Context, targetNodeID int64, sequence uint64, sentAtHlc string, batch *internalproto.EventBatch) error {
 	if batch == nil {
 		return errors.New("mesh replication batch cannot be empty")
@@ -186,6 +201,7 @@ func (m *Manager) routeMeshReplicationBatch(ctx context.Context, targetNodeID in
 	})
 }
 
+// routeMeshPullRequest 通过网格路由事件拉取请求。
 func (m *Manager) routeMeshPullRequest(ctx context.Context, targetNodeID int64, pull *internalproto.PullEvents) error {
 	if pull == nil {
 		return errors.New("mesh pull request cannot be empty")
@@ -200,6 +216,7 @@ func (m *Manager) routeMeshPullRequest(ctx context.Context, targetNodeID int64, 
 	})
 }
 
+// routeMeshReplicationAck 通过网格路由复制确认。
 func (m *Manager) routeMeshReplicationAck(ctx context.Context, targetNodeID int64, ack *internalproto.Ack) error {
 	if ack == nil {
 		return errors.New("mesh replication ack cannot be empty")
@@ -213,6 +230,7 @@ func (m *Manager) routeMeshReplicationAck(ctx context.Context, targetNodeID int6
 	})
 }
 
+// routeMeshSnapshotManifest 通过网格路由快照摘要清单（snapshot_bulk流量类别）。
 func (m *Manager) routeMeshSnapshotManifest(ctx context.Context, targetNodeID int64, digest *internalproto.SnapshotDigest) error {
 	if digest == nil {
 		return errors.New("mesh snapshot manifest cannot be empty")
@@ -226,6 +244,7 @@ func (m *Manager) routeMeshSnapshotManifest(ctx context.Context, targetNodeID in
 	})
 }
 
+// routeMeshSnapshotChunk 通过网格路由快照分块。
 func (m *Manager) routeMeshSnapshotChunk(ctx context.Context, targetNodeID int64, chunk *internalproto.SnapshotChunk) error {
 	if chunk == nil {
 		return errors.New("mesh snapshot chunk cannot be empty")
@@ -239,6 +258,7 @@ func (m *Manager) routeMeshSnapshotChunk(ctx context.Context, targetNodeID int64
 	})
 }
 
+// handleMeshReplicationBatchEnvelope 处理网格复制事件批次。
 func (m *Manager) handleMeshReplicationBatchEnvelope(packet *mesh.ForwardedPacket, batch *mesh.ReplicationBatch) error {
 	if batch == nil {
 		return errors.New("mesh replication batch body cannot be empty")
@@ -261,6 +281,7 @@ func (m *Manager) handleMeshReplicationBatchEnvelope(packet *mesh.ForwardedPacke
 	})
 }
 
+// handleMeshPullRequestEnvelope 处理网格事件拉取请求。
 func (m *Manager) handleMeshPullRequestEnvelope(packet *mesh.ForwardedPacket, pull *mesh.PullRequest) error {
 	if pull == nil {
 		return errors.New("mesh pull request body cannot be empty")
@@ -281,6 +302,7 @@ func (m *Manager) handleMeshPullRequestEnvelope(packet *mesh.ForwardedPacket, pu
 	})
 }
 
+// handleMeshReplicationAckEnvelope 处理网格复制确认。
 func (m *Manager) handleMeshReplicationAckEnvelope(packet *mesh.ForwardedPacket, ack *mesh.ReplicationAck) error {
 	if ack == nil || ack.GetAck() == nil {
 		return errors.New("mesh replication ack body cannot be empty")
@@ -297,6 +319,7 @@ func (m *Manager) handleMeshReplicationAckEnvelope(packet *mesh.ForwardedPacket,
 	})
 }
 
+// handleMeshSnapshotManifestEnvelope 处理网格快照清单。
 func (m *Manager) handleMeshSnapshotManifestEnvelope(packet *mesh.ForwardedPacket, manifest *mesh.SnapshotManifest) error {
 	if manifest == nil || manifest.GetSnapshotDigest() == nil {
 		return errors.New("mesh snapshot manifest body cannot be empty")
@@ -313,6 +336,7 @@ func (m *Manager) handleMeshSnapshotManifestEnvelope(packet *mesh.ForwardedPacke
 	})
 }
 
+// handleMeshSnapshotChunkEnvelope 处理网格快照分块。
 func (m *Manager) handleMeshSnapshotChunkEnvelope(packet *mesh.ForwardedPacket, chunk *mesh.SnapshotChunk) error {
 	if chunk == nil || chunk.GetSnapshotChunk() == nil {
 		return errors.New("mesh snapshot chunk body cannot be empty")
@@ -329,6 +353,7 @@ func (m *Manager) handleMeshSnapshotChunkEnvelope(packet *mesh.ForwardedPacket, 
 	})
 }
 
+// handleMeshMembershipUpdateEnvelope 处理网格成员资格更新。
 func (m *Manager) handleMeshMembershipUpdateEnvelope(packet *mesh.ForwardedPacket, update *mesh.MembershipUpdate) error {
 	if update == nil || update.GetMembershipUpdate() == nil {
 		return errors.New("mesh membership update body cannot be empty")
@@ -344,6 +369,7 @@ func (m *Manager) handleMeshMembershipUpdateEnvelope(packet *mesh.ForwardedPacke
 	return m.handleMembershipUpdateBody(sourceNodeID, body)
 }
 
+// meshSessionForPacket 获取数据包源节点对应的网格会话。
 func (m *Manager) meshSessionForPacket(packet *mesh.ForwardedPacket, fallbackPeerID int64) (*session, error) {
 	peerID := packetSourceNodeID(packet)
 	if peerID <= 0 {
@@ -359,6 +385,7 @@ func (m *Manager) meshSessionForPacket(packet *mesh.ForwardedPacket, fallbackPee
 	return sess, nil
 }
 
+// packetSourceNodeID 返回数据包的源节点ID。
 func packetSourceNodeID(packet *mesh.ForwardedPacket) int64 {
 	if packet == nil {
 		return 0
@@ -366,6 +393,7 @@ func packetSourceNodeID(packet *mesh.ForwardedPacket) int64 {
 	return packet.GetSourceNodeId()
 }
 
+// sessionPeerIDForEnvelope 返回用于构造信封节点ID的对等节点ID。
 func sessionPeerIDForEnvelope(sess *session, fallbackPeerID int64) int64 {
 	if sess != nil && sess.peerID > 0 {
 		return sess.peerID
@@ -373,6 +401,7 @@ func sessionPeerIDForEnvelope(sess *session, fallbackPeerID int64) int64 {
 	return fallbackPeerID
 }
 
+// handleMeshQueryRequest 分派网格查询请求到对应的处理函数。
 func (m *Manager) handleMeshQueryRequest(ctx context.Context, packet *mesh.ForwardedPacket, query *mesh.QueryRequest) error {
 	if query == nil {
 		return errors.New("mesh query request cannot be empty")
@@ -385,6 +414,7 @@ func (m *Manager) handleMeshQueryRequest(ctx context.Context, packet *mesh.Forwa
 	}
 }
 
+// handleMeshQueryResponse 分派网格查询响应到对应的处理函数。
 func (m *Manager) handleMeshQueryResponse(ctx context.Context, query *mesh.QueryResponse) error {
 	if query == nil {
 		return errors.New("mesh query response cannot be empty")
@@ -397,6 +427,7 @@ func (m *Manager) handleMeshQueryResponse(ctx context.Context, query *mesh.Query
 	}
 }
 
+// handleMeshResolveUserSessionsRequest 处理解析用户会话的网格查询请求。
 func (m *Manager) handleMeshResolveUserSessionsRequest(ctx context.Context, packet *mesh.ForwardedPacket, query *mesh.QueryRequest) error {
 	req := &internalproto.QueryResolveUserSessionsRequest{}
 	if err := proto.Unmarshal(query.Payload, req); err != nil {
@@ -444,6 +475,8 @@ func (m *Manager) handleMeshResolveUserSessionsRequest(ctx context.Context, pack
 	return m.routeMeshResolveUserSessionsResponse(ctx, response)
 }
 
+// handleMeshResolveUserSessionsResponse 处理解析用户会话的网格查询响应。
+// 如果目标不是本地发起的查询则继续路由。
 func (m *Manager) handleMeshResolveUserSessionsResponse(ctx context.Context, query *mesh.QueryResponse) error {
 	_ = ctx
 	resp := &internalproto.QueryResolveUserSessionsResponse{}
@@ -466,6 +499,8 @@ func (m *Manager) handleMeshResolveUserSessionsResponse(ctx context.Context, que
 	return nil
 }
 
+// handleMeshPresenceUpdateEnvelope 处理网格在线状态更新。
+// 应用快照并转发给其他对等节点（排除源节点）。
 func (m *Manager) handleMeshPresenceUpdateEnvelope(packet *mesh.ForwardedPacket, update *mesh.MeshPresenceUpdate) error {
 	if update == nil || update.GetPresenceUpdate() == nil {
 		return errors.New("mesh online presence update body cannot be empty")
@@ -485,6 +520,12 @@ func (m *Manager) handleMeshPresenceUpdateEnvelope(packet *mesh.ForwardedPacket,
 	return nil
 }
 
+// handleMeshConnectivityRumorEnvelope 处理网格连接性传闻。
+//
+// 逻辑：
+//   - 传闻针对本节点且纪元匹配 → 本节点被怀疑断开 → 广播在线状态自证
+//   - 传闻针对其他节点且纪元较旧 → 忽略（已有更新信息）
+//   - 传闻针对其他节点且首次见到 → 记录怀疑并转发
 func (m *Manager) handleMeshConnectivityRumorEnvelope(packet *mesh.ForwardedPacket, envelope *mesh.MeshConnectivityRumor) error {
 	if envelope == nil || envelope.GetConnectivityRumor() == nil {
 		return errors.New("mesh connectivity rumor body cannot be empty")
@@ -526,6 +567,7 @@ func (m *Manager) handleMeshConnectivityRumorEnvelope(packet *mesh.ForwardedPack
 	return nil
 }
 
+// handleMeshForwardedPacket 处理通过网格转发的数据包（瞬时消息流量）。
 func (m *Manager) handleMeshForwardedPacket(ctx context.Context, packet *mesh.ForwardedPacket) error {
 	_ = ctx
 	if m == nil || packet == nil {
@@ -551,10 +593,13 @@ func (m *Manager) handleMeshForwardedPacket(ctx context.Context, packet *mesh.Fo
 	return nil
 }
 
+// routeOrQueueTransientPacket 路由或排队一个瞬态数据包。
+// 目标为本地时立即投递；需要通过网格转发时尝试路由或排队重试。
 func (m *Manager) routeOrQueueTransientPacket(ctx context.Context, packet store.TransientPacket) {
 	m.routeOrQueueMeshTransient(ctx, packet)
 }
 
+// routeOrQueueMeshTransient 通过网格路由瞬态数据包，失败时排队重试。
 func (m *Manager) routeOrQueueMeshTransient(ctx context.Context, packet store.TransientPacket) {
 	if packet.TargetNodeID == m.cfg.NodeID {
 		m.removeQueuedTransientPacket(packet)
@@ -600,6 +645,7 @@ func (m *Manager) routeOrQueueMeshTransient(ctx context.Context, packet store.Tr
 	m.queueTransientPacket(packet)
 }
 
+// nextMeshForwardPacketID 返回下一个网格转发数据包ID。
 func (m *Manager) nextMeshForwardPacketID() uint64 {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -607,6 +653,8 @@ func (m *Manager) nextMeshForwardPacketID() uint64 {
 	return m.nextMeshPacketID
 }
 
+// meshPeerSession 返回或创建指定对等节点的网格会话。
+// 网格会话是合成会话（没有实际传输连接），用于通过网格转发的消息处理。
 func (m *Manager) meshPeerSession(peerID int64) *session {
 	if m == nil || peerID <= 0 || peerID == m.cfg.NodeID {
 		return nil
@@ -652,6 +700,7 @@ func (m *Manager) meshPeerSession(peerID int64) *session {
 	return sess
 }
 
+// ensureMeshPeerSessions 为拓扑快照中的所有节点创建网格会话。
 func (m *Manager) ensureMeshPeerSessions() {
 	if m == nil {
 		return
@@ -669,6 +718,7 @@ func (m *Manager) ensureMeshPeerSessions() {
 	}
 }
 
+// meshPeerSessions 返回所有网格对等节点的合成会话。
 func (m *Manager) meshPeerSessions() []*session {
 	if m == nil {
 		return nil

@@ -17,10 +17,13 @@ const (
 	userMetadataExpiresAtFormat   = "2006-01-02T15:04:05.000000000Z07:00"
 )
 
+// NormalizeUserMetadataKey 校验并返回合法的用户元数据键名。
+// 键名仅允许 [a-zA-Z0-9._:-] 字符，最大长度 128。
 func NormalizeUserMetadataKey(raw string) (string, error) {
 	return normalizeUserMetadataKeyFragment(raw, "key", false)
 }
 
+// normalizeUserMetadataKeyFragment 是 NormalizeUserMetadataKey 的通用实现，也用于校验 prefix 和 after。
 func normalizeUserMetadataKeyFragment(raw, field string, allowEmpty bool) (string, error) {
 	if raw == "" {
 		if allowEmpty {
@@ -57,6 +60,7 @@ func normalizeUserMetadataScanLimit(limit int) (int, error) {
 	return limit, nil
 }
 
+// ParseUserMetadataExpiresAt 解析 RFC3339 格式的过期时间字符串，返回 UTC 时间。
 func ParseUserMetadataExpiresAt(raw string) (*time.Time, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -70,6 +74,7 @@ func ParseUserMetadataExpiresAt(raw string) (*time.Time, error) {
 	return &expiresAt, nil
 }
 
+// normalizedUserMetadataExpiresAt 将 *time.Time 标准化为 UTC。
 func normalizedUserMetadataExpiresAt(expiresAt *time.Time) *time.Time {
 	if expiresAt == nil {
 		return nil
@@ -78,10 +83,12 @@ func normalizedUserMetadataExpiresAt(expiresAt *time.Time) *time.Time {
 	return &normalized
 }
 
+// FormatUserMetadataExpiresAt 将 time.Time 格式化为存储用的 RFC3339 纳秒字符串。
 func FormatUserMetadataExpiresAt(expiresAt time.Time) string {
 	return expiresAt.UTC().Format(userMetadataExpiresAtFormat)
 }
 
+// nullableUserMetadataExpiresAt 将 *time.Time 转为 SQL nullable 值。
 func nullableUserMetadataExpiresAt(expiresAt *time.Time) any {
 	if expiresAt == nil {
 		return nil
@@ -89,14 +96,18 @@ func nullableUserMetadataExpiresAt(expiresAt *time.Time) any {
 	return FormatUserMetadataExpiresAt(*expiresAt)
 }
 
+// currentUserMetadataWallTime 获取当前时钟的 wall time（UTC），用于 TTL 过期判断。
 func currentUserMetadataWallTime(clk *clock.Clock) time.Time {
 	return time.UnixMilli(clk.WallTimeMs()).UTC()
 }
 
+// currentUserMetadataExpiresAtBoundary 获取当前时间格式化后的边界值，用于 SQL 过期比较。
 func currentUserMetadataExpiresAtBoundary(clk *clock.Clock) string {
 	return FormatUserMetadataExpiresAt(currentUserMetadataWallTime(clk))
 }
 
+// userMetadataPrefixUpperBound 计算前缀扫描的字节上界。
+// 例如："abc" -> 对最后一个字节加 1 得到 "abd"，用于 SQL 中 key < upperBound 的范围查询。
 func userMetadataPrefixUpperBound(prefix string) (string, bool) {
 	if prefix == "" {
 		return "", false
@@ -114,6 +125,7 @@ func userMetadataPrefixUpperBound(prefix string) (string, bool) {
 	return "", false
 }
 
+// validateUserMetadataOwner 校验用户角色是否允许拥有元数据（必须是可登录用户）。
 func validateUserMetadataOwner(user User) error {
 	if !user.CanLogin() {
 		return fmt.Errorf("%w: metadata owner must be a login user", ErrInvalidInput)
@@ -143,6 +155,7 @@ func (s *Store) validateUserMetadataOwnerTx(ctx context.Context, tx *sql.Tx, own
 	return validateUserMetadataOwner(user)
 }
 
+// UpsertUserMetadata 创建或更新用户元数据。校验 owner 角色后，在事务中写入并生成事件。
 func (s *Store) UpsertUserMetadata(ctx context.Context, params UpsertUserMetadataParams) (UserMetadata, Event, error) {
 	if err := params.Owner.Validate(); err != nil {
 		return UserMetadata{}, Event{}, err
@@ -193,6 +206,7 @@ func (s *Store) UpsertUserMetadata(ctx context.Context, params UpsertUserMetadat
 	return metadata, event, nil
 }
 
+// GetUserMetadata 获取用户的单个元数据条目。自动过滤已过期和已删除的记录。
 func (s *Store) GetUserMetadata(ctx context.Context, owner UserKey, key string) (UserMetadata, error) {
 	if err := s.validateUserMetadataOwner(ctx, owner); err != nil {
 		return UserMetadata{}, err
@@ -204,6 +218,7 @@ func (s *Store) GetUserMetadata(ctx context.Context, owner UserKey, key string) 
 	return s.getVisibleUserMetadata(ctx, owner, key)
 }
 
+// DeleteUserMetadata 软删除用户元数据。在校验 owner 后，设置 DeletedAt 并生成事件。
 func (s *Store) DeleteUserMetadata(ctx context.Context, params DeleteUserMetadataParams) (UserMetadata, Event, error) {
 	if err := params.Owner.Validate(); err != nil {
 		return UserMetadata{}, Event{}, err
@@ -251,6 +266,8 @@ func (s *Store) DeleteUserMetadata(ctx context.Context, params DeleteUserMetadat
 	return current, event, nil
 }
 
+// ScanUserMetadata 分页扫描用户元数据。支持 Prefix 前缀过滤和 After 游标分页。
+// 自动过滤已删除和已过期的记录。返回 NextAfter 供下一页继续。
 func (s *Store) ScanUserMetadata(ctx context.Context, params ScanUserMetadataParams) (UserMetadataScanResult, error) {
 	if err := s.validateUserMetadataOwner(ctx, params.Owner); err != nil {
 		return UserMetadataScanResult{}, err
@@ -320,6 +337,7 @@ WHERE owner_node_id = ? AND owner_user_id = ?
 	return result, nil
 }
 
+// getVisibleUserMetadata 获取非删除、未过期的用户元数据。未找到时返回 ErrNotFound。
 func (s *Store) getVisibleUserMetadata(ctx context.Context, owner UserKey, key string) (UserMetadata, error) {
 	row := s.db.QueryRowContext(ctx, `
 SELECT owner_node_id, owner_user_id, key, value, updated_at_hlc, deleted_at_hlc, expires_at, origin_node_id
@@ -338,6 +356,7 @@ WHERE owner_node_id = ? AND owner_user_id = ? AND key = ?
 	return metadata, nil
 }
 
+// getVisibleUserMetadataTx 在事务中获取非删除、未过期的用户元数据。
 func (s *Store) getVisibleUserMetadataTx(ctx context.Context, tx *sql.Tx, owner UserKey, key string) (UserMetadata, error) {
 	row := tx.QueryRowContext(ctx, `
 SELECT owner_node_id, owner_user_id, key, value, updated_at_hlc, deleted_at_hlc, expires_at, origin_node_id
@@ -356,6 +375,9 @@ WHERE owner_node_id = ? AND owner_user_id = ? AND key = ?
 	return metadata, nil
 }
 
+// upsertUserMetadataTx 在事务中执行 CRDT 风格的用户元数据 upsert。
+// 通过 HLC 时间戳比较决定是否覆盖：仅当新 updated_at >= 已有的 updated_at 且
+//（无删除标记或新更新时间戳在删除之后）时才覆盖值。
 func (s *Store) upsertUserMetadataTx(ctx context.Context, tx *sql.Tx, metadata UserMetadata) error {
 	if err := metadata.Owner.Validate(); err != nil {
 		return err

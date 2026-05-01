@@ -9,6 +9,9 @@ import (
 
 var topologyMarshalOptions = proto.MarshalOptions{Deterministic: true}
 
+// NormalizeTopologyUpdate 对拓扑更新进行标准化：克隆并标准化转发策略，
+// 排序并去重传输能力，过滤链路至源节点，去重并排序。
+// 输入为 nil 或 OriginNodeId 无效时返回 nil。
 func NormalizeTopologyUpdate(update *TopologyUpdate) *TopologyUpdate {
 	if update == nil || update.OriginNodeId <= 0 {
 		return nil
@@ -22,6 +25,8 @@ func NormalizeTopologyUpdate(update *TopologyUpdate) *TopologyUpdate {
 	}
 }
 
+// TopologyUpdatesEqual 通过确定性的 protobuf 指纹比较两个拓扑更新是否相等。
+// 输入会先被标准化以确保一致性。
 func TopologyUpdatesEqual(left, right *TopologyUpdate) bool {
 	leftFingerprint, ok := topologyUpdateFingerprint(left)
 	if !ok {
@@ -34,6 +39,7 @@ func TopologyUpdatesEqual(left, right *TopologyUpdate) bool {
 	return bytes.Equal(leftFingerprint, rightFingerprint)
 }
 
+// topologyUpdateFingerprint 对标准化后的拓扑更新进行确定性 protobuf 序列化，生成用于相等性比较的指纹。
 func topologyUpdateFingerprint(update *TopologyUpdate) ([]byte, bool) {
 	normalized := NormalizeTopologyUpdate(update)
 	if normalized == nil {
@@ -46,6 +52,7 @@ func topologyUpdateFingerprint(update *TopologyUpdate) ([]byte, bool) {
 	return fingerprint, true
 }
 
+// normalizeTopologyCapabilities 按传输去重能力、对端点排序，并按传输类型排序输出。
 func normalizeTopologyCapabilities(capabilities []*TransportCapability) []*TransportCapability {
 	byTransport := make(map[TransportKind]*TransportCapability, len(capabilities))
 	kinds := make([]TransportKind, 0, len(capabilities))
@@ -68,6 +75,7 @@ func normalizeTopologyCapabilities(capabilities []*TransportCapability) []*Trans
 	return normalized
 }
 
+// normalizeTopologyLinks 过滤链路至指定的 originNodeID，按 (from, to, transport) 去重，并排序输出。
 func normalizeTopologyLinks(originNodeID int64, links []*LinkAdvertisement) []*LinkAdvertisement {
 	type normalizedKey struct {
 		from      int64

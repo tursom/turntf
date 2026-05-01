@@ -1,13 +1,22 @@
 syntax = "proto3";
 
+// Package notifier.cluster.v1 定义了集群节点间通信的完整有线协议。
+// 包括信封包装、握手、事件复制、快照同步、时间同步、
+// 对等发现和在线状态广播所需的所有消息类型。
 package notifier.cluster.v1;
 
 option go_package = "github.com/tursom/turntf/internal/proto;proto";
 
+// Envelope 是所有集群节点间通信的通用信封。
+// 包含发送节点标识、序列号、HLC时间戳以及HMAC签名。
 message Envelope {
+  // node_id 是发送此信封的节点标识。
   int64 node_id = 1;
+  // sequence 是事件批次的全局序列号（仅事件批次使用）。
   uint64 sequence = 2;
+  // sent_at_hlc 是发送时的混合逻辑时钟时间戳。
   string sent_at_hlc = 3;
+  // body 是信封的具体内容，支持10种消息类型。
   oneof body {
     Hello hello = 4;
     Ack ack = 5;
@@ -19,46 +28,71 @@ message Envelope {
     TimeSyncResponse time_sync_response = 11;
     MembershipUpdate membership_update = 17;
   }
+  // hmac 是信封体的HMAC-SHA256签名，使用集群密钥计算。
   bytes hmac = 12;
 }
 
+// Hello 是会话建立时发送的握手消息。
+// 交换节点标识、事件进度、快照版本和能力信息。
 message Hello {
   int64 node_id = 1;
+  // advertise_addr 是节点对外通告的WebSocket路径。
   string advertise_addr = 2;
+  // protocol_version 是支持的协议版本。
   string protocol_version = 3;
+  // origin_progress 是各原始节点的事件进度。
   repeated OriginProgress origin_progress = 4;
+  // snapshot_version 是支持的快照版本。
   string snapshot_version = 5;
+  // message_window_size 是每个事件流保留的最大事件数。
   uint32 message_window_size = 6;
+  // connection_id 是此连接的标识符。
   uint64 connection_id = 8;
+  // smoothed_rtt_ms 是指数平滑后的RTT值（毫秒）。
   uint32 smoothed_rtt_ms = 9;
+  // jitter_penalty_ms 是RTT抖动惩罚值（毫秒）。
   uint32 jitter_penalty_ms = 10;
+  // supports_membership 表示节点是否支持成员资格协议。
   bool supports_membership = 11;
+  // runtime_epoch 是节点的运行时纪元。
   uint64 runtime_epoch = 12;
 }
 
+// OriginProgress 报告单个原始节点的事件复制进度。
 message OriginProgress {
   int64 origin_node_id = 1;
+  // last_event_id 是该原始节点的最新事件ID。
   uint64 last_event_id = 2;
 }
 
+// Ack 确认已成功应用到指定事件ID的所有事件。
 message Ack {
   int64 node_id = 1;
+  // origin_node_id 是事件原始产生的节点ID。
   int64 origin_node_id = 2;
+  // acked_event_id 是已成功应用的最高事件ID。
   uint64 acked_event_id = 3;
 }
 
+// EventBatch 包含一个或多个待复制的事件。
+// 也可用于Pull响应（通过pull_request_id关联请求）。
 message EventBatch {
   repeated ReplicatedEvent events = 1;
+  // pull_request_id 关联到PullEvents请求（非零表示此批次是Pull响应）。
   uint64 pull_request_id = 2;
   int64 origin_node_id = 3;
+  // truncated_before_event_id 表示保留窗口已裁剪该ID之前的事件。
   uint64 truncated_before_event_id = 4;
 }
 
+// ReplicatedEvent 表示一个已复制到集群的存储事件。
+// 使用oneof body支持10种事件类型。
 message ReplicatedEvent {
   int64 event_id = 1;
   string aggregate_type = 2;
   int64 aggregate_node_id = 3;
   int64 aggregate_id = 4;
+  // hlc 是事件发生时的混合逻辑时钟时间戳。
   string hlc = 5;
   int64 origin_node_id = 6;
   oneof body {
@@ -75,6 +109,7 @@ message ReplicatedEvent {
   }
 }
 
+// UserCreatedEvent 表示用户账户被创建。
 message UserCreatedEvent {
   int64 node_id = 1;
   int64 user_id = 2;
@@ -92,6 +127,7 @@ message UserCreatedEvent {
   int64 origin_node_id = 14;
 }
 
+// UserUpdatedEvent 表示用户账户信息被更新。
 message UserUpdatedEvent {
   int64 node_id = 1;
   int64 user_id = 2;
@@ -111,17 +147,20 @@ message UserUpdatedEvent {
   int64 origin_node_id = 16;
 }
 
+// UserDeletedEvent 表示用户账户被删除。
 message UserDeletedEvent {
   int64 node_id = 1;
   int64 user_id = 2;
   string deleted_at_hlc = 3;
 }
 
+// ClusterUserRef 唯一标识集群中的用户。
 message ClusterUserRef {
   int64 node_id = 1;
   int64 user_id = 2;
 }
 
+// MessageCreatedEvent 表示一条消息被创建。
 message MessageCreatedEvent {
   ClusterUserRef recipient = 1;
   int64 node_id = 3;
@@ -131,6 +170,7 @@ message MessageCreatedEvent {
   string created_at_hlc = 8;
 }
 
+// UserAttachmentUpsertedEvent 表示用户附件被创建或更新。
 message UserAttachmentUpsertedEvent {
   ClusterUserRef owner = 1;
   ClusterUserRef subject = 2;
@@ -140,6 +180,7 @@ message UserAttachmentUpsertedEvent {
   int64 origin_node_id = 6;
 }
 
+// UserAttachmentDeletedEvent 表示用户附件被删除。
 message UserAttachmentDeletedEvent {
   ClusterUserRef owner = 1;
   ClusterUserRef subject = 2;
@@ -150,6 +191,7 @@ message UserAttachmentDeletedEvent {
   int64 origin_node_id = 7;
 }
 
+// UserMetadataUpsertedEvent 表示用户元数据被创建或更新。
 message UserMetadataUpsertedEvent {
   ClusterUserRef owner = 1;
   string key = 2;
@@ -159,6 +201,7 @@ message UserMetadataUpsertedEvent {
   int64 origin_node_id = 6;
 }
 
+// UserMetadataDeletedEvent 表示用户元数据被删除。
 message UserMetadataDeletedEvent {
   ClusterUserRef owner = 1;
   string key = 2;
@@ -166,6 +209,7 @@ message UserMetadataDeletedEvent {
   int64 origin_node_id = 4;
 }
 
+// UserLoginNameUpsertedEvent 表示登录名被绑定到用户。
 message UserLoginNameUpsertedEvent {
   string login_name = 1;
   int64 user_node_id = 2;
@@ -174,6 +218,7 @@ message UserLoginNameUpsertedEvent {
   int64 origin_node_id = 5;
 }
 
+// UserLoginNameDeletedEvent 表示登录名与用户的绑定被删除。
 message UserLoginNameDeletedEvent {
   string login_name = 1;
   int64 user_node_id = 2;
@@ -183,26 +228,36 @@ message UserLoginNameDeletedEvent {
   int64 origin_node_id = 6;
 }
 
+// PullEvents 请求从指定原始节点拉取事件。
 message PullEvents {
   int64 origin_node_id = 1;
+  // after_event_id 是已应用的最高事件ID，请求此ID之后的事件。
   uint64 after_event_id = 2;
+  // limit 是最大返回事件数。
   uint32 limit = 3;
+  // request_id 是此请求的唯一标识符。
   uint64 request_id = 4;
 }
 
+// SnapshotDigest 包含存储各分区状态的摘要信息。
+// 用于快速检测节点间的状态分歧。
 message SnapshotDigest {
   string snapshot_version = 1;
   repeated SnapshotPartitionDigest partitions = 2;
 }
 
+// SnapshotChunk 是单个快照分区的数据传输。
+// request=true时表示请求分区数据；request=false时包含实际数据。
 message SnapshotChunk {
   string partition = 1;
   repeated SnapshotRow rows = 2;
   string snapshot_version = 3;
   SnapshotPartitionKind kind = 4;
+  // request 为true时表示请求分区数据而非携带数据。
   bool request = 5;
 }
 
+// SnapshotPartitionKind 是快照分区的类型枚举。
 enum SnapshotPartitionKind {
   SNAPSHOT_PARTITION_KIND_UNSPECIFIED = 0;
   SNAPSHOT_PARTITION_KIND_USERS = 1;
@@ -212,13 +267,17 @@ enum SnapshotPartitionKind {
   SNAPSHOT_PARTITION_KIND_LOGIN_NAMES = 5;
 }
 
+// SnapshotPartitionDigest 是单个分区的摘要。
 message SnapshotPartitionDigest {
   string partition = 1;
   SnapshotPartitionKind kind = 2;
+  // row_count 是分区中的总行数。
   uint64 row_count = 3;
+  // hash 是分区内容的SHA-256哈希。
   bytes hash = 4;
 }
 
+// SnapshotRow 是快照分区中的一行数据。
 message SnapshotRow {
   oneof body {
     SnapshotUserRow user = 1;
@@ -230,6 +289,7 @@ message SnapshotRow {
   }
 }
 
+// SnapshotUserRow 是快照中的用户行。
 message SnapshotUserRow {
   int64 user_id = 1;
   int64 node_id = 16;
@@ -249,6 +309,7 @@ message SnapshotUserRow {
   int64 origin_node_id = 12;
 }
 
+// SnapshotTombstoneRow 是表示已删除实体的墓碑记录。
 message SnapshotTombstoneRow {
   string entity_type = 1;
   int64 entity_id = 2;
@@ -257,6 +318,7 @@ message SnapshotTombstoneRow {
   int64 entity_node_id = 5;
 }
 
+// SnapshotMessageRow 是快照中的消息行。
 message SnapshotMessageRow {
   ClusterUserRef recipient = 1;
   int64 node_id = 2;
@@ -266,6 +328,7 @@ message SnapshotMessageRow {
   int64 seq = 7;
 }
 
+// SnapshotAttachmentRow 是快照中的附件行。
 message SnapshotAttachmentRow {
   ClusterUserRef owner = 1;
   ClusterUserRef subject = 2;
@@ -276,6 +339,7 @@ message SnapshotAttachmentRow {
   int64 origin_node_id = 7;
 }
 
+// SnapshotUserMetadataRow 是快照中的用户元数据行。
 message SnapshotUserMetadataRow {
   ClusterUserRef owner = 1;
   string key = 2;
@@ -286,6 +350,7 @@ message SnapshotUserMetadataRow {
   int64 origin_node_id = 7;
 }
 
+// SnapshotLoginNameRow 是快照中的登录名行。
 message SnapshotLoginNameRow {
   string login_name = 1;
   int64 user_node_id = 2;
@@ -295,18 +360,25 @@ message SnapshotLoginNameRow {
   int64 origin_node_id = 6;
 }
 
+// TimeSyncRequest 是NTP风格时间同步的请求消息。
+// 包含客户端发送时间（T1），服务器回复T2和T3，客户端记录T4。
 message TimeSyncRequest {
   uint64 request_id = 1;
+  // client_send_time_ms 是请求发起时客户端的物理时间（T1）。
   int64 client_send_time_ms = 2;
 }
 
+// TimeSyncResponse 是时间同步的响应消息。
 message TimeSyncResponse {
   uint64 request_id = 1;
   int64 client_send_time_ms = 2;
+  // server_receive_time_ms 是服务器接收请求的物理时间（T2）。
   int64 server_receive_time_ms = 3;
+  // server_send_time_ms 是服务器发送响应的物理时间（T3）。
   int64 server_send_time_ms = 4;
 }
 
+// QueryLoggedInUsersRequest 查询目标节点上的已登录用户列表。
 message QueryLoggedInUsersRequest {
   uint64 request_id = 1;
   int64 target_node_id = 2;
@@ -314,6 +386,7 @@ message QueryLoggedInUsersRequest {
   int32 remaining_hops = 4;
 }
 
+// QueryLoggedInUsersResponse 返回已登录用户列表。
 message QueryLoggedInUsersResponse {
   uint64 request_id = 1;
   int64 target_node_id = 2;
@@ -324,6 +397,7 @@ message QueryLoggedInUsersResponse {
   int32 remaining_hops = 7;
 }
 
+// QueryResolveUserSessionsRequest 查询指定用户的在线会话。
 message QueryResolveUserSessionsRequest {
   uint64 request_id = 1;
   int64 target_node_id = 2;
@@ -332,6 +406,7 @@ message QueryResolveUserSessionsRequest {
   ClusterUserRef user = 5;
 }
 
+// QueryResolveUserSessionsResponse 返回用户的在线会话列表。
 message QueryResolveUserSessionsResponse {
   uint64 request_id = 1;
   int64 target_node_id = 2;
@@ -343,6 +418,7 @@ message QueryResolveUserSessionsResponse {
   ClusterUserRef user = 8;
 }
 
+// ClusterLoggedInUser 表示集群中的一个已登录用户。
 message ClusterLoggedInUser {
   int64 node_id = 1;
   int64 user_id = 2;
@@ -350,6 +426,7 @@ message ClusterLoggedInUser {
   string login_name = 4;
 }
 
+// ClusterSessionRef 引用集群中的用户会话。
 message ClusterSessionRef {
   int64 serving_node_id = 1;
   string session_id = 2;
@@ -357,6 +434,7 @@ message ClusterSessionRef {
   bool transient_capable = 4;
 }
 
+// ClusterOnlineNodePresence 表示一个用户的服务节点存在信息。
 message ClusterOnlineNodePresence {
   ClusterUserRef user = 1;
   int64 serving_node_id = 2;
@@ -364,14 +442,18 @@ message ClusterOnlineNodePresence {
   string transport_hint = 4;
 }
 
+// OnlinePresenceSnapshot 是节点的在线状态快照。
 message OnlinePresenceSnapshot {
   int64 origin_node_id = 1;
+  // generation 是此快照的代数，用于冲突解决。
   uint64 generation = 2;
   repeated ClusterOnlineNodePresence items = 3;
+  // runtime_epoch 是发送节点的运行时纪元。
   uint64 runtime_epoch = 4;
   repeated ClusterLoggedInUser logged_in_users = 5;
 }
 
+// NodeConnectivityRumor 传播节点可能已断开连接的传闻。
 message NodeConnectivityRumor {
   int64 target_node_id = 1;
   uint64 target_runtime_epoch = 2;
@@ -381,12 +463,15 @@ message NodeConnectivityRumor {
   string reason = 6;
 }
 
+// MembershipUpdate 包含对等节点发现信息。
 message MembershipUpdate {
   int64 origin_node_id = 1;
   uint64 generation = 2;
+  // peers 是此节点已知的对等节点列表。
   repeated PeerAdvertisement peers = 3;
 }
 
+// PeerAdvertisement 广告一个已知的对等节点。
 message PeerAdvertisement {
   int64 node_id = 1;
   string url = 2;
@@ -395,6 +480,7 @@ message PeerAdvertisement {
   string zeromq_curve_server_public_key = 5;
 }
 
+// TransientPacket 是通过集群网格路由的瞬时消息包。
 message TransientPacket {
   uint64 packet_id = 1;
   int64 source_node_id = 2;
@@ -407,8 +493,11 @@ message TransientPacket {
   ClusterSessionRef target_session = 10;
 }
 
+// ClusterDeliveryMode 是瞬时消息的投递模式。
 enum ClusterDeliveryMode {
   CLUSTER_DELIVERY_MODE_UNSPECIFIED = 0;
+  // BEST_EFFORT 尽最大努力投递，不重试。
   CLUSTER_DELIVERY_MODE_BEST_EFFORT = 1;
+  // ROUTE_RETRY 失败时排队重试。
   CLUSTER_DELIVERY_MODE_ROUTE_RETRY = 2;
 }

@@ -14,11 +14,13 @@ import (
 	"github.com/tursom/turntf/internal/store"
 )
 
+// clusterStatusProvider 集群状态提供者接口（由 mesh 层实现），用于获取集群拓扑和健康状态。
 type clusterStatusProvider interface {
 	Status(context.Context) (app.ClusterStatus, error)
 	ConfiguredPeerNodeIDs() []int64
 }
 
+// clusterNodeResponse 集群节点信息（用于 /cluster/nodes 响应）。
 type clusterNodeResponse struct {
 	NodeID        int64  `json:"node_id"`
 	IsLocal       bool   `json:"is_local"`
@@ -43,6 +45,7 @@ type nodeLoggedInUsersResponse struct {
 	Count        int                    `json:"count"`
 }
 
+// operationsStatus 集群运维综合状态，涵盖时钟、存储修剪、事件投影、服务发现、mesh 拓扑和对等节点信息。
 type operationsStatus struct {
 	NodeID               int64                `json:"node_id"`
 	MessageWindowSize    int                  `json:"message_window_size"`
@@ -197,6 +200,7 @@ type peerStatusResponse struct {
 	LastSnapshotChunkAt       string                     `json:"last_snapshot_chunk_at,omitempty"`
 }
 
+// OperationsStatus 收集集群综合运维状态，包括存储统计、时钟、mesh 拓扑、服务发现和对等节点信息。
 func (s *Service) OperationsStatus(ctx context.Context) (operationsStatus, error) {
 	var (
 		clusterStatus app.ClusterStatus
@@ -274,6 +278,7 @@ func (s *Service) OperationsStatus(ctx context.Context) (operationsStatus, error
 	return response, nil
 }
 
+// ClusterNodes 返回集群节点列表（本地节点排在首位）。
 func (s *Service) ClusterNodes(ctx context.Context) (clusterNodesResponse, error) {
 	nodeID := s.store.NodeID()
 	nodes := []clusterNodeResponse{{
@@ -302,6 +307,7 @@ func (s *Service) ClusterNodes(ctx context.Context) (clusterNodesResponse, error
 	return clusterNodesResponse{Nodes: nodes}, nil
 }
 
+// ListNodeLoggedInUsers 查询指定节点的已登录用户列表（本节点通过 localUsers、远程节点通过 remoteUsers）。
 func (s *Service) ListNodeLoggedInUsers(ctx context.Context, nodeID int64) (nodeLoggedInUsersResponse, error) {
 	if nodeID <= 0 {
 		return nodeLoggedInUsersResponse{}, fmt.Errorf("%w: node_id must be positive", store.ErrInvalidInput)
@@ -342,6 +348,7 @@ func (s *Service) ListNodeLoggedInUsers(ctx context.Context, nodeID int64) (node
 	}, nil
 }
 
+// Metrics 以 Prometheus 文本格式导出集群运行指标。
 func (s *Service) Metrics(ctx context.Context) (string, error) {
 	status, err := s.OperationsStatus(ctx)
 	if err != nil {
@@ -513,6 +520,7 @@ func (s *Service) Metrics(ctx context.Context) (string, error) {
 	return buf.String(), nil
 }
 
+// mergePeerStatus 合并 store 层的对等节点统计和集群层的对等节点状态，生成统一的 peerStatusResponse 列表。
 func mergePeerStatus(storePeers []store.PeerOperationsStats, clusterPeers []app.ClusterPeerStatus) []peerStatusResponse {
 	index := make(map[int64]peerStatusResponse, len(storePeers)+len(clusterPeers))
 	unknown := make([]peerStatusResponse, 0)
@@ -616,6 +624,7 @@ func mergePeerStatus(storePeers []store.PeerOperationsStats, clusterPeers []app.
 	return append(unknown, peers...)
 }
 
+// meshStatusFromCluster 将集群层的 mesh 状态转换为 API 响应格式。
 func meshStatusFromCluster(status app.ClusterMeshStatus) meshStatus {
 	out := meshStatus{
 		Enabled:            status.Enabled,
@@ -670,6 +679,7 @@ func meshStatusFromCluster(status app.ClusterMeshStatus) meshStatus {
 	return out
 }
 
+// mergePeerOrigins 合并 store 层和集群层的对等节点事件来源状态。
 func mergePeerOrigins(storeOrigins []peerOriginStatusResponse, clusterOrigins []app.ClusterPeerOriginStatus) []peerOriginStatusResponse {
 	index := make(map[int64]peerOriginStatusResponse, len(storeOrigins)+len(clusterOrigins))
 	for _, origin := range storeOrigins {
@@ -690,6 +700,7 @@ func mergePeerOrigins(storeOrigins []peerOriginStatusResponse, clusterOrigins []
 	return origins
 }
 
+// connectedClusterNodes 从集群对等节点列表中筛选出已连接的节点。
 func connectedClusterNodes(peers []app.ClusterPeerStatus) []clusterNodeResponse {
 	nodes := make([]clusterNodeResponse, 0, len(peers))
 	for _, peer := range peers {
@@ -734,14 +745,17 @@ func boolGauge(value bool) float64 {
 	return 0
 }
 
+// writeMetricHelp 写入 Prometheus HELP 和 TYPE 注释行。
 func writeMetricHelp(buf *bytes.Buffer, name, help, metricType string) {
 	fmt.Fprintf(buf, "# HELP %s %s\n# TYPE %s %s\n", name, help, name, metricType)
 }
 
+// writeGauge 写入一行 Prometheus gauge 指标。
 func writeGauge(buf *bytes.Buffer, name string, labels map[string]string, value float64) {
 	fmt.Fprintf(buf, "%s%s %s\n", name, formatLabels(labels), strconv.FormatFloat(value, 'f', -1, 64))
 }
 
+// formatLabels 将标签 map 格式化为 Prometheus 标签字符串 {key="value",...}。
 func formatLabels(labels map[string]string) string {
 	if len(labels) == 0 {
 		return ""

@@ -14,6 +14,8 @@ import (
 	internalproto "github.com/tursom/turntf/internal/proto"
 )
 
+// storeBackend 是双后端（SQLite/Pebble）的抽象接口，定义所有存储操作契约。
+// 由 sqliteStoreBackend 和 pebbleStoreBackend 实现。
 type storeBackend interface {
 	Name() string
 	Bind(storeBackendBindings) error
@@ -30,10 +32,12 @@ type storeBackend interface {
 	Close() error
 }
 
+// txMessageProjectionRepository 是事务内消息投影的接口窄化。
 type txMessageProjectionRepository interface {
 	applyMessageCreatedTx(context.Context, *sql.Tx, Message) error
 }
 
+// storeBackendBindings 包含 Bind() 时注入给后端的依赖项。
 type storeBackendBindings struct {
 	NodeID            int64
 	Clock             *clock.Clock
@@ -45,6 +49,7 @@ type storeBackendBindings struct {
 	MessageTrim       MessageTrimRepository
 }
 
+// newStoreBackend 根据引擎名称创建对应的后端实现。
 func newStoreBackend(engine string, db *sql.DB, pebbleDB *pebble.DB, pebbleProfile PebbleProfile) (storeBackend, error) {
 	switch engine {
 	case EngineSQLite:
@@ -64,6 +69,7 @@ func newStoreBackend(engine string, db *sql.DB, pebbleDB *pebble.DB, pebbleProfi
 	}
 }
 
+// sqliteStoreBackend 是纯 SQLite 后端实现，所有数据存储在 SQLite 中。
 type sqliteStoreBackend struct {
 	db                *sql.DB
 	nodeID            int64
@@ -74,10 +80,12 @@ type sqliteStoreBackend struct {
 	messageProjection MessageProjectionRepository
 }
 
+// Name 返回后端引擎名称。
 func (b *sqliteStoreBackend) Name() string {
 	return EngineSQLite
 }
 
+// Bind 注入运行时依赖并初始化事件日志和消息投影 Repository。
 func (b *sqliteStoreBackend) Bind(bindings storeBackendBindings) error {
 	b.nodeID = bindings.NodeID
 	b.clock = bindings.Clock
@@ -436,10 +444,14 @@ WHERE origin_node_id = ? AND event_id <= ?
 	return trimmed, nil
 }
 
+// Close 关闭 SQLite 后端（无额外资源需要释放）。
 func (b *sqliteStoreBackend) Close() error {
 	return nil
 }
 
+// pebbleStoreBackend 是 Pebble+SQLite 混合后端实现。
+// 高性能消息数据和事件日志存储在 Pebble KV 中，关系型数据（用户、附件、元数据）存储在 SQLite 中。
+// 使用异步 goroutine 处理消息写入以提高吞吐。
 type pebbleStoreBackend struct {
 	db                    *pebble.DB
 	sqlDB                 *sql.DB
@@ -460,10 +472,12 @@ type pebbleStoreBackend struct {
 	localMessageClosed    bool
 }
 
+// Name 返回后端引擎名称。
 func (b *pebbleStoreBackend) Name() string {
 	return EnginePebble
 }
 
+// Bind 注入运行时依赖，初始化 Pebble 各 Repository 并启动异步消息写入循环。
 func (b *pebbleStoreBackend) Bind(bindings storeBackendBindings) error {
 	b.messageProjectionRepo = &pebbleMessageProjectionRepository{
 		db:                b.db,

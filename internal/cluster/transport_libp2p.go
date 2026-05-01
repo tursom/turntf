@@ -32,16 +32,23 @@ import (
 	internalproto "github.com/tursom/turntf/internal/proto"
 )
 
+// libp2p传输常量和协议配置。
 const (
+	// libP2PClusterStreamProtocol 是集群节点间直接流通信的协议标识符。
 	libP2PClusterStreamProtocol protocol.ID = "/turntf/cluster/stream/1.0.0"
-	libP2PMaxFrameSize                      = websocketReadLimit
-	libP2PDiscoveryInterval                 = 30 * time.Second
+	// libP2PMaxFrameSize 是libp2p单帧的最大字节数（与WebSocket读取限制相同）。
+	libP2PMaxFrameSize = websocketReadLimit
+	// libP2PDiscoveryInterval 是DHT发现轮次的间隔时间。
+	libP2PDiscoveryInterval = 30 * time.Second
 )
 
+// libP2PIdentityConn 是从libp2p连接中提取对等节点身份信息的接口。
 type libP2PIdentityConn interface {
 	RemotePeerID() string
 }
 
+// libP2PTransport 实现基于go-libp2p的传输层。
+// 支持DHT发现、mDNS发现、GossipSub pubsub、中继和NAT穿透。
 type libP2PTransport struct {
 	cfg           LibP2PConfig
 	clusterSecret string
@@ -63,6 +70,8 @@ type libP2PTransport struct {
 	dhtBootstrapped bool
 }
 
+// libP2PTransportConn 包装libp2p流，实现TransportConn接口。
+// 使用4字节大端长度前缀进行消息分帧。
 type libP2PTransportConn struct {
 	stream     network.Stream
 	direction  string
@@ -74,10 +83,12 @@ type libP2PTransportConn struct {
 	writeMu sync.Mutex
 }
 
+// libP2PMDNSNotifee 实现mDNS发现回调。
 type libP2PMDNSNotifee struct {
 	transport *libP2PTransport
 }
 
+// newLibP2PTransport 创建一个新的libp2p传输实现。
 func newLibP2PTransport(cfg LibP2PConfig, clusterSecret string, manager *Manager) *libP2PTransport {
 	return &libP2PTransport{
 		cfg:           cfg,
@@ -86,6 +97,7 @@ func newLibP2PTransport(cfg LibP2PConfig, clusterSecret string, manager *Manager
 	}
 }
 
+// SetAccept 设置入站连接的回调函数。
 func (t *libP2PTransport) SetAccept(accept func(TransportConn)) {
 	if t == nil {
 		return
@@ -93,6 +105,7 @@ func (t *libP2PTransport) SetAccept(accept func(TransportConn)) {
 	t.inboundAccept = accept
 }
 
+// Start 启动libp2p主机、DHT、mDNS和GossipSub。
 func (t *libP2PTransport) Start(ctx context.Context) error {
 	if t == nil {
 		return nil
@@ -198,6 +211,7 @@ func (t *libP2PTransport) Start(ctx context.Context) error {
 	return nil
 }
 
+// Dial 向libp2p对等节点发起出站流连接。
 func (t *libP2PTransport) Dial(ctx context.Context, peerURL string) (TransportConn, error) {
 	if t == nil || t.host == nil {
 		return nil, fmt.Errorf("libp2p host is not started")
@@ -224,6 +238,7 @@ func (t *libP2PTransport) Dial(ctx context.Context, peerURL string) (TransportCo
 	return conn, nil
 }
 
+// Close 停止所有libp2p子系统（GossipSub、mDNS、DHT、主机）。
 func (t *libP2PTransport) Close() error {
 	if t == nil {
 		return nil
@@ -247,6 +262,7 @@ func (t *libP2PTransport) Close() error {
 	return nil
 }
 
+// Publish 向GossipSub主题发布一条消息。
 func (t *libP2PTransport) Publish(ctx context.Context, payload []byte) error {
 	if t == nil || t.pubsub == nil || strings.TrimSpace(t.topic) == "" {
 		return nil
@@ -254,6 +270,7 @@ func (t *libP2PTransport) Publish(ctx context.Context, payload []byte) error {
 	return t.pubsub.Publish(t.topic, payload)
 }
 
+// PeerID 返回libp2p主机的对等节点ID。
 func (t *libP2PTransport) PeerID() string {
 	if t == nil || t.host == nil {
 		return ""
@@ -261,6 +278,7 @@ func (t *libP2PTransport) PeerID() string {
 	return t.host.ID().String()
 }
 
+// ListenAddrs 返回libp2p主机的监听地址（含/p2p对等节点ID）。
 func (t *libP2PTransport) ListenAddrs() []string {
 	if t == nil || t.host == nil {
 		return nil
@@ -276,6 +294,7 @@ func (t *libP2PTransport) ListenAddrs() []string {
 	return addrs
 }
 
+// DHTBootstrapped 返回DHT是否已完成引导。
 func (t *libP2PTransport) DHTBootstrapped() bool {
 	if t == nil {
 		return false
@@ -285,6 +304,7 @@ func (t *libP2PTransport) DHTBootstrapped() bool {
 	return t.dhtBootstrapped
 }
 
+// Topic 返回GossipSub主题名称。
 func (t *libP2PTransport) Topic() string {
 	if t == nil {
 		return ""
@@ -292,6 +312,7 @@ func (t *libP2PTransport) Topic() string {
 	return t.topic
 }
 
+// TopicPeers 返回当前GossipSub主题的对等节点数。
 func (t *libP2PTransport) TopicPeers() int {
 	if t == nil || t.pubsub == nil || t.topic == "" {
 		return 0
@@ -299,6 +320,7 @@ func (t *libP2PTransport) TopicPeers() int {
 	return len(t.pubsub.ListPeers(t.topic))
 }
 
+// handleStream 处理来自对等节点的新入站流。
 func (t *libP2PTransport) handleStream(stream network.Stream) {
 	if t == nil {
 		_ = stream.Reset()
@@ -316,6 +338,7 @@ func (t *libP2PTransport) handleStream(stream network.Stream) {
 	t.manager.AcceptLibP2PConn(conn)
 }
 
+// connectConfiguredPeers 连接到配置的对等节点列表（中继或引导节点）。
 func (t *libP2PTransport) connectConfiguredPeers(values []string) error {
 	for _, raw := range values {
 		info, _, err := libP2PAddrInfo(raw)
@@ -333,6 +356,7 @@ func (t *libP2PTransport) connectConfiguredPeers(values []string) error {
 	return nil
 }
 
+// readPubSubLoop 从GossipSub订阅中读取消息，验证并应用事件。
 func (t *libP2PTransport) readPubSubLoop() {
 	defer t.wg.Done()
 	for {
@@ -349,6 +373,7 @@ func (t *libP2PTransport) readPubSubLoop() {
 	}
 }
 
+// dhtDiscoveryLoop 定期通过DHT广告本节点并发现新的对等节点。
 func (t *libP2PTransport) dhtDiscoveryLoop() {
 	defer t.wg.Done()
 
@@ -365,6 +390,7 @@ func (t *libP2PTransport) dhtDiscoveryLoop() {
 	}
 }
 
+// runDHTDiscoveryRound 执行一轮DHT广告和发现。
 func (t *libP2PTransport) runDHTDiscoveryRound() {
 	if t == nil || t.dhtDiscovery == nil || t.host == nil || t.manager == nil {
 		return
@@ -396,27 +422,34 @@ func (t *libP2PTransport) runDHTDiscoveryRound() {
 	findCancel()
 }
 
+// privateProtocolPrefix 返回集群专用的协议前缀（基于集群密钥哈希）。
 func (t *libP2PTransport) privateProtocolPrefix() string {
 	return "/turntf/" + t.clusterHash()
 }
 
+// dhtDiscoveryNamespace 返回DHT发现的命名空间。
 func (t *libP2PTransport) dhtDiscoveryNamespace() string {
 	return "turntf/" + t.clusterHash() + "/peers/v1"
 }
 
+// privateMDNSServiceName 返回集群专用的mDNS服务名称。
 func (t *libP2PTransport) privateMDNSServiceName() string {
 	return "_turntf-" + t.clusterHash() + "._udp"
 }
 
+// gossipTopic 返回GossipSub的专用主题名称。
 func (t *libP2PTransport) gossipTopic() string {
 	return "/turntf/" + t.clusterHash() + "/events/v1"
 }
 
+// clusterHash 计算集群密钥的SHA-256哈希（16字符十六进制前缀），
+// 用于派生私有的协议标识符、命名空间和主题名称，隔离不同集群。
 func (t *libP2PTransport) clusterHash() string {
 	sum := sha256.Sum256([]byte("turntf/libp2p/" + t.clusterSecret))
 	return hex.EncodeToString(sum[:])[:16]
 }
 
+// HandlePeerFound 实现mDNS发现回调。
 func (n *libP2PMDNSNotifee) HandlePeerFound(info peer.AddrInfo) {
 	if n == nil || n.transport == nil || n.transport.manager == nil || info.ID == "" {
 		return
@@ -428,6 +461,7 @@ func (n *libP2PMDNSNotifee) HandlePeerFound(info peer.AddrInfo) {
 	n.transport.manager.startLibP2PCandidate(addrs[0].String())
 }
 
+// newLibP2PTransportConn 包装libp2p流为TransportConn。
 func newLibP2PTransportConn(stream network.Stream, outbound bool) *libP2PTransportConn {
 	direction := "inbound"
 	if outbound {
@@ -443,6 +477,7 @@ func newLibP2PTransportConn(stream network.Stream, outbound bool) *libP2PTranspo
 	}
 }
 
+// Send 使用4字节大端长度前缀分帧发送消息。
 func (c *libP2PTransportConn) Send(ctx context.Context, payload []byte) error {
 	if len(payload) > libP2PMaxFrameSize {
 		return fmt.Errorf("libp2p payload exceeds %d bytes", libP2PMaxFrameSize)
@@ -471,6 +506,7 @@ func (c *libP2PTransportConn) Send(ctx context.Context, payload []byte) error {
 	}
 }
 
+// Receive 读取4字节大端长度前缀，然后读取消息负载。
 func (c *libP2PTransportConn) Receive(ctx context.Context) ([]byte, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -505,30 +541,38 @@ func (c *libP2PTransportConn) Receive(ctx context.Context) ([]byte, error) {
 	}
 }
 
+// Close 关闭底层libp2p流。
 func (c *libP2PTransportConn) Close() error {
 	return c.stream.Close()
 }
 
+// LocalAddr 返回本地地址。
 func (c *libP2PTransportConn) LocalAddr() string {
 	return c.localAddr
 }
 
+// RemoteAddr 返回远程地址。
 func (c *libP2PTransportConn) RemoteAddr() string {
 	return c.remoteAddr
 }
 
+// Direction 返回连接方向。
 func (c *libP2PTransportConn) Direction() string {
 	return c.direction
 }
 
+// Transport 返回传输类型字符串libp2p。
 func (c *libP2PTransportConn) Transport() string {
 	return transportLibP2P
 }
 
+// RemotePeerID 返回远程对等节点的ID。
 func (c *libP2PTransportConn) RemotePeerID() string {
 	return c.remotePeer
 }
 
+// loadOrCreateLibP2PPrivateKey 加载或生成libp2p Ed25519私钥。
+// 如果密钥文件不存在则自动生成并持久化。
 func loadOrCreateLibP2PPrivateKey(path string) (crypto.PrivKey, error) {
 	trimmed := strings.TrimSpace(path)
 	if trimmed == "" {
@@ -562,6 +606,7 @@ func loadOrCreateLibP2PPrivateKey(path string) (crypto.PrivKey, error) {
 	return key, nil
 }
 
+// parseMultiaddrs 解析多个multiaddr字符串。
 func parseMultiaddrs(values []string) ([]ma.Multiaddr, error) {
 	addrs := make([]ma.Multiaddr, 0, len(values))
 	for _, raw := range values {
@@ -574,6 +619,7 @@ func parseMultiaddrs(values []string) ([]ma.Multiaddr, error) {
 	return addrs, nil
 }
 
+// libP2PAddrInfo 从multiaddr中提取对等节点信息。
 func libP2PAddrInfo(raw string) (*peer.AddrInfo, string, error) {
 	addr, err := ma.NewMultiaddr(strings.TrimSpace(raw))
 	if err != nil {
@@ -586,6 +632,7 @@ func libP2PAddrInfo(raw string) (*peer.AddrInfo, string, error) {
 	return info, addr.String(), nil
 }
 
+// libP2PAddrInfos 解析多个libp2p对等节点地址为AddrInfo列表。
 func libP2PAddrInfos(values []string) ([]peer.AddrInfo, error) {
 	infos := make([]peer.AddrInfo, 0, len(values))
 	for _, raw := range values {
@@ -598,6 +645,7 @@ func libP2PAddrInfos(values []string) ([]peer.AddrInfo, error) {
 	return infos, nil
 }
 
+// libP2PConnAddr 格式化libp2p连接的地址表示。
 func libP2PConnAddr(addr ma.Multiaddr, id peer.ID) string {
 	if addr == nil {
 		if id == "" {
@@ -615,6 +663,7 @@ func libP2PConnAddr(addr ma.Multiaddr, id peer.ID) string {
 	return addr.Encapsulate(p2pPart.Multiaddr()).String()
 }
 
+// publishLibP2PEvent 通过libp2p GossipSub发布签名的事件信封。
 func (m *Manager) publishLibP2PEvent(envelope *internalproto.Envelope) {
 	if m == nil || m.libp2p == nil || envelope == nil {
 		return
@@ -631,6 +680,8 @@ func (m *Manager) publishLibP2PEvent(envelope *internalproto.Envelope) {
 	}
 }
 
+// handleLibP2PPubSubMessage 处理从GossipSub接收到的消息。
+// 验证HMAC签名并应用事件批次。
 func (m *Manager) handleLibP2PPubSubMessage(data []byte, remotePeerID string) {
 	if m == nil || len(data) == 0 || strings.TrimSpace(remotePeerID) == "" {
 		return
@@ -672,6 +723,7 @@ func (m *Manager) handleLibP2PPubSubMessage(data []byte, remotePeerID string) {
 	}
 }
 
+// startLibP2PCandidate 将从DHT/mDNS发现的libp2p地址注册为候选节点并开始网格拨号。
 func (m *Manager) startLibP2PCandidate(rawURL string) {
 	if m == nil || m.cfg.DiscoveryDisabled || !m.canDialPeerURL(rawURL) {
 		return

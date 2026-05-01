@@ -17,12 +17,16 @@ import (
 	clusterproto "github.com/tursom/turntf/internal/proto"
 )
 
+// 快照分区键常量。
+// 非消息数据（users, login_names, attachments, user_metadata）使用全量分区，
+// 消息数据按来源节点分片（messages/{originNodeID}）。
 const (
-	SnapshotUsersPartition          = "users/full"
-	SnapshotLoginNamesPartition     = "login_names/full"
-	SnapshotAttachmentsPartition    = "attachments/full"
-	SnapshotUserMetadataPartition   = "user_metadata/full"
-	SnapshotMessagesPrefix          = "messages/"
+	SnapshotUsersPartition        = "users/full"
+	SnapshotLoginNamesPartition   = "login_names/full"
+	SnapshotAttachmentsPartition  = "attachments/full"
+	SnapshotUserMetadataPartition = "user_metadata/full"
+	SnapshotMessagesPrefix        = "messages/"
+
 	snapshotPartitionKindUsers      = clusterproto.SnapshotPartitionKind_SNAPSHOT_PARTITION_KIND_USERS
 	snapshotPartitionKindMessage    = clusterproto.SnapshotPartitionKind_SNAPSHOT_PARTITION_KIND_MESSAGES
 	snapshotPartitionKindAttachment = clusterproto.SnapshotPartitionKind_SNAPSHOT_PARTITION_KIND_ATTACHMENTS
@@ -30,10 +34,12 @@ const (
 	snapshotPartitionKindLoginNames = clusterproto.SnapshotPartitionKind_SNAPSHOT_PARTITION_KIND_LOGIN_NAMES
 )
 
+// MessageSnapshotPartition 构造指定来源节点的消息快照分区键。
 func MessageSnapshotPartition(originNodeID int64) string {
 	return SnapshotMessagesPrefix + strconv.FormatInt(originNodeID, 10)
 }
 
+// BuildSnapshotDigest 构建所有分区的 SHA-256 哈希摘要，用于与 peer 比较快照差异。
 func (s *Store) BuildSnapshotDigest(ctx context.Context, producerNodeIDs []int64) (*clusterproto.SnapshotDigest, error) {
 	partitions := make([]*clusterproto.SnapshotPartitionDigest, 0, 1+len(producerNodeIDs))
 
@@ -117,6 +123,7 @@ func (s *Store) BuildSnapshotDigest(ctx context.Context, producerNodeIDs []int64
 	return &clusterproto.SnapshotDigest{Partitions: partitions}, nil
 }
 
+// BuildSnapshotChunk 构建指定分区的快照 chunk，包含该分区的所有数据行。
 func (s *Store) BuildSnapshotChunk(ctx context.Context, partition string) (*clusterproto.SnapshotChunk, error) {
 	partition = strings.TrimSpace(partition)
 	switch {
@@ -179,6 +186,8 @@ func (s *Store) BuildSnapshotChunk(ctx context.Context, partition string) (*clus
 	}
 }
 
+// ApplySnapshotChunk 应用快照 chunk，替换本地该分区的数据。
+// 在事务中按行应用（插入或 CRDT 风格更新），应用后更新 origin cursor 防止重复。
 func (s *Store) ApplySnapshotChunk(ctx context.Context, chunk *clusterproto.SnapshotChunk) error {
 	if chunk == nil {
 		return fmt.Errorf("%w: snapshot chunk cannot be nil", ErrInvalidInput)
@@ -263,6 +272,7 @@ func (s *Store) ApplySnapshotChunk(ctx context.Context, chunk *clusterproto.Snap
 	return nil
 }
 
+// MaxSnapshotChunkTimestamp 从 chunk 所有行中提取最大的 HLC 时间戳。
 func MaxSnapshotChunkTimestamp(chunk *clusterproto.SnapshotChunk) (clock.Timestamp, error) {
 	if chunk == nil {
 		return clock.Timestamp{}, fmt.Errorf("%w: snapshot chunk cannot be nil", ErrInvalidInput)

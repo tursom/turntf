@@ -8,29 +8,43 @@ import (
 	"time"
 )
 
+// ErrNoRoute 表示规划器无法找到通往目标的路径。
 var ErrNoRoute = errors.New("mesh: no route")
+
+// ErrTTLExceeded 表示数据包的跳数已达零，被丢弃。
 var ErrTTLExceeded = errors.New("mesh: ttl exhausted")
+
+// ErrDuplicatePacket 表示数据包已在去重表中记录（重复包）。
 var ErrDuplicatePacket = errors.New("mesh: duplicate packet")
+
+// ErrLoopDetected 表示下一跳与上一跳节点相同，构成转发循环。
 var ErrLoopDetected = errors.New("mesh: forwarding loop detected")
 
+// PacketSender 将转发数据包发送到下一跳节点。
+// Runtime.SendPacket 提供默认实现。
 type PacketSender interface {
 	SendPacket(ctx context.Context, nextHopNodeID int64, transport TransportKind, packet *ForwardedPacket) error
 }
 
+// LocalPacketHandler 处理目标为本地节点的转发数据包。
 type LocalPacketHandler func(ctx context.Context, packet *ForwardedPacket) error
 
+// ForwardingObservation 记录每次转发决策的指标，供观察者消费。
 type ForwardingObservation struct {
-	TrafficClass       TrafficClass
-	PathClass          PathClass
-	EstimatedCost      int64
-	PayloadBytes       int
-	TargetNodeID       int64
-	TopologyGeneration uint64
-	NoPath             bool
+	TrafficClass       TrafficClass // 数据包的流量类别。
+	PathClass          PathClass    // 选择路径的分类。
+	EstimatedCost      int64        // 路径预估的往返时间（毫秒）。
+	PayloadBytes       int          // 载荷大小（字节）。
+	TargetNodeID       int64        // 原始目标节点 ID。
+	TopologyGeneration uint64       // 路由计算时使用的拓扑世代号。
+	NoPath             bool         // 是否未找到路径。
 }
 
+// ForwardingObserver 接收每次转发决策的指标记录。
 type ForwardingObserver func(observation ForwardingObservation)
 
+// Engine 是 ForwardingEngine 的实现，提供去重、路由、TTL 管理和本地投递功能。
+// 去重机制：以 (source, packetID) 为键，定期清理超过 seenTTL 的过期条目。
 type Engine struct {
 	localNodeID int64
 	snapshotFn  func() TopologySnapshot
@@ -85,6 +99,9 @@ func forwardedPacketPayloadBytes(packet *ForwardedPacket) int {
 	return len(packet.GetPayload())
 }
 
+// NewEngine 创建转发引擎。
+// snapshotFn 返回最新拓扑快照；planner 用于路由计算；
+// sender 用于发送数据包；handler 处理本地投递；observer 接收转发指标。
 func NewEngine(localNodeID int64, snapshotFn func() TopologySnapshot, planner RoutePlanner, sender PacketSender, handler LocalPacketHandler, observer ForwardingObserver) *Engine {
 	return &Engine{
 		localNodeID:       localNodeID,
@@ -100,14 +117,21 @@ func NewEngine(localNodeID int64, snapshotFn func() TopologySnapshot, planner Ro
 	}
 }
 
+// Forward 将出站数据包注入转发管道。
+// 自动设置默认 TTL 和流量类别（如未设置）。
+// 可能返回 ErrDuplicatePacket、ErrNoRoute、ErrTTLExceeded 或 ErrLoopDetected。
 func (e *Engine) Forward(ctx context.Context, packet *ForwardedPacket) error {
 	return e.forward(ctx, packet, TransportUnspecified, true)
 }
 
+// HandleInbound 处理来自邻接节点的入站转发数据包。
+// 与 Forward 类似，但入站数据包在管道开始时立即标记为已见。
 func (e *Engine) HandleInbound(ctx context.Context, packet *ForwardedPacket) error {
 	return e.forward(ctx, packet, packet.GetIngressTransport(), false)
 }
 
+// forward 是统一的转发管道：
+// 验证 → 去重标记（入站立即标记）→ 本地投递 → TTL 检查 → 路由计算 → 回环检测 → 发送。
 func (e *Engine) forward(ctx context.Context, packet *ForwardedPacket, ingress TransportKind, outbound bool) error {
 	if e == nil || packet == nil {
 		return fmt.Errorf("mesh: forwarded packet cannot be nil")
@@ -127,6 +151,8 @@ func (e *Engine) forward(ctx context.Context, packet *ForwardedPacket, ingress T
 	if packet.TtlHops == 0 {
 		packet.TtlHops = DefaultTTLHops
 	}
+
+	// 入站数据包立即标记为已见，防止重复处理。
 	seenMarked := false
 	if !outbound {
 		if !e.markSeen(packet) {
@@ -134,6 +160,8 @@ func (e *Engine) forward(ctx context.Context, packet *ForwardedPacket, ingress T
 		}
 		seenMarked = true
 	}
+
+	// 本地投递：目标为自身时直接分发到本地处理器。
 	if packet.TargetNodeId == e.localNodeID {
 		if outbound {
 			if !e.markSeen(packet) {
@@ -143,9 +171,13 @@ func (e *Engine) forward(ctx context.Context, packet *ForwardedPacket, ingress T
 		}
 		return e.deliverLocal(ctx, packet, seenMarked)
 	}
+
+	// TTL 耗尽：已达最大跳数，丢弃。
 	if packet.TtlHops <= 1 {
 		return ErrTTLExceeded
 	}
+
+	// 使用最新拓扑快照计算路由。
 	snapshot := e.snapshotFn()
 	decision, ok := e.planner.Compute(snapshot, packet.TargetNodeId, packet.TrafficClass, ingress)
 	if !ok {
@@ -156,9 +188,12 @@ func (e *Engine) forward(ctx context.Context, packet *ForwardedPacket, ingress T
 		e.observeNoPath(packet, snapshot.TopologyGeneration)
 		return ErrNoRoute
 	}
+
+	// 回环检测：如果下一跳等于上一跳，则存在转发循环。
 	if packet.LastHopNodeId != 0 && decision.NextHopNodeID == packet.LastHopNodeId {
 		return ErrLoopDetected
 	}
+
 	next := cloneForwardedPacket(packet)
 	next.LastHopNodeId = e.localNodeID
 	next.IngressTransport = decision.OutboundTransport
@@ -166,13 +201,18 @@ func (e *Engine) forward(ctx context.Context, packet *ForwardedPacket, ingress T
 	if next.TtlHops == 0 {
 		return ErrTTLExceeded
 	}
+
+	// 出站数据包在发送前标记为已见。
 	if outbound {
 		if !e.markSeen(packet) {
 			return ErrDuplicatePacket
 		}
 		seenMarked = true
 	}
+
+	// 发送到下一跳。
 	if err := e.sender.SendPacket(ctx, decision.NextHopNodeID, decision.OutboundTransport, next); err != nil {
+		// 发送失败时回滚去重标记，允许后续重试。
 		if outbound && seenMarked {
 			e.unmarkSeen(packet)
 		}
@@ -185,6 +225,7 @@ func (e *Engine) forward(ctx context.Context, packet *ForwardedPacket, ingress T
 	return nil
 }
 
+// deliverLocal 将数据包投递到本地处理器。如果处理器未设置则静默丢弃。
 func (e *Engine) deliverLocal(ctx context.Context, packet *ForwardedPacket, seenMarked bool) error {
 	if !seenMarked && !e.markSeen(packet) {
 		return ErrDuplicatePacket
@@ -195,6 +236,8 @@ func (e *Engine) deliverLocal(ctx context.Context, packet *ForwardedPacket, seen
 	return e.handler(ctx, packet)
 }
 
+// markSeen 将数据包加入去重表（以 source + packetID 为键）。
+// 如果已存在则返回 false。定期清理超过 seenTTL 的过期条目。
 func (e *Engine) markSeen(packet *ForwardedPacket) bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -220,6 +263,7 @@ func (e *Engine) markSeen(packet *ForwardedPacket) bool {
 	return true
 }
 
+// unmarkSeen 用于发送失败时的回滚：从去重表中移除数据包，允许后续重试。
 func (e *Engine) unmarkSeen(packet *ForwardedPacket) {
 	if e == nil || packet == nil {
 		return
@@ -247,6 +291,7 @@ func cloneForwardedPacket(packet *ForwardedPacket) *ForwardedPacket {
 	}
 }
 
+// sweepSeenLocked 删除所有存在时间超过 seenTTL 的过期去重条目。
 func (e *Engine) sweepSeenLocked(now time.Time) {
 	for key, ts := range e.seen {
 		if now.Sub(ts) > e.seenTTL {

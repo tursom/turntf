@@ -10,10 +10,13 @@ import (
 	"github.com/tursom/turntf/internal/clock"
 )
 
+// sqliteUserAttachmentRepository 是 AttachmentRepository 的 SQLite 实现，
+// 直接操作 user_attachments 表。
 type sqliteUserAttachmentRepository struct {
 	db *sql.DB
 }
 
+// ListActiveByOwner 列出所有者的活跃附件，可按类型过滤。
 func (r *sqliteUserAttachmentRepository) ListActiveByOwner(ctx context.Context, owner UserKey, attachmentType AttachmentType) ([]Attachment, error) {
 	if err := owner.Validate(); err != nil {
 		return nil, err
@@ -50,6 +53,7 @@ WHERE owner_node_id = ? AND owner_user_id = ? AND deleted_at_hlc IS NULL`
 	return attachments, nil
 }
 
+// ListActiveBySubject 列出目标主体的活跃附件（按 subject 查询），用于复制时按 subject 维度同步。
 func (r *sqliteUserAttachmentRepository) ListActiveBySubject(ctx context.Context, subject UserKey, attachmentType AttachmentType) ([]Attachment, error) {
 	if err := subject.Validate(); err != nil {
 		return nil, err
@@ -86,6 +90,7 @@ WHERE subject_node_id = ? AND subject_user_id = ? AND deleted_at_hlc IS NULL`
 	return attachments, nil
 }
 
+// HasActive 检查指定的附件关系是否存在且活跃。attachedAt 可选过滤创建时间。
 func (r *sqliteUserAttachmentRepository) HasActive(ctx context.Context, owner, subject UserKey, attachmentType AttachmentType, attachedAt *clock.Timestamp) (bool, error) {
 	if err := owner.Validate(); err != nil {
 		return false, err
@@ -116,6 +121,7 @@ WHERE owner_node_id = ? AND owner_user_id = ?
 	return count > 0, nil
 }
 
+// scanAttachment 从 SQL scanner 扫描一行到 Attachment，解析和校验所有字段。
 func scanAttachment(scanner interface{ Scan(...any) error }) (Attachment, error) {
 	var (
 		attachment    Attachment
@@ -162,6 +168,7 @@ func scanAttachment(scanner interface{ Scan(...any) error }) (Attachment, error)
 	return attachment, nil
 }
 
+// normalizeAttachmentConfigJSON 校验并标准化附件配置 JSON，空值默认为 "{}"。
 func normalizeAttachmentConfigJSON(raw string) (string, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -173,6 +180,7 @@ func normalizeAttachmentConfigJSON(raw string) (string, error) {
 	return raw, nil
 }
 
+// attachmentFromSubscription 将 Subscription 转换为 Attachment（AttachmentTypeChannelSubscription）。
 func attachmentFromSubscription(subscription Subscription) Attachment {
 	return Attachment{
 		Owner:        subscription.Subscriber,
@@ -185,6 +193,7 @@ func attachmentFromSubscription(subscription Subscription) Attachment {
 	}
 }
 
+// attachmentFromBlacklistEntry 将 BlacklistEntry 转换为 Attachment（AttachmentTypeUserBlacklist）。
 func attachmentFromBlacklistEntry(entry BlacklistEntry) Attachment {
 	return Attachment{
 		Owner:        entry.Owner,
@@ -197,6 +206,7 @@ func attachmentFromBlacklistEntry(entry BlacklistEntry) Attachment {
 	}
 }
 
+// subscriptionFromAttachment 将 Attachment 转换为 Subscription。
 func subscriptionFromAttachment(attachment Attachment) Subscription {
 	return Subscription{
 		Subscriber:   attachment.Owner,
@@ -207,6 +217,7 @@ func subscriptionFromAttachment(attachment Attachment) Subscription {
 	}
 }
 
+// blacklistEntryFromAttachment 将 Attachment 转换为 BlacklistEntry。
 func blacklistEntryFromAttachment(attachment Attachment) BlacklistEntry {
 	return BlacklistEntry{
 		Owner:        attachment.Owner,

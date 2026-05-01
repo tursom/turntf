@@ -11,23 +11,29 @@ import (
 	"github.com/tursom/turntf/internal/store"
 )
 
+// clientWSVisibilityCacheTTL 客户端可见性缓存（黑名单、频道订阅、用户角色）的 TTL。
 const clientWSVisibilityCacheTTL = 5 * time.Second
 
+// clientBoolCacheEntry 布尔值缓存条目（用于黑名单和频道订阅）。
 type clientBoolCacheEntry struct {
 	value     bool
 	expiresAt time.Time
 }
 
+// clientRoleCacheEntry 用户角色缓存条目。
 type clientRoleCacheEntry struct {
 	role      string
 	expiresAt time.Time
 }
 
+// queuedPersistentMessage 暂存的持久化消息（在会话推送就绪前排队的消息）。
 type queuedPersistentMessage struct {
 	eventSequence int64
 	message       store.Message
 }
 
+// startPersistentDispatcher 启动持久化事件分发器的后台 goroutine（仅启动一次）。
+// 从当前最新事件序列号开始轮询，将新事件推送给所有需要持久化推送的客户端会话。
 func (h *HTTP) startPersistentDispatcher() {
 	if h == nil || h.service == nil {
 		return
@@ -54,6 +60,8 @@ func (h *HTTP) startPersistentDispatcher() {
 	go h.runPersistentDispatcher(ctx, afterSequence)
 }
 
+// runPersistentDispatcher 持久化事件分发器的主循环。每秒轮询一次新事件，
+// 按消息目标角色（广播/频道/普通用户）筛选候选会话，检查可见性后推送。
 func (h *HTTP) runPersistentDispatcher(ctx context.Context, afterSequence int64) {
 	ticker := time.NewTicker(clientWSPollInterval)
 	defer ticker.Stop()
@@ -104,6 +112,8 @@ func (h *HTTP) runPersistentDispatcher(ctx context.Context, afterSequence int64)
 	}
 }
 
+// dispatchPersistentMessage 将一条持久化消息分发给所有符合条件的候选会话。
+// 先解析消息目标角色，获取候选会话列表，然后逐个检查可见性并推送。
 func (h *HTTP) dispatchPersistentMessage(ctx context.Context, eventSequence int64, message store.Message) {
 	if h == nil {
 		return
@@ -148,6 +158,7 @@ func (h *HTTP) dispatchPersistentMessage(ctx context.Context, eventSequence int6
 	}
 }
 
+// hasPersistentSessions 检查是否有任何需要持久化推送的客户端会话。
 func (h *HTTP) hasPersistentSessions() bool {
 	if h == nil {
 		return false
@@ -157,6 +168,7 @@ func (h *HTTP) hasPersistentSessions() bool {
 	return len(h.persistent) > 0
 }
 
+// registerPersistentSession 注册一个需要持久化推送的客户端会话。会自动启动分发器（如果尚未启动）。
 func (h *HTTP) registerPersistentSession(sess *clientWSSession) {
 	if h == nil || sess == nil {
 		return
@@ -170,6 +182,7 @@ func (h *HTTP) registerPersistentSession(sess *clientWSSession) {
 	h.persistentMu.Unlock()
 }
 
+// unregisterPersistentSession 注销一个持久化推送会话。
 func (h *HTTP) unregisterPersistentSession(sess *clientWSSession) {
 	if h == nil || sess == nil {
 		return
@@ -180,6 +193,9 @@ func (h *HTTP) unregisterPersistentSession(sess *clientWSSession) {
 	h.persistentMu.Unlock()
 }
 
+// persistentCandidatesForMessage 确定消息的候选推送会话：
+//   - 广播/频道消息 → 所有持久化会话
+//   - 普通用户消息 → 该用户的直接接收者会话 + 所有管理员会话
 func (h *HTTP) persistentCandidatesForMessage(ctx context.Context, message store.Message) ([]*clientWSSession, error) {
 	role, err := h.messageTargetRole(ctx, message.UserKey())
 	if err != nil {
@@ -193,6 +209,7 @@ func (h *HTTP) persistentCandidatesForMessage(ctx context.Context, message store
 	}
 }
 
+// clonePersistentSessions 返回所有持久化会话的快照副本。
 func (h *HTTP) clonePersistentSessions() []*clientWSSession {
 	if h == nil {
 		return nil
@@ -206,6 +223,8 @@ func (h *HTTP) clonePersistentSessions() []*clientWSSession {
 	return sessions
 }
 
+// clonePersistentDirectRecipients 返回指定接收者的直接会话 + 所有管理员会话的去重副本。
+// 先查 shard 中的目标用户会话，再合并管理员。
 func (h *HTTP) clonePersistentDirectRecipients(recipient store.UserKey) []*clientWSSession {
 	if h == nil {
 		return nil
@@ -241,6 +260,8 @@ func (h *HTTP) clonePersistentDirectRecipients(recipient store.UserKey) []*clien
 	return sessions
 }
 
+// messageTargetRole 带缓存查询消息目标用户的角色（用于确定推送策略：广播/频道/直接）。
+// 缓存 TTL 为 clientWSVisibilityCacheTTL。
 func (h *HTTP) messageTargetRole(ctx context.Context, key store.UserKey) (string, error) {
 	now := time.Now()
 
@@ -268,6 +289,7 @@ func (h *HTTP) messageTargetRole(ctx context.Context, key store.UserKey) (string
 	return user.Role, nil
 }
 
+// invalidateTargetRoleCache 使指定用户的角色缓存失效（当用户角色变更时调用）。
 func (h *HTTP) invalidateTargetRoleCache(key store.UserKey) {
 	if h == nil {
 		return
@@ -277,18 +299,21 @@ func (h *HTTP) invalidateTargetRoleCache(key store.UserKey) {
 	h.targetRoleMu.Unlock()
 }
 
+// invalidateUserChannelSubscriptionCache 使指定用户的频道订阅缓存失效（遍历该用户的所有会话）。
 func (h *HTTP) invalidateUserChannelSubscriptionCache(subscriber, channel store.UserKey) {
 	for _, sess := range h.cloneSessionsForUser(subscriber) {
 		sess.invalidateChannelSubscriptionCache(channel)
 	}
 }
 
+// invalidateUserBlacklistCache 使指定用户的黑名单缓存失效（遍历该用户的所有会话）。
 func (h *HTTP) invalidateUserBlacklistCache(owner, blocked store.UserKey) {
 	for _, sess := range h.cloneSessionsForUser(owner) {
 		sess.invalidateBlacklistCache(blocked)
 	}
 }
 
+// cloneSessionsForUser 返回指定用户所有会话的快照副本（从会话 shard 中查找）。
 func (h *HTTP) cloneSessionsForUser(key store.UserKey) []*clientWSSession {
 	shard := h.sessionShard(key)
 	if shard == nil {

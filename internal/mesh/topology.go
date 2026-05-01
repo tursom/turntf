@@ -2,6 +2,7 @@ package mesh
 
 import "sync"
 
+// NodeState 记录一个节点的身份、协议版本、转发策略及各传输能力。
 type NodeState struct {
 	NodeID           int64
 	ProtocolVersion  string
@@ -9,6 +10,8 @@ type NodeState struct {
 	TransportCaps    map[TransportKind]*TransportCapability
 }
 
+// LinkState 表示一条有向边：从 FromNodeID 到 ToNodeID 在指定传输上，
+// 包括代价、抖动和活跃标志。
 type LinkState struct {
 	OriginNodeID int64
 	FromNodeID   int64
@@ -20,6 +23,8 @@ type LinkState struct {
 	Established  bool
 }
 
+// TopologySnapshot 是不可变的拓扑只读视图，包含节点、链路和世代号。
+// outgoingLinks 字段是 adjacency-list 索引，提供 O(1) 的邻居查找。
 type TopologySnapshot struct {
 	Nodes              map[int64]NodeState
 	Links              []LinkState
@@ -45,6 +50,8 @@ type storeNode struct {
 	capabilities    map[TransportKind]*TransportCapability
 }
 
+// MemoryTopologyStore 是 TopologyStore 的内存实现。
+// 它对输入进行标准化，按世代号去重，原子性地重建快照。
 type MemoryTopologyStore struct {
 	mu         sync.RWMutex
 	nodes      map[int64]*storeNode
@@ -54,6 +61,7 @@ type MemoryTopologyStore struct {
 	snapshot   TopologySnapshot
 }
 
+// NewMemoryTopologyStore 创建一个新的空 MemoryTopologyStore。
 func NewMemoryTopologyStore() *MemoryTopologyStore {
 	return &MemoryTopologyStore{
 		nodes:      make(map[int64]*storeNode),
@@ -63,6 +71,7 @@ func NewMemoryTopologyStore() *MemoryTopologyStore {
 	}
 }
 
+// ApplyHello 存储来自 NodeHello 交换的节点身份（协议版本、策略、传输能力）。
 func (s *MemoryTopologyStore) ApplyHello(nodeID int64, hello *NodeHello) {
 	if s == nil || hello == nil || nodeID <= 0 {
 		return
@@ -82,6 +91,8 @@ func (s *MemoryTopologyStore) ApplyHello(nodeID int64, hello *NodeHello) {
 	s.rebuildSnapshotLocked()
 }
 
+// ApplyTopologyUpdate 应用拓扑更新；拒绝过时（低世代号）或重复（相同世代号且指纹相同）的更新。
+// 标准化后原子性地重建快照。
 func (s *MemoryTopologyStore) ApplyTopologyUpdate(update *TopologyUpdate) {
 	normalized := NormalizeTopologyUpdate(update)
 	if s == nil || normalized == nil {
@@ -89,6 +100,7 @@ func (s *MemoryTopologyStore) ApplyTopologyUpdate(update *TopologyUpdate) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// 世代守卫：拒绝低于当前世代的更新；相同世代的更新通过指纹判断是否重复。
 	currentGeneration := s.generation[normalized.OriginNodeId]
 	if normalized.Generation < currentGeneration {
 		return
@@ -133,6 +145,7 @@ func (s *MemoryTopologyStore) ApplyTopologyUpdate(update *TopologyUpdate) {
 	s.rebuildSnapshotLocked()
 }
 
+// Snapshot 返回当前不可变的拓扑视图。调用者不可修改返回的快照。
 func (s *MemoryTopologyStore) Snapshot() TopologySnapshot {
 	if s == nil {
 		return TopologySnapshot{}
@@ -149,6 +162,7 @@ func (s *MemoryTopologyStore) rebuildSnapshotLocked() {
 	snapshot := TopologySnapshot{
 		Nodes:         make(map[int64]NodeState, len(s.nodes)),
 		Links:         make([]LinkState, 0, len(s.links)),
+		// outgoingLinks 索引提供对 (node, transport) 邻居的 O(1) 查找。
 		outgoingLinks: make(map[topologyAdjacencyKey][]LinkState, len(s.links)),
 	}
 	for nodeID, node := range s.nodes {
@@ -203,6 +217,7 @@ func (s *MemoryTopologyStore) ensureNodeLocked(nodeID int64) *storeNode {
 	return node
 }
 
+// Node 按 ID 返回节点状态。如果未找到则返回 false。
 func (s TopologySnapshot) Node(nodeID int64) (NodeState, bool) {
 	node, ok := s.Nodes[nodeID]
 	return node, ok
@@ -239,11 +254,13 @@ func (s TopologySnapshot) outgoing(nodeID int64, transport TransportKind) []Link
 	}]
 }
 
+// OutboundEnabled 检查节点在指定传输上是否可以发起出站连接。
 func (n NodeState) OutboundEnabled(kind TransportKind) bool {
 	capability := n.TransportCaps[kind]
 	return capability != nil && capability.OutboundEnabled
 }
 
+// HasTransport 检查节点是否支持指定传输。
 func (n NodeState) HasTransport(kind TransportKind) bool {
 	_, ok := n.TransportCaps[kind]
 	return ok

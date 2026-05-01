@@ -12,6 +12,8 @@ import (
 	internalproto "github.com/tursom/turntf/internal/proto"
 )
 
+// handleTimeSyncRequest 处理来自对等节点的时间同步请求。
+// 记录请求接收时间和响应发送时间（NTP协议的T2和T3），立即回复响应。
 func (m *Manager) handleTimeSyncRequest(sess *session, envelope *internalproto.Envelope) error {
 	if err := validatePeerEnvelope(sess, envelope); err != nil {
 		return err
@@ -25,7 +27,9 @@ func (m *Manager) handleTimeSyncRequest(sess *session, envelope *internalproto.E
 		return errors.New("time sync request id cannot be empty")
 	}
 
+	// T2: 服务器接收时间 (ServerReceiveTime)
 	receivedAtMs := m.clock.PhysicalTimeMs()
+	// T3: 服务器发送时间 (ServerSendTime)
 	sentAtMs := m.clock.PhysicalTimeMs()
 	sess.enqueue(&internalproto.Envelope{
 		NodeId: m.cfg.NodeID,
@@ -41,6 +45,8 @@ func (m *Manager) handleTimeSyncRequest(sess *session, envelope *internalproto.E
 	return nil
 }
 
+// handleTimeSyncResponse 处理时间同步响应。
+// 取出对应的等待通道并发送结果。
 func (m *Manager) handleTimeSyncResponse(sess *session, envelope *internalproto.Envelope) error {
 	if err := validatePeerEnvelope(sess, envelope); err != nil {
 		return err
@@ -63,6 +69,8 @@ func (m *Manager) handleTimeSyncResponse(sess *session, envelope *internalproto.
 	return nil
 }
 
+// performTimeSync 执行一次完整的时间同步流程。
+// 收集样本（默认7个），选择RTT最小的样本，更新时钟状态。
 func (m *Manager) performTimeSync(sess *session) error {
 	var (
 		best timeSyncSample
@@ -90,6 +98,11 @@ func (m *Manager) performTimeSync(sess *session) error {
 	return nil
 }
 
+// collectTimeSyncSample 执行多次时间同步往返（默认7次），
+// 选择RTT最小的样本作为最佳结果，并计算抖动和可信度。
+//
+// 不确定性计算：max(RTT/2, Jitter/2) + 50ms
+// 这提供了对时钟偏移的保守误差估计。
 func (m *Manager) collectTimeSyncSample(sess *session) (timeSyncSample, error) {
 	var (
 		best      timeSyncSample
@@ -118,6 +131,7 @@ func (m *Manager) collectTimeSyncSample(sess *session) (timeSyncSample, error) {
 				maxRTT = sample.rttMs
 			}
 		}
+		// 选择RTT最小的样本作为最佳样本
 		if !found || sample.rttMs < best.rttMs {
 			best = sample
 			found = true
@@ -138,8 +152,25 @@ func (m *Manager) collectTimeSyncSample(sess *session) (timeSyncSample, error) {
 	return timeSyncSample{}, lastErr
 }
 
+// timeSyncRoundTrip 执行单次NTP风格的4时间戳往返测量。
+//
+// 时间戳定义：
+//
+//	T1 (ClientSendTime):    客户端发出请求的物理时间
+//	T2 (ServerReceiveTime): 服务器收到请求的物理时间
+//	T3 (ServerSendTime):    服务器发出响应的物理时间
+//	T4 (ClientReceiveTime): 客户端收到响应的物理时间
+//
+// 计算公式：
+//
+//	时钟偏移 = ((T2 - T1) + (T3 - T4)) / 2
+//	RTT      = (T4 - T1) - (T3 - T2)
+//
+// 该公式假设往返的网络延迟是对称的。如果RTT过大，
+// 则样本被标记为不可信。
 func (m *Manager) timeSyncRoundTrip(sess *session) (timeSyncSample, error) {
 	requestID, resultCh := sess.beginTimeSync()
+	// T1: 客户端发送时间
 	clientSendTimeMs := m.clock.PhysicalTimeMs()
 	ctx := m.ctx
 	if ctx == nil {
@@ -170,10 +201,14 @@ func (m *Manager) timeSyncRoundTrip(sess *session) (timeSyncSample, error) {
 			return timeSyncSample{}, errors.New("time sync response was empty")
 		}
 
+		// T2和T3来自服务器的响应
 		serverReceiveMs := result.response.ServerReceiveTimeMs
 		serverSendMs := result.response.ServerSendTimeMs
+		// T4: 客户端接收时间
 		clientReceiveMs := result.receivedAtMs
+		// 偏移 = ((T2 - T1) + (T3 - T4)) / 2
 		offsetMs := ((serverReceiveMs - clientSendTimeMs) + (serverSendMs - clientReceiveMs)) / 2
+		// RTT = (T4 - T1) - (T3 - T2)
 		rttMs := clientReceiveMs - clientSendTimeMs - (serverSendMs - serverReceiveMs)
 		if rttMs < 0 {
 			rttMs = 0
@@ -189,6 +224,8 @@ func (m *Manager) timeSyncRoundTrip(sess *session) (timeSyncSample, error) {
 	}
 }
 
+// sessionSyncLoop 是每个会话的后台同步循环。
+// 定期执行时间同步、数据追赶和反熵检查。
 func (m *Manager) sessionSyncLoop(sess *session) {
 	if m.ctx == nil {
 		return
@@ -246,6 +283,7 @@ func (m *Manager) sessionSyncLoop(sess *session) {
 	}
 }
 
+// markPeerClockSynced 将一个对等节点标记为已同步（用于外部提供的时钟信息）。
 func (m *Manager) markPeerClockSynced(sess *session, offsetMs int64) {
 	_, _ = m.recordTimeSyncSample(sess, timeSyncSample{
 		offsetMs:      offsetMs,
@@ -256,6 +294,7 @@ func (m *Manager) markPeerClockSynced(sess *session, offsetMs int64) {
 	})
 }
 
+// clearPeerClockSync 清除对等节点的时钟信任状态。
 func (m *Manager) clearPeerClockSync(sess *session) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -278,6 +317,8 @@ func (m *Manager) clearPeerClockSync(sess *session) {
 	}
 }
 
+// recomputeClockOffsetLocked 使用所有可信对等节点的中位数偏移重新计算时钟偏移。
+// 使用中位数而非平均值可以抵抗偏差异常值。
 func (m *Manager) recomputeClockOffsetLocked() {
 	offsets := make([]int64, 0, len(m.peers))
 	for _, peer := range m.peers {
@@ -292,9 +333,13 @@ func (m *Manager) recomputeClockOffsetLocked() {
 	sort.Slice(offsets, func(i, j int) bool {
 		return offsets[i] < offsets[j]
 	})
+	// 取中位数作为全局时钟偏移
 	m.clock.SetOffsetMs(offsets[len(offsets)/2])
 }
 
+// validateBatchHLC 验证事件批次中的HLC（混合逻辑时钟）时间戳。
+// 检查批次sent_at_hlc和每个事件的hlc是否超出本地物理时间+最大偏差。
+// 同时确保批次时间戳不早于批次中任意事件的时间戳。
 func (m *Manager) validateBatchHLC(sentAtRaw string, events []*internalproto.ReplicatedEvent) error {
 	if m.cfg.MaxClockSkewMs == 0 {
 		return nil
@@ -323,12 +368,14 @@ func (m *Manager) validateBatchHLC(sentAtRaw string, events []*internalproto.Rep
 			maxEventHLC = hlc
 		}
 	}
+	// 批次sent_at不应早于批次中任意事件的HLC
 	if maxEventHLC != (clock.Timestamp{}) && sentAt.Compare(maxEventHLC) < 0 {
 		return fmt.Errorf("event batch sent_at_hlc %s is earlier than max event hlc %s", sentAt, maxEventHLC)
 	}
 	return nil
 }
 
+// peerClockState 返回指定对等节点时钟状态的字符串表示。
 func (m *Manager) peerClockState(peerID int64) (string, string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

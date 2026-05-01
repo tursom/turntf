@@ -13,18 +13,28 @@ import (
 	"github.com/tursom/turntf/internal/store"
 )
 
+// 对等节点来源常量和发现状态常量。
 const (
-	peerSourceStatic     = "static"
+	// peerSourceStatic 表示配置文件中静态配置的对等节点。
+	peerSourceStatic = "static"
+	// peerSourceDiscovered 表示通过成员资格协议动态发现的节点。
 	peerSourceDiscovered = "discovered"
-	peerSourceInbound    = "inbound"
+	// peerSourceInbound 表示通过入站连接首次遇到的节点。
+	peerSourceInbound = "inbound"
 
+	// discoveryStateCandidate 表示节点已被发现但尚未尝试连接。
 	discoveryStateCandidate = "candidate"
-	discoveryStateDialing   = "dialing"
+	// discoveryStateDialing 表示正在向该节点发起连接。
+	discoveryStateDialing = "dialing"
+	// discoveryStateConnected 表示已成功连接到该节点。
 	discoveryStateConnected = "connected"
-	discoveryStateFailed    = "failed"
-	discoveryStateExpired   = "expired"
+	// discoveryStateFailed 表示最近的连接尝试失败。
+	discoveryStateFailed = "failed"
+	// discoveryStateExpired 表示节点的候选信息已过期。
+	discoveryStateExpired = "expired"
 )
 
+// loadDiscoveredPeers 从存储中加载持久化的已发现节点列表。
 func (m *Manager) loadDiscoveredPeers(ctx context.Context) error {
 	if m == nil || m.store == nil {
 		return nil
@@ -41,6 +51,7 @@ func (m *Manager) loadDiscoveredPeers(ctx context.Context) error {
 		if err != nil {
 			continue
 		}
+		// 将本节点的URL加入自我认知列表
 		if peer.NodeID == m.cfg.NodeID {
 			m.selfKnownURLs[normalized] = peer.Generation
 			continue
@@ -63,6 +74,8 @@ func (m *Manager) loadDiscoveredPeers(ctx context.Context) error {
 	return nil
 }
 
+// discoveryLoop 是节点发现的主循环。
+// 定期淘汰过期候选节点、协调拨号器并广播成员资格更新。
 func (m *Manager) discoveryLoop() {
 	defer m.wg.Done()
 
@@ -83,6 +96,7 @@ func (m *Manager) discoveryLoop() {
 	}
 }
 
+// handleMembershipUpdate 处理来自对等节点的成员资格更新消息。
 func (m *Manager) handleMembershipUpdate(sess *session, envelope *internalproto.Envelope) error {
 	if m == nil || m.cfg.DiscoveryDisabled {
 		return nil
@@ -100,6 +114,7 @@ func (m *Manager) handleMembershipUpdate(sess *session, envelope *internalproto.
 	return m.handleMembershipUpdateBody(sess.peerID, update)
 }
 
+// handleMembershipUpdateBody 处理成员资格更新中的每个节点广告。
 func (m *Manager) handleMembershipUpdateBody(sourcePeerNodeID int64, update *internalproto.MembershipUpdate) error {
 	if m == nil || m.cfg.DiscoveryDisabled {
 		return nil
@@ -137,6 +152,8 @@ func (m *Manager) handleMembershipUpdateBody(sourcePeerNodeID int64, update *int
 	return nil
 }
 
+// observePeerAdvertisement 处理单个节点广告。
+// 验证URL、Curve密钥，并记录候选节点。
 func (m *Manager) observePeerAdvertisement(sourcePeerNodeID int64, item *internalproto.PeerAdvertisement) error {
 	if item == nil {
 		return errors.New("advertisement cannot be empty")
@@ -164,6 +181,8 @@ func (m *Manager) observePeerAdvertisement(sourcePeerNodeID int64, item *interna
 	return m.recordDiscoveredCandidate(item.NodeId, normalized, curveServerPublicKey, sourcePeerNodeID, item.Generation)
 }
 
+// recordDiscoveredCandidate 记录或更新一个发现候选节点。
+// 验证节点ID一致性：一个URL不能属于两个不同的节点。
 func (m *Manager) recordDiscoveredCandidate(nodeID int64, normalizedURL, zeroMQCurveServerPublicKey string, sourcePeerNodeID int64, generation uint64) error {
 	if nodeID <= 0 || nodeID == m.cfg.NodeID {
 		return nil
@@ -194,6 +213,7 @@ func (m *Manager) recordDiscoveredCandidate(nodeID int64, normalizedURL, zeroMQC
 	if strings.TrimSpace(zeroMQCurveServerPublicKey) != "" {
 		peer.zeroMQCurveServerPublicKey = strings.TrimSpace(zeroMQCurveServerPublicKey)
 	}
+	// 重置已过期或失败的状态回到candidate
 	if peer.state == "" || peer.state == discoveryStateExpired || peer.state == discoveryStateFailed {
 		peer.state = discoveryStateCandidate
 	}
@@ -208,6 +228,7 @@ func (m *Manager) recordDiscoveredCandidate(nodeID int64, normalizedURL, zeroMQC
 	return nil
 }
 
+// recordConfiguredPeerDialing 标记动态配置的节点正在拨号。
 func (m *Manager) recordConfiguredPeerDialing(peer *configuredPeer) {
 	if m == nil || m.cfg.DiscoveryDisabled || peer == nil || !peer.dynamic {
 		return
@@ -215,6 +236,7 @@ func (m *Manager) recordConfiguredPeerDialing(peer *configuredPeer) {
 	m.recordDiscoveredState(peer.nodeID, peer.URL, discoveryStateDialing, "", false)
 }
 
+// recordConfiguredPeerDialFailure 记录动态配置节点的拨号失败。
 func (m *Manager) recordConfiguredPeerDialFailure(peer *configuredPeer, err error) {
 	if m == nil || m.cfg.DiscoveryDisabled || peer == nil || !peer.dynamic {
 		return
@@ -226,6 +248,7 @@ func (m *Manager) recordConfiguredPeerDialFailure(peer *configuredPeer, err erro
 	m.recordDiscoveredState(peer.nodeID, peer.URL, discoveryStateFailed, message, false)
 }
 
+// recordConfiguredPeerSessionClosed 记录动态配置节点会话关闭。
 func (m *Manager) recordConfiguredPeerSessionClosed(peer *configuredPeer, sess *session) {
 	if m == nil || m.cfg.DiscoveryDisabled || peer == nil || !peer.dynamic || m.ctx == nil {
 		return
@@ -245,6 +268,7 @@ func (m *Manager) recordConfiguredPeerSessionClosed(peer *configuredPeer, sess *
 	m.recordDiscoveredState(nodeID, peer.URL, discoveryStateFailed, "session closed", false)
 }
 
+// recordSessionDiscoveryConnected 记录会话已成功连接（用于发现状态跟踪）。
 func (m *Manager) recordSessionDiscoveryConnected(sess *session) {
 	if m == nil || m.cfg.DiscoveryDisabled || sess == nil || sess.configuredPeer == nil {
 		return
@@ -259,6 +283,7 @@ func (m *Manager) recordSessionDiscoveryConnected(sess *session) {
 		Msg("recorded peer discovery state")
 }
 
+// recordDiscoveredState 更新已发现节点的状态和错误信息。
 func (m *Manager) recordDiscoveredState(nodeID int64, rawURL, state, lastError string, connected bool) {
 	normalized, err := normalizePeerURL(rawURL)
 	if err != nil || nodeID <= 0 || nodeID == m.cfg.NodeID {
@@ -292,6 +317,7 @@ func (m *Manager) recordDiscoveredState(nodeID int64, rawURL, state, lastError s
 	m.persistDiscoveredPeer(snapshot, connected)
 }
 
+// expireDiscoveredCandidates 淘汰超过TTL的候选节点。
 func (m *Manager) expireDiscoveredCandidates() {
 	now := time.Now().UTC()
 	expired := make([]discoveredPeerState, 0)
@@ -321,6 +347,14 @@ func (m *Manager) expireDiscoveredCandidates() {
 	}
 }
 
+// reconcileDiscoveredDialers 协调发现节点的拨号状态。
+//
+// 选择逻辑：
+//  1. 排除静态配置的URL和过期节点
+//  2. 排除无法拨号的节点
+//  3. 排除已有活跃连接的节点
+//  4. 按优先级排序：已存在的动态节点 > 以前连接过的节点 > 最近见过的节点
+//  5. 最多选择maxDynamicDiscoveredPeers（8）个节点进行拨号
 func (m *Manager) reconcileDiscoveredDialers() {
 	type candidate struct {
 		peer           discoveredPeerState
@@ -366,6 +400,7 @@ func (m *Manager) reconcileDiscoveredDialers() {
 		_, alreadyDynamic := m.dynamicPeers[url]
 		candidates = append(candidates, candidate{peer: *peer, alreadyDynamic: alreadyDynamic})
 	}
+	// 排序优先级：已存在的动态节点 > 有连接历史 > 最近连接 > 最近看见 > URL
 	sort.Slice(candidates, func(i, j int) bool {
 		left := candidates[i].peer
 		right := candidates[j].peer
@@ -452,6 +487,7 @@ func (m *Manager) reconcileDiscoveredDialers() {
 	}
 }
 
+// broadcastMembershipUpdate 向所有支持成员资格的会话广播成员资格更新。
 func (m *Manager) broadcastMembershipUpdate() {
 	if m == nil || m.cfg.DiscoveryDisabled {
 		return
@@ -462,6 +498,7 @@ func (m *Manager) broadcastMembershipUpdate() {
 	}
 }
 
+// sendMembershipUpdate 向指定会话发送成员资格更新。
 func (m *Manager) sendMembershipUpdate(sess *session) {
 	if m == nil || m.cfg.DiscoveryDisabled || sess == nil || !sess.supportsMembership || sess.isClosed() {
 		return
@@ -487,6 +524,7 @@ func (m *Manager) sendMembershipUpdate(sess *session) {
 	m.mu.Unlock()
 }
 
+// membershipSessions 返回所有支持成员资格协议的活跃会话。
 func (m *Manager) membershipSessions() []*session {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -504,6 +542,8 @@ func (m *Manager) membershipSessions() []*session {
 	return sessions
 }
 
+// buildMembershipEnvelope 构建成员资格更新信封。
+// 包含本节点已知的所有节点（配置节点、已连接发现节点、自我认知URL）。
 func (m *Manager) buildMembershipEnvelope() *internalproto.Envelope {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -573,6 +613,7 @@ func (m *Manager) buildMembershipEnvelope() *internalproto.Envelope {
 	}
 }
 
+// persistDiscoveredPeer 将发现节点状态持久化到存储。
 func (m *Manager) persistDiscoveredPeer(peer discoveredPeerState, connected bool) {
 	if m == nil || m.store == nil || peer.nodeID <= 0 || peer.url == "" {
 		return
@@ -601,6 +642,7 @@ func (m *Manager) persistDiscoveredPeer(peer discoveredPeerState, connected bool
 	}
 }
 
+// discoveryStateByURLLocked 通过URL查找发现状态。
 func (m *Manager) discoveryStateByURLLocked(rawURL string) discoveredPeerState {
 	normalized, err := normalizePeerURL(rawURL)
 	if err != nil {
@@ -612,6 +654,7 @@ func (m *Manager) discoveryStateByURLLocked(rawURL string) discoveredPeerState {
 	return discoveredPeerState{}
 }
 
+// discoveryStateByNodeIDLocked 通过节点ID查找最佳发现状态。
 func (m *Manager) discoveryStateByNodeIDLocked(nodeID int64) discoveredPeerState {
 	var best discoveredPeerState
 	for _, peer := range m.discoveredPeers {
@@ -629,18 +672,21 @@ func (m *Manager) discoveryStateByNodeIDLocked(nodeID int64) discoveredPeerState
 	return best
 }
 
+// recordDiscoveryReject 记录一次发现拒绝。
 func (m *Manager) recordDiscoveryReject() {
 	m.mu.Lock()
 	m.discoveryRejects++
 	m.mu.Unlock()
 }
 
+// recordDiscoveryPersistFailure 记录一次发现持久化失败。
 func (m *Manager) recordDiscoveryPersistFailure() {
 	m.mu.Lock()
 	m.discoveryPersistFailures++
 	m.mu.Unlock()
 }
 
+// timestampWallTime 将毫秒级时间戳转换为time.Time。
 func timestampWallTime(wallTimeMs int64) time.Time {
 	if wallTimeMs <= 0 {
 		return time.Time{}
@@ -648,6 +694,7 @@ func timestampWallTime(wallTimeMs int64) time.Time {
 	return time.UnixMilli(wallTimeMs).UTC()
 }
 
+// clockTimestampPointer 将time.Time指针转换为时钟时间戳。
 func clockTimestampPointer(clockRef *clock.Clock, value *time.Time) *clock.Timestamp {
 	if value == nil || value.IsZero() {
 		return nil
@@ -657,6 +704,7 @@ func clockTimestampPointer(clockRef *clock.Clock, value *time.Time) *clock.Times
 	return &ts
 }
 
+// maxUint64 返回两个uint64中的较大值。
 func maxUint64(a, b uint64) uint64 {
 	if a > b {
 		return a

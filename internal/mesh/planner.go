@@ -4,6 +4,8 @@ import (
 	"container/heap"
 )
 
+// Planner 使用多源 Dijkstra 算法在 (nodeID, transport) 状态空间上计算路由。
+// 初始化时需要本地节点 ID。
 type Planner struct {
 	localNodeID int64
 }
@@ -30,10 +32,14 @@ type queueItem struct {
 
 type stateQueue []*queueItem
 
+// NewPlanner 创建一个以 localNodeID 为起点的 Planner。
 func NewPlanner(localNodeID int64) *Planner {
 	return &Planner{localNodeID: localNodeID}
 }
 
+// Compute 使用多源 Dijkstra 算法在 (nodeID, transport) 状态空间中计算最佳路径。
+// 如未指定入站传输，则从所有启用了出站能力的本地传输开始搜索。
+// 返回路由决策与是否可达。
 func (p *Planner) Compute(snapshot TopologySnapshot, destinationNodeID int64, trafficClass TrafficClass, ingressTransport TransportKind) (RouteDecision, bool) {
 	if p == nil || p.localNodeID <= 0 || destinationNodeID <= 0 {
 		return RouteDecision{}, false
@@ -43,6 +49,8 @@ func (p *Planner) Compute(snapshot TopologySnapshot, destinationNodeID int64, tr
 	if !ok {
 		return RouteDecision{}, false
 	}
+
+	// 构建初始状态：从本地节点所有启用了出站能力的传输（或指定入站传输）开始。
 	starts := make([]plannerState, 0, len(localNode.TransportCaps))
 	if ingressTransport != TransportUnspecified {
 		if localNode.HasTransport(ingressTransport) {
@@ -58,6 +66,8 @@ func (p *Planner) Compute(snapshot TopologySnapshot, destinationNodeID int64, tr
 	if len(starts) == 0 {
 		return RouteDecision{}, false
 	}
+
+	// 多源 Dijkstra：从本地节点所有启用了出站的传输出发，在 (节点, 传输) 状态空间中搜索。
 	best := make(map[plannerState]plannerMeta)
 	pq := make(stateQueue, 0, len(starts))
 	for _, start := range starts {
@@ -68,10 +78,12 @@ func (p *Planner) Compute(snapshot TopologySnapshot, destinationNodeID int64, tr
 
 	for pq.Len() > 0 {
 		item := heap.Pop(&pq).(*queueItem)
+		// 跳过已过时的状态（代价或第一跳信息已变更）。
 		currentBest, ok := best[item.state]
 		if !ok || currentBest.cost != item.meta.cost || currentBest.firstHopNode != item.meta.firstHopNode || currentBest.firstTransport != item.meta.firstTransport {
 			continue
 		}
+		// 到达目标节点（且不是本地节点自身）。
 		if item.state.nodeID == destinationNodeID && item.state.nodeID != p.localNodeID {
 			return buildRouteDecision(destinationNodeID, snapshot.TopologyGeneration, item.meta), true
 		}
@@ -91,11 +103,14 @@ type transition struct {
 	meta  plannerMeta
 }
 
+// expand 生成从当前状态出发的合法转移：
+// 出站链路转移和跨传输桥接转移。
 func (p *Planner) expand(snapshot TopologySnapshot, destinationNodeID int64, trafficClass TrafficClass, ingressTransport TransportKind, current plannerState, meta plannerMeta) []transition {
 	transitions := make([]transition, 0)
 	if !p.canTransit(snapshot, destinationNodeID, trafficClass, ingressTransport, current.nodeID) {
 		return transitions
 	}
+	// 沿出站链路转移，累加链路的 (代价 + 抖动) 和中转惩罚。
 	for _, link := range snapshot.outgoing(current.nodeID, current.transport) {
 		if !link.Established {
 			continue
@@ -121,6 +136,8 @@ func (p *Planner) expand(snapshot TopologySnapshot, destinationNodeID int64, tra
 		}
 		transitions = append(transitions, transition{state: nextState, meta: nextMeta})
 	}
+
+	// 如果此流量类别允许桥接且当前节点启用了桥接，则对节点拥有的每个不同输出传输生成桥接转移。
 	if !BridgeAllowedForTrafficClass(trafficClass) {
 		return transitions
 	}
@@ -141,6 +158,8 @@ func (p *Planner) expand(snapshot TopologySnapshot, destinationNodeID int64, tra
 	return transitions
 }
 
+// canTransit 检查节点是否允许为指定流量类别中转流量。
+// 目标和本地节点允许驻留但不允许中转。
 func (p *Planner) canTransit(snapshot TopologySnapshot, destinationNodeID int64, trafficClass TrafficClass, ingressTransport TransportKind, nodeID int64) bool {
 	if nodeID == destinationNodeID {
 		return false
@@ -168,6 +187,7 @@ func (p *Planner) canTransit(snapshot TopologySnapshot, destinationNodeID int64,
 	return DispositionForTraffic(node.ForwardingPolicy, trafficClass) != DispositionDeny
 }
 
+// transitPenalty 计算中转代价值：NodeFeeWeight × TrafficClassFactor + 若策略为 Discourage 则加 DiscouragePenaltyMs。
 func transitPenalty(policy *ForwardingPolicy, trafficClass TrafficClass) int64 {
 	if policy == nil {
 		return 0
@@ -179,6 +199,8 @@ func transitPenalty(policy *ForwardingPolicy, trafficClass TrafficClass) int64 {
 	return penalty
 }
 
+// betterMeta 实现多级排序决胜局：
+// 总代价 → 非桥接优先 → 非中继优先 → 跳数少 → 第一跳 ID 小 → 第一传输 ID 小。
 func betterMeta(candidate, current plannerMeta) bool {
 	if candidate.cost != current.cost {
 		return candidate.cost < current.cost
@@ -198,6 +220,8 @@ func betterMeta(candidate, current plannerMeta) bool {
 	return candidate.firstTransport < current.firstTransport
 }
 
+// buildRouteDecision 根据规划器元数据设置 PathClass：
+// 桥接 → CrossTransportBridge，中继 → NativeRelay，多跳 → SameTransportForward，否则 → Direct。
 func buildRouteDecision(destinationNodeID int64, generation uint64, meta plannerMeta) RouteDecision {
 	pathClass := PathClassDirect
 	if meta.usedBridge {

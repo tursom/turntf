@@ -9,6 +9,8 @@ import (
 	"github.com/tursom/turntf/internal/auth"
 )
 
+// CreateUser 创建用户并以事件溯源方式写入。返回创建的用户和主要事件（UserCreated）。
+// 这是 CreateUserWithEvents 的便捷封装，仅返回主要用户事件。
 func (s *Store) CreateUser(ctx context.Context, params CreateUserParams) (User, Event, error) {
 	user, events, err := s.CreateUserWithEvents(ctx, params)
 	if err != nil {
@@ -17,6 +19,8 @@ func (s *Store) CreateUser(ctx context.Context, params CreateUserParams) (User, 
 	return user, primaryUserEvent(events), nil
 }
 
+// CreateUserWithEvents 创建用户并返回所有生成的事件（包括登录名绑定事件）。
+// 在校验参数后，在事务中分配用户 ID、插入用户行、生成事件并处理登录名绑定。
 func (s *Store) CreateUserWithEvents(ctx context.Context, params CreateUserParams) (User, []Event, error) {
 	username := strings.TrimSpace(params.Username)
 	if username == "" {
@@ -141,6 +145,8 @@ VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, NULL, ?)
 	return user, events, nil
 }
 
+// UpdateUser 部分更新用户。指针字段 nil 表示不修改，非 nil 表示更新为新值。
+// 返回更新后的用户和主要事件。不修改受保护的系统用户。
 func (s *Store) UpdateUser(ctx context.Context, params UpdateUserParams) (User, Event, error) {
 	user, events, err := s.UpdateUserWithEvents(ctx, params)
 	if err != nil {
@@ -149,6 +155,7 @@ func (s *Store) UpdateUser(ctx context.Context, params UpdateUserParams) (User, 
 	return user, primaryUserEvent(events), nil
 }
 
+// UpdateUserWithEvents 部分更新用户并返回所有生成的事件（包括登录名变更事件）。
 func (s *Store) UpdateUserWithEvents(ctx context.Context, params UpdateUserParams) (User, []Event, error) {
 	if err := params.Key.Validate(); err != nil {
 		return User{}, nil, err
@@ -348,6 +355,7 @@ WHERE node_id = ? AND user_id = ? AND deleted_at_hlc IS NULL
 	return current, events, nil
 }
 
+// DeleteUser 软删除用户。受保护的系统用户（bootstrap admin、broadcast、node ingress）不可删除。
 func (s *Store) DeleteUser(ctx context.Context, key UserKey) (Event, error) {
 	events, err := s.DeleteUserWithEvents(ctx, key)
 	if err != nil {
@@ -356,6 +364,7 @@ func (s *Store) DeleteUser(ctx context.Context, key UserKey) (Event, error) {
 	return primaryUserEvent(events), nil
 }
 
+// DeleteUserWithEvents 软删除用户并返回所有生成的事件（包括登录名删除事件）。
 func (s *Store) DeleteUserWithEvents(ctx context.Context, key UserKey) ([]Event, error) {
 	if err := key.Validate(); err != nil {
 		return nil, err
@@ -426,10 +435,12 @@ func (s *Store) DeleteUserWithEvents(ctx context.Context, key UserKey) ([]Event,
 	return events, nil
 }
 
+// GetUser 根据 UserKey 获取活跃（非删除）用户，优先使用缓存。
 func (s *Store) GetUser(ctx context.Context, key UserKey) (User, error) {
 	return s.userRepository.GetUser(ctx, key, false)
 }
 
+// ListUsers 列出所有活跃用户，按 (node_id, user_id) 升序排列。
 func (s *Store) ListUsers(ctx context.Context) ([]User, error) {
 	rows, err := s.db.QueryContext(ctx, `
 SELECT node_id, user_id, username, password_hash, profile, role, system_reserved, created_at_hlc, updated_at_hlc,
@@ -458,32 +469,39 @@ ORDER BY node_id ASC, user_id ASC
 	return users, nil
 }
 
+// getUser 获取用户，委托给 UserRepository。
 func (s *Store) getUser(ctx context.Context, key UserKey, includeDeleted bool) (User, error) {
 	return s.userRepository.GetUser(ctx, key, includeDeleted)
 }
 
+// getUserTx 在给定事务中获取用户。
 func (s *Store) getUserTx(ctx context.Context, tx *sql.Tx, key UserKey, includeDeleted bool) (User, error) {
 	return s.userRepository.GetUserTx(ctx, tx, key, includeDeleted)
 }
 
+// cacheUser 将用户写入缓存（如果 userRepository 是 cachedUserRepository）。
 func (s *Store) cacheUser(user User) {
 	if cache, ok := s.userRepository.(*cachedUserRepository); ok {
 		cache.StoreUser(user)
 	}
 }
 
+// invalidateCachedUser 使指定用户的缓存失效。
 func (s *Store) invalidateCachedUser(key UserKey) {
 	if cache, ok := s.userRepository.(*cachedUserRepository); ok {
 		cache.InvalidateUser(key)
 	}
 }
 
+// invalidateUserCache 使所有用户缓存失效。
 func (s *Store) invalidateUserCache() {
 	if cache, ok := s.userRepository.(*cachedUserRepository); ok {
 		cache.InvalidateAll()
 	}
 }
 
+// nextUserIDTx 在事务中为给定节点分配下一个用户 ID。
+// 使用 ReservedUserIDMax 作为起始偏移，确保系统预留 ID 不会被分配给普通用户。
 func (s *Store) nextUserIDTx(ctx context.Context, tx *sql.Tx, nodeID int64) (int64, error) {
 	if nodeID <= 0 {
 		return 0, fmt.Errorf("%w: node id is required for user sequence", ErrInvalidInput)
@@ -502,6 +520,7 @@ WHERE node_id = ?
 	return userID, nil
 }
 
+// AuthenticateUser 验证用户的密码。验证失败或用户不可登录时返回 ErrNotFound。
 func (s *Store) AuthenticateUser(ctx context.Context, key UserKey, password string) (User, error) {
 	if err := key.Validate(); err != nil {
 		return User{}, err
@@ -522,6 +541,7 @@ func (s *Store) AuthenticateUser(ctx context.Context, key UserKey, password stri
 	return user, nil
 }
 
+// primaryUserEvent 从事件列表中过滤出第一个用户相关的事件（Created/Updated/Deleted）。
 func primaryUserEvent(events []Event) Event {
 	for _, event := range events {
 		switch event.EventType {

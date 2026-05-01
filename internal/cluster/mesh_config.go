@@ -7,13 +7,19 @@ import (
 	"github.com/tursom/turntf/internal/mesh"
 )
 
+// ForwardingConfig 定义网格转发的全局策略配置。
 type ForwardingConfig struct {
-	Enabled       *bool
+	// Enabled 控制网格转发是否启用。nil表示默认启用。
+	Enabled *bool
+	// BridgeEnabled 控制跨传输网桥是否启用。nil表示默认启用。
 	BridgeEnabled *bool
+	// NodeFeeWeight 是路由决策中节点费用的权重因子。
 	NodeFeeWeight int64
-	Traffic       ForwardingTrafficConfig
+	// Traffic 定义各流量类别的转发处置策略。
+	Traffic ForwardingTrafficConfig
 }
 
+// ForwardingTrafficConfig 定义五种流量类别的转发处置策略。
 type ForwardingTrafficConfig struct {
 	ControlCritical      mesh.ForwardingDisposition
 	ControlQuery         mesh.ForwardingDisposition
@@ -22,6 +28,8 @@ type ForwardingTrafficConfig struct {
 	SnapshotBulk         mesh.ForwardingDisposition
 }
 
+// ParseForwardingDisposition 将字符串解析为转发处置枚举。
+// 支持: ALLOW、DISCOURAGE、DENY（大小写不敏感）。
 func ParseForwardingDisposition(raw string) (mesh.ForwardingDisposition, error) {
 	switch strings.ToUpper(strings.TrimSpace(raw)) {
 	case "":
@@ -37,15 +45,18 @@ func ParseForwardingDisposition(raw string) (mesh.ForwardingDisposition, error) 
 	}
 }
 
+// EffectiveForwarding 返回填充了默认值的转发配置。
 func (c Config) EffectiveForwarding() ForwardingConfig {
 	return c.Forwarding.withDefaults()
 }
 
+// ZeroMQForwardingEnabled 检查ZeroMQ转发是否启用。
 func (c Config) ZeroMQForwardingEnabled() bool {
 	withDefaults := c.WithDefaults()
 	return boolValue(withDefaults.ZeroMQ.ForwardingEnabled, boolValue(withDefaults.Forwarding.Enabled, true))
 }
 
+// MeshForwardingPolicy 构建网格运行时使用的转发策略对象。
 func (c Config) MeshForwardingPolicy() *mesh.ForwardingPolicy {
 	forwarding := c.EffectiveForwarding()
 	return &mesh.ForwardingPolicy{
@@ -62,6 +73,7 @@ func (c Config) MeshForwardingPolicy() *mesh.ForwardingPolicy {
 	}
 }
 
+// LibP2PTransportCapability 构建libp2p传输能力描述。
 func (c Config) LibP2PTransportCapability() *mesh.TransportCapability {
 	if !c.LibP2P.Enabled {
 		return nil
@@ -76,6 +88,7 @@ func (c Config) LibP2PTransportCapability() *mesh.TransportCapability {
 	}
 }
 
+// ZeroMQTransportCapability 构建ZeroMQ传输能力描述。
 func (c Config) ZeroMQTransportCapability() *mesh.TransportCapability {
 	if !c.ZeroMQ.Enabled {
 		return nil
@@ -92,6 +105,7 @@ func (c Config) ZeroMQTransportCapability() *mesh.TransportCapability {
 	return capability
 }
 
+// zeroMQPeerURLForBindURL 将ZeroMQ绑定URL转换为对等节点URL格式。
 func zeroMQPeerURLForBindURL(bindURL string) string {
 	trimmed := strings.TrimSpace(bindURL)
 	if trimmed == "" {
@@ -103,6 +117,7 @@ func zeroMQPeerURLForBindURL(bindURL string) string {
 	return peerSchemeZeroMQTCP + strings.TrimPrefix(trimmed, zeroMQBindSchemeTCP)
 }
 
+// withDefaults 返回填充了默认值的ForwardingConfig副本。
 func (c ForwardingConfig) withDefaults() ForwardingConfig {
 	if c.Enabled == nil {
 		c.Enabled = boolPtr(true)
@@ -117,6 +132,7 @@ func (c ForwardingConfig) withDefaults() ForwardingConfig {
 	return c
 }
 
+// validate 验证转发配置中的处置值是否有效。
 func (c ForwardingConfig) validate() error {
 	for _, item := range []struct {
 		name        string
@@ -135,6 +151,7 @@ func (c ForwardingConfig) validate() error {
 	return nil
 }
 
+// withDefaults 为未指定的流量类别填充默认处置策略。
 func (c ForwardingTrafficConfig) withDefaults(nodeFeeWeight int64) ForwardingTrafficConfig {
 	defaults := mesh.DefaultForwardingPolicy(nodeFeeWeight)
 	if c.ControlCritical == mesh.DispositionUnspecified {
@@ -155,6 +172,7 @@ func (c ForwardingTrafficConfig) withDefaults(nodeFeeWeight int64) ForwardingTra
 	return c
 }
 
+// boolValue 解引用可选布尔值，nil时返回默认值。
 func boolValue(value *bool, fallback bool) bool {
 	if value == nil {
 		return fallback
@@ -162,11 +180,14 @@ func boolValue(value *bool, fallback bool) bool {
 	return *value
 }
 
+// boolPtr 创建布尔值的指针。
+//
 //go:fix inline
 func boolPtr(value bool) *bool {
 	return new(value)
 }
 
+// isValidDisposition 检查转发处置值是否有效。
 func isValidDisposition(disposition mesh.ForwardingDisposition) bool {
 	switch disposition {
 	case mesh.DispositionUnspecified, mesh.DispositionAllow, mesh.DispositionDiscourage, mesh.DispositionDeny:

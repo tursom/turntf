@@ -15,32 +15,36 @@ import (
 	"github.com/tursom/turntf/internal/store"
 )
 
+// clientMessageCursor 标识一条已见消息的位置（节点 + 序列号），用于客户端去重。
 type clientMessageCursor struct {
 	nodeID int64
 	seq    int64
 }
 
+// clientWSSession 表示一个客户端 WebSocket/ZeroMQ 会话，管理认证、读写、消息推送等全生命周期。
+// 每个客户端连接对应一个 clientWSSession 实例。
 type clientWSSession struct {
-	http              *HTTP
-	conn              clientTransportConn
-	protocol          string
-	remoteAddr        string
-	sessionRef        store.SessionRef
-	loginName         string
-	principal         *requestPrincipal
-	realtimeOnly      bool
-	transientOnly     bool
-	afterSequence     int64
-	seen              map[clientMessageCursor]struct{}
-	seenMu            sync.Mutex
-	writeMu           sync.Mutex
-	persistentMu      sync.Mutex
-	persistentReady   bool
-	pendingPersistent []queuedPersistentMessage
-	blacklistCache    map[store.UserKey]clientBoolCacheEntry
-	subscriptionCache map[store.UserKey]clientBoolCacheEntry
+	http              *HTTP                                 // 关联的 HTTP 服务实例
+	conn              clientTransportConn                   // 底层传输连接
+	protocol          string                                // 传输协议标识："ws" 或 "zmq"
+	remoteAddr        string                                // 对端地址
+	sessionRef        store.SessionRef                      // 本会话的全局唯一引用
+	loginName         string                                // 登录名
+	principal         *requestPrincipal                     // 认证后的用户身份
+	realtimeOnly      bool                                  // 仅实时流（不持久化存储）
+	transientOnly     bool                                  // 仅即时消息（不接收持久化推送）
+	afterSequence     int64                                 // 登录时的最新事件序列号，用于跳过已处理的持久化事件
+	seen              map[clientMessageCursor]struct{}      // 已见消息集合（去重）
+	seenMu            sync.Mutex                            // 保护 seen
+	writeMu           sync.Mutex                            // 串行化写入
+	persistentMu      sync.Mutex                            // 保护持久化推送状态
+	persistentReady   bool                                  // 持久化推送是否已就绪
+	pendingPersistent []queuedPersistentMessage             // 推送就绪前暂存的持久化消息
+	blacklistCache    map[store.UserKey]clientBoolCacheEntry    // 黑名单查询缓存
+	subscriptionCache map[store.UserKey]clientBoolCacheEntry    // 频道订阅查询缓存
 }
 
+// AcceptZeroMQConn 接受 ZeroMQ 客户端连接，将其纳入与 WebSocket 相同的服务流程。
 func (h *HTTP) AcceptZeroMQConn(conn clientTransportConn) {
 	if conn == nil {
 		return
@@ -48,6 +52,8 @@ func (h *HTTP) AcceptZeroMQConn(conn clientTransportConn) {
 	h.serveClientConn(conn, context.Background(), "")
 }
 
+// serveClientConn 处理一个客户端连接的完整生命周期：认证 → 注册 → 读写循环 → 清理。
+// path 用于区分实时流（/ws/realtime）和普通客户端连接（/ws/client）。
 func (h *HTTP) serveClientConn(conn clientTransportConn, baseCtx context.Context, path string) {
 	if conn == nil {
 		return
@@ -99,6 +105,13 @@ func (h *HTTP) serveClientConn(conn clientTransportConn, baseCtx context.Context
 		Msg("client transport closed")
 }
 
+// login 执行客户端认证握手：
+//   - 读取并解析 Login 请求（支持 user key 或 login_name 两种方式）
+//   - 验证密码
+//   - 记录已见消息光标（用于去重）
+//   - 处理实时流和即时消息模式
+//   - 返回 LoginResponse 包含用户信息和会话引用
+//   - 如果需要持久化推送，推送历史消息并启用持久化分发
 func (s *clientWSSession) login(ctx context.Context) error {
 	data, err := s.conn.Receive(ctx)
 	if err != nil {
@@ -182,10 +195,12 @@ func (s *clientWSSession) login(ctx context.Context) error {
 	return nil
 }
 
+// requiresPersistentPush 判断此会话是否需要持久化消息推送（非即时消息模式）。
 func (s *clientWSSession) requiresPersistentPush() bool {
 	return s != nil && !s.transientOnly
 }
 
+// writeError 向客户端返回一个错误响应信封。
 func (s *clientWSSession) writeError(code, message string, requestID uint64) error {
 	s.logWarn("client_error_response", errors.New(message)).
 		Str("code", code).
@@ -196,6 +211,7 @@ func (s *clientWSSession) writeError(code, message string, requestID uint64) err
 	})
 }
 
+// logInfo 创建带会话上下文的 Info 级别日志事件（协议、地址、用户身份）。
 func (s *clientWSSession) logInfo(event string) *zerolog.Event {
 	e := log.Info().
 		Str("component", "api").
@@ -210,6 +226,7 @@ func (s *clientWSSession) logInfo(event string) *zerolog.Event {
 	return e
 }
 
+// logWarn 创建带会话上下文和错误信息的 Warn 级别日志事件。
 func (s *clientWSSession) logWarn(event string, err error) *zerolog.Event {
 	e := log.Warn().
 		Str("component", "api").
@@ -227,6 +244,7 @@ func (s *clientWSSession) logWarn(event string, err error) *zerolog.Event {
 	return e
 }
 
+// logDebug 创建带请求上下文的 Debug 级别日志事件。
 func (s *clientWSSession) logDebug(action string, requestID uint64) *zerolog.Event {
 	e := log.Debug().
 		Str("component", "api").
@@ -245,6 +263,7 @@ func (s *clientWSSession) logDebug(action string, requestID uint64) *zerolog.Eve
 	return e
 }
 
+// logRequest 创建 Info 级别的客户端请求日志事件，包含 action 和 requestID。
 func (s *clientWSSession) logRequest(action string, requestID uint64) *zerolog.Event {
 	e := s.logInfo("client_request").Str("action", action)
 	if requestID != 0 {
@@ -253,6 +272,7 @@ func (s *clientWSSession) logRequest(action string, requestID uint64) *zerolog.E
 	return e
 }
 
+// writeEnvelope 将 protobuf 信封序列化后通过底层连接发送给客户端。使用互斥锁保证串行写入。
 func (s *clientWSSession) writeEnvelope(envelope *internalproto.ServerEnvelope) error {
 	data, err := gproto.Marshal(envelope)
 	if err != nil {
@@ -263,6 +283,7 @@ func (s *clientWSSession) writeEnvelope(envelope *internalproto.ServerEnvelope) 
 	return s.conn.Send(context.Background(), data)
 }
 
+// clientWSError 构造一个客户端协议错误对象。
 func clientWSError(code, message string, requestID uint64) *internalproto.Error {
 	return &internalproto.Error{
 		Code:      code,
@@ -271,6 +292,7 @@ func clientWSError(code, message string, requestID uint64) *internalproto.Error 
 	}
 }
 
+// onlineSession 构造此会话对应的 OnlineSession 表示，用于向集群注册。
 func (s *clientWSSession) onlineSession() store.OnlineSession {
 	user := store.UserKey{}
 	if s != nil && s.principal != nil {

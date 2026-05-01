@@ -10,17 +10,20 @@ import (
 	"github.com/tursom/turntf/internal/store"
 )
 
+// meshMetricSample 是网格转发的单个指标样本。
 type meshMetricSample struct {
 	TrafficClass string
 	PathClass    string
 	Value        uint64
 }
 
+// meshCostSample 是路由决策成本的单个样本。
 type meshCostSample struct {
 	TrafficClass string
 	Value        int64
 }
 
+// meshMetricsSnapshot 是网格指标的快照集合。
 type meshMetricsSnapshot struct {
 	ForwardedPackets []meshMetricSample
 	ForwardedBytes   []meshMetricSample
@@ -29,6 +32,7 @@ type meshMetricsSnapshot struct {
 	BridgeForwards   []meshMetricSample
 }
 
+// meshTrafficClassLabel 将流量类别枚举转换为可读的字符串标签。
 func meshTrafficClassLabel(class mesh.TrafficClass) string {
 	switch class {
 	case mesh.TrafficControlCritical:
@@ -46,6 +50,7 @@ func meshTrafficClassLabel(class mesh.TrafficClass) string {
 	}
 }
 
+// meshPathClassLabel 将路径类别枚举转换为可读的字符串标签。
 func meshPathClassLabel(class mesh.PathClass) string {
 	switch class {
 	case mesh.PathClassDirect:
@@ -61,6 +66,7 @@ func meshPathClassLabel(class mesh.PathClass) string {
 	}
 }
 
+// meshTransportLabel 将传输类型枚举转换为字符串标签。
 func meshTransportLabel(kind mesh.TransportKind) string {
 	switch kind {
 	case mesh.TransportLibP2P:
@@ -74,6 +80,7 @@ func meshTransportLabel(kind mesh.TransportKind) string {
 	}
 }
 
+// meshDispositionLabel 将转发处置枚举转换为字符串标签。
 func meshDispositionLabel(disposition mesh.ForwardingDisposition) string {
 	switch disposition {
 	case mesh.DispositionAllow:
@@ -87,10 +94,12 @@ func meshDispositionLabel(disposition mesh.ForwardingDisposition) string {
 	}
 }
 
+// meshMetricKey 组合流量类别和路径类别生成指标键。
 func meshMetricKey(trafficClass string, pathClass string) string {
 	return trafficClass + "|" + pathClass
 }
 
+// splitMeshMetricKey 将指标键拆分为流量类别和路径类别。
 func splitMeshMetricKey(key string) (string, string) {
 	parts := strings.SplitN(key, "|", 2)
 	if len(parts) != 2 {
@@ -99,10 +108,12 @@ func splitMeshMetricKey(key string) (string, string) {
 	return parts[0], parts[1]
 }
 
+// forwardMeshPayload 通过网格转发二进制负载。
 func (m *Manager) forwardMeshPayload(ctx context.Context, targetNodeID int64, trafficClass mesh.TrafficClass, payload []byte) error {
 	return m.forwardMeshPayloadWithPacketID(ctx, targetNodeID, trafficClass, 0, payload)
 }
 
+// routeMeshEnvelope 通过网格路由一个ClusterEnvelope。
 func (m *Manager) routeMeshEnvelope(ctx context.Context, targetNodeID int64, trafficClass mesh.TrafficClass, envelope *mesh.ClusterEnvelope) error {
 	binding := m.MeshRuntime()
 	if binding == nil {
@@ -111,10 +122,12 @@ func (m *Manager) routeMeshEnvelope(ctx context.Context, targetNodeID int64, tra
 	return binding.RouteEnvelope(ctx, targetNodeID, envelope)
 }
 
+// forwardMeshPayloadWithPacketID 通过网格转发带数据包ID的二进制负载。
 func (m *Manager) forwardMeshPayloadWithPacketID(ctx context.Context, targetNodeID int64, trafficClass mesh.TrafficClass, packetID uint64, payload []byte) error {
 	return m.forwardMeshPayloadWithPacketIDAndTTL(ctx, targetNodeID, trafficClass, packetID, 0, payload)
 }
 
+// forwardMeshTransientPacket 通过网格转发一个瞬态数据包。
 func (m *Manager) forwardMeshTransientPacket(ctx context.Context, packet store.TransientPacket) error {
 	binding := m.MeshRuntime()
 	if binding == nil {
@@ -134,6 +147,7 @@ func (m *Manager) forwardMeshTransientPacket(ctx context.Context, packet store.T
 	})
 }
 
+// forwardMeshPayloadWithPacketIDAndTTL 通过网格转发带数据包ID和TTL的二进制负载。
 func (m *Manager) forwardMeshPayloadWithPacketIDAndTTL(ctx context.Context, targetNodeID int64, trafficClass mesh.TrafficClass, packetID uint64, ttlHops uint32, payload []byte) error {
 	binding := m.MeshRuntime()
 	if binding == nil {
@@ -156,6 +170,7 @@ func (m *Manager) forwardMeshPayloadWithPacketIDAndTTL(ctx context.Context, targ
 	return binding.ForwardPacket(ctx, packet)
 }
 
+// recordMeshForwarded 记录一次网格转发操作的指标。
 func (m *Manager) recordMeshForwarded(trafficClass mesh.TrafficClass, pathClass mesh.PathClass, bytes int, cost int64) {
 	if m == nil {
 		return
@@ -185,6 +200,7 @@ func (m *Manager) recordMeshForwarded(trafficClass mesh.TrafficClass, pathClass 
 	}
 }
 
+// observeMeshForwarding 处理网格转发的观测结果。
 func (m *Manager) observeMeshForwarding(observation mesh.ForwardingObservation) {
 	if m == nil {
 		return
@@ -196,6 +212,7 @@ func (m *Manager) observeMeshForwarding(observation mesh.ForwardingObservation) 
 	m.recordMeshForwarded(observation.TrafficClass, observation.PathClass, observation.PayloadBytes, observation.EstimatedCost)
 }
 
+// recordMeshNoPath 记录一次无路径的网格路由尝试。
 func (m *Manager) recordMeshNoPath(trafficClass mesh.TrafficClass) {
 	if m == nil {
 		return
@@ -209,6 +226,7 @@ func (m *Manager) recordMeshNoPath(trafficClass mesh.TrafficClass) {
 	m.meshRoutingNoPath[meshMetricKey(classLabel, "no_path")]++
 }
 
+// meshMetricsSnapshot 获取网格指标的快照副本。
 func (m *Manager) meshMetricsSnapshot() meshMetricsSnapshot {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -221,6 +239,7 @@ func (m *Manager) meshMetricsSnapshot() meshMetricsSnapshot {
 	}
 }
 
+// meshMetricSamples 将map转换为排序的样本切片。
 func meshMetricSamples(values map[string]uint64) []meshMetricSample {
 	out := make([]meshMetricSample, 0, len(values))
 	for key, value := range values {
@@ -236,6 +255,7 @@ func meshMetricSamples(values map[string]uint64) []meshMetricSample {
 	return out
 }
 
+// meshCostSamples 将成本map转换为排序的样本切片。
 func meshCostSamples(values map[string]int64) []meshCostSample {
 	out := make([]meshCostSample, 0, len(values))
 	for key, value := range values {

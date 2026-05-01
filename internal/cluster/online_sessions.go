@@ -14,6 +14,7 @@ import (
 	"github.com/tursom/turntf/internal/store"
 )
 
+// RegisterLocalSession 注册一个本地在线会话，并广播在线状态更新。
 func (m *Manager) RegisterLocalSession(session store.OnlineSession) {
 	if m == nil || !session.SessionRef.Valid() {
 		return
@@ -43,6 +44,7 @@ func (m *Manager) RegisterLocalSession(session store.OnlineSession) {
 	m.broadcastOnlinePresence()
 }
 
+// UnregisterLocalSession 注销一个本地在线会话，并广播在线状态更新。
 func (m *Manager) UnregisterLocalSession(user store.UserKey, sessionRef store.SessionRef) {
 	if m == nil || !sessionRef.Valid() || user.Validate() != nil {
 		return
@@ -68,6 +70,8 @@ func (m *Manager) UnregisterLocalSession(user store.UserKey, sessionRef store.Se
 	m.broadcastOnlinePresence()
 }
 
+// QueryOnlineUserPresence 查询指定用户在集群中的在线状态。
+// 返回所有已知的服务节点上该用户的存在信息。
 func (m *Manager) QueryOnlineUserPresence(_ context.Context, user store.UserKey) ([]store.OnlineNodePresence, error) {
 	if m == nil {
 		return nil, fmt.Errorf("%w: cluster manager is not configured", app.ErrServiceUnavailable)
@@ -88,6 +92,11 @@ func (m *Manager) QueryOnlineUserPresence(_ context.Context, user store.UserKey)
 	return items, nil
 }
 
+// ResolveUserSessions 跨集群解析指定用户的所有在线会话。
+//
+// 解析策略：
+//  1. 首先查询存在信息中已知的候选节点
+//  2. 如果没有找到结果，则回退到查询所有已知节点
 func (m *Manager) ResolveUserSessions(ctx context.Context, user store.UserKey) ([]store.OnlineSession, error) {
 	if m == nil {
 		return nil, fmt.Errorf("%w: cluster manager is not configured", app.ErrServiceUnavailable)
@@ -113,6 +122,8 @@ func (m *Manager) ResolveUserSessions(ctx context.Context, user store.UserKey) (
 	return results, nil
 }
 
+// resolveUserSessionsAcrossNodes 在指定的候选节点列表中解析用户会话。
+// skip参数包含已查询过的节点。
 func (m *Manager) resolveUserSessionsAcrossNodes(ctx context.Context, user store.UserKey, candidates []int64, skip map[int64]struct{}) ([]store.OnlineSession, error, map[int64]struct{}) {
 	seenNodes := make(map[int64]struct{}, len(candidates))
 	for nodeID := range skip {
@@ -146,6 +157,8 @@ func (m *Manager) resolveUserSessionsAcrossNodes(ctx context.Context, user store
 	return results, lastErr, seenNodes
 }
 
+// resolveUserSessionsAtNode 在指定节点上解析用户会话。
+// 本地节点直接返回本地会话；远程节点通过网格查询。
 func (m *Manager) resolveUserSessionsAtNode(ctx context.Context, nodeID int64, user store.UserKey) ([]store.OnlineSession, error) {
 	if nodeID == m.cfg.NodeID {
 		return m.localUserSessions(user), nil
@@ -198,6 +211,7 @@ func (m *Manager) resolveUserSessionsAtNode(ctx context.Context, nodeID int64, u
 	}
 }
 
+// beginResolveUserSessionsQuery 分配新的查询请求ID和响应通道。
 func (m *Manager) beginResolveUserSessionsQuery() (uint64, chan resolveUserSessionsQueryResult) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -208,6 +222,7 @@ func (m *Manager) beginResolveUserSessionsQuery() (uint64, chan resolveUserSessi
 	return requestID, ch
 }
 
+// cancelResolveUserSessionsQuery 取消等待中的查询。
 func (m *Manager) cancelResolveUserSessionsQuery(requestID uint64, err error) {
 	m.mu.Lock()
 	ch, ok := m.pendingResolveSessions[requestID]
@@ -225,6 +240,7 @@ func (m *Manager) cancelResolveUserSessionsQuery(requestID uint64, err error) {
 	close(ch)
 }
 
+// resolveResolveUserSessionsQuery 完成等待中的查询，发送结果。
 func (m *Manager) resolveResolveUserSessionsQuery(requestID uint64, result resolveUserSessionsQueryResult) bool {
 	m.mu.Lock()
 	ch, ok := m.pendingResolveSessions[requestID]
@@ -240,12 +256,14 @@ func (m *Manager) resolveResolveUserSessionsQuery(requestID uint64, result resol
 	return true
 }
 
+// presenceCandidateNodeIDs 返回在在线存在信息中已知的候选节点ID列表。
 func (m *Manager) presenceCandidateNodeIDs(user store.UserKey) []int64 {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return presenceNodeIDsLocked(m.onlinePresenceByUser[user])
 }
 
+// allKnownNodeIDs 返回所有已知节点ID的列表。
 func (m *Manager) allKnownNodeIDs() []int64 {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -274,12 +292,14 @@ func (m *Manager) allKnownNodeIDs() []int64 {
 	return out
 }
 
+// localUserSessions 返回本地指定用户的所有在线会话。
 func (m *Manager) localUserSessions(user store.UserKey) []store.OnlineSession {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return cloneLocalSessionsLocked(m.localOnlineSessions[user])
 }
 
+// localPresenceSessions 返回所有活跃的本地会话（用于广播在线状态）。
 func (m *Manager) localPresenceSessions() []*session {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -297,6 +317,7 @@ func (m *Manager) localPresenceSessions() []*session {
 	return out
 }
 
+// broadcastOnlinePresence 构建并广播当前的在线状态快照。
 func (m *Manager) broadcastOnlinePresence() {
 	if m == nil || m.ctx == nil {
 		return
@@ -308,6 +329,7 @@ func (m *Manager) broadcastOnlinePresence() {
 	m.forwardOnlinePresence(snapshot, 0)
 }
 
+// presenceLoop 是在线状态广播和断开连接怀疑清理的后台循环。
 func (m *Manager) presenceLoop() {
 	defer m.wg.Done()
 
@@ -329,6 +351,7 @@ func (m *Manager) presenceLoop() {
 	}
 }
 
+// forwardOnlinePresence 将在线状态快照转发给所有本地活跃会话。
 func (m *Manager) forwardOnlinePresence(snapshot *internalproto.OnlinePresenceSnapshot, excludePeerNodeID int64) {
 	if m == nil || snapshot == nil {
 		return
@@ -341,6 +364,7 @@ func (m *Manager) forwardOnlinePresence(snapshot *internalproto.OnlinePresenceSn
 	}
 }
 
+// sendOnlinePresence 向单个会话发送在线状态快照。
 func (m *Manager) sendOnlinePresence(sess *session, snapshot *internalproto.OnlinePresenceSnapshot) {
 	if m == nil || sess == nil || snapshot == nil || sess.isClosed() {
 		return
@@ -356,6 +380,7 @@ func (m *Manager) sendOnlinePresence(sess *session, snapshot *internalproto.Onli
 	}
 }
 
+// retryOnlinePresenceForward 延迟重试在线状态快照的转发。
 func (m *Manager) retryOnlinePresenceForward(targetNodeID int64, snapshot *internalproto.OnlinePresenceSnapshot) {
 	if m == nil || targetNodeID <= 0 || snapshot == nil || m.ctx == nil {
 		return
@@ -377,6 +402,7 @@ func (m *Manager) retryOnlinePresenceForward(targetNodeID int64, snapshot *inter
 	})
 }
 
+// buildOnlinePresenceSnapshot 构建包含本地在线状态和已登录用户的快照。
 func (m *Manager) buildOnlinePresenceSnapshot() *internalproto.OnlinePresenceSnapshot {
 	if m == nil {
 		return nil
@@ -418,6 +444,12 @@ func (m *Manager) buildOnlinePresenceSnapshot() *internalproto.OnlinePresenceSna
 	}
 }
 
+// applyOnlinePresenceSnapshot 应用从远程节点接收的在线状态快照。
+//
+// 纪元（epoch）检查确保不会用过期或陈旧的数据覆盖当前状态：
+//   - 如果纪元小于当前已知纪元，拒绝更新
+//   - 如果纪元变化，清除该节点的临时状态
+//   - 如果generation不更新，跳过重复快照
 func (m *Manager) applyOnlinePresenceSnapshot(snapshot *internalproto.OnlinePresenceSnapshot) bool {
 	if m == nil || snapshot == nil || snapshot.GetOriginNodeId() <= 0 || snapshot.GetRuntimeEpoch() == 0 {
 		return false
@@ -484,6 +516,7 @@ func (m *Manager) applyOnlinePresenceSnapshot(snapshot *internalproto.OnlinePres
 	return true
 }
 
+// refreshLocalPresenceLocked 根据本地会话状态更新在线存在信息。
 func (m *Manager) refreshLocalPresenceLocked(user store.UserKey) {
 	if m == nil {
 		return
@@ -511,6 +544,7 @@ func (m *Manager) refreshLocalPresenceLocked(user store.UserKey) {
 	}
 }
 
+// presenceNodeIDsLocked 从存在信息桶中提取节点ID列表。
 func presenceNodeIDsLocked(bucket map[int64]store.OnlineNodePresence) []int64 {
 	if len(bucket) == 0 {
 		return nil
@@ -523,6 +557,7 @@ func presenceNodeIDsLocked(bucket map[int64]store.OnlineNodePresence) []int64 {
 	return out
 }
 
+// cloneLocalSessionsLocked 克隆本地会话桶。
 func cloneLocalSessionsLocked(bucket map[string]store.OnlineSession) []store.OnlineSession {
 	if len(bucket) == 0 {
 		return nil
@@ -537,6 +572,8 @@ func cloneLocalSessionsLocked(bucket map[string]store.OnlineSession) []store.Onl
 	return items
 }
 
+// localTransportHint 返回本地会话桶的传输提示。
+// 如果所有会话使用同一传输则返回该传输名，否则返回"mixed"。
 func localTransportHint(bucket map[string]store.OnlineSession) string {
 	hint := ""
 	for _, session := range bucket {
@@ -551,6 +588,7 @@ func localTransportHint(bucket map[string]store.OnlineSession) string {
 	return hint
 }
 
+// clearPresenceForNodeLocked 从所有用户的存在信息中移除指定服务节点的条目。
 func clearPresenceForNodeLocked(presenceByUser map[store.UserKey]map[int64]store.OnlineNodePresence, servingNodeID int64) {
 	for user, bucket := range presenceByUser {
 		delete(bucket, servingNodeID)
@@ -560,6 +598,7 @@ func clearPresenceForNodeLocked(presenceByUser map[store.UserKey]map[int64]store
 	}
 }
 
+// cloneOnlinePresenceSnapshot 创建在线状态快照的深拷贝。
 func cloneOnlinePresenceSnapshot(snapshot *internalproto.OnlinePresenceSnapshot) *internalproto.OnlinePresenceSnapshot {
 	if snapshot == nil {
 		return nil
@@ -588,6 +627,7 @@ func cloneOnlinePresenceSnapshot(snapshot *internalproto.OnlinePresenceSnapshot)
 	}
 }
 
+// clusterQueryErrorCode 将protobuf错误码转换为Go error。
 func clusterQueryErrorCode(code, message string) error {
 	if strings.TrimSpace(code) == "" {
 		return nil
@@ -607,6 +647,7 @@ func clusterQueryErrorCode(code, message string) error {
 	}
 }
 
+// storeOnlineSessionsFromCluster 将protobuf格式的集群会话引用转换为存储层在线会话。
 func storeOnlineSessionsFromCluster(user *internalproto.ClusterUserRef, items []*internalproto.ClusterSessionRef) []store.OnlineSession {
 	if user == nil || len(items) == 0 {
 		return nil
@@ -630,6 +671,7 @@ func storeOnlineSessionsFromCluster(user *internalproto.ClusterUserRef, items []
 	return out
 }
 
+// meshNoRouteError 返回无路由错误。
 func meshNoRouteError(nodeID int64) error {
 	return fmt.Errorf("%w: node %d is not reachable", app.ErrServiceUnavailable, nodeID)
 }

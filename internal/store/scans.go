@@ -10,6 +10,7 @@ import (
 	internalproto "github.com/tursom/turntf/internal/proto"
 )
 
+// scanUser 从 SQL scanner 扫描 users 表一行到 User，解析所有 HLC 时间戳字段。
 func scanUser(scanner interface {
 	Scan(dest ...any) error
 }) (User, error) {
@@ -88,6 +89,7 @@ func scanUser(scanner interface {
 	return user, nil
 }
 
+// scanMessage 从 SQL scanner 扫描 messages 投影表一行到 Message，解析 HLC 时间戳。
 func scanMessage(scanner interface {
 	Scan(dest ...any) error
 }) (Message, error) {
@@ -115,6 +117,7 @@ func scanMessage(scanner interface {
 	return message, nil
 }
 
+// scanSubscription 从 SQL scanner 扫描订阅视图一行到 Subscription，解析 HLC 时间戳。
 func scanSubscription(scanner interface {
 	Scan(dest ...any) error
 }) (Subscription, error) {
@@ -149,6 +152,7 @@ func scanSubscription(scanner interface {
 	return subscription, nil
 }
 
+// scanBlacklistEntry 从 SQL scanner 扫描黑名单视图一行到 BlacklistEntry，解析 HLC 时间戳。
 func scanBlacklistEntry(scanner interface {
 	Scan(dest ...any) error
 }) (BlacklistEntry, error) {
@@ -183,6 +187,7 @@ func scanBlacklistEntry(scanner interface {
 	return entry, nil
 }
 
+// scanEvent 从 SQL scanner 扫描 event_log 一行到 Event，反序列化 protobuf value 并解码。
 func scanEvent(scanner interface {
 	Scan(dest ...any) error
 }) (Event, error) {

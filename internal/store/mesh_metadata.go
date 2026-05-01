@@ -8,6 +8,7 @@ import (
 	"strings"
 )
 
+// LoadMeshTopologyGeneration 从 schema_meta 读取当前 mesh 拓扑代际计数器。
 func (s *Store) LoadMeshTopologyGeneration(ctx context.Context) (uint64, error) {
 	if s == nil || s.db == nil {
 		return 0, nil
@@ -35,6 +36,7 @@ WHERE key = ?
 	return generation, nil
 }
 
+// StoreMeshTopologyGeneration 将 mesh 拓扑代际计数器持久化到 schema_meta。
 func (s *Store) StoreMeshTopologyGeneration(ctx context.Context, generation uint64) error {
 	if s == nil || s.db == nil {
 		return nil

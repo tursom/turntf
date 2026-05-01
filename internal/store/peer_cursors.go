@@ -8,6 +8,7 @@ import (
 	"github.com/tursom/turntf/internal/clock"
 )
 
+// GetPeerAckCursor 获取某个 peer 对某个来源节点的确认游标，不存在时返回零值游标。
 func (s *Store) GetPeerAckCursor(ctx context.Context, peerNodeID, originNodeID int64) (PeerAckCursor, error) {
 	if pebbleBackend, ok := s.backend.(*pebbleStoreBackend); ok && pebbleBackend.peerAckCursors != nil {
 		return pebbleBackend.peerAckCursors.Get(ctx, peerNodeID, originNodeID)
@@ -35,6 +36,7 @@ WHERE peer_node_id = ? AND origin_node_id = ?
 	return cursor, nil
 }
 
+// ListPeerAckCursors 列出所有 peer 确认游标。
 func (s *Store) ListPeerAckCursors(ctx context.Context) ([]PeerAckCursor, error) {
 	if pebbleBackend, ok := s.backend.(*pebbleStoreBackend); ok && pebbleBackend.peerAckCursors != nil {
 		return pebbleBackend.peerAckCursors.List(ctx)
@@ -63,6 +65,7 @@ ORDER BY peer_node_id ASC, origin_node_id ASC
 	return cursors, nil
 }
 
+// RecordPeerAck 记录某个 peer 已确认收到某来源节点的某个事件。
 func (s *Store) RecordPeerAck(ctx context.Context, peerNodeID, originNodeID, ackedEventID int64) error {
 	if ackedEventID < 0 {
 		return fmt.Errorf("%w: acked event id cannot be negative", ErrInvalidInput)
@@ -70,6 +73,7 @@ func (s *Store) RecordPeerAck(ctx context.Context, peerNodeID, originNodeID, ack
 	return s.upsertPeerAckCursor(ctx, peerNodeID, originNodeID, ackedEventID)
 }
 
+// upsertPeerAckCursor 分发 peer ack cursor 的 upsert 到 Pebble 或 SQLite 实现。
 func (s *Store) upsertPeerAckCursor(ctx context.Context, peerNodeID, originNodeID, ackedEventID int64) error {
 	if pebbleBackend, ok := s.backend.(*pebbleStoreBackend); ok && pebbleBackend.peerAckCursors != nil {
 		return pebbleBackend.peerAckCursors.Upsert(ctx, peerNodeID, originNodeID, ackedEventID)
@@ -97,6 +101,7 @@ ON CONFLICT(peer_node_id, origin_node_id) DO UPDATE SET
 	return nil
 }
 
+// GetOriginCursor 获取本地节点对某来源节点的应用游标，不存在时返回零值游标。
 func (s *Store) GetOriginCursor(ctx context.Context, originNodeID int64) (OriginCursor, error) {
 	if pebbleBackend, ok := s.backend.(*pebbleStoreBackend); ok && pebbleBackend.originCursors != nil {
 		return pebbleBackend.originCursors.Get(ctx, originNodeID)
@@ -121,6 +126,7 @@ WHERE origin_node_id = ?
 	return cursor, nil
 }
 
+// ListOriginCursors 列出所有来源节点的应用游标。
 func (s *Store) ListOriginCursors(ctx context.Context) ([]OriginCursor, error) {
 	if pebbleBackend, ok := s.backend.(*pebbleStoreBackend); ok && pebbleBackend.originCursors != nil {
 		return pebbleBackend.originCursors.List(ctx)
@@ -149,6 +155,7 @@ ORDER BY origin_node_id ASC
 	return cursors, nil
 }
 
+// RecordOriginApplied 记录本地已应用某来源节点的某个事件。
 func (s *Store) RecordOriginApplied(ctx context.Context, originNodeID, appliedEventID int64) error {
 	if appliedEventID < 0 {
 		return fmt.Errorf("%w: applied event id cannot be negative", ErrInvalidInput)
@@ -156,6 +163,7 @@ func (s *Store) RecordOriginApplied(ctx context.Context, originNodeID, appliedEv
 	return s.upsertOriginCursor(ctx, originNodeID, appliedEventID)
 }
 
+// upsertOriginCursor 分发 origin cursor 的 upsert 到 Pebble 或 SQLite 实现。
 func (s *Store) upsertOriginCursor(ctx context.Context, originNodeID, appliedEventID int64) error {
 	if pebbleBackend, ok := s.backend.(*pebbleStoreBackend); ok && pebbleBackend.originCursors != nil {
 		return pebbleBackend.originCursors.Upsert(ctx, originNodeID, appliedEventID)
@@ -177,6 +185,7 @@ func (s *Store) upsertOriginCursorTx(ctx context.Context, exec interface {
 	return upsertOriginCursorTx(ctx, exec, originNodeID, appliedEventID, updatedAt)
 }
 
+// upsertOriginCursorTx 在 SQLite 中 upsert origin cursor，仅当新 event_id 更大时更新。
 func upsertOriginCursorTx(ctx context.Context, exec interface {
 	ExecContext(context.Context, string, ...any) (sql.Result, error)
 }, originNodeID, appliedEventID int64, updatedAt string) error {
@@ -195,6 +204,7 @@ ON CONFLICT(origin_node_id) DO UPDATE SET
 	return nil
 }
 
+// scanPeerAckCursor 从 SQL scanner 扫描一行到 PeerAckCursor，解析 HLC 时间戳。
 func scanPeerAckCursor(scanner interface {
 	Scan(dest ...any) error
 }) (PeerAckCursor, error) {
@@ -218,6 +228,7 @@ func scanPeerAckCursor(scanner interface {
 	return cursor, nil
 }
 
+// scanOriginCursor 从 SQL scanner 扫描一行到 OriginCursor，解析 HLC 时间戳。
 func scanOriginCursor(scanner interface {
 	Scan(dest ...any) error
 }) (OriginCursor, error) {

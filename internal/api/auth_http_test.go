@@ -199,6 +199,99 @@ func TestAuthenticatedHTTPLoginAndAuthorization(t *testing.T) {
 	}, http.StatusOK)
 }
 
+func TestHTTPAdminAndSuperAdminPermissionSeparation(t *testing.T) {
+	t.Parallel()
+
+	testAPI := newAuthenticatedTestAPI(t)
+	superAdminKey := store.UserKey{NodeID: testNodeID(1), UserID: store.BootstrapAdminUserID}
+	superAdminToken := loginToken(t, testAPI.handler, superAdminKey, "root-password")
+
+	adminKey := createUserAs(t, testAPI.handler, superAdminToken, "ops-admin", "ops-admin-password", store.RoleAdmin)
+	adminToken := loginToken(t, testAPI.handler, adminKey, "ops-admin-password")
+
+	managedUserKey := createUserAs(t, testAPI.handler, adminToken, "managed-user", "managed-user-password", store.RoleUser)
+	_ = createUserAs(t, testAPI.handler, adminToken, "managed-channel", "", store.RoleChannel)
+
+	doJSONWithHeaders(t, testAPI.handler, http.MethodGet, "/events?after=0&limit=10", nil, map[string]string{
+		"Authorization": "Bearer " + adminToken,
+	}, http.StatusOK)
+	doJSONWithHeaders(t, testAPI.handler, http.MethodGet, "/ops/status", nil, map[string]string{
+		"Authorization": "Bearer " + adminToken,
+	}, http.StatusOK)
+	metrics := doPlain(t, testAPI.handler, http.MethodGet, "/metrics", map[string]string{
+		"Authorization": "Bearer " + adminToken,
+	}, http.StatusOK)
+	if !strings.Contains(metrics, "notifier_write_gate_ready") {
+		t.Fatalf("metrics missing write gate gauge: %s", metrics)
+	}
+
+	doJSONWithHeaders(t, testAPI.handler, http.MethodPost, "/users", map[string]any{
+		"username": "blocked-admin",
+		"password": "blocked-admin-password",
+		"role":     store.RoleAdmin,
+	}, map[string]string{
+		"Authorization": "Bearer " + adminToken,
+	}, http.StatusForbidden)
+
+	doJSONWithHeaders(t, testAPI.handler, http.MethodPatch, userPath(managedUserKey.NodeID, managedUserKey.UserID), map[string]any{
+		"role": store.RoleAdmin,
+	}, map[string]string{
+		"Authorization": "Bearer " + adminToken,
+	}, http.StatusForbidden)
+
+	var promoted struct {
+		NodeID int64  `json:"node_id"`
+		UserID int64  `json:"user_id"`
+		Role   string `json:"role"`
+	}
+	mustJSON(t, doJSONWithHeaders(t, testAPI.handler, http.MethodPatch, userPath(managedUserKey.NodeID, managedUserKey.UserID), map[string]any{
+		"role": store.RoleAdmin,
+	}, map[string]string{
+		"Authorization": "Bearer " + superAdminToken,
+	}, http.StatusOK), &promoted)
+	if promoted.Role != store.RoleAdmin {
+		t.Fatalf("expected promoted admin role, got %+v", promoted)
+	}
+
+	doJSONWithHeaders(t, testAPI.handler, http.MethodPatch, userPath(promoted.NodeID, promoted.UserID), map[string]any{
+		"username": "blocked-admin-rename",
+	}, map[string]string{
+		"Authorization": "Bearer " + adminToken,
+	}, http.StatusForbidden)
+	doJSONWithHeaders(t, testAPI.handler, http.MethodDelete, userPath(promoted.NodeID, promoted.UserID), nil, map[string]string{
+		"Authorization": "Bearer " + adminToken,
+	}, http.StatusForbidden)
+
+	doJSONWithHeaders(t, testAPI.handler, http.MethodPatch, userPath(superAdminKey.NodeID, superAdminKey.UserID), map[string]any{
+		"password": "new-root-password",
+	}, map[string]string{
+		"Authorization": "Bearer " + superAdminToken,
+	}, http.StatusForbidden)
+	doJSONWithHeaders(t, testAPI.handler, http.MethodPatch, userPath(testNodeID(1), store.BroadcastUserID), map[string]any{
+		"username": "blocked-broadcast",
+	}, map[string]string{
+		"Authorization": "Bearer " + superAdminToken,
+	}, http.StatusForbidden)
+	doJSONWithHeaders(t, testAPI.handler, http.MethodDelete, userPath(testNodeID(1), store.NodeIngressUserID), nil, map[string]string{
+		"Authorization": "Bearer " + superAdminToken,
+	}, http.StatusForbidden)
+
+	var demoted struct {
+		Role string `json:"role"`
+	}
+	mustJSON(t, doJSONWithHeaders(t, testAPI.handler, http.MethodPatch, userPath(promoted.NodeID, promoted.UserID), map[string]any{
+		"role": store.RoleUser,
+	}, map[string]string{
+		"Authorization": "Bearer " + superAdminToken,
+	}, http.StatusOK), &demoted)
+	if demoted.Role != store.RoleUser {
+		t.Fatalf("expected demoted user role, got %+v", demoted)
+	}
+	doJSONWithHeaders(t, testAPI.handler, http.MethodDelete, userPath(promoted.NodeID, promoted.UserID), nil, map[string]string{
+		"Authorization": "Bearer " + superAdminToken,
+	}, http.StatusOK)
+}
+
 func TestBlacklistHTTPAPIRejectsDirectMessagesButKeepsChannelVisibility(t *testing.T) {
 	t.Parallel()
 
@@ -1510,6 +1603,160 @@ func TestClientWebSocketRPCRespectsUserAuthorizationAndSubscriptions(t *testing.
 	})
 	if rpcErr := readServerEnvelope(t, conn).GetError(); rpcErr == nil || rpcErr.RequestId != 29 || rpcErr.Code != "forbidden" {
 		t.Fatalf("unexpected send forbidden error: %+v", rpcErr)
+	}
+}
+
+func TestClientWebSocketAdminAndSuperAdminPermissionSeparation(t *testing.T) {
+	t.Parallel()
+
+	testAPI := newAuthenticatedTestAPI(t)
+	server := newIPv4TestServer(t, testAPI.handler)
+	defer server.Close()
+
+	superAdminKey := store.UserKey{NodeID: testNodeID(1), UserID: store.BootstrapAdminUserID}
+	superAdminToken := loginToken(t, testAPI.handler, superAdminKey, "root-password")
+	adminKey := createUserAs(t, testAPI.handler, superAdminToken, "rpc-admin", "rpc-admin-password", store.RoleAdmin)
+	managedKey := createUserAs(t, testAPI.handler, superAdminToken, "rpc-managed", "rpc-managed-password", store.RoleUser)
+
+	adminConn := dialClientWebSocket(t, server.URL)
+	defer adminConn.Close()
+	loginClientWebSocket(t, adminConn, adminKey, "rpc-admin-password")
+
+	superConn := dialClientWebSocket(t, server.URL)
+	defer superConn.Close()
+	loginClientWebSocket(t, superConn, superAdminKey, "root-password")
+
+	writeClientEnvelope(t, adminConn, &internalproto.ClientEnvelope{
+		Body: &internalproto.ClientEnvelope_CreateUser{
+			CreateUser: &internalproto.CreateUserRequest{
+				RequestId: 200,
+				Username:  "rpc-ordinary",
+				Password:  "rpc-ordinary-password",
+				Role:      store.RoleUser,
+			},
+		},
+	})
+	if createResp := readServerEnvelope(t, adminConn).GetCreateUserResponse(); createResp == nil || createResp.RequestId != 200 || createResp.User.GetRole() != store.RoleUser {
+		t.Fatalf("unexpected admin create user response: %+v", createResp)
+	}
+
+	writeClientEnvelope(t, adminConn, &internalproto.ClientEnvelope{
+		Body: &internalproto.ClientEnvelope_CreateUser{
+			CreateUser: &internalproto.CreateUserRequest{
+				RequestId: 201,
+				Username:  "rpc-blocked-admin",
+				Password:  "rpc-blocked-admin-password",
+				Role:      store.RoleAdmin,
+			},
+		},
+	})
+	if rpcErr := readServerEnvelope(t, adminConn).GetError(); rpcErr == nil || rpcErr.RequestId != 201 || rpcErr.Code != "forbidden" {
+		t.Fatalf("unexpected create admin forbidden error: %+v", rpcErr)
+	}
+
+	writeClientEnvelope(t, adminConn, &internalproto.ClientEnvelope{
+		Body: &internalproto.ClientEnvelope_ListEvents{
+			ListEvents: &internalproto.ListEventsRequest{RequestId: 202, After: 0, Limit: 10},
+		},
+	})
+	if listEvents := readServerEnvelope(t, adminConn).GetListEventsResponse(); listEvents == nil || listEvents.RequestId != 202 {
+		t.Fatalf("unexpected admin list events response: %+v", listEvents)
+	}
+
+	writeClientEnvelope(t, adminConn, &internalproto.ClientEnvelope{
+		Body: &internalproto.ClientEnvelope_OperationsStatus{
+			OperationsStatus: &internalproto.OperationsStatusRequest{RequestId: 203},
+		},
+	})
+	if opsResp := readServerEnvelope(t, adminConn).GetOperationsStatusResponse(); opsResp == nil || opsResp.RequestId != 203 {
+		t.Fatalf("unexpected admin ops response: %+v", opsResp)
+	}
+
+	writeClientEnvelope(t, adminConn, &internalproto.ClientEnvelope{
+		Body: &internalproto.ClientEnvelope_Metrics{
+			Metrics: &internalproto.MetricsRequest{RequestId: 204},
+		},
+	})
+	metricsResp := readServerEnvelope(t, adminConn).GetMetricsResponse()
+	if metricsResp == nil || metricsResp.RequestId != 204 || !strings.Contains(metricsResp.Text, "notifier_write_gate_ready") {
+		t.Fatalf("unexpected admin metrics response: %+v", metricsResp)
+	}
+
+	writeClientEnvelope(t, adminConn, &internalproto.ClientEnvelope{
+		Body: &internalproto.ClientEnvelope_UpdateUser{
+			UpdateUser: &internalproto.UpdateUserRequest{
+				RequestId: 205,
+				User:      &internalproto.UserRef{NodeId: managedKey.NodeID, UserId: managedKey.UserID},
+				Role:      &internalproto.StringField{Value: store.RoleAdmin},
+			},
+		},
+	})
+	if rpcErr := readServerEnvelope(t, adminConn).GetError(); rpcErr == nil || rpcErr.RequestId != 205 || rpcErr.Code != "forbidden" {
+		t.Fatalf("unexpected promote forbidden error: %+v", rpcErr)
+	}
+
+	writeClientEnvelope(t, superConn, &internalproto.ClientEnvelope{
+		Body: &internalproto.ClientEnvelope_UpdateUser{
+			UpdateUser: &internalproto.UpdateUserRequest{
+				RequestId: 206,
+				User:      &internalproto.UserRef{NodeId: managedKey.NodeID, UserId: managedKey.UserID},
+				Role:      &internalproto.StringField{Value: store.RoleAdmin},
+			},
+		},
+	})
+	updateResp := readServerEnvelope(t, superConn).GetUpdateUserResponse()
+	if updateResp == nil || updateResp.RequestId != 206 || updateResp.User.GetRole() != store.RoleAdmin {
+		t.Fatalf("unexpected super admin promote response: %+v", updateResp)
+	}
+
+	writeClientEnvelope(t, adminConn, &internalproto.ClientEnvelope{
+		Body: &internalproto.ClientEnvelope_UpdateUser{
+			UpdateUser: &internalproto.UpdateUserRequest{
+				RequestId: 207,
+				User:      &internalproto.UserRef{NodeId: managedKey.NodeID, UserId: managedKey.UserID},
+				Username:  &internalproto.StringField{Value: "blocked-admin-update"},
+			},
+		},
+	})
+	if rpcErr := readServerEnvelope(t, adminConn).GetError(); rpcErr == nil || rpcErr.RequestId != 207 || rpcErr.Code != "forbidden" {
+		t.Fatalf("unexpected update admin forbidden error: %+v", rpcErr)
+	}
+
+	writeClientEnvelope(t, adminConn, &internalproto.ClientEnvelope{
+		Body: &internalproto.ClientEnvelope_DeleteUser{
+			DeleteUser: &internalproto.DeleteUserRequest{
+				RequestId: 208,
+				User:      &internalproto.UserRef{NodeId: managedKey.NodeID, UserId: managedKey.UserID},
+			},
+		},
+	})
+	if rpcErr := readServerEnvelope(t, adminConn).GetError(); rpcErr == nil || rpcErr.RequestId != 208 || rpcErr.Code != "forbidden" {
+		t.Fatalf("unexpected delete admin forbidden error: %+v", rpcErr)
+	}
+
+	writeClientEnvelope(t, superConn, &internalproto.ClientEnvelope{
+		Body: &internalproto.ClientEnvelope_UpdateUser{
+			UpdateUser: &internalproto.UpdateUserRequest{
+				RequestId: 209,
+				User:      &internalproto.UserRef{NodeId: managedKey.NodeID, UserId: managedKey.UserID},
+				Role:      &internalproto.StringField{Value: store.RoleUser},
+			},
+		},
+	})
+	if demoteResp := readServerEnvelope(t, superConn).GetUpdateUserResponse(); demoteResp == nil || demoteResp.RequestId != 209 || demoteResp.User.GetRole() != store.RoleUser {
+		t.Fatalf("unexpected super admin demote response: %+v", demoteResp)
+	}
+
+	writeClientEnvelope(t, superConn, &internalproto.ClientEnvelope{
+		Body: &internalproto.ClientEnvelope_DeleteUser{
+			DeleteUser: &internalproto.DeleteUserRequest{
+				RequestId: 210,
+				User:      &internalproto.UserRef{NodeId: managedKey.NodeID, UserId: managedKey.UserID},
+			},
+		},
+	})
+	if deleteResp := readServerEnvelope(t, superConn).GetDeleteUserResponse(); deleteResp == nil || deleteResp.RequestId != 210 || deleteResp.Status != "deleted" {
+		t.Fatalf("unexpected super admin delete response: %+v", deleteResp)
 	}
 }
 

@@ -286,7 +286,7 @@ func (h *HTTP) handleLogin(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *HTTP) handleCreateUser(w http.ResponseWriter, r *http.Request) {
-	principal, ok := h.requireAdmin(w, r)
+	principal, ok := h.requireAuthenticated(w, r)
 	if !ok {
 		return
 	}
@@ -294,6 +294,10 @@ func (h *HTTP) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 	var req createUserRequest
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := h.authorizeCreateUser(principal, req.Role); err != nil {
+		writeStoreError(w, err)
 		return
 	}
 
@@ -343,7 +347,12 @@ func (h *HTTP) handleGetUser(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if _, ok := h.requireSelfOrAdmin(w, r, key); !ok {
+	principal, ok := h.requireAuthenticated(w, r)
+	if !ok {
+		return
+	}
+	if err := h.authorizeViewUser(principal, key); err != nil {
+		writeStoreError(w, err)
 		return
 	}
 
@@ -363,7 +372,12 @@ func (h *HTTP) handleGetUser(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *HTTP) handleListUsers(w http.ResponseWriter, r *http.Request) {
-	if _, ok := h.requireAdmin(w, r); !ok {
+	principal, ok := h.requireAuthenticated(w, r)
+	if !ok {
+		return
+	}
+	if err := h.authorizeListUsers(principal); err != nil {
+		writeStoreError(w, err)
 		return
 	}
 
@@ -399,14 +413,13 @@ func (h *HTTP) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		writeStoreError(w, err)
 		return
 	}
-	if err := h.authorizeManageUser(r.Context(), principal, target, true); err != nil {
-		writeStoreError(w, err)
-		return
-	}
-
 	var req updateUserRequest
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := h.authorizeUpdateUser(r.Context(), principal, target, req.Role, req.Password != nil, req.LoginName != nil); err != nil {
+		writeStoreError(w, err)
 		return
 	}
 
@@ -427,17 +440,6 @@ func (h *HTTP) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		passwordHash = &hashed
-	}
-	if req.LoginName != nil && (principal == nil || !isAdminRole(principal.User.Role)) {
-		writeStoreError(w, store.ErrForbidden)
-		return
-	}
-
-	if principal != nil && !isAdminRole(principal.User.Role) && target.Role == store.RoleChannel {
-		if req.Password != nil || req.Role != nil {
-			writeStoreError(w, store.ErrForbidden)
-			return
-		}
 	}
 
 	user, _, err := h.service.UpdateUser(r.Context(), store.UpdateUserParams{
@@ -475,7 +477,7 @@ func (h *HTTP) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 		writeStoreError(w, err)
 		return
 	}
-	if err := h.authorizeManageUser(r.Context(), principal, target, false); err != nil {
+	if err := h.authorizeDeleteUser(r.Context(), principal, target); err != nil {
 		writeStoreError(w, err)
 		return
 	}
@@ -593,16 +595,17 @@ func (h *HTTP) handleListMessagesByUser(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
+	principal, ok := h.requireAuthenticated(w, r)
+	if !ok {
+		return
+	}
 	target, err := h.service.GetUser(r.Context(), key)
 	if err != nil {
 		writeStoreError(w, err)
 		return
 	}
-	if target.CanLogin() {
-		if _, ok := h.requireSelfOrAdmin(w, r, key); !ok {
-			return
-		}
-	} else if _, ok := h.requireAdmin(w, r); !ok {
+	if err := h.authorizeListMessages(principal, target); err != nil {
+		writeStoreError(w, err)
 		return
 	}
 
@@ -647,7 +650,7 @@ func (h *HTTP) handleListUserAttachments(w http.ResponseWriter, r *http.Request)
 		writeStoreError(w, err)
 		return
 	}
-	if err := h.authorizeAttachmentOwnerAccess(r.Context(), principal, owner, attachmentType); err != nil {
+	if err := h.authorizeListAttachment(r.Context(), principal, owner, attachmentType); err != nil {
 		writeStoreError(w, err)
 		return
 	}
@@ -671,7 +674,12 @@ func (h *HTTP) handleGetUserMetadata(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if _, ok := h.requireSelfOrAdmin(w, r, owner); !ok {
+	principal, ok := h.requireAuthenticated(w, r)
+	if !ok {
+		return
+	}
+	if err := h.authorizeReadUserMetadata(principal, owner); err != nil {
+		writeStoreError(w, err)
 		return
 	}
 	metadata, err := h.service.GetUserMetadata(r.Context(), owner, key)
@@ -687,7 +695,12 @@ func (h *HTTP) handleUpsertUserMetadata(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
-	if _, ok := h.requireSelfOrAdmin(w, r, owner); !ok {
+	principal, ok := h.requireAuthenticated(w, r)
+	if !ok {
+		return
+	}
+	if err := h.authorizeWriteUserMetadata(principal, owner); err != nil {
+		writeStoreError(w, err)
 		return
 	}
 
@@ -719,7 +732,12 @@ func (h *HTTP) handleDeleteUserMetadata(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
-	if _, ok := h.requireSelfOrAdmin(w, r, owner); !ok {
+	principal, ok := h.requireAuthenticated(w, r)
+	if !ok {
+		return
+	}
+	if err := h.authorizeWriteUserMetadata(principal, owner); err != nil {
+		writeStoreError(w, err)
 		return
 	}
 	metadata, _, err := h.service.DeleteUserMetadata(r.Context(), store.DeleteUserMetadataParams{
@@ -738,7 +756,12 @@ func (h *HTTP) handleScanUserMetadata(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if _, ok := h.requireSelfOrAdmin(w, r, owner); !ok {
+	principal, ok := h.requireAuthenticated(w, r)
+	if !ok {
+		return
+	}
+	if err := h.authorizeReadUserMetadata(principal, owner); err != nil {
+		writeStoreError(w, err)
 		return
 	}
 	limit, err := metadataScanLimitFromQuery(r)
@@ -772,7 +795,7 @@ func (h *HTTP) handleUpsertUserAttachment(w http.ResponseWriter, r *http.Request
 	if !ok {
 		return
 	}
-	if err := h.authorizeAttachmentAccess(r.Context(), principal, owner, attachmentType); err != nil {
+	if err := h.authorizeManageAttachment(r.Context(), principal, owner, attachmentType); err != nil {
 		writeStoreError(w, err)
 		return
 	}
@@ -801,7 +824,7 @@ func (h *HTTP) handleDeleteUserAttachment(w http.ResponseWriter, r *http.Request
 	if !ok {
 		return
 	}
-	if err := h.authorizeAttachmentAccess(r.Context(), principal, owner, attachmentType); err != nil {
+	if err := h.authorizeManageAttachment(r.Context(), principal, owner, attachmentType); err != nil {
 		writeStoreError(w, err)
 		return
 	}
@@ -823,7 +846,12 @@ func (h *HTTP) handleSubscribeChannel(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if _, ok := h.requireSelfOrAdmin(w, r, subscriber); !ok {
+	principal, ok := h.requireAuthenticated(w, r)
+	if !ok {
+		return
+	}
+	if err := h.authorizeManageSubscription(principal, subscriber); err != nil {
+		writeStoreError(w, err)
 		return
 	}
 
@@ -850,7 +878,12 @@ func (h *HTTP) handleUnsubscribeChannel(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
-	if _, ok := h.requireSelfOrAdmin(w, r, subscriber); !ok {
+	principal, ok := h.requireAuthenticated(w, r)
+	if !ok {
+		return
+	}
+	if err := h.authorizeManageSubscription(principal, subscriber); err != nil {
+		writeStoreError(w, err)
 		return
 	}
 	channelNodeID, ok := parsePositivePathInt(w, r, "channel_node_id")
@@ -878,7 +911,12 @@ func (h *HTTP) handleListSubscriptions(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if _, ok := h.requireSelfOrAdmin(w, r, subscriber); !ok {
+	principal, ok := h.requireAuthenticated(w, r)
+	if !ok {
+		return
+	}
+	if err := h.authorizeListSubscription(principal, subscriber); err != nil {
+		writeStoreError(w, err)
 		return
 	}
 	subscriptions, err := h.service.ListChannelSubscriptions(r.Context(), subscriber)
@@ -901,7 +939,12 @@ func (h *HTTP) handleBlockUser(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if _, ok := h.requireSelfOrAdmin(w, r, owner); !ok {
+	principal, ok := h.requireAuthenticated(w, r)
+	if !ok {
+		return
+	}
+	if err := h.authorizeManageBlacklist(principal, owner); err != nil {
+		writeStoreError(w, err)
 		return
 	}
 
@@ -927,7 +970,12 @@ func (h *HTTP) handleUnblockUser(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if _, ok := h.requireSelfOrAdmin(w, r, owner); !ok {
+	principal, ok := h.requireAuthenticated(w, r)
+	if !ok {
+		return
+	}
+	if err := h.authorizeManageBlacklist(principal, owner); err != nil {
+		writeStoreError(w, err)
 		return
 	}
 	blockedNodeID, ok := parsePositivePathInt(w, r, "blocked_node_id")
@@ -955,7 +1003,12 @@ func (h *HTTP) handleListBlockedUsers(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if _, ok := h.requireSelfOrAdmin(w, r, owner); !ok {
+	principal, ok := h.requireAuthenticated(w, r)
+	if !ok {
+		return
+	}
+	if err := h.authorizeListBlacklist(principal, owner); err != nil {
+		writeStoreError(w, err)
 		return
 	}
 	entries, err := h.service.ListBlockedUsers(r.Context(), owner)
@@ -974,7 +1027,12 @@ func (h *HTTP) handleListBlockedUsers(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *HTTP) handleListEvents(w http.ResponseWriter, r *http.Request) {
-	if _, ok := h.requireAdmin(w, r); !ok {
+	principal, ok := h.requireAuthenticated(w, r)
+	if !ok {
+		return
+	}
+	if err := h.authorizeListEvents(principal); err != nil {
+		writeStoreError(w, err)
 		return
 	}
 
@@ -1016,7 +1074,12 @@ func (h *HTTP) handleListEvents(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *HTTP) handleOpsStatus(w http.ResponseWriter, r *http.Request) {
-	if _, ok := h.requireAdmin(w, r); !ok {
+	principal, ok := h.requireAuthenticated(w, r)
+	if !ok {
+		return
+	}
+	if err := h.authorizeReadOpsStatus(principal); err != nil {
+		writeStoreError(w, err)
 		return
 	}
 
@@ -1029,7 +1092,12 @@ func (h *HTTP) handleOpsStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *HTTP) handleClusterNodes(w http.ResponseWriter, r *http.Request) {
-	if _, ok := h.requireAuthenticated(w, r); !ok {
+	principal, ok := h.requireAuthenticated(w, r)
+	if !ok {
+		return
+	}
+	if err := h.authorizeListClusterNodes(principal); err != nil {
+		writeStoreError(w, err)
 		return
 	}
 
@@ -1042,7 +1110,12 @@ func (h *HTTP) handleClusterNodes(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *HTTP) handleNodeLoggedInUsers(w http.ResponseWriter, r *http.Request) {
-	if _, ok := h.requireAuthenticated(w, r); !ok {
+	principal, ok := h.requireAuthenticated(w, r)
+	if !ok {
+		return
+	}
+	if err := h.authorizeListLoggedInUsers(principal); err != nil {
+		writeStoreError(w, err)
 		return
 	}
 	nodeID, ok := parsePositivePathInt(w, r, "node_id")
@@ -1058,7 +1131,12 @@ func (h *HTTP) handleNodeLoggedInUsers(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *HTTP) handleMetrics(w http.ResponseWriter, r *http.Request) {
-	if _, ok := h.requireAdmin(w, r); !ok {
+	principal, ok := h.requireAuthenticated(w, r)
+	if !ok {
+		return
+	}
+	if err := h.authorizeReadMetrics(principal); err != nil {
+		writeStoreError(w, err)
 		return
 	}
 
@@ -1681,74 +1759,6 @@ func (h *HTTP) parseAttachmentWriteRequest(w http.ResponseWriter, r *http.Reques
 	return owner, attachmentType, store.UserKey{NodeID: subjectNodeID, UserID: subjectUserID}, principal, true
 }
 
-func (h *HTTP) authorizeAttachmentAccess(ctx context.Context, principal *requestPrincipal, owner store.UserKey, attachmentType store.AttachmentType) error {
-	if principal == nil || isAdminRole(principal.User.Role) {
-		return nil
-	}
-	switch attachmentType {
-	case store.AttachmentTypeChannelManager, store.AttachmentTypeChannelWriter:
-		allowed, err := h.service.IsChannelManager(ctx, owner, principal.User.Key())
-		if err != nil {
-			return err
-		}
-		if allowed {
-			return nil
-		}
-		return store.ErrForbidden
-	case store.AttachmentTypeChannelSubscription, store.AttachmentTypeUserBlacklist:
-		if principal.User.Key() == owner {
-			return nil
-		}
-		return store.ErrForbidden
-	default:
-		return store.ErrInvalidInput
-	}
-}
-
-func (h *HTTP) authorizeAttachmentOwnerAccess(ctx context.Context, principal *requestPrincipal, owner store.UserKey, attachmentType store.AttachmentType) error {
-	if principal == nil || isAdminRole(principal.User.Role) {
-		return nil
-	}
-	if attachmentType != "" {
-		return h.authorizeAttachmentAccess(ctx, principal, owner, attachmentType)
-	}
-	ownerUser, err := h.service.GetUser(ctx, owner)
-	if err != nil {
-		return err
-	}
-	if ownerUser.Role == store.RoleChannel {
-		allowed, err := h.service.IsChannelManager(ctx, owner, principal.User.Key())
-		if err != nil {
-			return err
-		}
-		if allowed {
-			return nil
-		}
-		return store.ErrForbidden
-	}
-	if principal.User.Key() == owner {
-		return nil
-	}
-	return store.ErrForbidden
-}
-
-func (h *HTTP) authorizeManageUser(ctx context.Context, principal *requestPrincipal, target store.User, update bool) error {
-	if principal == nil || isAdminRole(principal.User.Role) {
-		return nil
-	}
-	if target.Role != store.RoleChannel {
-		return store.ErrForbidden
-	}
-	allowed, err := h.service.IsChannelManager(ctx, target.Key(), principal.User.Key())
-	if err != nil {
-		return err
-	}
-	if !allowed {
-		return store.ErrForbidden
-	}
-	return nil
-}
-
 func (h *HTTP) invalidateAttachmentCaches(attachment store.Attachment) {
 	switch attachment.Type {
 	case store.AttachmentTypeChannelSubscription:
@@ -1768,36 +1778,6 @@ func (h *HTTP) requireAuthenticated(w http.ResponseWriter, r *http.Request) (*re
 		return nil, false
 	}
 	return principal, true
-}
-
-func (h *HTTP) requireAdmin(w http.ResponseWriter, r *http.Request) (*requestPrincipal, bool) {
-	if h.signer == nil {
-		return nil, true
-	}
-	principal, ok := h.requireAuthenticated(w, r)
-	if !ok {
-		return nil, false
-	}
-	if !isAdminRole(principal.User.Role) {
-		writeError(w, http.StatusForbidden, "forbidden")
-		return nil, false
-	}
-	return principal, true
-}
-
-func (h *HTTP) requireSelfOrAdmin(w http.ResponseWriter, r *http.Request, key store.UserKey) (*requestPrincipal, bool) {
-	if h.signer == nil {
-		return nil, true
-	}
-	principal, ok := h.requireAuthenticated(w, r)
-	if !ok {
-		return nil, false
-	}
-	if isAdminRole(principal.User.Role) || principal.User.Key() == key {
-		return principal, true
-	}
-	writeError(w, http.StatusForbidden, "forbidden")
-	return nil, false
 }
 
 func (h *HTTP) authenticateRequest(ctx context.Context, r *http.Request) (*requestPrincipal, error) {

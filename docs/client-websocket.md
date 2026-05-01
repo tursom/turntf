@@ -384,7 +384,9 @@ ServerEnvelope {
 
 权限边界与 HTTP 完全一致：
 
-- `create_user`、`update_user`、`delete_user`、`list_events`、`operations_status`、`metrics` 仅管理员可用。
+- `list_events`、`operations_status`、`metrics` 允许 `role=admin` 和 `role=super_admin`。
+- `create_user`、`update_user`、`delete_user` 允许 `role=admin` 和 `role=super_admin`，但以下高风险动作仅 `super_admin` 可用：创建 `role=admin` 用户、把用户提升为 `admin`、把 `admin` 降权回普通角色、修改或删除 `role=admin` 用户。
+- 系统保留用户（bootstrap `super_admin`、`broadcast`、`node`）仍不能通过管理 RPC 修改或删除。
 - `list_cluster_nodes` 只要求当前连接已登录，普通用户可用。
 - `list_node_logged_in_users` 只要求当前连接已登录，普通用户可用；目标节点不可达时返回错误，不返回空列表。
 - `get_user` 允许本人或管理员。

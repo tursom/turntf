@@ -102,11 +102,12 @@ printf 'secret' | go run ./cmd/turntf hash --stdin
 ## 认证与授权
 
 - 登录使用 `node_id + user_id + password`，签发的 token 在所有共享 `auth.token_secret` 的节点间通用
-- `user_id = 1`：保底超级管理员，不可删除、不可降权、不可改名，允许改密码
+- `user_id = 1`：保底超级管理员 (`role=super_admin`)，管理面高风险动作只能由 `super_admin` 执行；系统保留用户仍不可通过管理接口修改或删除
 - `user_id = 2`：系统广播地址 (`role=broadcast`)，不可登录、不可删除
 - `user_id = 3`：系统节点入口地址 (`role=node`)，不可登录、不可删除
 - `user_id ≤ 1024`：保留区间，普通用户和 channel 从 1025 开始分配
 - `role=channel`：不可登录的组播地址，订阅后接收订阅时间之后的 channel 消息
+- `role=admin`：保留大部分管理能力，但不能创建/提升/修改/删除管理员用户
 - 集群内部 `Envelope` 收发两端均使用 `cluster.secret` 做 HMAC 鉴权
 
 **权限矩阵：**
@@ -118,7 +119,8 @@ printf 'secret' | go run ./cmd/turntf hash --stdin
 | 发送消息到可登录用户或已授权 channel | 登录用户 |
 | 发送瞬时包到 `(node_id, 3)` | 登录用户 |
 | 查询集群节点 | 登录用户 |
-| 创建用户、修改/删除他人信息、事件查询、运维/监控 | 管理员 |
+| 创建普通用户、管理普通用户和 channel、事件查询、运维/监控 | `admin` 或 `super_admin` |
+| 创建 `role=admin`、管理员升降权、修改或删除管理员用户 | 仅 `super_admin` |
 
 ## 集群同步
 

@@ -95,7 +95,7 @@ func (s *clientWSSession) handleCreateUser(ctx context.Context, req *internalpro
 	if req == nil {
 		return s.writeError("invalid_request", "create_user cannot be empty", 0)
 	}
-	if err := s.requireAdminPrincipal(); err != nil {
+	if err := s.http.authorizeCreateUser(s.principal, req.Role); err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
 	profile, err := normalizeJSONValue(req.ProfileJson, "{}")
@@ -147,7 +147,7 @@ func (s *clientWSSession) handleGetUser(ctx context.Context, req *internalproto.
 	if err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
-	if err := s.requireSelfOrAdminPrincipal(key); err != nil {
+	if err := s.http.authorizeViewUser(s.principal, key); err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
 	user, err := s.http.service.GetUser(ctx, key)
@@ -180,7 +180,7 @@ func (s *clientWSSession) handleUpdateUser(ctx context.Context, req *internalpro
 	if err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
-	if err := s.authorizeManageUserPrincipal(ctx, target); err != nil {
+	if err := s.http.authorizeUpdateUser(ctx, s.principal, target, stringPtrValue(req.Role), req.Password != nil, req.LoginName != nil); err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
 
@@ -201,15 +201,6 @@ func (s *clientWSSession) handleUpdateUser(ctx context.Context, req *internalpro
 		}
 		passwordHash = &hashed
 	}
-	if req.LoginName != nil && !isAdminRole(s.principal.User.Role) {
-		return s.writeStoreOrRequestError(req.RequestId, store.ErrForbidden)
-	}
-	if !isAdminRole(s.principal.User.Role) && target.Role == store.RoleChannel {
-		if passwordHash != nil || req.Role != nil || req.LoginName != nil {
-			return s.writeStoreOrRequestError(req.RequestId, store.ErrForbidden)
-		}
-	}
-
 	user, _, err := s.http.service.UpdateUser(ctx, store.UpdateUserParams{
 		Key:          key,
 		Username:     stringPtrValue(req.Username),
@@ -248,7 +239,7 @@ func (s *clientWSSession) handleDeleteUser(ctx context.Context, req *internalpro
 	if err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
-	if err := s.authorizeManageUserPrincipal(ctx, target); err != nil {
+	if err := s.http.authorizeDeleteUser(ctx, s.principal, target); err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
 	if _, err := s.http.service.DeleteUser(ctx, key); err != nil {
@@ -274,7 +265,11 @@ func (s *clientWSSession) handleListMessages(ctx context.Context, req *internalp
 	if err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
-	if err := s.authorizeListMessages(ctx, key); err != nil {
+	target, err := s.http.service.GetUser(ctx, key)
+	if err != nil {
+		return s.writeStoreOrRequestError(req.RequestId, err)
+	}
+	if err := s.http.authorizeListMessages(s.principal, target); err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
 	limit := 100
@@ -308,7 +303,7 @@ func (s *clientWSSession) handleGetUserMetadata(ctx context.Context, req *intern
 	if err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
-	if err := s.requireSelfOrAdminPrincipal(owner); err != nil {
+	if err := s.http.authorizeReadUserMetadata(s.principal, owner); err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
 	metadata, err := s.http.service.GetUserMetadata(ctx, owner, req.Key)
@@ -333,7 +328,7 @@ func (s *clientWSSession) handleUpsertUserMetadata(ctx context.Context, req *int
 	if err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
-	if err := s.requireSelfOrAdminPrincipal(owner); err != nil {
+	if err := s.http.authorizeWriteUserMetadata(s.principal, owner); err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
 	expiresAt, err := parseOptionalMetadataExpiresAt(stringPtrValue(req.ExpiresAt))
@@ -367,7 +362,7 @@ func (s *clientWSSession) handleDeleteUserMetadata(ctx context.Context, req *int
 	if err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
-	if err := s.requireSelfOrAdminPrincipal(owner); err != nil {
+	if err := s.http.authorizeWriteUserMetadata(s.principal, owner); err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
 	metadata, _, err := s.http.service.DeleteUserMetadata(ctx, store.DeleteUserMetadataParams{
@@ -395,7 +390,7 @@ func (s *clientWSSession) handleScanUserMetadata(ctx context.Context, req *inter
 	if err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
-	if err := s.requireSelfOrAdminPrincipal(owner); err != nil {
+	if err := s.http.authorizeReadUserMetadata(s.principal, owner); err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
 	result, err := s.http.service.ScanUserMetadata(ctx, store.ScanUserMetadataParams{
@@ -439,7 +434,7 @@ func (s *clientWSSession) handleUpsertUserAttachment(ctx context.Context, req *i
 	if err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
-	if err := s.authorizeAttachmentPrincipal(ctx, owner, attachmentType); err != nil {
+	if err := s.http.authorizeManageAttachment(ctx, s.principal, owner, attachmentType); err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
 	attachment, _, err := s.http.service.UpsertAttachment(ctx, store.UpsertAttachmentParams{
@@ -478,7 +473,7 @@ func (s *clientWSSession) handleDeleteUserAttachment(ctx context.Context, req *i
 	if err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
-	if err := s.authorizeAttachmentPrincipal(ctx, owner, attachmentType); err != nil {
+	if err := s.http.authorizeManageAttachment(ctx, s.principal, owner, attachmentType); err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
 	attachment, _, err := s.http.service.DeleteAttachment(ctx, store.DeleteAttachmentParams{
@@ -512,7 +507,7 @@ func (s *clientWSSession) handleListUserAttachments(ctx context.Context, req *in
 	if err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
-	if err := s.authorizeAttachmentOwnerPrincipal(ctx, owner, attachmentType); err != nil {
+	if err := s.http.authorizeListAttachment(ctx, s.principal, owner, attachmentType); err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
 	attachments, err := s.http.service.ListUserAttachments(ctx, owner, attachmentType)
@@ -538,7 +533,7 @@ func (s *clientWSSession) handleListEvents(ctx context.Context, req *internalpro
 	if req == nil {
 		return s.writeError("invalid_request", "list_events cannot be empty", 0)
 	}
-	if err := s.requireAdminPrincipal(); err != nil {
+	if err := s.http.authorizeListEvents(s.principal); err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
 	limit := 100
@@ -572,7 +567,7 @@ func (s *clientWSSession) handleOperationsStatus(ctx context.Context, req *inter
 	if req == nil {
 		return s.writeError("invalid_request", "operations_status cannot be empty", 0)
 	}
-	if err := s.requireAdminPrincipal(); err != nil {
+	if err := s.http.authorizeReadOpsStatus(s.principal); err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
 	status, err := s.http.service.OperationsStatus(ctx)
@@ -593,7 +588,7 @@ func (s *clientWSSession) handleListClusterNodes(ctx context.Context, req *inter
 	if req == nil {
 		return s.writeError("invalid_request", "list_cluster_nodes cannot be empty", 0)
 	}
-	if err := s.requireAuthenticatedPrincipal(); err != nil {
+	if err := s.http.authorizeListClusterNodes(s.principal); err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
 	nodes, err := s.http.service.ClusterNodes(ctx)
@@ -619,7 +614,7 @@ func (s *clientWSSession) handleListNodeLoggedInUsers(ctx context.Context, req *
 	if req == nil {
 		return s.writeError("invalid_request", "list_node_logged_in_users cannot be empty", 0)
 	}
-	if err := s.requireAuthenticatedPrincipal(); err != nil {
+	if err := s.http.authorizeListLoggedInUsers(s.principal); err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
 	users, err := s.http.service.ListNodeLoggedInUsers(ctx, req.NodeId)
@@ -713,7 +708,7 @@ func (s *clientWSSession) handleMetrics(ctx context.Context, req *internalproto.
 	if req == nil {
 		return s.writeError("invalid_request", "metrics cannot be empty", 0)
 	}
-	if err := s.requireAdminPrincipal(); err != nil {
+	if err := s.http.authorizeReadMetrics(s.principal); err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
 	text, err := s.http.service.Metrics(ctx)
@@ -728,118 +723,6 @@ func (s *clientWSSession) handleMetrics(ctx context.Context, req *internalproto.
 			},
 		},
 	})
-}
-
-func (s *clientWSSession) requireAdminPrincipal() error {
-	if s.principal == nil || !isAdminRole(s.principal.User.Role) {
-		return store.ErrForbidden
-	}
-	return nil
-}
-
-func (s *clientWSSession) requireAuthenticatedPrincipal() error {
-	if s.principal == nil {
-		return store.ErrForbidden
-	}
-	return nil
-}
-
-func (s *clientWSSession) requireSelfOrAdminPrincipal(key store.UserKey) error {
-	if s.principal == nil {
-		return store.ErrForbidden
-	}
-	if isAdminRole(s.principal.User.Role) || s.principal.User.Key() == key {
-		return nil
-	}
-	return store.ErrForbidden
-}
-
-func (s *clientWSSession) authorizeManageUserPrincipal(ctx context.Context, target store.User) error {
-	if s.principal == nil {
-		return store.ErrForbidden
-	}
-	if isAdminRole(s.principal.User.Role) {
-		return nil
-	}
-	if target.Role != store.RoleChannel {
-		return store.ErrForbidden
-	}
-	allowed, err := s.http.service.IsChannelManager(ctx, target.Key(), s.principal.User.Key())
-	if err != nil {
-		return err
-	}
-	if !allowed {
-		return store.ErrForbidden
-	}
-	return nil
-}
-
-func (s *clientWSSession) authorizeAttachmentPrincipal(ctx context.Context, owner store.UserKey, attachmentType store.AttachmentType) error {
-	if s.principal == nil {
-		return store.ErrForbidden
-	}
-	if isAdminRole(s.principal.User.Role) {
-		return nil
-	}
-	switch attachmentType {
-	case store.AttachmentTypeChannelManager, store.AttachmentTypeChannelWriter:
-		allowed, err := s.http.service.IsChannelManager(ctx, owner, s.principal.User.Key())
-		if err != nil {
-			return err
-		}
-		if allowed {
-			return nil
-		}
-		return store.ErrForbidden
-	case store.AttachmentTypeChannelSubscription, store.AttachmentTypeUserBlacklist:
-		if s.principal.User.Key() == owner {
-			return nil
-		}
-		return store.ErrForbidden
-	default:
-		return store.ErrInvalidInput
-	}
-}
-
-func (s *clientWSSession) authorizeAttachmentOwnerPrincipal(ctx context.Context, owner store.UserKey, attachmentType store.AttachmentType) error {
-	if s.principal == nil {
-		return store.ErrForbidden
-	}
-	if isAdminRole(s.principal.User.Role) {
-		return nil
-	}
-	if attachmentType != "" {
-		return s.authorizeAttachmentPrincipal(ctx, owner, attachmentType)
-	}
-	ownerUser, err := s.http.service.GetUser(ctx, owner)
-	if err != nil {
-		return err
-	}
-	if ownerUser.Role == store.RoleChannel {
-		allowed, err := s.http.service.IsChannelManager(ctx, owner, s.principal.User.Key())
-		if err != nil {
-			return err
-		}
-		if allowed {
-			return nil
-		}
-		return store.ErrForbidden
-	}
-	if s.principal.User.Key() == owner {
-		return nil
-	}
-	return store.ErrForbidden
-}
-
-func (s *clientWSSession) authorizeListMessages(ctx context.Context, key store.UserKey) error {
-	target, err := s.http.service.GetUser(ctx, key)
-	if err != nil {
-		return err
-	}
-	if target.CanLogin() {
-		return s.requireSelfOrAdminPrincipal(key)
-	}
-	return s.requireAdminPrincipal()
 }
 
 func userKeyFromProto(ref *internalproto.UserRef) (store.UserKey, error) {

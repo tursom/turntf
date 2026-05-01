@@ -19,6 +19,7 @@ import (
 
 	"github.com/tursom/turntf/internal/app"
 	"github.com/tursom/turntf/internal/auth"
+	"github.com/tursom/turntf/internal/permission"
 	"github.com/tursom/turntf/internal/store"
 )
 
@@ -42,6 +43,7 @@ type onlineUserState struct {
 
 type HTTP struct {
 	service          *Service
+	authorizer       *permission.Authorizer
 	mux              *http.ServeMux
 	nodeID           int64
 	signer           *auth.Signer
@@ -122,6 +124,13 @@ type requestPrincipal struct {
 	Claims auth.Claims
 }
 
+func actorFromPrincipal(principal *requestPrincipal) *store.User {
+	if principal == nil {
+		return nil
+	}
+	return &principal.User
+}
+
 type deliveryKind string
 
 const (
@@ -151,6 +160,7 @@ func NewHTTP(service *Service, opts ...HTTPOptions) *HTTP {
 	}
 	h := &HTTP{
 		service:         service,
+		authorizer:      permission.NewAuthorizer(service, resolved.Signer != nil),
 		mux:             http.NewServeMux(),
 		nodeID:          resolved.NodeID,
 		signer:          resolved.Signer,
@@ -296,7 +306,7 @@ func (h *HTTP) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if err := h.authorizeCreateUser(principal, req.Role); err != nil {
+	if err := h.authorizer.CreateUser(actorFromPrincipal(principal), req.Role); err != nil {
 		writeStoreError(w, err)
 		return
 	}
@@ -351,7 +361,7 @@ func (h *HTTP) handleGetUser(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := h.authorizeViewUser(principal, key); err != nil {
+	if err := h.authorizer.ViewUser(actorFromPrincipal(principal), key); err != nil {
 		writeStoreError(w, err)
 		return
 	}
@@ -376,7 +386,7 @@ func (h *HTTP) handleListUsers(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := h.authorizeListUsers(principal); err != nil {
+	if err := h.authorizer.ListUsers(actorFromPrincipal(principal)); err != nil {
 		writeStoreError(w, err)
 		return
 	}
@@ -418,7 +428,7 @@ func (h *HTTP) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if err := h.authorizeUpdateUser(r.Context(), principal, target, req.Role, req.Password != nil, req.LoginName != nil); err != nil {
+	if err := h.authorizer.UpdateUser(r.Context(), actorFromPrincipal(principal), target, req.Role, req.Password != nil, req.LoginName != nil); err != nil {
 		writeStoreError(w, err)
 		return
 	}
@@ -477,7 +487,7 @@ func (h *HTTP) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 		writeStoreError(w, err)
 		return
 	}
-	if err := h.authorizeDeleteUser(r.Context(), principal, target); err != nil {
+	if err := h.authorizer.DeleteUser(r.Context(), actorFromPrincipal(principal), target); err != nil {
 		writeStoreError(w, err)
 		return
 	}
@@ -510,7 +520,7 @@ func (h *HTTP) handleCreateMessage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if err := h.authorizeCreateMessage(r.Context(), principal, key); err != nil {
+	if err := h.authorizer.CreateMessage(r.Context(), actorFromPrincipal(principal), key); err != nil {
 		writeStoreError(w, err)
 		return
 	}
@@ -580,7 +590,7 @@ func (h *HTTP) handleListMessagesByUser(w http.ResponseWriter, r *http.Request) 
 		writeStoreError(w, err)
 		return
 	}
-	if err := h.authorizeListMessages(principal, target); err != nil {
+	if err := h.authorizer.ListMessages(actorFromPrincipal(principal), target); err != nil {
 		writeStoreError(w, err)
 		return
 	}
@@ -626,7 +636,7 @@ func (h *HTTP) handleListUserAttachments(w http.ResponseWriter, r *http.Request)
 		writeStoreError(w, err)
 		return
 	}
-	if err := h.authorizeListAttachment(r.Context(), principal, owner, attachmentType); err != nil {
+	if err := h.authorizer.ListAttachment(r.Context(), actorFromPrincipal(principal), owner, attachmentType); err != nil {
 		writeStoreError(w, err)
 		return
 	}
@@ -654,7 +664,7 @@ func (h *HTTP) handleGetUserMetadata(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := h.authorizeReadUserMetadata(principal, owner); err != nil {
+	if err := h.authorizer.ReadUserMetadata(actorFromPrincipal(principal), owner); err != nil {
 		writeStoreError(w, err)
 		return
 	}
@@ -675,7 +685,7 @@ func (h *HTTP) handleUpsertUserMetadata(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
-	if err := h.authorizeWriteUserMetadata(principal, owner); err != nil {
+	if err := h.authorizer.WriteUserMetadata(actorFromPrincipal(principal), owner); err != nil {
 		writeStoreError(w, err)
 		return
 	}
@@ -712,7 +722,7 @@ func (h *HTTP) handleDeleteUserMetadata(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
-	if err := h.authorizeWriteUserMetadata(principal, owner); err != nil {
+	if err := h.authorizer.WriteUserMetadata(actorFromPrincipal(principal), owner); err != nil {
 		writeStoreError(w, err)
 		return
 	}
@@ -736,7 +746,7 @@ func (h *HTTP) handleScanUserMetadata(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := h.authorizeReadUserMetadata(principal, owner); err != nil {
+	if err := h.authorizer.ReadUserMetadata(actorFromPrincipal(principal), owner); err != nil {
 		writeStoreError(w, err)
 		return
 	}
@@ -771,7 +781,7 @@ func (h *HTTP) handleUpsertUserAttachment(w http.ResponseWriter, r *http.Request
 	if !ok {
 		return
 	}
-	if err := h.authorizeManageAttachment(r.Context(), principal, owner, attachmentType); err != nil {
+	if err := h.authorizer.ManageAttachment(r.Context(), actorFromPrincipal(principal), owner, attachmentType); err != nil {
 		writeStoreError(w, err)
 		return
 	}
@@ -800,7 +810,7 @@ func (h *HTTP) handleDeleteUserAttachment(w http.ResponseWriter, r *http.Request
 	if !ok {
 		return
 	}
-	if err := h.authorizeManageAttachment(r.Context(), principal, owner, attachmentType); err != nil {
+	if err := h.authorizer.ManageAttachment(r.Context(), actorFromPrincipal(principal), owner, attachmentType); err != nil {
 		writeStoreError(w, err)
 		return
 	}
@@ -826,7 +836,7 @@ func (h *HTTP) handleSubscribeChannel(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := h.authorizeManageSubscription(principal, subscriber); err != nil {
+	if err := h.authorizer.ManageSubscription(actorFromPrincipal(principal), subscriber); err != nil {
 		writeStoreError(w, err)
 		return
 	}
@@ -858,7 +868,7 @@ func (h *HTTP) handleUnsubscribeChannel(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
-	if err := h.authorizeManageSubscription(principal, subscriber); err != nil {
+	if err := h.authorizer.ManageSubscription(actorFromPrincipal(principal), subscriber); err != nil {
 		writeStoreError(w, err)
 		return
 	}
@@ -891,7 +901,7 @@ func (h *HTTP) handleListSubscriptions(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := h.authorizeListSubscription(principal, subscriber); err != nil {
+	if err := h.authorizer.ListSubscription(actorFromPrincipal(principal), subscriber); err != nil {
 		writeStoreError(w, err)
 		return
 	}
@@ -919,7 +929,7 @@ func (h *HTTP) handleBlockUser(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := h.authorizeManageBlacklist(principal, owner); err != nil {
+	if err := h.authorizer.ManageBlacklist(actorFromPrincipal(principal), owner); err != nil {
 		writeStoreError(w, err)
 		return
 	}
@@ -950,7 +960,7 @@ func (h *HTTP) handleUnblockUser(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := h.authorizeManageBlacklist(principal, owner); err != nil {
+	if err := h.authorizer.ManageBlacklist(actorFromPrincipal(principal), owner); err != nil {
 		writeStoreError(w, err)
 		return
 	}
@@ -983,7 +993,7 @@ func (h *HTTP) handleListBlockedUsers(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := h.authorizeListBlacklist(principal, owner); err != nil {
+	if err := h.authorizer.ListBlacklist(actorFromPrincipal(principal), owner); err != nil {
 		writeStoreError(w, err)
 		return
 	}
@@ -1007,7 +1017,7 @@ func (h *HTTP) handleListEvents(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := h.authorizeListEvents(principal); err != nil {
+	if err := h.authorizer.ListEvents(actorFromPrincipal(principal)); err != nil {
 		writeStoreError(w, err)
 		return
 	}
@@ -1054,7 +1064,7 @@ func (h *HTTP) handleOpsStatus(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := h.authorizeReadOpsStatus(principal); err != nil {
+	if err := h.authorizer.ReadOpsStatus(actorFromPrincipal(principal)); err != nil {
 		writeStoreError(w, err)
 		return
 	}
@@ -1072,7 +1082,7 @@ func (h *HTTP) handleClusterNodes(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := h.authorizeListClusterNodes(principal); err != nil {
+	if err := h.authorizer.ListClusterNodes(actorFromPrincipal(principal)); err != nil {
 		writeStoreError(w, err)
 		return
 	}
@@ -1090,7 +1100,7 @@ func (h *HTTP) handleNodeLoggedInUsers(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := h.authorizeListLoggedInUsers(principal); err != nil {
+	if err := h.authorizer.ListLoggedInUsers(actorFromPrincipal(principal)); err != nil {
 		writeStoreError(w, err)
 		return
 	}
@@ -1111,7 +1121,7 @@ func (h *HTTP) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := h.authorizeReadMetrics(principal); err != nil {
+	if err := h.authorizer.ReadMetrics(actorFromPrincipal(principal)); err != nil {
 		writeStoreError(w, err)
 		return
 	}

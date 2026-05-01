@@ -21,7 +21,7 @@ func (s *clientWSSession) handleSendMessage(ctx context.Context, req *internalpr
 		return s.writeError("invalid_request", "target is required", req.RequestId)
 	}
 	target := store.UserKey{NodeID: req.Target.NodeId, UserID: req.Target.UserId}
-	if err := s.http.authorizeCreateMessage(ctx, s.principal, target); err != nil {
+	if err := s.http.authorizer.CreateMessage(ctx, actorFromPrincipal(s.principal), target); err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
 	sender, err := messageSenderFromPrincipal(s.principal)
@@ -95,7 +95,7 @@ func (s *clientWSSession) handleCreateUser(ctx context.Context, req *internalpro
 	if req == nil {
 		return s.writeError("invalid_request", "create_user cannot be empty", 0)
 	}
-	if err := s.http.authorizeCreateUser(s.principal, req.Role); err != nil {
+	if err := s.http.authorizer.CreateUser(actorFromPrincipal(s.principal), req.Role); err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
 	profile, err := normalizeJSONValue(req.ProfileJson, "{}")
@@ -147,7 +147,7 @@ func (s *clientWSSession) handleGetUser(ctx context.Context, req *internalproto.
 	if err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
-	if err := s.http.authorizeViewUser(s.principal, key); err != nil {
+	if err := s.http.authorizer.ViewUser(actorFromPrincipal(s.principal), key); err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
 	user, err := s.http.service.GetUser(ctx, key)
@@ -180,7 +180,7 @@ func (s *clientWSSession) handleUpdateUser(ctx context.Context, req *internalpro
 	if err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
-	if err := s.http.authorizeUpdateUser(ctx, s.principal, target, stringPtrValue(req.Role), req.Password != nil, req.LoginName != nil); err != nil {
+	if err := s.http.authorizer.UpdateUser(ctx, actorFromPrincipal(s.principal), target, stringPtrValue(req.Role), req.Password != nil, req.LoginName != nil); err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
 
@@ -239,7 +239,7 @@ func (s *clientWSSession) handleDeleteUser(ctx context.Context, req *internalpro
 	if err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
-	if err := s.http.authorizeDeleteUser(ctx, s.principal, target); err != nil {
+	if err := s.http.authorizer.DeleteUser(ctx, actorFromPrincipal(s.principal), target); err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
 	if _, err := s.http.service.DeleteUser(ctx, key); err != nil {
@@ -269,7 +269,7 @@ func (s *clientWSSession) handleListMessages(ctx context.Context, req *internalp
 	if err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
-	if err := s.http.authorizeListMessages(s.principal, target); err != nil {
+	if err := s.http.authorizer.ListMessages(actorFromPrincipal(s.principal), target); err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
 	limit := 100
@@ -303,7 +303,7 @@ func (s *clientWSSession) handleGetUserMetadata(ctx context.Context, req *intern
 	if err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
-	if err := s.http.authorizeReadUserMetadata(s.principal, owner); err != nil {
+	if err := s.http.authorizer.ReadUserMetadata(actorFromPrincipal(s.principal), owner); err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
 	metadata, err := s.http.service.GetUserMetadata(ctx, owner, req.Key)
@@ -328,7 +328,7 @@ func (s *clientWSSession) handleUpsertUserMetadata(ctx context.Context, req *int
 	if err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
-	if err := s.http.authorizeWriteUserMetadata(s.principal, owner); err != nil {
+	if err := s.http.authorizer.WriteUserMetadata(actorFromPrincipal(s.principal), owner); err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
 	expiresAt, err := parseOptionalMetadataExpiresAt(stringPtrValue(req.ExpiresAt))
@@ -362,7 +362,7 @@ func (s *clientWSSession) handleDeleteUserMetadata(ctx context.Context, req *int
 	if err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
-	if err := s.http.authorizeWriteUserMetadata(s.principal, owner); err != nil {
+	if err := s.http.authorizer.WriteUserMetadata(actorFromPrincipal(s.principal), owner); err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
 	metadata, _, err := s.http.service.DeleteUserMetadata(ctx, store.DeleteUserMetadataParams{
@@ -390,7 +390,7 @@ func (s *clientWSSession) handleScanUserMetadata(ctx context.Context, req *inter
 	if err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
-	if err := s.http.authorizeReadUserMetadata(s.principal, owner); err != nil {
+	if err := s.http.authorizer.ReadUserMetadata(actorFromPrincipal(s.principal), owner); err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
 	result, err := s.http.service.ScanUserMetadata(ctx, store.ScanUserMetadataParams{
@@ -434,7 +434,7 @@ func (s *clientWSSession) handleUpsertUserAttachment(ctx context.Context, req *i
 	if err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
-	if err := s.http.authorizeManageAttachment(ctx, s.principal, owner, attachmentType); err != nil {
+	if err := s.http.authorizer.ManageAttachment(ctx, actorFromPrincipal(s.principal), owner, attachmentType); err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
 	attachment, _, err := s.http.service.UpsertAttachment(ctx, store.UpsertAttachmentParams{
@@ -473,7 +473,7 @@ func (s *clientWSSession) handleDeleteUserAttachment(ctx context.Context, req *i
 	if err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
-	if err := s.http.authorizeManageAttachment(ctx, s.principal, owner, attachmentType); err != nil {
+	if err := s.http.authorizer.ManageAttachment(ctx, actorFromPrincipal(s.principal), owner, attachmentType); err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
 	attachment, _, err := s.http.service.DeleteAttachment(ctx, store.DeleteAttachmentParams{
@@ -507,7 +507,7 @@ func (s *clientWSSession) handleListUserAttachments(ctx context.Context, req *in
 	if err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
-	if err := s.http.authorizeListAttachment(ctx, s.principal, owner, attachmentType); err != nil {
+	if err := s.http.authorizer.ListAttachment(ctx, actorFromPrincipal(s.principal), owner, attachmentType); err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
 	attachments, err := s.http.service.ListUserAttachments(ctx, owner, attachmentType)
@@ -533,7 +533,7 @@ func (s *clientWSSession) handleListEvents(ctx context.Context, req *internalpro
 	if req == nil {
 		return s.writeError("invalid_request", "list_events cannot be empty", 0)
 	}
-	if err := s.http.authorizeListEvents(s.principal); err != nil {
+	if err := s.http.authorizer.ListEvents(actorFromPrincipal(s.principal)); err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
 	limit := 100
@@ -567,7 +567,7 @@ func (s *clientWSSession) handleOperationsStatus(ctx context.Context, req *inter
 	if req == nil {
 		return s.writeError("invalid_request", "operations_status cannot be empty", 0)
 	}
-	if err := s.http.authorizeReadOpsStatus(s.principal); err != nil {
+	if err := s.http.authorizer.ReadOpsStatus(actorFromPrincipal(s.principal)); err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
 	status, err := s.http.service.OperationsStatus(ctx)
@@ -588,7 +588,7 @@ func (s *clientWSSession) handleListClusterNodes(ctx context.Context, req *inter
 	if req == nil {
 		return s.writeError("invalid_request", "list_cluster_nodes cannot be empty", 0)
 	}
-	if err := s.http.authorizeListClusterNodes(s.principal); err != nil {
+	if err := s.http.authorizer.ListClusterNodes(actorFromPrincipal(s.principal)); err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
 	nodes, err := s.http.service.ClusterNodes(ctx)
@@ -614,7 +614,7 @@ func (s *clientWSSession) handleListNodeLoggedInUsers(ctx context.Context, req *
 	if req == nil {
 		return s.writeError("invalid_request", "list_node_logged_in_users cannot be empty", 0)
 	}
-	if err := s.http.authorizeListLoggedInUsers(s.principal); err != nil {
+	if err := s.http.authorizer.ListLoggedInUsers(actorFromPrincipal(s.principal)); err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
 	users, err := s.http.service.ListNodeLoggedInUsers(ctx, req.NodeId)
@@ -645,7 +645,7 @@ func (s *clientWSSession) handleResolveUserSessions(ctx context.Context, req *in
 	if err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
-	if err := s.http.authorizeCreateMessage(ctx, s.principal, user); err != nil {
+	if err := s.http.authorizer.CreateMessage(ctx, actorFromPrincipal(s.principal), user); err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
 	presence, err := s.http.service.QueryOnlineUserPresence(ctx, user)
@@ -708,7 +708,7 @@ func (s *clientWSSession) handleMetrics(ctx context.Context, req *internalproto.
 	if req == nil {
 		return s.writeError("invalid_request", "metrics cannot be empty", 0)
 	}
-	if err := s.http.authorizeReadMetrics(s.principal); err != nil {
+	if err := s.http.authorizer.ReadMetrics(actorFromPrincipal(s.principal)); err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
 	text, err := s.http.service.Metrics(ctx)

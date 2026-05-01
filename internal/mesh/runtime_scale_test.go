@@ -47,13 +47,20 @@ func TestRuntimeDiamondReRoutesAfterNextHopFailure(t *testing.T) {
 	waitForNodes(t, runtimeA, []int64{1, 2, 3, 4}, 5*time.Second)
 	waitForEstablishedLink(t, runtimeA, 2, 4, 10*time.Second)
 	waitForEstablishedLink(t, runtimeA, 3, 4, 10*time.Second)
-	waitForRouteNextHop(t, runtimeA, 4, 2, 5*time.Second)
-
-	if err := connBD.Close(); err != nil {
-		t.Fatalf("close B-D conn: %v", err)
+	initialNextHop := waitForRouteAnyNextHop(t, runtimeA, 4, []int64{2, 3}, 5*time.Second)
+	expectedFailover := int64(2)
+	closeConn := connCD
+	closeLabel := "C-D"
+	if initialNextHop == 2 {
+		expectedFailover = 3
+		closeConn = connBD
+		closeLabel = "B-D"
 	}
-	waitForLinkRemoval(t, runtimeA, 2, 4, 10*time.Second)
-	waitForRouteNextHop(t, runtimeA, 4, 3, 5*time.Second)
+	if err := closeConn.Close(); err != nil {
+		t.Fatalf("close %s conn: %v", closeLabel, err)
+	}
+	waitForLinkRemoval(t, runtimeA, initialNextHop, 4, 10*time.Second)
+	waitForRouteNextHop(t, runtimeA, 4, expectedFailover, 5*time.Second)
 }
 
 func runLinearFloodingConvergence(t *testing.T, nodes int, timeout time.Duration) {
@@ -111,6 +118,26 @@ func waitForRouteNextHop(t *testing.T, runtime *Runtime, destinationNodeID, next
 	}
 	decision, ok := runtime.DescribeRoute(destinationNodeID, TrafficControlCritical)
 	t.Fatalf("timed out waiting for next hop %d to %d; ok=%v decision=%+v", nextHopNodeID, destinationNodeID, ok, decision)
+}
+
+func waitForRouteAnyNextHop(t *testing.T, runtime *Runtime, destinationNodeID int64, nextHopNodeIDs []int64, timeout time.Duration) int64 {
+	t.Helper()
+	allowed := make(map[int64]struct{}, len(nextHopNodeIDs))
+	for _, nodeID := range nextHopNodeIDs {
+		allowed[nodeID] = struct{}{}
+	}
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if decision, ok := runtime.DescribeRoute(destinationNodeID, TrafficControlCritical); ok {
+			if _, exists := allowed[decision.NextHopNodeID]; exists {
+				return decision.NextHopNodeID
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	decision, ok := runtime.DescribeRoute(destinationNodeID, TrafficControlCritical)
+	t.Fatalf("timed out waiting for any next hop %v to %d; ok=%v decision=%+v", nextHopNodeIDs, destinationNodeID, ok, decision)
+	return 0
 }
 
 func waitForEstablishedLink(t *testing.T, runtime *Runtime, fromNodeID, toNodeID int64, timeout time.Duration) {

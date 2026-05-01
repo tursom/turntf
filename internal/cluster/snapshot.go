@@ -144,6 +144,19 @@ func (m *Manager) handleSnapshotDigest(sess *session, envelope *internalproto.En
 		m.requestSnapshotPartition(sess, remoteAttachments)
 		return nil
 	}
+	remoteLoginNames, ok := remote[store.SnapshotLoginNamesPartition]
+	if !ok {
+		return fmt.Errorf("snapshot digest missing %s partition", store.SnapshotLoginNamesPartition)
+	}
+	if !snapshotPartitionDigestEqual(local[store.SnapshotLoginNamesPartition], remoteLoginNames) {
+		m.logSessionEvent("snapshot_partition_mismatch", sess).
+			Str("partition", remoteLoginNames.Partition).
+			Stringer("kind", remoteLoginNames.Kind).
+			Uint64("row_count", remoteLoginNames.RowCount).
+			Msg("snapshot partition mismatch detected")
+		m.requestSnapshotPartition(sess, remoteLoginNames)
+		return nil
+	}
 	remoteMetadata, ok := remote[store.SnapshotUserMetadataPartition]
 	if !ok {
 		return fmt.Errorf("snapshot digest missing %s partition", store.SnapshotUserMetadataPartition)
@@ -167,6 +180,9 @@ func (m *Manager) handleSnapshotDigest(sess *session, envelope *internalproto.En
 			continue
 		}
 		if partition == store.SnapshotAttachmentsPartition {
+			continue
+		}
+		if partition == store.SnapshotLoginNamesPartition {
 			continue
 		}
 		if partition == store.SnapshotUserMetadataPartition {
@@ -331,6 +347,10 @@ func (m *Manager) requestSnapshotRepairForOrigin(sess *session, originNodeID int
 		{
 			Partition: store.SnapshotUsersPartition,
 			Kind:      internalproto.SnapshotPartitionKind_SNAPSHOT_PARTITION_KIND_USERS,
+		},
+		{
+			Partition: store.SnapshotLoginNamesPartition,
+			Kind:      internalproto.SnapshotPartitionKind_SNAPSHOT_PARTITION_KIND_LOGIN_NAMES,
 		},
 		{
 			Partition: store.SnapshotAttachmentsPartition,

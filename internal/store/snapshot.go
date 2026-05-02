@@ -452,7 +452,7 @@ ORDER BY entity_type ASC, entity_node_id ASC, entity_id ASC
 
 func (s *Store) buildMessageSnapshotRows(ctx context.Context, producer int64) ([]*clusterproto.SnapshotRow, error) {
 	rows, err := s.db.QueryContext(ctx, `
-SELECT user_node_id, user_id, node_id, seq, sender_node_id, sender_user_id, body, created_at_hlc
+SELECT user_node_id, user_id, node_id, seq, sender_node_id, sender_user_id, body, created_at_hlc, session
 FROM messages
 WHERE node_id = ?
 ORDER BY user_node_id ASC, user_id ASC, created_at_hlc DESC, node_id ASC, seq DESC
@@ -628,9 +628,11 @@ func (s *Store) applyMessageSnapshotRowTx(ctx context.Context, tx *sql.Tx, produ
 		return UserKey{}, fmt.Errorf("%w: snapshot message sender cannot be empty", ErrInvalidInput)
 	}
 	if _, err := tx.ExecContext(ctx, `
-INSERT INTO messages(user_node_id, user_id, node_id, seq, sender_node_id, sender_user_id, body, created_at_hlc)
-VALUES(?, ?, ?, ?, ?, ?, ?, ?)
-`, messageRow.Recipient.NodeId, messageRow.Recipient.UserId, messageRow.NodeId, messageRow.Seq, messageRow.Sender.NodeId, messageRow.Sender.UserId, messageRow.Body, messageRow.CreatedAtHlc); err != nil {
+INSERT INTO messages(user_node_id, user_id, node_id, seq, sender_node_id, sender_user_id, body, created_at_hlc, session)
+VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+`, messageRow.Recipient.NodeId, messageRow.Recipient.UserId, messageRow.NodeId, messageRow.Seq, messageRow.Sender.NodeId, messageRow.Sender.UserId, messageRow.Body, messageRow.CreatedAtHlc,
+		MessageSession(UserKey{NodeID: messageRow.Sender.NodeId, UserID: messageRow.Sender.UserId}, UserKey{NodeID: messageRow.Recipient.NodeId, UserID: messageRow.Recipient.UserId}),
+	); err != nil {
 		if isUniqueConstraint(err) {
 			return key, nil
 		}

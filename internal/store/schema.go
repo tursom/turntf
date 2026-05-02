@@ -49,6 +49,7 @@ CREATE TABLE IF NOT EXISTS messages (
     sender_user_id INTEGER NOT NULL,
     body BLOB NOT NULL,
     created_at_hlc TEXT NOT NULL,
+    session BLOB NOT NULL,
     FOREIGN KEY(user_node_id, user_id) REFERENCES users(node_id, user_id),
     PRIMARY KEY(user_node_id, user_id, node_id, seq)
 );
@@ -204,6 +205,7 @@ CREATE TABLE IF NOT EXISTS discovered_peers (
 	if _, err := s.db.ExecContext(ctx, `
 CREATE INDEX IF NOT EXISTS idx_messages_user_created ON messages(user_node_id, user_id, created_at_hlc DESC, node_id ASC, seq DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_node ON messages(node_id, user_node_id, user_id, seq);
+CREATE INDEX IF NOT EXISTS idx_messages_session_created ON messages(session, created_at_hlc DESC, node_id ASC, seq DESC);
 CREATE INDEX IF NOT EXISTS idx_user_attachments_owner_type ON user_attachments(owner_node_id, owner_user_id, attachment_type, deleted_at_hlc);
 CREATE INDEX IF NOT EXISTS idx_user_attachments_subject_type ON user_attachments(subject_node_id, subject_user_id, attachment_type, deleted_at_hlc);
 CREATE INDEX IF NOT EXISTS idx_user_metadata_owner_key ON user_metadata(owner_node_id, owner_user_id, key, deleted_at_hlc, expires_at);

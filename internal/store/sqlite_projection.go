@@ -302,7 +302,7 @@ func (r *sqliteMessageProjectionRepository) ListMessagesByUser(ctx context.Conte
 
 func (r *sqliteMessageProjectionRepository) BuildMessageSnapshotRows(ctx context.Context, producer int64) ([]*clusterproto.SnapshotRow, error) {
 	rows, err := r.db.QueryContext(ctx, `
-SELECT user_node_id, user_id, node_id, seq, sender_node_id, sender_user_id, body, created_at_hlc
+SELECT user_node_id, user_id, node_id, seq, sender_node_id, sender_user_id, body, created_at_hlc, session
 FROM messages
 WHERE node_id = ?
 ORDER BY user_node_id ASC, user_id ASC, created_at_hlc DESC, node_id ASC, seq DESC
@@ -361,9 +361,9 @@ func (r *sqliteMessageProjectionRepository) applyMessageCreatedTx(ctx context.Co
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `
-INSERT INTO messages(user_node_id, user_id, node_id, seq, sender_node_id, sender_user_id, body, created_at_hlc)
-VALUES(?, ?, ?, ?, ?, ?, ?, ?)
-`, message.Recipient.NodeID, message.Recipient.UserID, message.NodeID, message.Seq, message.Sender.NodeID, message.Sender.UserID, message.Body, message.CreatedAt.String()); err != nil {
+INSERT INTO messages(user_node_id, user_id, node_id, seq, sender_node_id, sender_user_id, body, created_at_hlc, session)
+VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+`, message.Recipient.NodeID, message.Recipient.UserID, message.NodeID, message.Seq, message.Sender.NodeID, message.Sender.UserID, message.Body, message.CreatedAt.String(), MessageSession(message.Sender, message.Recipient)); err != nil {
 		if !isUniqueConstraint(err) {
 			return fmt.Errorf("insert message projection: %w", err)
 		}
@@ -406,9 +406,11 @@ func (r *sqliteMessageProjectionRepository) applyMessageSnapshotRowTx(ctx contex
 		return UserKey{}, fmt.Errorf("%w: snapshot message sender cannot be empty", ErrInvalidInput)
 	}
 	if _, err := tx.ExecContext(ctx, `
-INSERT INTO messages(user_node_id, user_id, node_id, seq, sender_node_id, sender_user_id, body, created_at_hlc)
-VALUES(?, ?, ?, ?, ?, ?, ?, ?)
-`, messageRow.Recipient.NodeId, messageRow.Recipient.UserId, messageRow.NodeId, messageRow.Seq, messageRow.Sender.NodeId, messageRow.Sender.UserId, messageRow.Body, messageRow.CreatedAtHlc); err != nil {
+INSERT INTO messages(user_node_id, user_id, node_id, seq, sender_node_id, sender_user_id, body, created_at_hlc, session)
+VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+`, messageRow.Recipient.NodeId, messageRow.Recipient.UserId, messageRow.NodeId, messageRow.Seq, messageRow.Sender.NodeId, messageRow.Sender.UserId, messageRow.Body, messageRow.CreatedAtHlc,
+		MessageSession(UserKey{NodeID: messageRow.Sender.NodeId, UserID: messageRow.Sender.UserId}, UserKey{NodeID: messageRow.Recipient.NodeId, UserID: messageRow.Recipient.UserId}),
+	); err != nil {
 		if isUniqueConstraint(err) {
 			return key, nil
 		}
@@ -426,7 +428,7 @@ func (r *sqliteMessageProjectionRepository) listRawMessagesByUserSince(ctx conte
 		limit = 1000
 	}
 	query := `
-SELECT user_node_id, user_id, node_id, seq, sender_node_id, sender_user_id, body, created_at_hlc
+SELECT user_node_id, user_id, node_id, seq, sender_node_id, sender_user_id, body, created_at_hlc, session
 FROM messages
 WHERE user_node_id = ? AND user_id = ?`
 	args := []any{key.NodeID, key.UserID}
@@ -457,6 +459,44 @@ LIMIT ?`
 		return nil, fmt.Errorf("iterate raw messages: %w", err)
 	}
 	return messages, nil
+}
+
+func (r *sqliteMessageProjectionRepository) ListMessagesBySession(ctx context.Context, session []byte, requester UserKey, limit int) ([]Message, error) {
+	if len(session) != 32 {
+		return nil, fmt.Errorf("%w: session must be exactly 32 bytes", ErrInvalidInput)
+	}
+	if limit <= 0 || limit > 1000 {
+		limit = 100
+	}
+
+	rows, err := r.db.QueryContext(ctx, `
+SELECT user_node_id, user_id, node_id, seq, sender_node_id, sender_user_id, body, created_at_hlc, session
+FROM messages
+WHERE session = ?
+ORDER BY created_at_hlc DESC, node_id ASC, seq DESC
+LIMIT ?
+`, session, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list messages by session: %w", err)
+	}
+	defer rows.Close()
+
+	messages := make([]Message, 0, limit)
+	for rows.Next() {
+		message, err := scanMessage(rows)
+		if err != nil {
+			return nil, err
+		}
+		messages = append(messages, message)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate session messages: %w", err)
+	}
+
+	if len(messages) == 0 {
+		return messages, nil
+	}
+	return filterDirectMessagesByBlacklist(ctx, r.userRepository, r.blacklists, requester, messages)
 }
 
 type sqliteBlacklistRepository struct {

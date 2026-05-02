@@ -222,6 +222,7 @@ type Message struct {
 	Sender    UserKey         `json:"sender"`
 	Body      []byte          `json:"body"`
 	CreatedAt clock.Timestamp `json:"created_at"`
+	Session   []byte          `json:"-"`
 }
 
 // UserKey 返回消息的接收者 UserKey。

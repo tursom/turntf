@@ -105,6 +105,7 @@ func scanMessage(scanner interface {
 		&message.Sender.UserID,
 		&message.Body,
 		&createdAtRaw,
+		&message.Session,
 	); err != nil {
 		return Message{}, err
 	}

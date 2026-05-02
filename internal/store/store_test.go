@@ -2853,6 +2853,10 @@ func (r failingMessageProjectionRepository) ListMessagesByUser(ctx context.Conte
 	return r.delegate.ListMessagesByUser(ctx, key, limit)
 }
 
+func (r failingMessageProjectionRepository) ListMessagesBySession(ctx context.Context, session []byte, requester UserKey, limit int) ([]Message, error) {
+	return r.delegate.ListMessagesBySession(ctx, session, requester, limit)
+}
+
 func (r failingMessageProjectionRepository) BuildMessageSnapshotRows(ctx context.Context, producer int64) ([]*proto.SnapshotRow, error) {
 	return r.delegate.BuildMessageSnapshotRows(ctx, producer)
 }

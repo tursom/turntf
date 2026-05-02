@@ -614,11 +614,6 @@ func (h *HTTP) handleListMessagesByUser(w http.ResponseWriter, r *http.Request) 
 		writeStoreError(w, err)
 		return
 	}
-	if err := h.authorizer.ListMessages(actorFromPrincipal(principal), target); err != nil {
-		writeStoreError(w, err)
-		return
-	}
-
 	limit := 100
 	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
 		parsed, err := strconv.Atoi(raw)
@@ -629,7 +624,42 @@ func (h *HTTP) handleListMessagesByUser(w http.ResponseWriter, r *http.Request) 
 		limit = parsed
 	}
 
-	messages, err := h.service.ListMessagesByUser(r.Context(), key, limit)
+	var messages []store.Message
+	peerNodeIDRaw := r.URL.Query().Get("peer_node_id")
+	peerUserIDRaw := r.URL.Query().Get("peer_user_id")
+	if peerNodeIDRaw != "" && peerUserIDRaw != "" {
+		peerNodeID, err := strconv.ParseInt(peerNodeIDRaw, 10, 64)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "peer_node_id must be an integer")
+			return
+		}
+		peerUserID, err := strconv.ParseInt(peerUserIDRaw, 10, 64)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "peer_user_id must be an integer")
+			return
+		}
+		peer := store.UserKey{NodeID: peerNodeID, UserID: peerUserID}
+		if err := peer.Validate(); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid peer user")
+			return
+		}
+		actor := actorFromPrincipal(principal)
+		// 会话查询允许 target 或 peer 任一方作为请求者（管理员也可）
+		if err := h.authorizer.ListMessages(actor, target); err != nil {
+			if actor.Key() != peer {
+				writeStoreError(w, err)
+				return
+			}
+		}
+		session := store.MessageSession(key, peer)
+		messages, err = h.service.ListMessagesBySession(r.Context(), session, actor.Key(), limit)
+	} else {
+		if err := h.authorizer.ListMessages(actorFromPrincipal(principal), target); err != nil {
+			writeStoreError(w, err)
+			return
+		}
+		messages, err = h.service.ListMessagesByUser(r.Context(), key, limit)
+	}
 	if err != nil {
 		writeStoreError(w, err)
 		return

@@ -103,7 +103,9 @@ func (s *Store) pruneEventLogOrigin(ctx context.Context, originNodeID int64, max
 }
 
 func countPebbleOriginEvents(ctx context.Context, db *pebble.DB, originNodeID int64) (int64, error) {
-	prefix := []byte(fmt.Sprintf("event/origin/%020d/", originNodeID))
+	prefix := make([]byte, 0, 9)
+	prefix = append(prefix, eventOriginTag)
+	prefix = encodeUint64(prefix, uint64(originNodeID))
 	iter, err := db.NewIter(&pebble.IterOptions{LowerBound: prefix, UpperBound: prefixUpperBound(prefix)})
 	if err != nil {
 		return 0, fmt.Errorf("open pebble event count iterator: %w", err)
@@ -124,7 +126,9 @@ func countPebbleOriginEvents(ctx context.Context, db *pebble.DB, originNodeID in
 }
 
 func nthPebbleOriginEventID(ctx context.Context, db *pebble.DB, originNodeID, offset int64) (int64, error) {
-	prefix := []byte(fmt.Sprintf("event/origin/%020d/", originNodeID))
+	prefix := make([]byte, 0, 9)
+	prefix = append(prefix, eventOriginTag)
+	prefix = encodeUint64(prefix, uint64(originNodeID))
 	iter, err := db.NewIter(&pebble.IterOptions{LowerBound: prefix, UpperBound: prefixUpperBound(prefix)})
 	if err != nil {
 		return 0, fmt.Errorf("open pebble truncation boundary iterator: %w", err)
@@ -152,7 +156,9 @@ func nthPebbleOriginEventID(ctx context.Context, db *pebble.DB, originNodeID, of
 }
 
 func deletePebbleOriginEvents(ctx context.Context, db *pebble.DB, originNodeID, limit int64) (int64, error) {
-	prefix := []byte(fmt.Sprintf("event/origin/%020d/", originNodeID))
+	prefix := make([]byte, 0, 9)
+	prefix = append(prefix, eventOriginTag)
+	prefix = encodeUint64(prefix, uint64(originNodeID))
 	iter, err := db.NewIter(&pebble.IterOptions{LowerBound: prefix, UpperBound: prefixUpperBound(prefix)})
 	if err != nil {
 		return 0, fmt.Errorf("open pebble delete iterator: %w", err)

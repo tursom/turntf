@@ -1,12 +1,10 @@
 package store
 
 import (
-	"bytes"
 	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"math"
 	"sort"
 	"sync"
 
@@ -17,7 +15,7 @@ import (
 	clusterproto "github.com/tursom/turntf/internal/proto"
 )
 
-var pebbleEventSequenceKey = []byte("meta/event_sequence")
+var pebbleEventSequenceKey = []byte{metaEventSequenceTag}
 
 const (
 	pebbleMessageIndexRefMarker byte = 0
@@ -163,7 +161,7 @@ func (r *pebbleEventLogRepository) ListEvents(ctx context.Context, afterSequence
 		limit = 100
 	}
 	lower := pebbleEventSeqKey(afterSequence + 1)
-	upper := prefixUpperBound([]byte("event/seq/"))
+	upper := prefixUpperBound([]byte{eventSeqTag})
 	iter, err := r.db.NewIter(&pebble.IterOptions{LowerBound: lower, UpperBound: upper})
 	if err != nil {
 		return nil, fmt.Errorf("open event iterator: %w", err)
@@ -194,7 +192,9 @@ func (r *pebbleEventLogRepository) ListEventsByOrigin(ctx context.Context, origi
 	if limit <= 0 || limit > 1000 {
 		limit = 100
 	}
-	prefix := []byte(fmt.Sprintf("event/origin/%020d/", originNodeID))
+	prefix := make([]byte, 0, 9)
+	prefix = append(prefix, eventOriginTag)
+	prefix = encodeUint64(prefix, uint64(originNodeID))
 	lower := pebbleEventOriginKey(originNodeID, afterEventID+1)
 	iter, err := r.db.NewIter(&pebble.IterOptions{LowerBound: lower, UpperBound: prefixUpperBound(prefix)})
 	if err != nil {
@@ -224,7 +224,9 @@ func (r *pebbleEventLogRepository) CountEventsByOrigin(ctx context.Context, orig
 	if originNodeID <= 0 {
 		return 0, nil
 	}
-	prefix := []byte(fmt.Sprintf("event/origin/%020d/", originNodeID))
+	prefix := make([]byte, 0, 9)
+	prefix = append(prefix, eventOriginTag)
+	prefix = encodeUint64(prefix, uint64(originNodeID))
 	lower := pebbleEventOriginKey(originNodeID, afterEventID+1)
 	iter, err := r.db.NewIter(&pebble.IterOptions{LowerBound: lower, UpperBound: prefixUpperBound(prefix)})
 	if err != nil {
@@ -260,7 +262,7 @@ func (r *pebbleEventLogRepository) LastEventSequence(ctx context.Context) (int64
 }
 
 func (r *pebbleEventLogRepository) ListOriginProgress(ctx context.Context) ([]OriginProgress, error) {
-	prefix := []byte("event/origin/")
+	prefix := []byte{eventOriginTag}
 	iter, err := r.db.NewIter(&pebble.IterOptions{LowerBound: prefix, UpperBound: prefixUpperBound(prefix)})
 	if err != nil {
 		return nil, fmt.Errorf("open origin progress iterator: %w", err)
@@ -534,7 +536,10 @@ func (r *pebbleMessageProjectionRepository) listInboxMessagesByUser(ctx context.
 		limit = normalizeMessageWindowSize(r.messageWindowSize)
 	}
 
-	prefix := []byte(fmt.Sprintf("message/inbox/%020d/%020d/", key.NodeID, key.UserID))
+	prefix := make([]byte, 0, 17)
+	prefix = append(prefix, messageInboxTag)
+	prefix = encodeUint64(prefix, uint64(key.NodeID))
+	prefix = encodeUint64(prefix, uint64(key.UserID))
 	iter, err := r.db.NewIter(&pebble.IterOptions{LowerBound: prefix, UpperBound: prefixUpperBound(prefix)})
 	if err != nil {
 		return nil, fmt.Errorf("open inbox iterator: %w", err)
@@ -627,7 +632,9 @@ func (r *pebbleMessageProjectionRepository) BuildMessageSnapshotRows(ctx context
 		return nil, fmt.Errorf("%w: producer cannot be empty", ErrInvalidInput)
 	}
 	windowSize := normalizeMessageWindowSize(r.messageWindowSize)
-	prefix := []byte(fmt.Sprintf("message/producer/%020d/", producer))
+	prefix := make([]byte, 0, 9)
+	prefix = append(prefix, messageProducerTag)
+	prefix = encodeUint64(prefix, uint64(producer))
 	iter, err := r.db.NewIter(&pebble.IterOptions{LowerBound: prefix, UpperBound: prefixUpperBound(prefix)})
 	if err != nil {
 		return nil, fmt.Errorf("open snapshot message iterator: %w", err)
@@ -790,7 +797,10 @@ func (r *pebbleMessageProjectionRepository) listMessagesByUserIndex(ctx context.
 			limit = windowSize
 		}
 	}
-	prefix := []byte(fmt.Sprintf("message/user/%020d/%020d/", key.NodeID, key.UserID))
+	prefix := make([]byte, 0, 17)
+	prefix = append(prefix, messageUserTag)
+	prefix = encodeUint64(prefix, uint64(key.NodeID))
+	prefix = encodeUint64(prefix, uint64(key.UserID))
 	iter, err := r.db.NewIter(&pebble.IterOptions{LowerBound: prefix, UpperBound: prefixUpperBound(prefix)})
 	if err != nil {
 		return nil, fmt.Errorf("open user message iterator: %w", err)
@@ -818,6 +828,50 @@ func (r *pebbleMessageProjectionRepository) listMessagesByUserIndex(ctx context.
 		return nil, fmt.Errorf("iterate user messages: %w", err)
 	}
 	return messages, nil
+}
+
+func (r *pebbleMessageProjectionRepository) ListMessagesBySession(ctx context.Context, session []byte, requester UserKey, limit int) ([]Message, error) {
+	if len(session) != 32 {
+		return nil, fmt.Errorf("%w: session must be exactly 32 bytes", ErrInvalidInput)
+	}
+	if limit <= 0 || limit > 1000 {
+		limit = 100
+	}
+	if err := requester.Validate(); err != nil {
+		return nil, err
+	}
+
+	prefix := make([]byte, 0, 33)
+	prefix = append(prefix, messageSessionTag)
+	prefix = append(prefix, session...)
+	iter, err := r.db.NewIter(&pebble.IterOptions{LowerBound: prefix, UpperBound: prefixUpperBound(prefix)})
+	if err != nil {
+		return nil, fmt.Errorf("open session message iterator: %w", err)
+	}
+	defer iter.Close()
+
+	messages := make([]Message, 0, limit)
+	for valid := iter.First(); valid; valid = iter.Next() {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		message, err := r.messageFromIndexValue(iter.Value())
+		if err != nil {
+			return nil, err
+		}
+		messages = append(messages, message)
+		if len(messages) >= limit {
+			break
+		}
+	}
+	if err := iter.Error(); err != nil {
+		return nil, fmt.Errorf("iterate session messages: %w", err)
+	}
+
+	if len(messages) == 0 {
+		return messages, nil
+	}
+	return filterDirectMessagesByBlacklist(ctx, r.userRepository, r.blacklists, requester, messages)
 }
 
 func pebbleEventRequiresForceSync(event Event) bool {
@@ -976,19 +1030,32 @@ func eventFromPebbleValue(key, value []byte) (Event, error) {
 }
 
 func pebbleEventSeqKey(sequence int64) []byte {
-	return fmt.Appendf(nil, "event/seq/%020d", sequence)
+	buf := make([]byte, 0, 9)
+	buf = append(buf, eventSeqTag)
+	return encodeUint64(buf, uint64(sequence))
 }
 
 func pebbleEventOriginKey(originNodeID, eventID int64) []byte {
-	return fmt.Appendf(nil, "event/origin/%020d/%020d", originNodeID, eventID)
+	buf := make([]byte, 0, 17)
+	buf = append(buf, eventOriginTag)
+	buf = encodeUint64(buf, uint64(originNodeID))
+	return encodeUint64(buf, uint64(eventID))
 }
 
 func pebbleMessageSequenceKey(key UserKey, nodeID int64) []byte {
-	return fmt.Appendf(nil, "meta/message_sequence/%020d/%020d/%020d", key.NodeID, key.UserID, nodeID)
+	buf := make([]byte, 0, 25)
+	buf = append(buf, metaMessageSequenceTag)
+	buf = encodeUint64(buf, uint64(key.NodeID))
+	buf = encodeUint64(buf, uint64(key.UserID))
+	return encodeUint64(buf, uint64(nodeID))
 }
 
 func pebbleMessageIDPrefix(key UserKey, nodeID int64) []byte {
-	return fmt.Appendf(nil, "message/id/%020d/%020d/%020d/", key.NodeID, key.UserID, nodeID)
+	buf := make([]byte, 0, 25)
+	buf = append(buf, messageIDTag)
+	buf = encodeUint64(buf, uint64(key.NodeID))
+	buf = encodeUint64(buf, uint64(key.UserID))
+	return encodeUint64(buf, uint64(nodeID))
 }
 
 func pebbleMessageIDKey(message Message) []byte {
@@ -996,33 +1063,76 @@ func pebbleMessageIDKey(message Message) []byte {
 }
 
 func pebbleMessageIDKeyFromRef(ref pebbleMessageRef) []byte {
-	return fmt.Appendf(nil, "message/id/%020d/%020d/%020d/%020d", ref.Recipient.NodeID, ref.Recipient.UserID, ref.NodeID, ref.Seq)
+	buf := make([]byte, 0, 33)
+	buf = append(buf, messageIDTag)
+	buf = encodeUint64(buf, uint64(ref.Recipient.NodeID))
+	buf = encodeUint64(buf, uint64(ref.Recipient.UserID))
+	buf = encodeUint64(buf, uint64(ref.NodeID))
+	return encodeUint64(buf, uint64(ref.Seq))
 }
 
 func pebbleMessageUserKey(message Message) []byte {
-	return fmt.Appendf(nil, "message/user/%020d/%020d/%s/%020d/%020d",
-		message.Recipient.NodeID, message.Recipient.UserID, descendingString(message.CreatedAt.String()), message.NodeID, math.MaxInt64-message.Seq)
+	buf := make([]byte, 0, 51)
+	buf = append(buf, messageUserTag)
+	buf = encodeUint64(buf, uint64(message.Recipient.NodeID))
+	buf = encodeUint64(buf, uint64(message.Recipient.UserID))
+	buf = encodeTimestampDesc(buf, message.CreatedAt)
+	buf = encodeUint64(buf, uint64(message.NodeID))
+	return encodeUint64Desc(buf, uint64(message.Seq))
 }
 
 func pebbleMessageProducerKey(message Message) []byte {
-	return fmt.Appendf(nil, "message/producer/%020d/%020d/%020d/%s/%020d",
-		message.NodeID, message.Recipient.NodeID, message.Recipient.UserID, descendingString(message.CreatedAt.String()), math.MaxInt64-message.Seq)
+	buf := make([]byte, 0, 51)
+	buf = append(buf, messageProducerTag)
+	buf = encodeUint64(buf, uint64(message.NodeID))
+	buf = encodeUint64(buf, uint64(message.Recipient.NodeID))
+	buf = encodeUint64(buf, uint64(message.Recipient.UserID))
+	buf = encodeTimestampDesc(buf, message.CreatedAt)
+	return encodeUint64Desc(buf, uint64(message.Seq))
 }
 
 func pebbleInboxUserKey(owner UserKey, message Message) []byte {
-	return fmt.Appendf(nil, "message/inbox/%020d/%020d/%s/%020d/%020d/%020d/%020d",
-		owner.NodeID, owner.UserID, descendingString(message.CreatedAt.String()),
-		message.Recipient.NodeID, message.Recipient.UserID, message.NodeID, math.MaxInt64-message.Seq)
+	buf := make([]byte, 0, 67)
+	buf = append(buf, messageInboxTag)
+	buf = encodeUint64(buf, uint64(owner.NodeID))
+	buf = encodeUint64(buf, uint64(owner.UserID))
+	buf = encodeTimestampDesc(buf, message.CreatedAt)
+	buf = encodeUint64(buf, uint64(message.Recipient.NodeID))
+	buf = encodeUint64(buf, uint64(message.Recipient.UserID))
+	buf = encodeUint64(buf, uint64(message.NodeID))
+	return encodeUint64Desc(buf, uint64(message.Seq))
 }
 
 func pebbleInboxSourcePrefix(message Message) []byte {
-	return fmt.Appendf(nil, "message/inbox_source/%020d/%020d/%020d/%020d/",
-		message.Recipient.NodeID, message.Recipient.UserID, message.NodeID, message.Seq)
+	buf := make([]byte, 0, 33)
+	buf = append(buf, messageInboxSourceTag)
+	buf = encodeUint64(buf, uint64(message.Recipient.NodeID))
+	buf = encodeUint64(buf, uint64(message.Recipient.UserID))
+	buf = encodeUint64(buf, uint64(message.NodeID))
+	return encodeUint64(buf, uint64(message.Seq))
 }
 
 func pebbleInboxSourceKey(message Message, owner UserKey) []byte {
-	return fmt.Appendf(nil, "message/inbox_source/%020d/%020d/%020d/%020d/%020d/%020d",
-		message.Recipient.NodeID, message.Recipient.UserID, message.NodeID, message.Seq, owner.NodeID, owner.UserID)
+	buf := make([]byte, 0, 49)
+	buf = append(buf, messageInboxSourceTag)
+	buf = encodeUint64(buf, uint64(message.Recipient.NodeID))
+	buf = encodeUint64(buf, uint64(message.Recipient.UserID))
+	buf = encodeUint64(buf, uint64(message.NodeID))
+	buf = encodeUint64(buf, uint64(message.Seq))
+	buf = encodeUint64(buf, uint64(owner.NodeID))
+	return encodeUint64(buf, uint64(owner.UserID))
+}
+
+func pebbleMessageSessionKey(message Message) []byte {
+	session := MessageSession(message.Sender, message.Recipient)
+	buf := make([]byte, 0, 83)
+	buf = append(buf, messageSessionTag)
+	buf = append(buf, session...)
+	buf = encodeTimestampDesc(buf, message.CreatedAt)
+	buf = encodeUint64(buf, uint64(message.Recipient.NodeID))
+	buf = encodeUint64(buf, uint64(message.Recipient.UserID))
+	buf = encodeUint64(buf, uint64(message.NodeID))
+	return encodeUint64Desc(buf, uint64(message.Seq))
 }
 
 func pebbleMessageKeys(message Message) [][]byte {
@@ -1030,59 +1140,34 @@ func pebbleMessageKeys(message Message) [][]byte {
 		pebbleMessageIDKey(message),
 		pebbleMessageUserKey(message),
 		pebbleMessageProducerKey(message),
+		pebbleMessageSessionKey(message),
 	}
 }
 
 func parsePebbleSequenceKey(key []byte) int64 {
-	var sequence int64
-	_, _ = fmt.Sscanf(string(key), "event/seq/%020d", &sequence)
-	return sequence
+	if len(key) == 9 && key[0] == eventSeqTag {
+		return int64(decodeUint64(key[1:9]))
+	}
+	return 0
 }
 
 func parsePebbleOriginKey(key []byte) (int64, int64, error) {
-	var originNodeID, eventID int64
-	if _, err := fmt.Sscanf(string(key), "event/origin/%020d/%020d", &originNodeID, &eventID); err != nil {
-		return 0, 0, fmt.Errorf("parse event origin key %q: %w", key, err)
+	if len(key) != 17 || key[0] != eventOriginTag {
+		return 0, 0, fmt.Errorf("parse event origin key %q: invalid format", key)
 	}
-	return originNodeID, eventID, nil
+	return int64(decodeUint64(key[1:9])), int64(decodeUint64(key[9:17])), nil
 }
 
 func parsePebbleMessageIDKey(key []byte) (UserKey, int64, int64, error) {
-	var userNodeID, userID, nodeID, seq int64
-	if _, err := fmt.Sscanf(string(key), "message/id/%020d/%020d/%020d/%020d", &userNodeID, &userID, &nodeID, &seq); err != nil {
-		return UserKey{}, 0, 0, fmt.Errorf("parse message id key %q: %w", key, err)
+	if len(key) != 33 || key[0] != messageIDTag {
+		return UserKey{}, 0, 0, fmt.Errorf("parse message id key %q: invalid format", key)
 	}
-	return UserKey{NodeID: userNodeID, UserID: userID}, nodeID, seq, nil
+	return UserKey{NodeID: int64(decodeUint64(key[1:9])), UserID: int64(decodeUint64(key[9:17]))}, int64(decodeUint64(key[17:25])), int64(decodeUint64(key[25:33])), nil
 }
 
-func encodeInt64(value int64) []byte {
-	buf := make([]byte, 8)
-	binary.BigEndian.PutUint64(buf, uint64(value))
-	return buf
-}
 
-func decodeInt64(value []byte) int64 {
-	return int64(binary.BigEndian.Uint64(value))
-}
 
-func prefixUpperBound(prefix []byte) []byte {
-	upper := bytes.Clone(prefix)
-	for i := len(upper) - 1; i >= 0; i-- {
-		if upper[i] != 0xff {
-			upper[i]++
-			return upper[:i+1]
-		}
-	}
-	return nil
-}
 
-func descendingString(value string) string {
-	buf := make([]byte, len(value))
-	for i := range value {
-		buf[i] = 0xff - value[i]
-	}
-	return string(buf)
-}
 
 func messageIdentity(message Message) string {
 	return fmt.Sprintf("%d/%d/%d/%d", message.Recipient.NodeID, message.Recipient.UserID, message.NodeID, message.Seq)

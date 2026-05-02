@@ -195,9 +195,11 @@ func (s *Store) applyReplicatedMessageCreated(ctx context.Context, tx *sql.Tx, b
 	}
 
 	if _, err := tx.ExecContext(ctx, `
-INSERT INTO messages(user_node_id, user_id, node_id, seq, sender_node_id, sender_user_id, body, created_at_hlc)
-VALUES(?, ?, ?, ?, ?, ?, ?, ?)
-`, body.Recipient.NodeId, body.Recipient.UserId, body.NodeId, body.Seq, body.Sender.NodeId, body.Sender.UserId, body.Body, body.CreatedAtHlc); err != nil {
+INSERT INTO messages(user_node_id, user_id, node_id, seq, sender_node_id, sender_user_id, body, created_at_hlc, session)
+VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+`, body.Recipient.NodeId, body.Recipient.UserId, body.NodeId, body.Seq, body.Sender.NodeId, body.Sender.UserId, body.Body, body.CreatedAtHlc,
+		MessageSession(UserKey{NodeID: body.Sender.NodeId, UserID: body.Sender.UserId}, UserKey{NodeID: body.Recipient.NodeId, UserID: body.Recipient.UserId}),
+	); err != nil {
 		if isUniqueConstraint(err) {
 			return nil
 		}

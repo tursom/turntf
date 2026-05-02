@@ -496,6 +496,11 @@ func (s *Service) ListMessagesByUser(ctx context.Context, key store.UserKey, lim
 	return s.store.ListMessagesByUser(ctx, key, limit)
 }
 
+// ListMessagesBySession 列出指定 session（会话双方）之间的消息，按时间降序排列。
+func (s *Service) ListMessagesBySession(ctx context.Context, session []byte, requester store.UserKey, limit int) ([]store.Message, error) {
+	return s.store.ListMessagesBySession(ctx, session, requester, limit)
+}
+
 // UpsertAttachment 创建或更新附件（如频道管理、订阅关系、黑名单等）。
 func (s *Service) UpsertAttachment(ctx context.Context, params store.UpsertAttachmentParams) (store.Attachment, store.Event, error) {
 	if err := s.allowWrite(ctx); err != nil {

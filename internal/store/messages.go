@@ -3,9 +3,24 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/binary"
 	"errors"
 	"fmt"
 )
+
+// MessageSession 计算两个用户之间的 session 标识（32 字节 BLOB）。
+// 将两个 UserKey 按 (node_id, user_id) 排序后以大端编码拼接，保证 A↔B 和 B↔A 得到相同的 session。
+func MessageSession(a, b UserKey) []byte {
+	if a.NodeID > b.NodeID || (a.NodeID == b.NodeID && a.UserID > b.UserID) {
+		a, b = b, a
+	}
+	session := make([]byte, 32)
+	binary.BigEndian.PutUint64(session[0:8], uint64(a.NodeID))
+	binary.BigEndian.PutUint64(session[8:16], uint64(a.UserID))
+	binary.BigEndian.PutUint64(session[16:24], uint64(b.NodeID))
+	binary.BigEndian.PutUint64(session[24:32], uint64(b.UserID))
+	return session
+}
 
 // CreateMessage 创建消息。校验参数后进行黑名单检查，然后通过后端写入事件日志和消息投影。
 func (s *Store) CreateMessage(ctx context.Context, params CreateMessageParams) (Message, Event, error) {
@@ -35,6 +50,11 @@ func (s *Store) nextMessageSeqTx(ctx context.Context, tx *sql.Tx, key UserKey, n
 // ListMessagesByUser 列出用户最近的消息（来自消息投影）。
 func (s *Store) ListMessagesByUser(ctx context.Context, key UserKey, limit int) ([]Message, error) {
 	return s.backend.MessageProjection().ListMessagesByUser(ctx, key, limit)
+}
+
+// ListMessagesBySession 列出指定 session（会话双方）之间的消息，按时间降序排列。
+func (s *Store) ListMessagesBySession(ctx context.Context, session []byte, requester UserKey, limit int) ([]Message, error) {
+	return s.backend.MessageProjection().ListMessagesBySession(ctx, session, requester, limit)
 }
 
 // nextSQLiteMessageSeq 在 SQLite 中分配下一个消息序列号。

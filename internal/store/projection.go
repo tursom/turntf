@@ -31,6 +31,7 @@ type EventLogRepository interface {
 type MessageProjectionRepository interface {
 	ApplyMessageCreated(context.Context, Message) error
 	ListMessagesByUser(context.Context, UserKey, int) ([]Message, error)
+	ListMessagesBySession(context.Context, []byte, UserKey, int) ([]Message, error)
 	BuildMessageSnapshotRows(context.Context, int64) ([]*clusterproto.SnapshotRow, error)
 	ApplyMessageSnapshotRows(context.Context, int64, []*clusterproto.SnapshotRow) error
 }

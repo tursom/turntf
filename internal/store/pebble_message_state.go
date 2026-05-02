@@ -246,7 +246,10 @@ func (r *pebbleMessageProjectionRepository) seedMessageUserStateLocked(ctx conte
 	}
 	windowSize := normalizeMessageWindowSize(r.messageWindowSize)
 	hardThreshold := pebbleMessageTrimHardThreshold(windowSize)
-	prefix := []byte(fmt.Sprintf("message/user/%020d/%020d/", key.NodeID, key.UserID))
+	prefix := make([]byte, 0, 17)
+	prefix = append(prefix, messageUserTag)
+	prefix = encodeUint64(prefix, uint64(key.NodeID))
+	prefix = encodeUint64(prefix, uint64(key.UserID))
 	iter, err := r.db.NewIter(&pebble.IterOptions{LowerBound: prefix, UpperBound: prefixUpperBound(prefix)})
 	if err != nil {
 		return pebbleMessageUserState{}, fmt.Errorf("open user state seed iterator: %w", err)
@@ -473,7 +476,10 @@ func pebbleMessageTrimHardThreshold(windowSize int) int {
 }
 
 func pebbleMessageUserStateKey(key UserKey) []byte {
-	return fmt.Appendf(nil, "meta/message_user_state/%020d/%020d", key.NodeID, key.UserID)
+	buf := make([]byte, 0, 17)
+	buf = append(buf, metaMessageUserStateTag)
+	buf = encodeUint64(buf, uint64(key.NodeID))
+	return encodeUint64(buf, uint64(key.UserID))
 }
 
 func encodePebbleMessageUserState(state pebbleMessageUserState) []byte {

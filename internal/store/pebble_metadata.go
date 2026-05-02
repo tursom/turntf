@@ -79,7 +79,7 @@ func (r *pebblePeerAckCursorRepository) Get(ctx context.Context, peerNodeID, ori
 }
 
 func (r *pebblePeerAckCursorRepository) List(ctx context.Context) ([]PeerAckCursor, error) {
-	prefix := []byte("meta/peer_ack_cursor/")
+	prefix := []byte{metaPeerAckCursorTag}
 	iter, err := r.db.NewIter(&pebble.IterOptions{LowerBound: prefix, UpperBound: prefixUpperBound(prefix)})
 	if err != nil {
 		return nil, fmt.Errorf("open pebble peer ack cursor iterator: %w", err)
@@ -168,7 +168,7 @@ func (r *pebbleOriginCursorRepository) Get(ctx context.Context, originNodeID int
 }
 
 func (r *pebbleOriginCursorRepository) List(ctx context.Context) ([]OriginCursor, error) {
-	prefix := []byte("meta/origin_cursor/")
+	prefix := []byte{metaOriginCursorTag}
 	iter, err := r.db.NewIter(&pebble.IterOptions{LowerBound: prefix, UpperBound: prefixUpperBound(prefix)})
 	if err != nil {
 		return nil, fmt.Errorf("open pebble origin cursor iterator: %w", err)
@@ -289,7 +289,7 @@ func (r *pebblePendingProjectionRepository) List(ctx context.Context, limit int)
 	if limit <= 0 || limit > 1000 {
 		limit = 100
 	}
-	prefix := []byte("meta/pending_projection/")
+	prefix := []byte{metaPendingProjectionTag}
 	iter, err := r.db.NewIter(&pebble.IterOptions{LowerBound: prefix, UpperBound: prefixUpperBound(prefix)})
 	if err != nil {
 		return nil, fmt.Errorf("open pebble pending projection iterator: %w", err)
@@ -340,7 +340,7 @@ func (r *pebblePendingProjectionRepository) List(ctx context.Context, limit int)
 }
 
 func (r *pebblePendingProjectionRepository) Stats(ctx context.Context) (ProjectionStats, error) {
-	prefix := []byte("meta/pending_projection/")
+	prefix := []byte{metaPendingProjectionTag}
 	iter, err := r.db.NewIter(&pebble.IterOptions{LowerBound: prefix, UpperBound: prefixUpperBound(prefix)})
 	if err != nil {
 		return ProjectionStats{}, fmt.Errorf("open pebble pending projection stats iterator: %w", err)
@@ -386,39 +386,44 @@ type pendingProjectionEnvelope struct {
 }
 
 func pebblePeerAckCursorKey(peerNodeID, originNodeID int64) []byte {
-	return fmt.Appendf(nil, "meta/peer_ack_cursor/%020d/%020d", peerNodeID, originNodeID)
+	buf := make([]byte, 0, 17)
+	buf = append(buf, metaPeerAckCursorTag)
+	buf = encodeUint64(buf, uint64(peerNodeID))
+	return encodeUint64(buf, uint64(originNodeID))
 }
 
 func pebbleOriginCursorKey(originNodeID int64) []byte {
-	return fmt.Appendf(nil, "meta/origin_cursor/%020d", originNodeID)
+	buf := make([]byte, 0, 9)
+	buf = append(buf, metaOriginCursorTag)
+	return encodeUint64(buf, uint64(originNodeID))
 }
 
 func pebblePendingProjectionKey(originNodeID, eventID int64) []byte {
-	return fmt.Appendf(nil, "meta/pending_projection/%020d/%020d", originNodeID, eventID)
+	buf := make([]byte, 0, 17)
+	buf = append(buf, metaPendingProjectionTag)
+	buf = encodeUint64(buf, uint64(originNodeID))
+	return encodeUint64(buf, uint64(eventID))
 }
 
 func parsePebblePeerAckCursorKey(key []byte) (int64, int64, error) {
-	var peerNodeID, originNodeID int64
-	if _, err := fmt.Sscanf(string(key), "meta/peer_ack_cursor/%020d/%020d", &peerNodeID, &originNodeID); err != nil {
-		return 0, 0, fmt.Errorf("parse pebble peer ack cursor key %q: %w", key, err)
+	if len(key) != 17 || key[0] != metaPeerAckCursorTag {
+		return 0, 0, fmt.Errorf("parse pebble peer ack cursor key %q: invalid format", key)
 	}
-	return peerNodeID, originNodeID, nil
+	return int64(decodeUint64(key[1:9])), int64(decodeUint64(key[9:17])), nil
 }
 
 func parsePebbleOriginCursorKey(key []byte) (int64, error) {
-	var originNodeID int64
-	if _, err := fmt.Sscanf(string(key), "meta/origin_cursor/%020d", &originNodeID); err != nil {
-		return 0, fmt.Errorf("parse pebble origin cursor key %q: %w", key, err)
+	if len(key) != 9 || key[0] != metaOriginCursorTag {
+		return 0, fmt.Errorf("parse pebble origin cursor key %q: invalid format", key)
 	}
-	return originNodeID, nil
+	return int64(decodeUint64(key[1:9])), nil
 }
 
 func parsePebblePendingProjectionKey(key []byte) (int64, int64, error) {
-	var originNodeID, eventID int64
-	if _, err := fmt.Sscanf(string(key), "meta/pending_projection/%020d/%020d", &originNodeID, &eventID); err != nil {
-		return 0, 0, fmt.Errorf("parse pebble pending projection key %q: %w", key, err)
+	if len(key) != 17 || key[0] != metaPendingProjectionTag {
+		return 0, 0, fmt.Errorf("parse pebble pending projection key %q: invalid format", key)
 	}
-	return originNodeID, eventID, nil
+	return int64(decodeUint64(key[1:9])), int64(decodeUint64(key[9:17])), nil
 }
 
 func readPebbleCursorValue(db *pebble.DB, key []byte) (int64, bool, error) {

@@ -80,11 +80,16 @@ func (c *clientWSConn) Send(ctx context.Context, payload []byte) error {
 }
 
 // Receive 接收下一条消息，只接受二进制帧。当 ctx 取消时优先返回 ctx 错误。
+// 每次读取前重置读取截止时间，配合客户端的应用层心跳（protobuf Ping/Pong）实现长连接保活。
 func (c *clientWSConn) Receive(ctx context.Context) ([]byte, error) {
 	select {
 	case <-ctxDone(ctx):
 		return nil, ctx.Err()
 	default:
+	}
+
+	if err := c.conn.SetReadDeadline(time.Now().Add(clientWSReadTimeout)); err != nil {
+		return nil, err
 	}
 
 	messageType, data, err := c.conn.ReadMessage()

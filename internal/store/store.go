@@ -503,6 +503,7 @@ type UserMetadataScanResult struct {
 type BootstrapAdminConfig struct {
 	Username     string
 	PasswordHash string
+	LoginName    string
 }
 
 // Open 打开 Store。根据 opts.Engine 选择 SQLite 或 SQLite+Pebble 后端，

@@ -22,7 +22,7 @@ func (s *Store) EnsureBootstrapAdmin(ctx context.Context, cfg BootstrapAdminConf
 	if passwordHash == "" {
 		return fmt.Errorf("%w: bootstrap admin password hash cannot be empty", ErrInvalidInput)
 	}
-	s.bootstrapAdmin = BootstrapAdminConfig{Username: username, PasswordHash: passwordHash}
+	s.bootstrapAdmin = BootstrapAdminConfig{Username: username, PasswordHash: passwordHash, LoginName: strings.TrimSpace(cfg.LoginName)}
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -36,6 +36,7 @@ func (s *Store) EnsureBootstrapAdmin(ctx context.Context, cfg BootstrapAdminConf
 		return fmt.Errorf("delete bootstrap admin tombstone: %w", err)
 	}
 
+	var bootstrapUser User
 	current, err := s.getUserTx(ctx, tx, key, true)
 	switch {
 	case errors.Is(err, ErrNotFound):
@@ -78,6 +79,7 @@ VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, NULL, ?)
 		}); err != nil {
 			return err
 		}
+		bootstrapUser = user
 	case err != nil:
 		return err
 	default:
@@ -126,6 +128,13 @@ WHERE node_id = ? AND user_id = ?
 			}); err != nil {
 				return err
 			}
+		}
+		bootstrapUser = updated
+	}
+
+	if loginName := strings.TrimSpace(cfg.LoginName); loginName != "" {
+		if _, _, _, err := s.bindUserLoginNameTx(ctx, tx, bootstrapUser, loginName, now, s.nodeID); err != nil {
+			return fmt.Errorf("bind bootstrap admin login name: %w", err)
 		}
 	}
 	if err := s.reconcileBootstrapAdminsTx(ctx, tx); err != nil {

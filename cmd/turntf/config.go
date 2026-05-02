@@ -68,6 +68,7 @@ type authConfig struct {
 type bootstrapAdminConfig struct {
 	Username     string `toml:"username"`
 	PasswordHash string `toml:"password_hash"`
+	LoginName    string `toml:"login_name"`
 }
 
 type loggingConfig struct {
@@ -418,6 +419,7 @@ func (c serveConfig) runtimeConfig(configPath string) (runtimeServeConfig, error
 			BootstrapAdmin: store.BootstrapAdminConfig{
 				Username:     strings.TrimSpace(c.Auth.BootstrapAdmin.Username),
 				PasswordHash: strings.TrimSpace(c.Auth.BootstrapAdmin.PasswordHash),
+				LoginName:    strings.TrimSpace(c.Auth.BootstrapAdmin.LoginName),
 			},
 		},
 		Logging: loggingCfg,

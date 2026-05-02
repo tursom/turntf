@@ -84,6 +84,8 @@ username = "root"
 # bcrypt 密码哈希；示例值对应明文密码 root。
 # 仅首次创建保底管理员时使用，后续不会强制覆盖已有密码。
 password_hash = "$2a$10$1gGoT/pdOu8vX1W28skBPOB7ICjISmVgt9lMyZf9c6re6cMHU6mAa"
+# 可选。登录名，设置后可通过 login_name + 密码登录；不设置则不绑定登录名。
+login_name = "root"
 
 # 日志配置。
 [logging]

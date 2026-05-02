@@ -16,11 +16,15 @@
 - `POST /nodes/{node_id}/users/{user_id}/subscriptions`：维护用户对 channel 的订阅。
 - `POST /nodes/{node_id}/users/{user_id}/blacklist`：维护用户拒收的普通用户列表。
 - `GET /nodes/{node_id}/users/{user_id}/messages?limit=N`：HTTP 查询消息，`body` 是 base64 字节。
+- `GET /nodes/{node_id}/users/{user_id}/metadata` 与 `.../metadata/{key}`：HTTP 读取或扫描用户元数据。
+- `GET /nodes/{node_id}/users/{user_id}/attachments`：HTTP 查询用户附件；低层接口，通常用于调试订阅/黑名单等附件关系。
 - `POST /nodes/{node_id}/users/{user_id}/messages`：HTTP 写消息，`body` 是 base64 字节；持久消息可选 `sync_mode = "no_sync" | "force_sync"`。
 - `POST /nodes/{node_id}/users/{user_id}/messages`：HTTP 发送消息；当 `delivery_kind = transient` 时走不落库瞬时投递。
 - `GET /ws/client`：客户端 WebSocket 长连接，连接后第一帧必须是 protobuf `LoginRequest`。
 - `zmq+tcp://host:port`：客户端 ZeroMQ 长连接，对应服务端 `services.zeromq.bind_url`；第一帧必须是 `ZeroMQMuxHello{role=CLIENT, protocol_version="zeromq-mux-v1"}`，第二帧必须是 protobuf `LoginRequest`。
 - 如果服务端启用 ZeroMQ CURVE，客户端连接前还必须配置服务端 `server_public_key` 和自己的 CURVE client key；客户端 public key 必须在服务端白名单中。TLS 证书体系需要通过外部 TCP TLS 隧道或 WebSocket `wss` 提供。
+
+对“本人作用域”的 HTTP 接口，路径中的 `{node_id,user_id}` 可以写成 `0/0`，服务端会按当前 Bearer token 解析为当前登录用户。仅完整的 `0/0` 组合有效；`0/x` 和 `x/0` 仍会报错。当前支持该快捷写法的主要接口包括：查询本人信息、本人消息、本人元数据、本人附件、本人订阅和本人黑名单。
 
 ## 端到端流程
 
@@ -65,6 +69,17 @@ curl -sS -X POST http://127.0.0.1:8080/users \
 
 响应中的 `node_id` 和 `user_id` 是客户端 WebSocket 登录时使用的身份。
 
+如果后续要使用 `/nodes/0/users/0/...` 这类“当前登录用户”快捷路径，先为该用户换取自己的 token：
+
+```bash
+ALICE_TOKEN="$(
+  curl -sS -X POST http://127.0.0.1:8080/auth/login \
+    -H 'Content-Type: application/json' \
+    -d '{"node_id":4096,"user_id":1025,"password":"alice-password"}' \
+  | jq -r .token
+)"
+```
+
 ### 创建 channel
 
 channel 是不可登录的组播地址：
@@ -79,8 +94,8 @@ curl -sS -X POST http://127.0.0.1:8080/users \
 ### 订阅 channel
 
 ```bash
-curl -sS -X POST http://127.0.0.1:8080/nodes/4096/users/1025/subscriptions \
-  -H "Authorization: Bearer ${ADMIN_TOKEN}" \
+curl -sS -X POST http://127.0.0.1:8080/nodes/0/users/0/subscriptions \
+  -H "Authorization: Bearer ${ALICE_TOKEN}" \
   -H 'Content-Type: application/json' \
   -d '{"channel_node_id":4096,"channel_user_id":1026}'
 ```
@@ -90,8 +105,8 @@ curl -sS -X POST http://127.0.0.1:8080/nodes/4096/users/1025/subscriptions \
 ### 配置黑名单
 
 ```bash
-curl -sS -X POST http://127.0.0.1:8080/nodes/4096/users/1025/blacklist \
-  -H "Authorization: Bearer ${ADMIN_TOKEN}" \
+curl -sS -X POST http://127.0.0.1:8080/nodes/0/users/0/blacklist \
+  -H "Authorization: Bearer ${ALICE_TOKEN}" \
   -H 'Content-Type: application/json' \
   -d '{"blocked_node_id":4096,"blocked_user_id":1027}'
 ```

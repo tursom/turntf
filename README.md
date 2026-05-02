@@ -71,9 +71,19 @@ printf 'secret' | go run ./cmd/turntf hash --stdin
 | `DELETE` | `/nodes/{node_id}/users/{user_id}` | 管理员删除用户 |
 | `POST` | `/nodes/{node_id}/users/{user_id}/messages` | 发送消息（需登录） |
 | `GET` | `/nodes/{node_id}/users/{user_id}/messages?limit=N` | 查询消息 |
+| `GET` | `/nodes/{node_id}/users/{user_id}/metadata` | 扫描用户元数据（本人或管理员） |
+| `GET` | `/nodes/{node_id}/users/{user_id}/metadata/{key}` | 查询用户元数据（本人或管理员） |
+| `PUT` | `/nodes/{node_id}/users/{user_id}/metadata/{key}` | 写入用户元数据（本人或管理员） |
+| `DELETE` | `/nodes/{node_id}/users/{user_id}/metadata/{key}` | 删除用户元数据（本人或管理员） |
+| `GET` | `/nodes/{node_id}/users/{user_id}/attachments` | 查询用户附件（本人或管理员） |
+| `PUT` | `/nodes/{node_id}/users/{user_id}/attachments/{attachment_type}/{subject_node_id}/{subject_user_id}` | 写入用户附件 |
+| `DELETE` | `/nodes/{node_id}/users/{user_id}/attachments/{attachment_type}/{subject_node_id}/{subject_user_id}` | 删除用户附件 |
 | `POST` | `/nodes/{node_id}/users/{user_id}/subscriptions` | 管理订阅 |
 | `DELETE` | `/nodes/{node_id}/users/{user_id}/subscriptions/{channel_node_id}/{channel_user_id}` | 取消订阅 |
 | `GET` | `/nodes/{node_id}/users/{user_id}/subscriptions` | 查询订阅 |
+| `POST` | `/nodes/{node_id}/users/{user_id}/blacklist` | 拉黑普通用户 |
+| `DELETE` | `/nodes/{node_id}/users/{user_id}/blacklist/{blocked_node_id}/{blocked_user_id}` | 取消拉黑普通用户 |
+| `GET` | `/nodes/{node_id}/users/{user_id}/blacklist` | 查询黑名单 |
 | `GET` | `/cluster/nodes` | 已连接集群节点列表（需登录） |
 | `GET` | `/events?after=0&limit=100` | 事件列表（管理员） |
 | `GET` | `/ops/status` | 节点运维快照（管理员） |
@@ -81,6 +91,8 @@ printf 'secret' | go run ./cmd/turntf hash --stdin
 | `GET` | `/healthz` | 健康检查（公开） |
 
 支持通过 `sync_mode: force_sync` 或 `no_sync` 控制单条消息的 Pebble 持久化方式（仅 `store.engine = "pebble"` 时生效）。
+
+对“本人作用域”的 HTTP 接口，路径中的 `{node_id,user_id}` 还支持使用 `/nodes/0/users/0` 表示“当前 Bearer token 对应的登录用户”。仅完整的 `0/0` 组合有效；`0/x`、`x/0`、负数或非数字仍会返回 `400`。该快捷写法适用于查询本人信息、本人消息、本人元数据、本人附件、本人订阅和本人黑名单，不适用于 `PATCH /users`、`DELETE /users` 或 `POST /messages` 这类目标地址型接口。
 
 ### 客户端长连接
 
@@ -115,7 +127,7 @@ printf 'secret' | go run ./cmd/turntf hash --stdin
 | 操作 | 权限要求 |
 |---|---|
 | 健康检查、登录 | 公开 |
-| 查询本人信息、本人消息、管理本人订阅 | 登录用户 |
+| 查询本人信息、本人消息、本人元数据、管理本人订阅或黑名单 | 登录用户 |
 | 发送消息到可登录用户或已授权 channel | 登录用户 |
 | 发送瞬时包到 `(node_id, 3)` | 登录用户 |
 | 查询集群节点 | 登录用户 |

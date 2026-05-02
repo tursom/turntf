@@ -138,6 +138,7 @@ message CreateUserRequest {
 
 message GetUserRequest {
   uint64 request_id = 1;
+  // user 为空（未设置或 node_id/user_id 都为 0）时，表示当前登录用户。
   UserRef user = 2;
 }
 
@@ -158,12 +159,15 @@ message DeleteUserRequest {
 
 message ListMessagesRequest {
   uint64 request_id = 1;
+  // user 为空（未设置或 node_id/user_id 都为 0）时，表示当前登录用户。
   UserRef user = 2;
   int32 limit = 3;
 }
 
 message UpsertUserAttachmentRequest {
   uint64 request_id = 1;
+  // 对 channel_subscription 和 user_blacklist，owner 为空时表示当前登录用户；
+  // channel_manager / channel_writer 仍必须显式指定频道 owner。
   UserRef owner = 2;
   UserRef subject = 3;
   AttachmentType attachment_type = 4;
@@ -172,6 +176,8 @@ message UpsertUserAttachmentRequest {
 
 message DeleteUserAttachmentRequest {
   uint64 request_id = 1;
+  // 对 channel_subscription 和 user_blacklist，owner 为空时表示当前登录用户；
+  // channel_manager / channel_writer 仍必须显式指定频道 owner。
   UserRef owner = 2;
   UserRef subject = 3;
   AttachmentType attachment_type = 4;
@@ -179,6 +185,8 @@ message DeleteUserAttachmentRequest {
 
 message ListUserAttachmentsRequest {
   uint64 request_id = 1;
+  // owner 为空时表示当前登录用户；attachment_type 仅允许为空、
+  // channel_subscription 或 user_blacklist。
   UserRef owner = 2;
   AttachmentType attachment_type = 3;
 }
@@ -293,12 +301,14 @@ message ResolveUserSessionsResponse {
 
 message GetUserMetadataRequest {
   uint64 request_id = 1;
+  // owner 为空（未设置或 node_id/user_id 都为 0）时，表示当前登录用户。
   UserRef owner = 2;
   string key = 3;
 }
 
 message UpsertUserMetadataRequest {
   uint64 request_id = 1;
+  // owner 为空（未设置或 node_id/user_id 都为 0）时，表示当前登录用户。
   UserRef owner = 2;
   string key = 3;
   bytes value = 4;
@@ -307,12 +317,14 @@ message UpsertUserMetadataRequest {
 
 message DeleteUserMetadataRequest {
   uint64 request_id = 1;
+  // owner 为空（未设置或 node_id/user_id 都为 0）时，表示当前登录用户。
   UserRef owner = 2;
   string key = 3;
 }
 
 message ScanUserMetadataRequest {
   uint64 request_id = 1;
+  // owner 为空（未设置或 node_id/user_id 都为 0）时，表示当前登录用户。
   UserRef owner = 2;
   string prefix = 3;
   string after = 4;

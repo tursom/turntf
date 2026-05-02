@@ -233,7 +233,15 @@ ServerEnvelope {
 - 消息与订阅查询：`list_messages`、`list_subscriptions`
 - 订阅管理：`subscribe_channel`、`unsubscribe_channel`
 - 黑名单管理：`block_user`、`unblock_user`、`list_blocked_users`
+- 附件与用户元数据：`upsert_user_attachment`、`delete_user_attachment`、`list_user_attachments`、`get_user_metadata`、`upsert_user_metadata`、`delete_user_metadata`、`scan_user_metadata`
 - 集群与运维查询：`list_cluster_nodes`、`list_node_logged_in_users`、`list_events`、`operations_status`、`metrics`
+
+自作用目标兼容：
+
+- `get_user.user`、`list_messages.user`、用户元数据请求中的 `owner` 为空时（字段省略，或 `node_id/user_id` 都为 `0`），服务端会自动解释为当前登录用户。
+- `list_user_attachments.owner` 也支持同样的空值回退，但仅适用于列出当前登录用户自己的附件。
+- `upsert_user_attachment.owner`、`delete_user_attachment.owner` 只在 `attachment_type=channel_subscription` 或 `user_blacklist` 时支持空值回退；`channel_manager` / `channel_writer` 仍必须显式指定频道 owner。
+- `node_id`、`user_id` 只填一个、填负数或其他无效组合仍会返回 `invalid_request`，不会回退到当前登录用户。
 
 示例：管理员创建用户
 
@@ -391,8 +399,11 @@ ServerEnvelope {
 - `list_node_logged_in_users` 只要求当前连接已登录，普通用户可用；目标节点不可达时返回错误，不返回空列表。
 - `get_user` 允许本人或管理员。
 - `list_messages` 对可登录用户允许本人或管理员；对 channel/broadcast 目标仅管理员可直接查询。
+- 用户元数据 RPC 允许本人或管理员；空 `owner` 仅是“本人”的便捷写法，不会放宽权限。
+- `list_user_attachments` 允许本人或管理员；空 `owner` 仅回退到当前登录用户自己。
 - `subscribe_channel`、`unsubscribe_channel`、`list_subscriptions` 允许本人或管理员。
 - `block_user`、`unblock_user`、`list_blocked_users` 允许本人或管理员；只能针对 `role=user` 的目标用户配置。
+- `upsert_user_attachment`、`delete_user_attachment` 的权限仍按附件类型区分：订阅/黑名单允许本人或管理员，频道管理/写入关系仍要求显式频道 owner 和原有管理权限。
 - `send_message` 的权限规则保持不变。
 
 字段约定：

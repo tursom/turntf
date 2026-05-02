@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tursom/turntf/internal/store"
 	internalproto "github.com/tursom/turntf/internal/proto"
+	"github.com/tursom/turntf/internal/store"
 )
 
 func TestHTTPUserMetadataCRUDAndScan(t *testing.T) {
@@ -113,6 +113,87 @@ func TestHTTPUserMetadataCRUDAndScan(t *testing.T) {
 	}, http.StatusNotFound)
 }
 
+func TestHTTPSelfScopedUserMetadataSupportsCurrentUserSentinel(t *testing.T) {
+	t.Parallel()
+
+	testAPI := newAuthenticatedTestAPI(t)
+	handler := testAPI.handler
+
+	adminKey := store.UserKey{NodeID: testNodeID(1), UserID: store.BootstrapAdminUserID}
+	adminToken := loginToken(t, handler, adminKey, "root-password")
+	aliceKey := createUserAs(t, handler, adminToken, "self-meta-alice", "alice-password", store.RoleUser)
+	bobKey := createUserAs(t, handler, adminToken, "self-meta-bob", "bob-password", store.RoleUser)
+	aliceToken := loginToken(t, handler, aliceKey, "alice-password")
+	bobToken := loginToken(t, handler, bobKey, "bob-password")
+
+	currentUser := store.UserKey{}
+
+	var upserted struct {
+		Owner store.UserKey `json:"owner"`
+		Key   string        `json:"key"`
+		Value []byte        `json:"value"`
+	}
+	mustJSON(t, doJSONWithHeaders(t, handler, http.MethodPut, userMetadataPath(currentUser, "session:self"), map[string]any{
+		"value": []byte("self-current"),
+	}, map[string]string{
+		"Authorization": "Bearer " + aliceToken,
+	}, http.StatusCreated), &upserted)
+	if upserted.Owner != aliceKey || upserted.Key != "session:self" || string(upserted.Value) != "self-current" {
+		t.Fatalf("unexpected self sentinel metadata upsert: %+v", upserted)
+	}
+
+	var loaded struct {
+		Owner store.UserKey `json:"owner"`
+		Key   string        `json:"key"`
+		Value []byte        `json:"value"`
+	}
+	mustJSON(t, doJSONWithHeaders(t, handler, http.MethodGet, userMetadataPath(currentUser, "session:self"), nil, map[string]string{
+		"Authorization": "Bearer " + aliceToken,
+	}, http.StatusOK), &loaded)
+	if loaded.Owner != aliceKey || loaded.Key != "session:self" || string(loaded.Value) != "self-current" {
+		t.Fatalf("unexpected self sentinel metadata get: %+v", loaded)
+	}
+
+	var scanned struct {
+		Items []struct {
+			Owner store.UserKey `json:"owner"`
+			Key   string        `json:"key"`
+		} `json:"items"`
+		Count int `json:"count"`
+	}
+	mustJSON(t, doJSONWithHeaders(t, handler, http.MethodGet, userMetadataScanPath(currentUser)+"?prefix=session:&limit=10", nil, map[string]string{
+		"Authorization": "Bearer " + aliceToken,
+	}, http.StatusOK), &scanned)
+	if scanned.Count != 1 || len(scanned.Items) != 1 || scanned.Items[0].Owner != aliceKey || scanned.Items[0].Key != "session:self" {
+		t.Fatalf("unexpected self sentinel metadata scan: %+v", scanned)
+	}
+
+	var deleted struct {
+		Owner     store.UserKey `json:"owner"`
+		Key       string        `json:"key"`
+		DeletedAt string        `json:"deleted_at"`
+	}
+	mustJSON(t, doJSONWithHeaders(t, handler, http.MethodDelete, userMetadataPath(currentUser, "session:self"), nil, map[string]string{
+		"Authorization": "Bearer " + aliceToken,
+	}, http.StatusOK), &deleted)
+	if deleted.Owner != aliceKey || deleted.Key != "session:self" || deleted.DeletedAt == "" {
+		t.Fatalf("unexpected self sentinel metadata delete: %+v", deleted)
+	}
+
+	doJSONWithHeaders(t, handler, http.MethodGet, userMetadataPath(currentUser, "session:self"), nil, map[string]string{
+		"Authorization": "Bearer " + aliceToken,
+	}, http.StatusNotFound)
+	doJSONWithHeaders(t, handler, http.MethodGet, userMetadataPath(store.UserKey{UserID: aliceKey.UserID}, "session:self"), nil, map[string]string{
+		"Authorization": "Bearer " + aliceToken,
+	}, http.StatusBadRequest)
+	doJSONWithHeaders(t, handler, http.MethodGet, userMetadataPath(store.UserKey{NodeID: aliceKey.NodeID}, "session:self"), nil, map[string]string{
+		"Authorization": "Bearer " + aliceToken,
+	}, http.StatusBadRequest)
+	doJSONWithHeaders(t, handler, http.MethodGet, userMetadataPath(aliceKey, "session:self"), nil, map[string]string{
+		"Authorization": "Bearer " + bobToken,
+	}, http.StatusForbidden)
+}
+
 func TestClientWebSocketUserMetadataRPC(t *testing.T) {
 	t.Parallel()
 
@@ -215,6 +296,179 @@ func TestClientWebSocketUserMetadataRPC(t *testing.T) {
 	notFound := readServerEnvelope(t, aliceConn).GetError()
 	if notFound == nil || notFound.RequestId != 46 || notFound.Code != "not_found" {
 		t.Fatalf("unexpected not found metadata response: %+v", notFound)
+	}
+}
+
+func TestClientWebSocketUserMetadataSupportsImplicitCurrentUserOwner(t *testing.T) {
+	t.Parallel()
+
+	testAPI := newAuthenticatedTestAPI(t)
+	server := newIPv4TestServer(t, testAPI.handler)
+	defer server.Close()
+
+	adminKey := store.UserKey{NodeID: testNodeID(1), UserID: store.BootstrapAdminUserID}
+	adminToken := loginToken(t, testAPI.handler, adminKey, "root-password")
+	aliceKey := createUserAs(t, testAPI.handler, adminToken, "implicit-meta-alice", "alice-password", store.RoleUser)
+	bobKey := createUserAs(t, testAPI.handler, adminToken, "implicit-meta-bob", "bob-password", store.RoleUser)
+
+	aliceConn := dialClientWebSocket(t, server.URL)
+	defer aliceConn.Close()
+	loginClientWebSocket(t, aliceConn, aliceKey, "alice-password")
+
+	writeClientEnvelope(t, aliceConn, &internalproto.ClientEnvelope{
+		Body: &internalproto.ClientEnvelope_UpsertUserMetadata{
+			UpsertUserMetadata: &internalproto.UpsertUserMetadataRequest{
+				RequestId: 61,
+				Key:       "session:nil",
+				Value:     []byte("nil-owner"),
+			},
+		},
+	})
+	upsertNilResp := readServerEnvelope(t, aliceConn).GetUpsertUserMetadataResponse()
+	if upsertNilResp == nil || upsertNilResp.RequestId != 61 || upsertNilResp.Metadata.GetKey() != "session:nil" || string(upsertNilResp.Metadata.GetValue()) != "nil-owner" {
+		t.Fatalf("unexpected nil-owner upsert metadata response: %+v", upsertNilResp)
+	}
+
+	writeClientEnvelope(t, aliceConn, &internalproto.ClientEnvelope{
+		Body: &internalproto.ClientEnvelope_UpsertUserMetadata{
+			UpsertUserMetadata: &internalproto.UpsertUserMetadataRequest{
+				RequestId: 62,
+				Owner:     &internalproto.UserRef{},
+				Key:       "session:zero",
+				Value:     []byte("zero-owner"),
+			},
+		},
+	})
+	upsertZeroResp := readServerEnvelope(t, aliceConn).GetUpsertUserMetadataResponse()
+	if upsertZeroResp == nil || upsertZeroResp.RequestId != 62 || upsertZeroResp.Metadata.GetKey() != "session:zero" || string(upsertZeroResp.Metadata.GetValue()) != "zero-owner" {
+		t.Fatalf("unexpected zero-owner upsert metadata response: %+v", upsertZeroResp)
+	}
+
+	writeClientEnvelope(t, aliceConn, &internalproto.ClientEnvelope{
+		Body: &internalproto.ClientEnvelope_GetUserMetadata{
+			GetUserMetadata: &internalproto.GetUserMetadataRequest{
+				RequestId: 63,
+				Key:       "session:nil",
+			},
+		},
+	})
+	getNilResp := readServerEnvelope(t, aliceConn).GetGetUserMetadataResponse()
+	if getNilResp == nil || getNilResp.RequestId != 63 || string(getNilResp.Metadata.GetValue()) != "nil-owner" {
+		t.Fatalf("unexpected nil-owner get metadata response: %+v", getNilResp)
+	}
+
+	writeClientEnvelope(t, aliceConn, &internalproto.ClientEnvelope{
+		Body: &internalproto.ClientEnvelope_GetUserMetadata{
+			GetUserMetadata: &internalproto.GetUserMetadataRequest{
+				RequestId: 64,
+				Owner:     &internalproto.UserRef{},
+				Key:       "session:zero",
+			},
+		},
+	})
+	getZeroResp := readServerEnvelope(t, aliceConn).GetGetUserMetadataResponse()
+	if getZeroResp == nil || getZeroResp.RequestId != 64 || string(getZeroResp.Metadata.GetValue()) != "zero-owner" {
+		t.Fatalf("unexpected zero-owner get metadata response: %+v", getZeroResp)
+	}
+
+	writeClientEnvelope(t, aliceConn, &internalproto.ClientEnvelope{
+		Body: &internalproto.ClientEnvelope_ScanUserMetadata{
+			ScanUserMetadata: &internalproto.ScanUserMetadataRequest{
+				RequestId: 65,
+				Prefix:    "session:",
+				Limit:     10,
+			},
+		},
+	})
+	scanNilResp := readServerEnvelope(t, aliceConn).GetScanUserMetadataResponse()
+	if scanNilResp == nil || scanNilResp.RequestId != 65 || scanNilResp.Count != 2 {
+		t.Fatalf("unexpected nil-owner scan metadata response: %+v", scanNilResp)
+	}
+
+	writeClientEnvelope(t, aliceConn, &internalproto.ClientEnvelope{
+		Body: &internalproto.ClientEnvelope_ScanUserMetadata{
+			ScanUserMetadata: &internalproto.ScanUserMetadataRequest{
+				RequestId: 66,
+				Owner:     &internalproto.UserRef{},
+				Prefix:    "session:",
+				Limit:     10,
+			},
+		},
+	})
+	scanZeroResp := readServerEnvelope(t, aliceConn).GetScanUserMetadataResponse()
+	if scanZeroResp == nil || scanZeroResp.RequestId != 66 || scanZeroResp.Count != 2 {
+		t.Fatalf("unexpected zero-owner scan metadata response: %+v", scanZeroResp)
+	}
+
+	bobConn := dialClientWebSocket(t, server.URL)
+	defer bobConn.Close()
+	loginClientWebSocket(t, bobConn, bobKey, "bob-password")
+	writeClientEnvelope(t, bobConn, &internalproto.ClientEnvelope{
+		Body: &internalproto.ClientEnvelope_GetUserMetadata{
+			GetUserMetadata: &internalproto.GetUserMetadataRequest{
+				RequestId: 67,
+				Owner:     &internalproto.UserRef{NodeId: aliceKey.NodeID, UserId: aliceKey.UserID},
+				Key:       "session:nil",
+			},
+		},
+	})
+	forbidden := readServerEnvelope(t, bobConn).GetError()
+	if forbidden == nil || forbidden.RequestId != 67 || forbidden.Code != "forbidden" {
+		t.Fatalf("unexpected explicit other metadata error: %+v", forbidden)
+	}
+
+	writeClientEnvelope(t, aliceConn, &internalproto.ClientEnvelope{
+		Body: &internalproto.ClientEnvelope_DeleteUserMetadata{
+			DeleteUserMetadata: &internalproto.DeleteUserMetadataRequest{
+				RequestId: 68,
+				Key:       "session:nil",
+			},
+		},
+	})
+	deleteNilResp := readServerEnvelope(t, aliceConn).GetDeleteUserMetadataResponse()
+	if deleteNilResp == nil || deleteNilResp.RequestId != 68 || deleteNilResp.Metadata.GetDeletedAt() == "" {
+		t.Fatalf("unexpected nil-owner delete metadata response: %+v", deleteNilResp)
+	}
+
+	writeClientEnvelope(t, aliceConn, &internalproto.ClientEnvelope{
+		Body: &internalproto.ClientEnvelope_DeleteUserMetadata{
+			DeleteUserMetadata: &internalproto.DeleteUserMetadataRequest{
+				RequestId: 69,
+				Owner:     &internalproto.UserRef{},
+				Key:       "session:zero",
+			},
+		},
+	})
+	deleteZeroResp := readServerEnvelope(t, aliceConn).GetDeleteUserMetadataResponse()
+	if deleteZeroResp == nil || deleteZeroResp.RequestId != 69 || deleteZeroResp.Metadata.GetDeletedAt() == "" {
+		t.Fatalf("unexpected zero-owner delete metadata response: %+v", deleteZeroResp)
+	}
+
+	writeClientEnvelope(t, aliceConn, &internalproto.ClientEnvelope{
+		Body: &internalproto.ClientEnvelope_GetUserMetadata{
+			GetUserMetadata: &internalproto.GetUserMetadataRequest{
+				RequestId: 70,
+				Key:       "session:nil",
+			},
+		},
+	})
+	notFoundNil := readServerEnvelope(t, aliceConn).GetError()
+	if notFoundNil == nil || notFoundNil.RequestId != 70 || notFoundNil.Code != "not_found" {
+		t.Fatalf("unexpected nil-owner not found metadata response: %+v", notFoundNil)
+	}
+
+	writeClientEnvelope(t, aliceConn, &internalproto.ClientEnvelope{
+		Body: &internalproto.ClientEnvelope_GetUserMetadata{
+			GetUserMetadata: &internalproto.GetUserMetadataRequest{
+				RequestId: 71,
+				Owner:     &internalproto.UserRef{},
+				Key:       "session:zero",
+			},
+		},
+	})
+	notFoundZero := readServerEnvelope(t, aliceConn).GetError()
+	if notFoundZero == nil || notFoundZero.RequestId != 71 || notFoundZero.Code != "not_found" {
+		t.Fatalf("unexpected zero-owner not found metadata response: %+v", notFoundZero)
 	}
 }
 

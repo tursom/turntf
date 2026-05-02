@@ -53,22 +53,22 @@ type HTTP struct {
 	authorizer       *permission.Authorizer
 	mux              *http.ServeMux
 	nodeID           int64
-	signer           *auth.Signer                         // JWT 签名器，nil 表示禁用认证
-	tokenTTL         time.Duration                         // JWT 有效期
+	signer           *auth.Signer                                // JWT 签名器，nil 表示禁用认证
+	tokenTTL         time.Duration                               // JWT 有效期
 	sessionShards    [clientSessionShardCount]clientSessionShard // 分片会话存储
 	persistentMu     sync.RWMutex
-	persistent       map[*clientWSSession]struct{}        // 需要持久化推送的会话集合
-	persistentAdmin  map[*clientWSSession]struct{}        // 管理员会话（接收所有消息）
+	persistent       map[*clientWSSession]struct{} // 需要持久化推送的会话集合
+	persistentAdmin  map[*clientWSSession]struct{} // 管理员会话（接收所有消息）
 	onlineUsersMu    sync.RWMutex
-	onlineUsers      map[store.UserKey]onlineUserState    // 在线用户聚合状态
+	onlineUsers      map[store.UserKey]onlineUserState // 在线用户聚合状态
 	onlineUserCount  atomic.Int64
-	sessionRegistry  OnlineSessionRegistry                 // 集群会话注册器
-	sessionSequence  atomic.Uint64                         // 会话 ID 自增序列
+	sessionRegistry  OnlineSessionRegistry // 集群会话注册器
+	sessionSequence  atomic.Uint64         // 会话 ID 自增序列
 	targetRoleMu     sync.Mutex
 	targetRoleCache  map[store.UserKey]clientRoleCacheEntry // 用户角色缓存
 	dispatcherMu     sync.Mutex
-	dispatcherCancel context.CancelFunc                    // 持久化分发器取消函数
-	closeOnce        sync.Once                             // 确保 Close 只执行一次
+	dispatcherCancel context.CancelFunc // 持久化分发器取消函数
+	closeOnce        sync.Once          // 确保 Close 只执行一次
 }
 
 // HTTPOptions 配置 HTTP 服务的可选参数。
@@ -237,6 +237,12 @@ func (h *HTTP) routes() {
 	h.mux.HandleFunc("GET /nodes/{node_id}/users/{user_id}/attachments", h.handleListUserAttachments)
 	h.mux.HandleFunc("PUT /nodes/{node_id}/users/{user_id}/attachments/{attachment_type}/{subject_node_id}/{subject_user_id}", h.handleUpsertUserAttachment)
 	h.mux.HandleFunc("DELETE /nodes/{node_id}/users/{user_id}/attachments/{attachment_type}/{subject_node_id}/{subject_user_id}", h.handleDeleteUserAttachment)
+	h.mux.HandleFunc("POST /nodes/{node_id}/users/{user_id}/subscriptions", h.handleSubscribeChannel)
+	h.mux.HandleFunc("DELETE /nodes/{node_id}/users/{user_id}/subscriptions/{channel_node_id}/{channel_user_id}", h.handleUnsubscribeChannel)
+	h.mux.HandleFunc("GET /nodes/{node_id}/users/{user_id}/subscriptions", h.handleListSubscriptions)
+	h.mux.HandleFunc("POST /nodes/{node_id}/users/{user_id}/blacklist", h.handleBlockUser)
+	h.mux.HandleFunc("DELETE /nodes/{node_id}/users/{user_id}/blacklist/{blocked_node_id}/{blocked_user_id}", h.handleUnblockUser)
+	h.mux.HandleFunc("GET /nodes/{node_id}/users/{user_id}/blacklist", h.handleListBlockedUsers)
 	h.mux.HandleFunc("GET /events", h.handleListEvents)
 	h.mux.HandleFunc("GET /cluster/nodes", h.handleClusterNodes)
 	h.mux.HandleFunc("GET /cluster/nodes/{node_id}/logged-in-users", h.handleNodeLoggedInUsers)
@@ -371,11 +377,11 @@ func (h *HTTP) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *HTTP) handleGetUser(w http.ResponseWriter, r *http.Request) {
-	key, ok := parsePathUserKey(w, r)
+	principal, ok := h.requireAuthenticated(w, r)
 	if !ok {
 		return
 	}
-	principal, ok := h.requireAuthenticated(w, r)
+	key, _, ok := h.parsePathUserKeyOrCurrent(w, r, principal)
 	if !ok {
 		return
 	}
@@ -595,11 +601,11 @@ func (h *HTTP) handleCreateMessage(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *HTTP) handleListMessagesByUser(w http.ResponseWriter, r *http.Request) {
-	key, ok := parsePathUserKey(w, r)
+	principal, ok := h.requireAuthenticated(w, r)
 	if !ok {
 		return
 	}
-	principal, ok := h.requireAuthenticated(w, r)
+	key, _, ok := h.parsePathUserKeyOrCurrent(w, r, principal)
 	if !ok {
 		return
 	}
@@ -641,10 +647,6 @@ func (h *HTTP) handleListMessagesByUser(w http.ResponseWriter, r *http.Request) 
 }
 
 func (h *HTTP) handleListUserAttachments(w http.ResponseWriter, r *http.Request) {
-	owner, ok := parsePathUserKey(w, r)
-	if !ok {
-		return
-	}
 	principal, ok := h.requireAuthenticated(w, r)
 	if !ok {
 		return
@@ -652,6 +654,14 @@ func (h *HTTP) handleListUserAttachments(w http.ResponseWriter, r *http.Request)
 	attachmentType, err := attachmentTypeFromQuery(r)
 	if err != nil {
 		writeStoreError(w, err)
+		return
+	}
+	owner, usingCurrent, ok := h.parsePathUserKeyOrCurrent(w, r, principal)
+	if !ok {
+		return
+	}
+	if usingCurrent && !allowCurrentUserSentinelForAttachmentList(attachmentType) {
+		writeStoreError(w, fmt.Errorf("%w: /nodes/0/users/0/attachments only supports empty, channel_subscription, or user_blacklist attachment_type", store.ErrInvalidInput))
 		return
 	}
 	if err := h.authorizer.ListAttachment(r.Context(), actorFromPrincipal(principal), owner, attachmentType); err != nil {
@@ -674,11 +684,11 @@ func (h *HTTP) handleListUserAttachments(w http.ResponseWriter, r *http.Request)
 }
 
 func (h *HTTP) handleGetUserMetadata(w http.ResponseWriter, r *http.Request) {
-	owner, key, ok := h.parseUserMetadataKeyRequest(w, r)
+	principal, ok := h.requireAuthenticated(w, r)
 	if !ok {
 		return
 	}
-	principal, ok := h.requireAuthenticated(w, r)
+	owner, key, ok := h.parseUserMetadataKeyRequest(w, r, principal)
 	if !ok {
 		return
 	}
@@ -695,11 +705,11 @@ func (h *HTTP) handleGetUserMetadata(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *HTTP) handleUpsertUserMetadata(w http.ResponseWriter, r *http.Request) {
-	owner, key, ok := h.parseUserMetadataKeyRequest(w, r)
+	principal, ok := h.requireAuthenticated(w, r)
 	if !ok {
 		return
 	}
-	principal, ok := h.requireAuthenticated(w, r)
+	owner, key, ok := h.parseUserMetadataKeyRequest(w, r, principal)
 	if !ok {
 		return
 	}
@@ -732,11 +742,11 @@ func (h *HTTP) handleUpsertUserMetadata(w http.ResponseWriter, r *http.Request) 
 }
 
 func (h *HTTP) handleDeleteUserMetadata(w http.ResponseWriter, r *http.Request) {
-	owner, key, ok := h.parseUserMetadataKeyRequest(w, r)
+	principal, ok := h.requireAuthenticated(w, r)
 	if !ok {
 		return
 	}
-	principal, ok := h.requireAuthenticated(w, r)
+	owner, key, ok := h.parseUserMetadataKeyRequest(w, r, principal)
 	if !ok {
 		return
 	}
@@ -756,11 +766,11 @@ func (h *HTTP) handleDeleteUserMetadata(w http.ResponseWriter, r *http.Request) 
 }
 
 func (h *HTTP) handleScanUserMetadata(w http.ResponseWriter, r *http.Request) {
-	owner, ok := parsePathUserKey(w, r)
+	principal, ok := h.requireAuthenticated(w, r)
 	if !ok {
 		return
 	}
-	principal, ok := h.requireAuthenticated(w, r)
+	owner, _, ok := h.parsePathUserKeyOrCurrent(w, r, principal)
 	if !ok {
 		return
 	}
@@ -846,11 +856,11 @@ func (h *HTTP) handleDeleteUserAttachment(w http.ResponseWriter, r *http.Request
 }
 
 func (h *HTTP) handleSubscribeChannel(w http.ResponseWriter, r *http.Request) {
-	subscriber, ok := parsePathUserKey(w, r)
+	principal, ok := h.requireAuthenticated(w, r)
 	if !ok {
 		return
 	}
-	principal, ok := h.requireAuthenticated(w, r)
+	subscriber, _, ok := h.parsePathUserKeyOrCurrent(w, r, principal)
 	if !ok {
 		return
 	}
@@ -878,11 +888,11 @@ func (h *HTTP) handleSubscribeChannel(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *HTTP) handleUnsubscribeChannel(w http.ResponseWriter, r *http.Request) {
-	subscriber, ok := parsePathUserKey(w, r)
+	principal, ok := h.requireAuthenticated(w, r)
 	if !ok {
 		return
 	}
-	principal, ok := h.requireAuthenticated(w, r)
+	subscriber, _, ok := h.parsePathUserKeyOrCurrent(w, r, principal)
 	if !ok {
 		return
 	}
@@ -911,11 +921,11 @@ func (h *HTTP) handleUnsubscribeChannel(w http.ResponseWriter, r *http.Request) 
 }
 
 func (h *HTTP) handleListSubscriptions(w http.ResponseWriter, r *http.Request) {
-	subscriber, ok := parsePathUserKey(w, r)
+	principal, ok := h.requireAuthenticated(w, r)
 	if !ok {
 		return
 	}
-	principal, ok := h.requireAuthenticated(w, r)
+	subscriber, _, ok := h.parsePathUserKeyOrCurrent(w, r, principal)
 	if !ok {
 		return
 	}
@@ -939,11 +949,11 @@ func (h *HTTP) handleListSubscriptions(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *HTTP) handleBlockUser(w http.ResponseWriter, r *http.Request) {
-	owner, ok := parsePathUserKey(w, r)
+	principal, ok := h.requireAuthenticated(w, r)
 	if !ok {
 		return
 	}
-	principal, ok := h.requireAuthenticated(w, r)
+	owner, _, ok := h.parsePathUserKeyOrCurrent(w, r, principal)
 	if !ok {
 		return
 	}
@@ -970,11 +980,11 @@ func (h *HTTP) handleBlockUser(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *HTTP) handleUnblockUser(w http.ResponseWriter, r *http.Request) {
-	owner, ok := parsePathUserKey(w, r)
+	principal, ok := h.requireAuthenticated(w, r)
 	if !ok {
 		return
 	}
-	principal, ok := h.requireAuthenticated(w, r)
+	owner, _, ok := h.parsePathUserKeyOrCurrent(w, r, principal)
 	if !ok {
 		return
 	}
@@ -1003,11 +1013,11 @@ func (h *HTTP) handleUnblockUser(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *HTTP) handleListBlockedUsers(w http.ResponseWriter, r *http.Request) {
-	owner, ok := parsePathUserKey(w, r)
+	principal, ok := h.requireAuthenticated(w, r)
 	if !ok {
 		return
 	}
-	principal, ok := h.requireAuthenticated(w, r)
+	owner, _, ok := h.parsePathUserKeyOrCurrent(w, r, principal)
 	if !ok {
 		return
 	}
@@ -1667,6 +1677,17 @@ func parsePathUserKey(w http.ResponseWriter, r *http.Request) (store.UserKey, bo
 	return store.UserKey{NodeID: nodeID, UserID: userID}, true
 }
 
+// parseNonNegativePathInt 从 URL 路径中解析非负整数参数。
+func parseNonNegativePathInt(w http.ResponseWriter, r *http.Request, name string) (int64, bool) {
+	raw := strings.TrimSpace(r.PathValue(name))
+	value, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || value < 0 {
+		writeError(w, http.StatusBadRequest, name+" must be a non-negative integer")
+		return 0, false
+	}
+	return value, true
+}
+
 // parsePositivePathInt 从 URL 路径中解析正整数参数。
 func parsePositivePathInt(w http.ResponseWriter, r *http.Request, name string) (int64, bool) {
 	raw := strings.TrimSpace(r.PathValue(name))
@@ -1730,8 +1751,8 @@ func userMetadataKeyFromPath(w http.ResponseWriter, r *http.Request) (string, bo
 	return key, true
 }
 
-func (h *HTTP) parseUserMetadataKeyRequest(w http.ResponseWriter, r *http.Request) (store.UserKey, string, bool) {
-	owner, ok := parsePathUserKey(w, r)
+func (h *HTTP) parseUserMetadataKeyRequest(w http.ResponseWriter, r *http.Request, principal *requestPrincipal) (store.UserKey, string, bool) {
+	owner, _, ok := h.parsePathUserKeyOrCurrent(w, r, principal)
 	if !ok {
 		return store.UserKey{}, "", false
 	}
@@ -1753,10 +1774,6 @@ func attachmentTypeFromPath(w http.ResponseWriter, r *http.Request) (store.Attac
 }
 
 func (h *HTTP) parseAttachmentWriteRequest(w http.ResponseWriter, r *http.Request) (store.UserKey, store.AttachmentType, store.UserKey, *requestPrincipal, bool) {
-	owner, ok := parsePathUserKey(w, r)
-	if !ok {
-		return store.UserKey{}, "", store.UserKey{}, nil, false
-	}
 	attachmentType, ok := attachmentTypeFromPath(w, r)
 	if !ok {
 		return store.UserKey{}, "", store.UserKey{}, nil, false
@@ -1773,7 +1790,49 @@ func (h *HTTP) parseAttachmentWriteRequest(w http.ResponseWriter, r *http.Reques
 	if !ok {
 		return store.UserKey{}, "", store.UserKey{}, nil, false
 	}
+	owner, usingCurrent, ok := h.parsePathUserKeyOrCurrent(w, r, principal)
+	if !ok {
+		return store.UserKey{}, "", store.UserKey{}, nil, false
+	}
+	if usingCurrent && !allowCurrentUserSentinelForAttachmentWrite(attachmentType) {
+		writeStoreError(w, fmt.Errorf("%w: /nodes/0/users/0/attachments only supports channel_subscription or user_blacklist for attachment write routes", store.ErrInvalidInput))
+		return store.UserKey{}, "", store.UserKey{}, nil, false
+	}
 	return owner, attachmentType, store.UserKey{NodeID: subjectNodeID, UserID: subjectUserID}, principal, true
+}
+
+// parsePathUserKeyOrCurrent 解析用户路径。
+// 显式正整数路径返回目标用户；仅 node_id=0 且 user_id=0 时回退到当前登录用户。
+func (h *HTTP) parsePathUserKeyOrCurrent(w http.ResponseWriter, r *http.Request, principal *requestPrincipal) (store.UserKey, bool, bool) {
+	nodeID, ok := parseNonNegativePathInt(w, r, "node_id")
+	if !ok {
+		return store.UserKey{}, false, false
+	}
+	userID, ok := parseNonNegativePathInt(w, r, "user_id")
+	if !ok {
+		return store.UserKey{}, false, false
+	}
+	switch {
+	case nodeID == 0 && userID == 0:
+		if principal == nil {
+			writeError(w, http.StatusUnauthorized, "unauthorized")
+			return store.UserKey{}, false, false
+		}
+		return principal.User.Key(), true, true
+	case nodeID == 0 || userID == 0:
+		writeError(w, http.StatusBadRequest, "node_id and user_id must both be 0 or both be positive integers")
+		return store.UserKey{}, false, false
+	default:
+		return store.UserKey{NodeID: nodeID, UserID: userID}, false, true
+	}
+}
+
+func allowCurrentUserSentinelForAttachmentWrite(attachmentType store.AttachmentType) bool {
+	return attachmentType == store.AttachmentTypeChannelSubscription || attachmentType == store.AttachmentTypeUserBlacklist
+}
+
+func allowCurrentUserSentinelForAttachmentList(attachmentType store.AttachmentType) bool {
+	return attachmentType == "" || allowCurrentUserSentinelForAttachmentWrite(attachmentType)
 }
 
 // invalidateAttachmentCaches 当附件变更时使相关客户端缓存失效（频道订阅或黑名单）。

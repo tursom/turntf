@@ -147,7 +147,7 @@ func (s *clientWSSession) handleGetUser(ctx context.Context, req *internalproto.
 	if req == nil {
 		return s.writeError("invalid_request", "get_user cannot be empty", 0)
 	}
-	key, err := userKeyFromProto(req.User)
+	key, err := userKeyFromProtoOrCurrent(req.User, "user", s.principal)
 	if err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
@@ -268,7 +268,7 @@ func (s *clientWSSession) handleListMessages(ctx context.Context, req *internalp
 	if req == nil {
 		return s.writeError("invalid_request", "list_messages cannot be empty", 0)
 	}
-	key, err := userKeyFromProto(req.User)
+	key, err := userKeyFromProtoOrCurrent(req.User, "user", s.principal)
 	if err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
@@ -307,7 +307,7 @@ func (s *clientWSSession) handleGetUserMetadata(ctx context.Context, req *intern
 	if req == nil {
 		return s.writeError("invalid_request", "get_user_metadata cannot be empty", 0)
 	}
-	owner, err := userKeyFromProto(req.Owner)
+	owner, err := userKeyFromProtoOrCurrent(req.Owner, "owner", s.principal)
 	if err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
@@ -333,7 +333,7 @@ func (s *clientWSSession) handleUpsertUserMetadata(ctx context.Context, req *int
 	if req == nil {
 		return s.writeError("invalid_request", "upsert_user_metadata cannot be empty", 0)
 	}
-	owner, err := userKeyFromProto(req.Owner)
+	owner, err := userKeyFromProtoOrCurrent(req.Owner, "owner", s.principal)
 	if err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
@@ -368,7 +368,7 @@ func (s *clientWSSession) handleDeleteUserMetadata(ctx context.Context, req *int
 	if req == nil {
 		return s.writeError("invalid_request", "delete_user_metadata cannot be empty", 0)
 	}
-	owner, err := userKeyFromProto(req.Owner)
+	owner, err := userKeyFromProtoOrCurrent(req.Owner, "owner", s.principal)
 	if err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
@@ -397,7 +397,7 @@ func (s *clientWSSession) handleScanUserMetadata(ctx context.Context, req *inter
 	if req == nil {
 		return s.writeError("invalid_request", "scan_user_metadata cannot be empty", 0)
 	}
-	owner, err := userKeyFromProto(req.Owner)
+	owner, err := userKeyFromProtoOrCurrent(req.Owner, "owner", s.principal)
 	if err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
@@ -434,15 +434,15 @@ func (s *clientWSSession) handleUpsertUserAttachment(ctx context.Context, req *i
 	if req == nil {
 		return s.writeError("invalid_request", "upsert_user_attachment cannot be empty", 0)
 	}
-	owner, err := userKeyFromProto(req.Owner)
+	attachmentType, err := attachmentTypeFromProto(req.AttachmentType)
+	if err != nil {
+		return s.writeStoreOrRequestError(req.RequestId, err)
+	}
+	owner, err := attachmentOwnerKeyFromProtoOrCurrent(req.Owner, attachmentType, s.principal, false)
 	if err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
 	subject, err := userKeyFromProto(req.Subject)
-	if err != nil {
-		return s.writeStoreOrRequestError(req.RequestId, err)
-	}
-	attachmentType, err := attachmentTypeFromProto(req.AttachmentType)
 	if err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
@@ -474,15 +474,15 @@ func (s *clientWSSession) handleDeleteUserAttachment(ctx context.Context, req *i
 	if req == nil {
 		return s.writeError("invalid_request", "delete_user_attachment cannot be empty", 0)
 	}
-	owner, err := userKeyFromProto(req.Owner)
+	attachmentType, err := attachmentTypeFromProto(req.AttachmentType)
+	if err != nil {
+		return s.writeStoreOrRequestError(req.RequestId, err)
+	}
+	owner, err := attachmentOwnerKeyFromProtoOrCurrent(req.Owner, attachmentType, s.principal, false)
 	if err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
 	subject, err := userKeyFromProto(req.Subject)
-	if err != nil {
-		return s.writeStoreOrRequestError(req.RequestId, err)
-	}
-	attachmentType, err := attachmentTypeFromProto(req.AttachmentType)
 	if err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
@@ -513,11 +513,11 @@ func (s *clientWSSession) handleListUserAttachments(ctx context.Context, req *in
 	if req == nil {
 		return s.writeError("invalid_request", "list_user_attachments cannot be empty", 0)
 	}
-	owner, err := userKeyFromProto(req.Owner)
+	attachmentType, err := attachmentTypeFromProto(req.AttachmentType)
 	if err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
-	attachmentType, err := attachmentTypeFromProto(req.AttachmentType)
+	owner, err := attachmentOwnerKeyFromProtoOrCurrent(req.Owner, attachmentType, s.principal, true)
 	if err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
@@ -747,16 +747,82 @@ func (s *clientWSSession) handleMetrics(ctx context.Context, req *internalproto.
 	})
 }
 
-// userKeyFromProto 将 protobuf UserRef 转换为 store.UserKey。
-func userKeyFromProto(ref *internalproto.UserRef) (store.UserKey, error) {
-	if ref == nil {
-		return store.UserKey{}, fmt.Errorf("%w: user is required", store.ErrInvalidInput)
+// currentUserKeyFromPrincipal 返回当前已登录用户的 UserKey。
+func currentUserKeyFromPrincipal(principal *requestPrincipal) (store.UserKey, error) {
+	if principal == nil {
+		return store.UserKey{}, fmt.Errorf("%w: authentication is required to derive current user", store.ErrForbidden)
 	}
-	key := store.UserKey{NodeID: ref.NodeId, UserID: ref.UserId}
-	if err := key.Validate(); err != nil {
+	return principal.User.Key(), nil
+}
+
+// userKeyFromProto 将 protobuf UserRef 转换为显式提供的 store.UserKey。
+func userKeyFromProto(ref *internalproto.UserRef) (store.UserKey, error) {
+	return requiredUserKeyFromProto(ref, "user")
+}
+
+// requiredUserKeyFromProto 将必填的 protobuf UserRef 转换为 store.UserKey。
+func requiredUserKeyFromProto(ref *internalproto.UserRef, fieldName string) (store.UserKey, error) {
+	key, empty, err := optionalUserKeyFromProto(ref, fieldName)
+	if err != nil {
 		return store.UserKey{}, err
 	}
+	if empty {
+		return store.UserKey{}, fmt.Errorf("%w: %s is required", store.ErrInvalidInput, fieldName)
+	}
 	return key, nil
+}
+
+// optionalUserKeyFromProto 解析可为空的 UserRef。
+// nil 或 {node_id:0, user_id:0} 表示空目标；半空目标返回 invalid input。
+func optionalUserKeyFromProto(ref *internalproto.UserRef, fieldName string) (store.UserKey, bool, error) {
+	if ref == nil {
+		return store.UserKey{}, true, nil
+	}
+	key := store.UserKey{NodeID: ref.NodeId, UserID: ref.UserId}
+	switch {
+	case key.NodeID == 0 && key.UserID == 0:
+		return store.UserKey{}, true, nil
+	case key.NodeID == 0 || key.UserID == 0:
+		return store.UserKey{}, false, fmt.Errorf("%w: %s must include both node_id and user_id", store.ErrInvalidInput, fieldName)
+	default:
+		if err := key.Validate(); err != nil {
+			return store.UserKey{}, false, err
+		}
+		return key, false, nil
+	}
+}
+
+// userKeyFromProtoOrCurrent 在显式目标和“当前登录用户”之间做兼容解析。
+func userKeyFromProtoOrCurrent(ref *internalproto.UserRef, fieldName string, principal *requestPrincipal) (store.UserKey, error) {
+	key, empty, err := optionalUserKeyFromProto(ref, fieldName)
+	if err != nil {
+		return store.UserKey{}, err
+	}
+	if !empty {
+		return key, nil
+	}
+	return currentUserKeyFromPrincipal(principal)
+}
+
+// attachmentOwnerKeyFromProtoOrCurrent 根据附件类型解析 owner。
+// 仅订阅/黑名单，以及列表请求中的空 attachment_type，允许空 owner 回退到当前登录用户。
+func attachmentOwnerKeyFromProtoOrCurrent(ref *internalproto.UserRef, attachmentType store.AttachmentType, principal *requestPrincipal, allowEmptyType bool) (store.UserKey, error) {
+	key, empty, err := optionalUserKeyFromProto(ref, "owner")
+	if err != nil {
+		return store.UserKey{}, err
+	}
+	if !empty {
+		return key, nil
+	}
+	switch attachmentType {
+	case store.AttachmentTypeChannelSubscription, store.AttachmentTypeUserBlacklist:
+		return currentUserKeyFromPrincipal(principal)
+	case "":
+		if allowEmptyType {
+			return currentUserKeyFromPrincipal(principal)
+		}
+	}
+	return store.UserKey{}, fmt.Errorf("%w: owner is required", store.ErrInvalidInput)
 }
 
 // stringPtrValue 将 protobuf 的可选字符串字段转为 *string，nil 字段返回 nil。

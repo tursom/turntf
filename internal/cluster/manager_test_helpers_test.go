@@ -344,7 +344,7 @@ func readySnapshotTestSession(mgr *Manager, peerID int64, remoteMessageWindowSiz
 		connectionID:            1,
 		remoteSnapshotVersion:   internalproto.SnapshotVersion,
 		remoteMessageWindowSize: remoteMessageWindowSize,
-		send:                    make(chan *internalproto.Envelope, 4),
+		send:                    make(chan *internalproto.Envelope, outboundQueueSize),
 	}
 	sess.markReplicationReady()
 	mgr.mu.Lock()

@@ -300,6 +300,7 @@ func TestHandleEventBatchTruncatedResponseRequestsSnapshotRepairAndAdvancesCurso
 	}
 
 	assertSnapshotRequest(t, sess, store.SnapshotUsersPartition)
+	assertSnapshotRequest(t, sess, store.SnapshotLoginNamesPartition)
 	assertSnapshotRequest(t, sess, store.SnapshotAttachmentsPartition)
 	assertSnapshotRequest(t, sess, store.SnapshotUserMetadataPartition)
 	assertSnapshotRequest(t, sess, store.MessageSnapshotPartition(testNodeID(1)))
@@ -362,6 +363,7 @@ func TestHandleEventBatchTruncatedResponseSkipsMessageSnapshotForWindowMismatch(
 	}
 
 	assertSnapshotRequest(t, sess, store.SnapshotUsersPartition)
+	assertSnapshotRequest(t, sess, store.SnapshotLoginNamesPartition)
 	assertSnapshotRequest(t, sess, store.SnapshotAttachmentsPartition)
 	assertSnapshotRequest(t, sess, store.SnapshotUserMetadataPartition)
 	select {

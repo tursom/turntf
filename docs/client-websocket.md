@@ -429,7 +429,7 @@ ServerEnvelope {
 - `list_users` 只要求当前连接已登录。管理员与超级管理员返回全量活跃用户；普通用户返回当前可通讯用户集合，并支持 `name` 与 `uid` 组合过滤。
 - `get_user` 允许本人或管理员。
 - `list_messages` 对可登录用户允许本人或管理员；对 channel/broadcast 目标仅管理员可直接查询。
-- 用户元数据 RPC 允许本人或管理员；空 `owner` 仅是“本人”的便捷写法，不会放宽权限。
+- 用户元数据 RPC 对普通用户 owner 允许本人或管理员；对 `role=channel` owner 允许频道管理员或管理员；空 `owner` 仅是“本人”的便捷写法，不会放宽权限。
 - `list_user_attachments` 允许本人或管理员；空 `owner` 仅回退到当前登录用户自己。
 - `subscribe_channel`、`unsubscribe_channel`、`list_subscriptions` 允许本人或管理员。
 - `block_user`、`unblock_user`、`list_blocked_users` 允许本人或管理员；只能针对 `role=user` 的目标用户配置。
@@ -442,6 +442,7 @@ ServerEnvelope {
 - `list_users.name` 会在可见用户集合内做大小写不敏感子串匹配。普通用户匹配 `username` 与 `profile_json.display_name/displayName`；管理员额外匹配 `login_name`。
 - `list_users.uid` 使用 `UserRef` 表示精确目标。省略该字段或传 `{node_id:0,user_id:0}` 表示“不按 uid 过滤”；只填一个字段或填负数会返回 `invalid_request`。
 - 普通用户通过 `list_users` 看到他人时，`login_name` 会被隐藏；查看自己或管理员查看任意用户时，`login_name` 保持可见。
+- 若目标用户或频道显式写入 metadata `system.visible_to_others=false`，它会从普通用户的 `list_users` 结果中隐藏；管理员和本人仍可看到，且该属性不影响知道 `uid` 后继续发消息。
 - `block_user` 只会拦截后续新的普通用户直发消息，不会删除已存在历史消息，也不会影响 channel/broadcast/node 地址。
 - 列表响应统一包含 `items` 和 `count`。
 - `metrics_response.text` 直接返回 Prometheus 文本，与 HTTP `/metrics` 内容一致。

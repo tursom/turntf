@@ -11,10 +11,10 @@ import (
 )
 
 const (
-	userMetadataKeyMaxLength      = 128
-	defaultUserMetadataScanLimit  = 100
-	maxUserMetadataScanLimit      = 1000
-	userMetadataExpiresAtFormat   = "2006-01-02T15:04:05.000000000Z07:00"
+	userMetadataKeyMaxLength     = 128
+	defaultUserMetadataScanLimit = 100
+	maxUserMetadataScanLimit     = 1000
+	userMetadataExpiresAtFormat  = "2006-01-02T15:04:05.000000000Z07:00"
 )
 
 // NormalizeUserMetadataKey 校验并返回合法的用户元数据键名。
@@ -125,12 +125,18 @@ func userMetadataPrefixUpperBound(prefix string) (string, bool) {
 	return "", false
 }
 
-// validateUserMetadataOwner 校验用户角色是否允许拥有元数据（必须是可登录用户）。
+// validateUserMetadataOwner 校验用户角色是否允许拥有元数据。
+// 允许：普通用户、管理员、超级管理员、频道；禁止系统保留用户。
 func validateUserMetadataOwner(user User) error {
-	if !user.CanLogin() {
-		return fmt.Errorf("%w: metadata owner must be a login user", ErrInvalidInput)
+	if user.SystemReserved {
+		return fmt.Errorf("%w: metadata owner cannot be a system reserved user", ErrInvalidInput)
 	}
-	return nil
+	switch user.Role {
+	case RoleUser, RoleAdmin, RoleSuperAdmin, RoleChannel:
+		return nil
+	default:
+		return fmt.Errorf("%w: metadata owner role %q is not supported", ErrInvalidInput, user.Role)
+	}
 }
 
 func (s *Store) validateUserMetadataOwner(ctx context.Context, owner UserKey) error {
@@ -162,6 +168,9 @@ func (s *Store) UpsertUserMetadata(ctx context.Context, params UpsertUserMetadat
 	}
 	key, err := NormalizeUserMetadataKey(params.Key)
 	if err != nil {
+		return UserMetadata{}, Event{}, err
+	}
+	if err := validateUserMetadataKeyPolicy(key); err != nil {
 		return UserMetadata{}, Event{}, err
 	}
 	expiresAt := normalizedUserMetadataExpiresAt(params.ExpiresAt)
@@ -215,6 +224,9 @@ func (s *Store) GetUserMetadata(ctx context.Context, owner UserKey, key string) 
 	if err != nil {
 		return UserMetadata{}, err
 	}
+	if err := validateUserMetadataKeyPolicy(key); err != nil {
+		return UserMetadata{}, err
+	}
 	return s.getVisibleUserMetadata(ctx, owner, key)
 }
 
@@ -225,6 +237,9 @@ func (s *Store) DeleteUserMetadata(ctx context.Context, params DeleteUserMetadat
 	}
 	key, err := NormalizeUserMetadataKey(params.Key)
 	if err != nil {
+		return UserMetadata{}, Event{}, err
+	}
+	if err := validateUserMetadataKeyPolicy(key); err != nil {
 		return UserMetadata{}, Event{}, err
 	}
 
@@ -286,6 +301,9 @@ func (s *Store) ScanUserMetadata(ctx context.Context, params ScanUserMetadataPar
 	}
 	if prefix != "" && after != "" && !strings.HasPrefix(after, prefix) {
 		return UserMetadataScanResult{}, fmt.Errorf("%w: after must use the same prefix", ErrInvalidInput)
+	}
+	if err := validateUserMetadataScanSystemPrefix(prefix, after); err != nil {
+		return UserMetadataScanResult{}, err
 	}
 
 	query := `
@@ -377,7 +395,7 @@ WHERE owner_node_id = ? AND owner_user_id = ? AND key = ?
 
 // upsertUserMetadataTx 在事务中执行 CRDT 风格的用户元数据 upsert。
 // 通过 HLC 时间戳比较决定是否覆盖：仅当新 updated_at >= 已有的 updated_at 且
-//（无删除标记或新更新时间戳在删除之后）时才覆盖值。
+// （无删除标记或新更新时间戳在删除之后）时才覆盖值。
 func (s *Store) upsertUserMetadataTx(ctx context.Context, tx *sql.Tx, metadata UserMetadata) error {
 	if err := metadata.Owner.Validate(); err != nil {
 		return err
@@ -388,6 +406,9 @@ func (s *Store) upsertUserMetadataTx(ctx context.Context, tx *sql.Tx, metadata U
 	}
 	metadata.Key = key
 	metadata.ExpiresAt = normalizedUserMetadataExpiresAt(metadata.ExpiresAt)
+	if err := validateUserMetadataPolicy(metadata); err != nil {
+		return err
+	}
 	if metadata.OriginNodeID <= 0 {
 		return fmt.Errorf("%w: metadata origin node id is required", ErrInvalidInput)
 	}

@@ -22,6 +22,14 @@ type SelfScopedContext struct {
 	TargetKey store.UserKey
 }
 
+// UserMetadataContext 描述 metadata 访问权限所需的上下文。
+// 频道 owner 需要额外的 ChannelManager 事实，其余用户沿用本人或管理员规则。
+type UserMetadataContext struct {
+	Actor          *store.User
+	Owner          store.User
+	ChannelManager bool
+}
+
 // CreateUserContext 创建用户时的权限上下文。
 // RequestedRole 是请求创建的用户角色。
 type CreateUserContext struct {
@@ -229,14 +237,36 @@ func CanCreateMessage(ctx CreateMessageContext) error {
 	return nil
 }
 
-// CanReadUserMetadata 检查是否允许读取用户元数据。本人或管理员可读。
-func CanReadUserMetadata(ctx SelfScopedContext) error {
-	return requireSelfOrAdmin(ctx.Actor, ctx.TargetKey)
+func canAccessUserMetadata(ctx UserMetadataContext) error {
+	if ctx.Actor == nil {
+		return store.ErrForbidden
+	}
+	if ctx.Owner.SystemReserved {
+		return store.ErrForbidden
+	}
+	if IsAdminRole(ctx.Actor.Role) {
+		return nil
+	}
+	if ctx.Owner.Role == store.RoleChannel {
+		if ctx.ChannelManager {
+			return nil
+		}
+		return store.ErrForbidden
+	}
+	if ctx.Actor.Key() == ctx.Owner.Key() {
+		return nil
+	}
+	return store.ErrForbidden
 }
 
-// CanWriteUserMetadata 检查是否允许修改用户元数据。本人或管理员可写。
-func CanWriteUserMetadata(ctx SelfScopedContext) error {
-	return requireSelfOrAdmin(ctx.Actor, ctx.TargetKey)
+// CanReadUserMetadata 检查是否允许读取用户元数据。
+func CanReadUserMetadata(ctx UserMetadataContext) error {
+	return canAccessUserMetadata(ctx)
+}
+
+// CanWriteUserMetadata 检查是否允许修改用户元数据。
+func CanWriteUserMetadata(ctx UserMetadataContext) error {
+	return canAccessUserMetadata(ctx)
 }
 
 // CanManageAttachment 检查是否允许管理附件（增/删/改）。规则按附件类型划分：

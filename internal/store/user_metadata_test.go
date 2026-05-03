@@ -30,6 +30,12 @@ func TestUserMetadataCRUDAndScan(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create channel: %v", err)
 	}
+	if err := st.EnsureBootstrapAdmin(ctx, BootstrapAdminConfig{
+		Username:     "root",
+		PasswordHash: "bootstrap-hash",
+	}); err != nil {
+		t.Fatalf("ensure bootstrap admin: %v", err)
+	}
 
 	first, event, err := st.UpsertUserMetadata(ctx, UpsertUserMetadataParams{
 		Owner: user.Key(),
@@ -158,13 +164,131 @@ func TestUserMetadataCRUDAndScan(t *testing.T) {
 		t.Fatalf("expected expired metadata to be hidden, got %v", err)
 	}
 
-	if _, _, err := st.UpsertUserMetadata(ctx, UpsertUserMetadataParams{
+	channelMetadata, _, err := st.UpsertUserMetadata(ctx, UpsertUserMetadataParams{
 		Owner: channel.Key(),
 		Key:   "session:web:channel",
+		Value: []byte("allowed"),
+	})
+	if err != nil {
+		t.Fatalf("expected channel metadata owner to be allowed, got %v", err)
+	}
+	if string(channelMetadata.Value) != "allowed" {
+		t.Fatalf("unexpected channel metadata: %+v", channelMetadata)
+	}
+
+	if _, _, err := st.UpsertUserMetadata(ctx, UpsertUserMetadataParams{
+		Owner: UserKey{NodeID: st.NodeID(), UserID: BroadcastUserID},
+		Key:   "session:web:broadcast",
 		Value: []byte("forbidden"),
 	}); !errors.Is(err, ErrInvalidInput) {
-		t.Fatalf("expected invalid input for channel metadata owner, got %v", err)
+		t.Fatalf("expected system reserved metadata owner to be rejected, got %v", err)
 	}
+}
+
+func TestUserMetadataSystemVisibleToOthersValidationAndDefaults(t *testing.T) {
+	t.Parallel()
+
+	st := openTestStore(t)
+	defer st.Close()
+
+	ctx := context.Background()
+	alice, _, err := st.CreateUser(ctx, CreateUserParams{
+		Username:     "visible-alice",
+		PasswordHash: "hash-1",
+	})
+	if err != nil {
+		t.Fatalf("create alice: %v", err)
+	}
+	bob, _, err := st.CreateUser(ctx, CreateUserParams{
+		Username:     "visible-bob",
+		PasswordHash: "hash-2",
+	})
+	if err != nil {
+		t.Fatalf("create bob: %v", err)
+	}
+	channel, _, err := st.CreateUser(ctx, CreateUserParams{
+		Username: "visible-channel",
+		Role:     RoleChannel,
+	})
+	if err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+	if _, _, err := st.UpsertAttachment(ctx, UpsertAttachmentParams{
+		Owner:      alice.Key(),
+		Subject:    channel.Key(),
+		Type:       AttachmentTypeChannelSubscription,
+		ConfigJSON: "{}",
+	}); err != nil {
+		t.Fatalf("subscribe alice to channel: %v", err)
+	}
+
+	users, err := st.ListCommunicableUsers(ctx, &alice, UserListFilter{})
+	if err != nil {
+		t.Fatalf("list default users: %v", err)
+	}
+	if !usersContainKey(users, bob.Key()) || !usersContainKey(users, channel.Key()) {
+		t.Fatalf("expected default visibility to show bob and channel: %+v", users)
+	}
+
+	if _, _, err := st.UpsertUserMetadata(ctx, UpsertUserMetadataParams{
+		Owner: bob.Key(),
+		Key:   UserMetadataKeyVisibleToOthers,
+		Value: []byte("false"),
+	}); err != nil {
+		t.Fatalf("hide bob: %v", err)
+	}
+	if _, _, err := st.UpsertUserMetadata(ctx, UpsertUserMetadataParams{
+		Owner: channel.Key(),
+		Key:   UserMetadataKeyVisibleToOthers,
+		Value: []byte("false"),
+	}); err != nil {
+		t.Fatalf("hide channel: %v", err)
+	}
+
+	users, err = st.ListCommunicableUsers(ctx, &alice, UserListFilter{})
+	if err != nil {
+		t.Fatalf("list hidden users: %v", err)
+	}
+	if usersContainKey(users, bob.Key()) || usersContainKey(users, channel.Key()) {
+		t.Fatalf("expected hidden users to disappear from normal list: %+v", users)
+	}
+
+	adminUsers, err := st.ListCommunicableUsers(ctx, &User{NodeID: st.NodeID(), ID: BootstrapAdminUserID, Role: RoleSuperAdmin, SystemReserved: true}, UserListFilter{})
+	if err != nil {
+		t.Fatalf("list admin users: %v", err)
+	}
+	if !usersContainKey(adminUsers, bob.Key()) || !usersContainKey(adminUsers, channel.Key()) {
+		t.Fatalf("expected admin list to keep hidden users visible: %+v", adminUsers)
+	}
+
+	if _, _, err := st.UpsertUserMetadata(ctx, UpsertUserMetadataParams{
+		Owner: bob.Key(),
+		Key:   UserMetadataKeyVisibleToOthers,
+		Value: []byte("not-bool"),
+	}); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("expected invalid boolean value, got %v", err)
+	}
+	expireAt := time.Now().UTC().Add(time.Hour)
+	if _, _, err := st.UpsertUserMetadata(ctx, UpsertUserMetadataParams{
+		Owner:     bob.Key(),
+		Key:       UserMetadataKeyVisibleToOthers,
+		Value:     []byte("true"),
+		ExpiresAt: &expireAt,
+	}); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("expected visibility metadata TTL to be rejected, got %v", err)
+	}
+	if _, err := st.GetUserMetadata(ctx, bob.Key(), "system.unknown"); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("expected unknown system metadata key to be rejected, got %v", err)
+	}
+}
+
+func usersContainKey(users []User, key UserKey) bool {
+	for _, user := range users {
+		if user.Key() == key {
+			return true
+		}
+	}
+	return false
 }
 
 func TestUserMetadataReplicationUsesLWW(t *testing.T) {

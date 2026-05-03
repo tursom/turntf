@@ -118,8 +118,9 @@ type attachmentRequest struct {
 }
 
 type userMetadataRequest struct {
-	Value     []byte  `json:"value"`
-	ExpiresAt *string `json:"expires_at,omitempty"`
+	Value      *[]byte             `json:"value,omitempty"`
+	TypedValue *metadataTypedValue `json:"typed_value,omitempty"`
+	ExpiresAt  *string             `json:"expires_at,omitempty"`
 }
 
 type loginRequest struct {
@@ -725,7 +726,12 @@ func (h *HTTP) handleGetUserMetadata(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := h.authorizer.ReadUserMetadata(actorFromPrincipal(principal), owner); err != nil {
+	ownerUser, err := h.service.GetUser(r.Context(), owner)
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	if err := h.authorizer.ReadUserMetadata(r.Context(), actorFromPrincipal(principal), ownerUser); err != nil {
 		writeStoreError(w, err)
 		return
 	}
@@ -746,7 +752,12 @@ func (h *HTTP) handleUpsertUserMetadata(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
-	if err := h.authorizer.WriteUserMetadata(actorFromPrincipal(principal), owner); err != nil {
+	ownerUser, err := h.service.GetUser(r.Context(), owner)
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	if err := h.authorizer.WriteUserMetadata(r.Context(), actorFromPrincipal(principal), ownerUser); err != nil {
 		writeStoreError(w, err)
 		return
 	}
@@ -761,10 +772,15 @@ func (h *HTTP) handleUpsertUserMetadata(w http.ResponseWriter, r *http.Request) 
 		writeStoreError(w, err)
 		return
 	}
+	value, err := metadataRawValueFromRequest(req)
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
 	metadata, _, err := h.service.UpsertUserMetadata(r.Context(), store.UpsertUserMetadataParams{
 		Owner:     owner,
 		Key:       key,
-		Value:     req.Value,
+		Value:     value,
 		ExpiresAt: expiresAt,
 	})
 	if err != nil {
@@ -783,7 +799,12 @@ func (h *HTTP) handleDeleteUserMetadata(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
-	if err := h.authorizer.WriteUserMetadata(actorFromPrincipal(principal), owner); err != nil {
+	ownerUser, err := h.service.GetUser(r.Context(), owner)
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	if err := h.authorizer.WriteUserMetadata(r.Context(), actorFromPrincipal(principal), ownerUser); err != nil {
 		writeStoreError(w, err)
 		return
 	}
@@ -807,7 +828,12 @@ func (h *HTTP) handleScanUserMetadata(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := h.authorizer.ReadUserMetadata(actorFromPrincipal(principal), owner); err != nil {
+	ownerUser, err := h.service.GetUser(r.Context(), owner)
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	if err := h.authorizer.ReadUserMetadata(r.Context(), actorFromPrincipal(principal), ownerUser); err != nil {
 		writeStoreError(w, err)
 		return
 	}
@@ -1240,13 +1266,14 @@ type attachmentResponse struct {
 }
 
 type userMetadataResponse struct {
-	Owner        store.UserKey `json:"owner"`
-	Key          string        `json:"key"`
-	Value        []byte        `json:"value"`
-	UpdatedAt    string        `json:"updated_at"`
-	DeletedAt    string        `json:"deleted_at,omitempty"`
-	ExpiresAt    string        `json:"expires_at,omitempty"`
-	OriginNodeID int64         `json:"origin_node_id"`
+	Owner        store.UserKey       `json:"owner"`
+	Key          string              `json:"key"`
+	Value        []byte              `json:"value"`
+	TypedValue   *metadataTypedValue `json:"typed_value,omitempty"`
+	UpdatedAt    string              `json:"updated_at"`
+	DeletedAt    string              `json:"deleted_at,omitempty"`
+	ExpiresAt    string              `json:"expires_at,omitempty"`
+	OriginNodeID int64               `json:"origin_node_id"`
 }
 
 type subscriptionResponse struct {
@@ -1347,6 +1374,7 @@ func userMetadataResponseFromStore(metadata store.UserMetadata) userMetadataResp
 		Owner:        metadata.Owner,
 		Key:          metadata.Key,
 		Value:        append([]byte(nil), metadata.Value...),
+		TypedValue:   metadataTypedValueFromRaw(metadata.Value),
 		UpdatedAt:    metadata.UpdatedAt.String(),
 		OriginNodeID: metadata.OriginNodeID,
 	}

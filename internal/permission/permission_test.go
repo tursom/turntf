@@ -125,18 +125,26 @@ func TestSelfScopedPermissions(t *testing.T) {
 
 	admin := testActor(store.RoleAdmin, 1)
 	alice := testActor(store.RoleUser, 2)
-	bobKey := store.UserKey{NodeID: 1, UserID: 3}
+	bob := testUser(store.RoleUser, 3, false)
+	channel := testUser(store.RoleChannel, 4, false)
+	reserved := testUser(store.RoleBroadcast, store.BroadcastUserID, true)
 
-	if err := CanReadUserMetadata(SelfScopedContext{Actor: alice, TargetKey: alice.Key()}); err != nil {
+	if err := CanReadUserMetadata(UserMetadataContext{Actor: alice, Owner: *testUser(store.RoleUser, alice.ID, false)}); err != nil {
 		t.Fatalf("self metadata read should be allowed: %v", err)
 	}
-	if err := CanReadUserMetadata(SelfScopedContext{Actor: alice, TargetKey: bobKey}); !errors.Is(err, store.ErrForbidden) {
+	if err := CanReadUserMetadata(UserMetadataContext{Actor: alice, Owner: *bob}); !errors.Is(err, store.ErrForbidden) {
 		t.Fatalf("cross-user metadata read should be forbidden: %v", err)
 	}
-	if err := CanManageSubscription(SelfScopedContext{Actor: admin, TargetKey: bobKey}); err != nil {
+	if err := CanReadUserMetadata(UserMetadataContext{Actor: alice, Owner: *channel, ChannelManager: true}); err != nil {
+		t.Fatalf("channel manager metadata read should be allowed: %v", err)
+	}
+	if err := CanReadUserMetadata(UserMetadataContext{Actor: admin, Owner: *reserved}); !errors.Is(err, store.ErrForbidden) {
+		t.Fatalf("system reserved metadata should stay forbidden: %v", err)
+	}
+	if err := CanManageSubscription(SelfScopedContext{Actor: admin, TargetKey: bob.Key()}); err != nil {
 		t.Fatalf("admin should manage subscriptions: %v", err)
 	}
-	if err := CanListBlacklist(SelfScopedContext{Actor: admin, TargetKey: bobKey}); err != nil {
+	if err := CanListBlacklist(SelfScopedContext{Actor: admin, TargetKey: bob.Key()}); err != nil {
 		t.Fatalf("admin should list blacklist: %v", err)
 	}
 }

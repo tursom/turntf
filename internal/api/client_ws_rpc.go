@@ -351,7 +351,11 @@ func (s *clientWSSession) handleGetUserMetadata(ctx context.Context, req *intern
 	if err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
-	if err := s.http.authorizer.ReadUserMetadata(actorFromPrincipal(s.principal), owner); err != nil {
+	ownerUser, err := s.http.service.GetUser(ctx, owner)
+	if err != nil {
+		return s.writeStoreOrRequestError(req.RequestId, err)
+	}
+	if err := s.http.authorizer.ReadUserMetadata(ctx, actorFromPrincipal(s.principal), ownerUser); err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
 	metadata, err := s.http.service.GetUserMetadata(ctx, owner, req.Key)
@@ -377,7 +381,11 @@ func (s *clientWSSession) handleUpsertUserMetadata(ctx context.Context, req *int
 	if err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
-	if err := s.http.authorizer.WriteUserMetadata(actorFromPrincipal(s.principal), owner); err != nil {
+	ownerUser, err := s.http.service.GetUser(ctx, owner)
+	if err != nil {
+		return s.writeStoreOrRequestError(req.RequestId, err)
+	}
+	if err := s.http.authorizer.WriteUserMetadata(ctx, actorFromPrincipal(s.principal), ownerUser); err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
 	expiresAt, err := parseOptionalMetadataExpiresAt(stringPtrValue(req.ExpiresAt))
@@ -412,7 +420,11 @@ func (s *clientWSSession) handleDeleteUserMetadata(ctx context.Context, req *int
 	if err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
-	if err := s.http.authorizer.WriteUserMetadata(actorFromPrincipal(s.principal), owner); err != nil {
+	ownerUser, err := s.http.service.GetUser(ctx, owner)
+	if err != nil {
+		return s.writeStoreOrRequestError(req.RequestId, err)
+	}
+	if err := s.http.authorizer.WriteUserMetadata(ctx, actorFromPrincipal(s.principal), ownerUser); err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
 	metadata, _, err := s.http.service.DeleteUserMetadata(ctx, store.DeleteUserMetadataParams{
@@ -441,7 +453,11 @@ func (s *clientWSSession) handleScanUserMetadata(ctx context.Context, req *inter
 	if err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
-	if err := s.http.authorizer.ReadUserMetadata(actorFromPrincipal(s.principal), owner); err != nil {
+	ownerUser, err := s.http.service.GetUser(ctx, owner)
+	if err != nil {
+		return s.writeStoreOrRequestError(req.RequestId, err)
+	}
+	if err := s.http.authorizer.ReadUserMetadata(ctx, actorFromPrincipal(s.principal), ownerUser); err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
 	result, err := s.http.service.ScanUserMetadata(ctx, store.ScanUserMetadataParams{

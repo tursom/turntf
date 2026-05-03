@@ -154,6 +154,29 @@ func TestAuthorizerManageAttachmentResolvesChannelManager(t *testing.T) {
 	}
 }
 
+func TestAuthorizerReadAndWriteUserMetadataResolveChannelManager(t *testing.T) {
+	t.Parallel()
+
+	actor := testActor(store.RoleUser, 1)
+	channel := testUser(store.RoleChannel, 2, false)
+	resolver := &fakeFactResolver{
+		channelManagers: map[relationKey]bool{
+			{channel: channel.Key(), subject: actor.Key()}: true,
+		},
+	}
+	authorizer := NewAuthorizer(resolver, true)
+
+	if err := authorizer.ReadUserMetadata(context.Background(), actor, *channel); err != nil {
+		t.Fatalf("channel manager should read channel metadata: %v", err)
+	}
+	if err := authorizer.WriteUserMetadata(context.Background(), actor, *channel); err != nil {
+		t.Fatalf("channel manager should write channel metadata: %v", err)
+	}
+	if resolver.channelManagerCalls != 2 {
+		t.Fatalf("expected two channel manager checks, got %d", resolver.channelManagerCalls)
+	}
+}
+
 func TestAuthorizerListAttachmentResolvesChannelManagerForTypedChannelAttachments(t *testing.T) {
 	t.Parallel()
 

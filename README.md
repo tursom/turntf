@@ -72,10 +72,10 @@ printf 'secret' | go run ./cmd/turntf hash --stdin
 | `DELETE` | `/nodes/{node_id}/users/{user_id}` | 管理员删除用户 |
 | `POST` | `/nodes/{node_id}/users/{user_id}/messages` | 发送消息（需登录） |
 | `GET` | `/nodes/{node_id}/users/{user_id}/messages?limit=N` | 查询消息 |
-| `GET` | `/nodes/{node_id}/users/{user_id}/metadata` | 扫描用户元数据（本人或管理员） |
-| `GET` | `/nodes/{node_id}/users/{user_id}/metadata/{key}` | 查询用户元数据（本人或管理员） |
-| `PUT` | `/nodes/{node_id}/users/{user_id}/metadata/{key}` | 写入用户元数据（本人或管理员） |
-| `DELETE` | `/nodes/{node_id}/users/{user_id}/metadata/{key}` | 删除用户元数据（本人或管理员） |
+| `GET` | `/nodes/{node_id}/users/{user_id}/metadata` | 扫描用户元数据（用户本人/管理员，或频道管理员/管理员） |
+| `GET` | `/nodes/{node_id}/users/{user_id}/metadata/{key}` | 查询用户元数据（用户本人/管理员，或频道管理员/管理员） |
+| `PUT` | `/nodes/{node_id}/users/{user_id}/metadata/{key}` | 写入用户元数据（用户本人/管理员，或频道管理员/管理员） |
+| `DELETE` | `/nodes/{node_id}/users/{user_id}/metadata/{key}` | 删除用户元数据（用户本人/管理员，或频道管理员/管理员） |
 | `GET` | `/nodes/{node_id}/users/{user_id}/attachments` | 查询用户附件（本人或管理员） |
 | `PUT` | `/nodes/{node_id}/users/{user_id}/attachments/{attachment_type}/{subject_node_id}/{subject_user_id}` | 写入用户附件 |
 | `DELETE` | `/nodes/{node_id}/users/{user_id}/attachments/{attachment_type}/{subject_node_id}/{subject_user_id}` | 删除用户附件 |
@@ -93,7 +93,9 @@ printf 'secret' | go run ./cmd/turntf hash --stdin
 
 支持通过 `sync_mode: force_sync` 或 `no_sync` 控制单条消息的 Pebble 持久化方式（仅 `store.engine = "pebble"` 时生效）。
 
-`GET /users` 默认返回“当前用户可通讯的活跃用户集合”。可选的 `name` 参数会在该集合内做大小写不敏感子串匹配；可选的 `uid` 参数使用 `node_id:user_id` 格式做精确过滤。普通用户返回的其他联系人会隐藏 `login_name`，管理员和超级管理员仍可看到完整字段。
+`GET /users` 默认返回“当前用户可通讯的活跃用户集合”。可选的 `name` 参数会在该集合内做大小写不敏感子串匹配；可选的 `uid` 参数使用 `node_id:user_id` 格式做精确过滤。普通用户返回的其他联系人会隐藏 `login_name`，管理员和超级管理员仍可看到完整字段。若目标用户或频道显式写入 metadata `system.visible_to_others=false`，它会从普通用户的可见集合中隐藏，但不影响已知 `uid` 时继续发消息。
+
+`/metadata` 现支持所有非系统保留用户作为 owner：普通用户、管理员、超级管理员和 `channel` 都可挂 metadata；`broadcast` / `node` 等系统保留用户仍不允许。HTTP JSON 在保留原始 `value` 字段的同时，新增可选 `typed_value` 视图，便于按 `bool|string|number|json|bytes` 读写 metadata；WebSocket / protobuf 仍只传输原始字节数组。
 
 对“本人作用域”的 HTTP 接口，路径中的 `{node_id,user_id}` 还支持使用 `/nodes/0/users/0` 表示“当前 Bearer token 对应的登录用户”。仅完整的 `0/0` 组合有效；`0/x`、`x/0`、负数或非数字仍会返回 `400`。该快捷写法适用于查询本人信息、本人消息、本人元数据、本人附件、本人订阅和本人黑名单，不适用于 `PATCH /users`、`DELETE /users` 或 `POST /messages` 这类目标地址型接口。
 

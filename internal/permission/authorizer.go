@@ -154,22 +154,48 @@ func (a *Authorizer) ListMessages(actor *store.User, target store.User) error {
 }
 
 // ReadUserMetadata 检查是否允许读取用户元数据。
-func (a *Authorizer) ReadUserMetadata(actor *store.User, owner store.UserKey) error {
+func (a *Authorizer) ReadUserMetadata(ctx context.Context, actor *store.User, owner store.User) error {
 	return a.authorize(func() error {
-		return CanReadUserMetadata(SelfScopedContext{
-			Actor:     actor,
-			TargetKey: owner,
-		})
+		permCtx := UserMetadataContext{
+			Actor: actor,
+			Owner: owner,
+		}
+		if actor == nil || IsAdminRole(actor.Role) || actor.Key() == owner.Key() || owner.Role != store.RoleChannel {
+			return CanReadUserMetadata(permCtx)
+		}
+		resolver, err := a.requireResolver()
+		if err != nil {
+			return err
+		}
+		channelManager, err := resolver.IsChannelManager(ctx, owner.Key(), actor.Key())
+		if err != nil {
+			return err
+		}
+		permCtx.ChannelManager = channelManager
+		return CanReadUserMetadata(permCtx)
 	})
 }
 
 // WriteUserMetadata 检查是否允许修改用户元数据。
-func (a *Authorizer) WriteUserMetadata(actor *store.User, owner store.UserKey) error {
+func (a *Authorizer) WriteUserMetadata(ctx context.Context, actor *store.User, owner store.User) error {
 	return a.authorize(func() error {
-		return CanWriteUserMetadata(SelfScopedContext{
-			Actor:     actor,
-			TargetKey: owner,
-		})
+		permCtx := UserMetadataContext{
+			Actor: actor,
+			Owner: owner,
+		}
+		if actor == nil || IsAdminRole(actor.Role) || actor.Key() == owner.Key() || owner.Role != store.RoleChannel {
+			return CanWriteUserMetadata(permCtx)
+		}
+		resolver, err := a.requireResolver()
+		if err != nil {
+			return err
+		}
+		channelManager, err := resolver.IsChannelManager(ctx, owner.Key(), actor.Key())
+		if err != nil {
+			return err
+		}
+		permCtx.ChannelManager = channelManager
+		return CanWriteUserMetadata(permCtx)
 	})
 }
 

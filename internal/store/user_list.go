@@ -31,9 +31,16 @@ func (s *Store) ListCommunicableUsers(ctx context.Context, actor *User, filter U
 	if err != nil {
 		return nil, err
 	}
+	hiddenFromOthers, err := s.listUsersHiddenFromOthers(ctx, candidates)
+	if err != nil {
+		return nil, err
+	}
 
 	users := make([]User, 0, len(candidates))
 	for _, candidate := range candidates {
+		if !userVisibleToActor(actor, candidate, hiddenFromOthers) {
+			continue
+		}
 		if !userCommunicableWithActor(actor, candidate, blockedByActor, blockedActorByTarget, subscribedChannels, writableChannels) {
 			continue
 		}
@@ -153,6 +160,17 @@ func (s *Store) userMatchesListName(ctx context.Context, actor *User, user User,
 		}
 	}
 	return false, nil
+}
+
+func userVisibleToActor(actor *User, candidate User, hiddenFromOthers map[UserKey]struct{}) bool {
+	if actor == nil || isAdminListUsersRole(actor.Role) {
+		return true
+	}
+	if actor.Key() == candidate.Key() || candidate.SystemReserved {
+		return true
+	}
+	_, hidden := hiddenFromOthers[candidate.Key()]
+	return !hidden
 }
 
 func userCommunicableWithActor(actor *User, candidate User, blockedByActor, blockedActorByTarget, subscribedChannels, writableChannels map[UserKey]struct{}) bool {

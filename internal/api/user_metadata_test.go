@@ -472,6 +472,333 @@ func TestClientWebSocketUserMetadataSupportsImplicitCurrentUserOwner(t *testing.
 	}
 }
 
+func TestHTTPUserMetadataTypedValueAndChannelManagerAccess(t *testing.T) {
+	t.Parallel()
+
+	testAPI := newAuthenticatedTestAPI(t)
+	handler := testAPI.handler
+
+	adminKey := store.UserKey{NodeID: testNodeID(1), UserID: store.BootstrapAdminUserID}
+	adminToken := loginToken(t, handler, adminKey, "root-password")
+	aliceKey := createUserAs(t, handler, adminToken, "typed-meta-alice", "alice-password", store.RoleUser)
+	bobKey := createUserAs(t, handler, adminToken, "typed-meta-bob", "bob-password", store.RoleUser)
+	channelKey := createUserAs(t, handler, adminToken, "typed-meta-channel", "", store.RoleChannel)
+	aliceToken := loginToken(t, handler, aliceKey, "alice-password")
+	bobToken := loginToken(t, handler, bobKey, "bob-password")
+
+	doJSONWithHeaders(t, handler, http.MethodPut, attachmentPath(channelKey, store.AttachmentTypeChannelManager, aliceKey), map[string]any{
+		"config_json": map[string]any{},
+	}, map[string]string{
+		"Authorization": "Bearer " + adminToken,
+	}, http.StatusCreated)
+
+	var boolMetadata struct {
+		Key        string `json:"key"`
+		Value      []byte `json:"value"`
+		TypedValue struct {
+			Kind      string `json:"kind"`
+			BoolValue bool   `json:"bool_value"`
+		} `json:"typed_value"`
+	}
+	mustJSON(t, doJSONWithHeaders(t, handler, http.MethodPut, userMetadataPath(aliceKey, store.UserMetadataKeyVisibleToOthers), map[string]any{
+		"typed_value": map[string]any{
+			"kind":       "bool",
+			"bool_value": false,
+		},
+	}, map[string]string{
+		"Authorization": "Bearer " + aliceToken,
+	}, http.StatusCreated), &boolMetadata)
+	if boolMetadata.Key != store.UserMetadataKeyVisibleToOthers || string(boolMetadata.Value) != "false" || boolMetadata.TypedValue.Kind != "bool" || boolMetadata.TypedValue.BoolValue {
+		t.Fatalf("unexpected bool metadata response: %+v", boolMetadata)
+	}
+
+	var jsonMetadata struct {
+		Key        string `json:"key"`
+		Value      []byte `json:"value"`
+		TypedValue struct {
+			Kind      string         `json:"kind"`
+			JSONValue map[string]any `json:"json_value"`
+		} `json:"typed_value"`
+	}
+	mustJSON(t, doJSONWithHeaders(t, handler, http.MethodPut, userMetadataPath(channelKey, "channel.config"), map[string]any{
+		"typed_value": map[string]any{
+			"kind":       "json",
+			"json_value": map[string]any{"theme": "blue"},
+		},
+	}, map[string]string{
+		"Authorization": "Bearer " + aliceToken,
+	}, http.StatusCreated), &jsonMetadata)
+	if jsonMetadata.TypedValue.Kind != "json" || jsonMetadata.TypedValue.JSONValue["theme"] != "blue" {
+		t.Fatalf("unexpected json metadata response: %+v", jsonMetadata)
+	}
+
+	var stringMetadata struct {
+		Value      []byte `json:"value"`
+		TypedValue struct {
+			Kind        string `json:"kind"`
+			StringValue string `json:"string_value"`
+		} `json:"typed_value"`
+	}
+	mustJSON(t, doJSONWithHeaders(t, handler, http.MethodPut, userMetadataPath(aliceKey, "profile.nickname"), map[string]any{
+		"typed_value": map[string]any{
+			"kind":         "string",
+			"string_value": "Alice",
+		},
+	}, map[string]string{
+		"Authorization": "Bearer " + aliceToken,
+	}, http.StatusCreated), &stringMetadata)
+	if string(stringMetadata.Value) != "\"Alice\"" || stringMetadata.TypedValue.Kind != "string" || stringMetadata.TypedValue.StringValue != "Alice" {
+		t.Fatalf("unexpected string metadata response: %+v", stringMetadata)
+	}
+
+	var numberMetadata struct {
+		Value      []byte `json:"value"`
+		TypedValue struct {
+			Kind        string  `json:"kind"`
+			NumberValue float64 `json:"number_value"`
+		} `json:"typed_value"`
+	}
+	mustJSON(t, doJSONWithHeaders(t, handler, http.MethodPut, userMetadataPath(aliceKey, "profile.score"), map[string]any{
+		"typed_value": map[string]any{
+			"kind":         "number",
+			"number_value": 7.5,
+		},
+	}, map[string]string{
+		"Authorization": "Bearer " + aliceToken,
+	}, http.StatusCreated), &numberMetadata)
+	if string(numberMetadata.Value) != "7.5" || numberMetadata.TypedValue.Kind != "number" || numberMetadata.TypedValue.NumberValue != 7.5 {
+		t.Fatalf("unexpected number metadata response: %+v", numberMetadata)
+	}
+
+	var bytesMetadata struct {
+		Key        string `json:"key"`
+		Value      []byte `json:"value"`
+		TypedValue any    `json:"typed_value"`
+	}
+	mustJSON(t, doJSONWithHeaders(t, handler, http.MethodPut, userMetadataPath(aliceKey, "avatar.raw"), map[string]any{
+		"typed_value": map[string]any{
+			"kind":        "bytes",
+			"bytes_value": "AAE=",
+		},
+	}, map[string]string{
+		"Authorization": "Bearer " + aliceToken,
+	}, http.StatusCreated), &bytesMetadata)
+	if string(bytesMetadata.Value) != string([]byte{0x00, 0x01}) || bytesMetadata.TypedValue != nil {
+		t.Fatalf("unexpected bytes metadata response: %+v", bytesMetadata)
+	}
+
+	doJSONWithHeaders(t, handler, http.MethodPut, userMetadataPath(aliceKey, "invalid.payload"), map[string]any{
+		"value": []byte("one"),
+		"typed_value": map[string]any{
+			"kind":       "bool",
+			"bool_value": true,
+		},
+	}, map[string]string{
+		"Authorization": "Bearer " + aliceToken,
+	}, http.StatusBadRequest)
+
+	doJSONWithHeaders(t, handler, http.MethodPut, userMetadataPath(aliceKey, store.UserMetadataKeyVisibleToOthers), map[string]any{
+		"typed_value": map[string]any{
+			"kind":       "bool",
+			"bool_value": true,
+		},
+		"expires_at": time.Now().UTC().Add(time.Hour).Format(time.RFC3339),
+	}, map[string]string{
+		"Authorization": "Bearer " + aliceToken,
+	}, http.StatusBadRequest)
+
+	doJSONWithHeaders(t, handler, http.MethodPut, userMetadataPath(channelKey, "channel.config"), map[string]any{
+		"value": []byte("forbidden"),
+	}, map[string]string{
+		"Authorization": "Bearer " + bobToken,
+	}, http.StatusForbidden)
+
+	var scanned struct {
+		Items []struct {
+			Key        string `json:"key"`
+			TypedValue struct {
+				Kind      string `json:"kind"`
+				BoolValue bool   `json:"bool_value"`
+			} `json:"typed_value"`
+		} `json:"items"`
+	}
+	mustJSON(t, doJSONWithHeaders(t, handler, http.MethodGet, userMetadataScanPath(aliceKey)+"?prefix=system.&limit=10", nil, map[string]string{
+		"Authorization": "Bearer " + aliceToken,
+	}, http.StatusOK), &scanned)
+	if len(scanned.Items) != 1 || scanned.Items[0].Key != store.UserMetadataKeyVisibleToOthers || scanned.Items[0].TypedValue.Kind != "bool" || scanned.Items[0].TypedValue.BoolValue {
+		t.Fatalf("unexpected system metadata scan response: %+v", scanned)
+	}
+}
+
+func TestClientWebSocketUserMetadataSupportsChannelOwnerAndVisibilityBytes(t *testing.T) {
+	t.Parallel()
+
+	testAPI := newAuthenticatedTestAPI(t)
+	server := newIPv4TestServer(t, testAPI.handler)
+	defer server.Close()
+
+	adminKey := store.UserKey{NodeID: testNodeID(1), UserID: store.BootstrapAdminUserID}
+	adminToken := loginToken(t, testAPI.handler, adminKey, "root-password")
+	aliceKey := createUserAs(t, testAPI.handler, adminToken, "ws-meta-alice", "alice-password", store.RoleUser)
+	channelKey := createUserAs(t, testAPI.handler, adminToken, "ws-meta-channel", "", store.RoleChannel)
+
+	doJSONWithHeaders(t, testAPI.handler, http.MethodPut, attachmentPath(channelKey, store.AttachmentTypeChannelManager, aliceKey), map[string]any{
+		"config_json": map[string]any{},
+	}, map[string]string{
+		"Authorization": "Bearer " + adminToken,
+	}, http.StatusCreated)
+
+	aliceConn := dialClientWebSocket(t, server.URL)
+	defer aliceConn.Close()
+	loginClientWebSocket(t, aliceConn, aliceKey, "alice-password")
+
+	writeClientEnvelope(t, aliceConn, &internalproto.ClientEnvelope{
+		Body: &internalproto.ClientEnvelope_UpsertUserMetadata{
+			UpsertUserMetadata: &internalproto.UpsertUserMetadataRequest{
+				RequestId: 81,
+				Owner:     &internalproto.UserRef{NodeId: channelKey.NodeID, UserId: channelKey.UserID},
+				Key:       store.UserMetadataKeyVisibleToOthers,
+				Value:     []byte("false"),
+			},
+		},
+	})
+	upsertResp := readServerEnvelope(t, aliceConn).GetUpsertUserMetadataResponse()
+	if upsertResp == nil || upsertResp.RequestId != 81 || upsertResp.Metadata.GetKey() != store.UserMetadataKeyVisibleToOthers || string(upsertResp.Metadata.GetValue()) != "false" {
+		t.Fatalf("unexpected websocket visibility upsert response: %+v", upsertResp)
+	}
+
+	writeClientEnvelope(t, aliceConn, &internalproto.ClientEnvelope{
+		Body: &internalproto.ClientEnvelope_GetUserMetadata{
+			GetUserMetadata: &internalproto.GetUserMetadataRequest{
+				RequestId: 82,
+				Owner:     &internalproto.UserRef{NodeId: channelKey.NodeID, UserId: channelKey.UserID},
+				Key:       store.UserMetadataKeyVisibleToOthers,
+			},
+		},
+	})
+	getResp := readServerEnvelope(t, aliceConn).GetGetUserMetadataResponse()
+	if getResp == nil || getResp.RequestId != 82 || string(getResp.Metadata.GetValue()) != "false" {
+		t.Fatalf("unexpected websocket visibility get response: %+v", getResp)
+	}
+}
+
+func TestHTTPListUsersRespectsVisibilityMetadata(t *testing.T) {
+	t.Parallel()
+
+	testAPI := newAuthenticatedTestAPI(t)
+	handler := testAPI.handler
+
+	adminKey := store.UserKey{NodeID: testNodeID(1), UserID: store.BootstrapAdminUserID}
+	adminToken := loginToken(t, handler, adminKey, "root-password")
+	aliceKey := createUserAs(t, handler, adminToken, "visible-http-alice", "alice-password", store.RoleUser)
+	bobKey := createUserAs(t, handler, adminToken, "visible-http-bob", "bob-password", store.RoleUser)
+	channelKey := createUserAs(t, handler, adminToken, "visible-http-channel", "", store.RoleChannel)
+	aliceToken := loginToken(t, handler, aliceKey, "alice-password")
+
+	doJSONWithHeaders(t, handler, http.MethodPost, subscriptionsPath(aliceKey.NodeID, aliceKey.UserID), map[string]any{
+		"channel_node_id": channelKey.NodeID,
+		"channel_user_id": channelKey.UserID,
+	}, map[string]string{
+		"Authorization": "Bearer " + aliceToken,
+	}, http.StatusCreated)
+
+	doJSONWithHeaders(t, handler, http.MethodPut, userMetadataPath(bobKey, store.UserMetadataKeyVisibleToOthers), map[string]any{
+		"typed_value": map[string]any{
+			"kind":       "bool",
+			"bool_value": false,
+		},
+	}, map[string]string{
+		"Authorization": "Bearer " + adminToken,
+	}, http.StatusCreated)
+	doJSONWithHeaders(t, handler, http.MethodPut, userMetadataPath(channelKey, store.UserMetadataKeyVisibleToOthers), map[string]any{
+		"typed_value": map[string]any{
+			"kind":       "bool",
+			"bool_value": false,
+		},
+	}, map[string]string{
+		"Authorization": "Bearer " + adminToken,
+	}, http.StatusCreated)
+
+	var users []authUserItem
+	mustJSON(t, doJSONWithHeaders(t, handler, http.MethodGet, "/users", nil, map[string]string{
+		"Authorization": "Bearer " + aliceToken,
+	}, http.StatusOK), &users)
+	if responseUsersContainKey(users, bobKey) || responseUsersContainKey(users, channelKey) {
+		t.Fatalf("expected hidden users to disappear from /users: %+v", users)
+	}
+
+	mustJSON(t, doJSONWithHeaders(t, handler, http.MethodGet, "/users", nil, map[string]string{
+		"Authorization": "Bearer " + adminToken,
+	}, http.StatusOK), &users)
+	if !responseUsersContainKey(users, bobKey) || !responseUsersContainKey(users, channelKey) {
+		t.Fatalf("expected admin /users to keep hidden entries visible: %+v", users)
+	}
+
+	doJSONWithHeaders(t, handler, http.MethodPost, userMessagesPath(bobKey.NodeID, bobKey.UserID), map[string]any{
+		"body": []byte("hidden direct message"),
+	}, map[string]string{
+		"Authorization": "Bearer " + aliceToken,
+	}, http.StatusCreated)
+}
+
+func TestClientWebSocketListUsersRespectsVisibilityMetadata(t *testing.T) {
+	t.Parallel()
+
+	testAPI := newAuthenticatedTestAPI(t)
+	server := newIPv4TestServer(t, testAPI.handler)
+	defer server.Close()
+
+	adminKey := store.UserKey{NodeID: testNodeID(1), UserID: store.BootstrapAdminUserID}
+	adminToken := loginToken(t, testAPI.handler, adminKey, "root-password")
+	aliceKey := createUserAs(t, testAPI.handler, adminToken, "visible-ws-alice", "alice-password", store.RoleUser)
+	bobKey := createUserAs(t, testAPI.handler, adminToken, "visible-ws-bob", "bob-password", store.RoleUser)
+	channelKey := createUserAs(t, testAPI.handler, adminToken, "visible-ws-channel", "", store.RoleChannel)
+
+	doJSONWithHeaders(t, testAPI.handler, http.MethodPost, subscriptionsPath(aliceKey.NodeID, aliceKey.UserID), map[string]any{
+		"channel_node_id": channelKey.NodeID,
+		"channel_user_id": channelKey.UserID,
+	}, map[string]string{
+		"Authorization": "Bearer " + loginToken(t, testAPI.handler, aliceKey, "alice-password"),
+	}, http.StatusCreated)
+
+	doJSONWithHeaders(t, testAPI.handler, http.MethodPut, userMetadataPath(bobKey, store.UserMetadataKeyVisibleToOthers), map[string]any{
+		"value": []byte("false"),
+	}, map[string]string{
+		"Authorization": "Bearer " + adminToken,
+	}, http.StatusCreated)
+	doJSONWithHeaders(t, testAPI.handler, http.MethodPut, userMetadataPath(channelKey, store.UserMetadataKeyVisibleToOthers), map[string]any{
+		"value": []byte("false"),
+	}, map[string]string{
+		"Authorization": "Bearer " + adminToken,
+	}, http.StatusCreated)
+
+	aliceConn := dialClientWebSocket(t, server.URL)
+	defer aliceConn.Close()
+	loginClientWebSocket(t, aliceConn, aliceKey, "alice-password")
+	writeClientEnvelope(t, aliceConn, &internalproto.ClientEnvelope{
+		Body: &internalproto.ClientEnvelope_ListUsers{
+			ListUsers: &internalproto.ListUsersRequest{RequestId: 91},
+		},
+	})
+	aliceResp := readServerEnvelope(t, aliceConn).GetListUsersResponse()
+	if aliceResp == nil || protoUsersContainKey(aliceResp.Items, bobKey) || protoUsersContainKey(aliceResp.Items, channelKey) {
+		t.Fatalf("expected websocket list_users to hide invisible entries: %+v", aliceResp)
+	}
+
+	adminConn := dialClientWebSocket(t, server.URL)
+	defer adminConn.Close()
+	loginClientWebSocket(t, adminConn, adminKey, "root-password")
+	writeClientEnvelope(t, adminConn, &internalproto.ClientEnvelope{
+		Body: &internalproto.ClientEnvelope_ListUsers{
+			ListUsers: &internalproto.ListUsersRequest{RequestId: 92},
+		},
+	})
+	adminResp := readServerEnvelope(t, adminConn).GetListUsersResponse()
+	if adminResp == nil || !protoUsersContainKey(adminResp.Items, bobKey) || !protoUsersContainKey(adminResp.Items, channelKey) {
+		t.Fatalf("expected admin websocket list_users to keep hidden entries visible: %+v", adminResp)
+	}
+}
+
 func userMetadataScanPath(owner store.UserKey) string {
 	return userPath(owner.NodeID, owner.UserID) + "/metadata"
 }

@@ -28,6 +28,7 @@ message ClientEnvelope {
     UpsertUserMetadataRequest upsert_user_metadata = 20;
     DeleteUserMetadataRequest delete_user_metadata = 21;
     ScanUserMetadataRequest scan_user_metadata = 22;
+    ListUsersRequest list_users = 23;
   }
 }
 
@@ -57,6 +58,7 @@ message ServerEnvelope {
     UpsertUserMetadataResponse upsert_user_metadata_response = 22;
     DeleteUserMetadataResponse delete_user_metadata_response = 23;
     ScanUserMetadataResponse scan_user_metadata_response = 24;
+    ListUsersResponse list_users_response = 25;
   }
 }
 
@@ -157,6 +159,13 @@ message DeleteUserRequest {
   UserRef user = 2;
 }
 
+message ListUsersRequest {
+  uint64 request_id = 1;
+  string name = 2;
+  // uid 为空（未设置或 node_id/user_id 都为 0）时，表示不按 uid 过滤。
+  UserRef uid = 3;
+}
+
 message ListMessagesRequest {
   uint64 request_id = 1;
   // user 为空（未设置或 node_id/user_id 都为 0）时，表示当前登录用户。
@@ -224,6 +233,12 @@ message DeleteUserResponse {
   uint64 request_id = 1;
   string status = 2;
   UserRef user = 3;
+}
+
+message ListUsersResponse {
+  uint64 request_id = 1;
+  repeated User items = 2;
+  int32 count = 3;
 }
 
 message ListMessagesResponse {

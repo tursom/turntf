@@ -4,6 +4,10 @@
 // 	protoc        v7.34.1
 // source: cluster.proto
 
+// Package notifier.cluster.v1 定义了集群节点间通信的完整有线协议。
+// 包括信封包装、握手、事件复制、快照同步、时间同步、
+// 对等发现和在线状态广播所需的所有消息类型。
+
 package proto
 
 import (
@@ -21,6 +25,7 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+// SnapshotPartitionKind 是快照分区的类型枚举。
 type SnapshotPartitionKind int32
 
 const (
@@ -79,11 +84,14 @@ func (SnapshotPartitionKind) EnumDescriptor() ([]byte, []int) {
 	return file_cluster_proto_rawDescGZIP(), []int{0}
 }
 
+// ClusterDeliveryMode 是瞬时消息的投递模式。
 type ClusterDeliveryMode int32
 
 const (
 	ClusterDeliveryMode_CLUSTER_DELIVERY_MODE_UNSPECIFIED ClusterDeliveryMode = 0
+	// BEST_EFFORT 尽最大努力投递，不重试。
 	ClusterDeliveryMode_CLUSTER_DELIVERY_MODE_BEST_EFFORT ClusterDeliveryMode = 1
+	// ROUTE_RETRY 失败时排队重试。
 	ClusterDeliveryMode_CLUSTER_DELIVERY_MODE_ROUTE_RETRY ClusterDeliveryMode = 2
 )
 
@@ -128,11 +136,18 @@ func (ClusterDeliveryMode) EnumDescriptor() ([]byte, []int) {
 	return file_cluster_proto_rawDescGZIP(), []int{1}
 }
 
+// Envelope 是所有集群节点间通信的通用信封。
+// 包含发送节点标识、序列号、HLC时间戳以及HMAC签名。
 type Envelope struct {
-	state     protoimpl.MessageState `protogen:"open.v1"`
-	NodeId    int64                  `protobuf:"varint,1,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
-	Sequence  uint64                 `protobuf:"varint,2,opt,name=sequence,proto3" json:"sequence,omitempty"`
-	SentAtHlc string                 `protobuf:"bytes,3,opt,name=sent_at_hlc,json=sentAtHlc,proto3" json:"sent_at_hlc,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// node_id 是发送此信封的节点标识。
+	NodeId int64 `protobuf:"varint,1,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
+	// sequence 是事件批次的全局序列号（仅事件批次使用）。
+	Sequence uint64 `protobuf:"varint,2,opt,name=sequence,proto3" json:"sequence,omitempty"`
+	// sent_at_hlc 是发送时的混合逻辑时钟时间戳。
+	SentAtHlc string `protobuf:"bytes,3,opt,name=sent_at_hlc,json=sentAtHlc,proto3" json:"sent_at_hlc,omitempty"`
+	// body 是信封的具体内容，支持10种消息类型。
+	//
 	// Types that are valid to be assigned to Body:
 	//
 	//	*Envelope_Hello
@@ -144,8 +159,9 @@ type Envelope struct {
 	//	*Envelope_TimeSyncRequest
 	//	*Envelope_TimeSyncResponse
 	//	*Envelope_MembershipUpdate
-	Body          isEnvelope_Body `protobuf_oneof:"body"`
-	Hmac          []byte          `protobuf:"bytes,12,opt,name=hmac,proto3" json:"hmac,omitempty"`
+	Body isEnvelope_Body `protobuf_oneof:"body"`
+	// hmac 是信封体的HMAC-SHA256签名，使用集群密钥计算。
+	Hmac          []byte `protobuf:"bytes,12,opt,name=hmac,proto3" json:"hmac,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -354,21 +370,33 @@ func (*Envelope_TimeSyncResponse) isEnvelope_Body() {}
 
 func (*Envelope_MembershipUpdate) isEnvelope_Body() {}
 
+// Hello 是会话建立时发送的握手消息。
+// 交换节点标识、事件进度、快照版本和能力信息。
 type Hello struct {
-	state              protoimpl.MessageState `protogen:"open.v1"`
-	NodeId             int64                  `protobuf:"varint,1,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
-	AdvertiseAddr      string                 `protobuf:"bytes,2,opt,name=advertise_addr,json=advertiseAddr,proto3" json:"advertise_addr,omitempty"`
-	ProtocolVersion    string                 `protobuf:"bytes,3,opt,name=protocol_version,json=protocolVersion,proto3" json:"protocol_version,omitempty"`
-	OriginProgress     []*OriginProgress      `protobuf:"bytes,4,rep,name=origin_progress,json=originProgress,proto3" json:"origin_progress,omitempty"`
-	SnapshotVersion    string                 `protobuf:"bytes,5,opt,name=snapshot_version,json=snapshotVersion,proto3" json:"snapshot_version,omitempty"`
-	MessageWindowSize  uint32                 `protobuf:"varint,6,opt,name=message_window_size,json=messageWindowSize,proto3" json:"message_window_size,omitempty"`
-	ConnectionId       uint64                 `protobuf:"varint,8,opt,name=connection_id,json=connectionId,proto3" json:"connection_id,omitempty"`
-	SmoothedRttMs      uint32                 `protobuf:"varint,9,opt,name=smoothed_rtt_ms,json=smoothedRttMs,proto3" json:"smoothed_rtt_ms,omitempty"`
-	JitterPenaltyMs    uint32                 `protobuf:"varint,10,opt,name=jitter_penalty_ms,json=jitterPenaltyMs,proto3" json:"jitter_penalty_ms,omitempty"`
-	SupportsMembership bool                   `protobuf:"varint,11,opt,name=supports_membership,json=supportsMembership,proto3" json:"supports_membership,omitempty"`
-	RuntimeEpoch       uint64                 `protobuf:"varint,12,opt,name=runtime_epoch,json=runtimeEpoch,proto3" json:"runtime_epoch,omitempty"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	NodeId int64                  `protobuf:"varint,1,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
+	// advertise_addr 是节点对外通告的WebSocket路径。
+	AdvertiseAddr string `protobuf:"bytes,2,opt,name=advertise_addr,json=advertiseAddr,proto3" json:"advertise_addr,omitempty"`
+	// protocol_version 是支持的协议版本。
+	ProtocolVersion string `protobuf:"bytes,3,opt,name=protocol_version,json=protocolVersion,proto3" json:"protocol_version,omitempty"`
+	// origin_progress 是各原始节点的事件进度。
+	OriginProgress []*OriginProgress `protobuf:"bytes,4,rep,name=origin_progress,json=originProgress,proto3" json:"origin_progress,omitempty"`
+	// snapshot_version 是支持的快照版本。
+	SnapshotVersion string `protobuf:"bytes,5,opt,name=snapshot_version,json=snapshotVersion,proto3" json:"snapshot_version,omitempty"`
+	// message_window_size 是每个事件流保留的最大事件数。
+	MessageWindowSize uint32 `protobuf:"varint,6,opt,name=message_window_size,json=messageWindowSize,proto3" json:"message_window_size,omitempty"`
+	// connection_id 是此连接的标识符。
+	ConnectionId uint64 `protobuf:"varint,8,opt,name=connection_id,json=connectionId,proto3" json:"connection_id,omitempty"`
+	// smoothed_rtt_ms 是指数平滑后的RTT值（毫秒）。
+	SmoothedRttMs uint32 `protobuf:"varint,9,opt,name=smoothed_rtt_ms,json=smoothedRttMs,proto3" json:"smoothed_rtt_ms,omitempty"`
+	// jitter_penalty_ms 是RTT抖动惩罚值（毫秒）。
+	JitterPenaltyMs uint32 `protobuf:"varint,10,opt,name=jitter_penalty_ms,json=jitterPenaltyMs,proto3" json:"jitter_penalty_ms,omitempty"`
+	// supports_membership 表示节点是否支持成员资格协议。
+	SupportsMembership bool `protobuf:"varint,11,opt,name=supports_membership,json=supportsMembership,proto3" json:"supports_membership,omitempty"`
+	// runtime_epoch 是节点的运行时纪元。
+	RuntimeEpoch  uint64 `protobuf:"varint,12,opt,name=runtime_epoch,json=runtimeEpoch,proto3" json:"runtime_epoch,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Hello) Reset() {
@@ -478,10 +506,12 @@ func (x *Hello) GetRuntimeEpoch() uint64 {
 	return 0
 }
 
+// OriginProgress 报告单个原始节点的事件复制进度。
 type OriginProgress struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	OriginNodeId  int64                  `protobuf:"varint,1,opt,name=origin_node_id,json=originNodeId,proto3" json:"origin_node_id,omitempty"`
-	LastEventId   uint64                 `protobuf:"varint,2,opt,name=last_event_id,json=lastEventId,proto3" json:"last_event_id,omitempty"`
+	state        protoimpl.MessageState `protogen:"open.v1"`
+	OriginNodeId int64                  `protobuf:"varint,1,opt,name=origin_node_id,json=originNodeId,proto3" json:"origin_node_id,omitempty"`
+	// last_event_id 是该原始节点的最新事件ID。
+	LastEventId   uint64 `protobuf:"varint,2,opt,name=last_event_id,json=lastEventId,proto3" json:"last_event_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -530,11 +560,14 @@ func (x *OriginProgress) GetLastEventId() uint64 {
 	return 0
 }
 
+// Ack 确认已成功应用到指定事件ID的所有事件。
 type Ack struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	NodeId        int64                  `protobuf:"varint,1,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
-	OriginNodeId  int64                  `protobuf:"varint,2,opt,name=origin_node_id,json=originNodeId,proto3" json:"origin_node_id,omitempty"`
-	AckedEventId  uint64                 `protobuf:"varint,3,opt,name=acked_event_id,json=ackedEventId,proto3" json:"acked_event_id,omitempty"`
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	NodeId int64                  `protobuf:"varint,1,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
+	// origin_node_id 是事件原始产生的节点ID。
+	OriginNodeId int64 `protobuf:"varint,2,opt,name=origin_node_id,json=originNodeId,proto3" json:"origin_node_id,omitempty"`
+	// acked_event_id 是已成功应用的最高事件ID。
+	AckedEventId  uint64 `protobuf:"varint,3,opt,name=acked_event_id,json=ackedEventId,proto3" json:"acked_event_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -590,12 +623,16 @@ func (x *Ack) GetAckedEventId() uint64 {
 	return 0
 }
 
+// EventBatch 包含一个或多个待复制的事件。
+// 也可用于Pull响应（通过pull_request_id关联请求）。
 type EventBatch struct {
-	state                  protoimpl.MessageState `protogen:"open.v1"`
-	Events                 []*ReplicatedEvent     `protobuf:"bytes,1,rep,name=events,proto3" json:"events,omitempty"`
-	PullRequestId          uint64                 `protobuf:"varint,2,opt,name=pull_request_id,json=pullRequestId,proto3" json:"pull_request_id,omitempty"`
-	OriginNodeId           int64                  `protobuf:"varint,3,opt,name=origin_node_id,json=originNodeId,proto3" json:"origin_node_id,omitempty"`
-	TruncatedBeforeEventId uint64                 `protobuf:"varint,4,opt,name=truncated_before_event_id,json=truncatedBeforeEventId,proto3" json:"truncated_before_event_id,omitempty"`
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	Events []*ReplicatedEvent     `protobuf:"bytes,1,rep,name=events,proto3" json:"events,omitempty"`
+	// pull_request_id 关联到PullEvents请求（非零表示此批次是Pull响应）。
+	PullRequestId uint64 `protobuf:"varint,2,opt,name=pull_request_id,json=pullRequestId,proto3" json:"pull_request_id,omitempty"`
+	OriginNodeId  int64  `protobuf:"varint,3,opt,name=origin_node_id,json=originNodeId,proto3" json:"origin_node_id,omitempty"`
+	// truncated_before_event_id 表示保留窗口已裁剪该ID之前的事件。
+	TruncatedBeforeEventId uint64 `protobuf:"varint,4,opt,name=truncated_before_event_id,json=truncatedBeforeEventId,proto3" json:"truncated_before_event_id,omitempty"`
 	unknownFields          protoimpl.UnknownFields
 	sizeCache              protoimpl.SizeCache
 }
@@ -658,14 +695,17 @@ func (x *EventBatch) GetTruncatedBeforeEventId() uint64 {
 	return 0
 }
 
+// ReplicatedEvent 表示一个已复制到集群的存储事件。
+// 使用oneof body支持10种事件类型。
 type ReplicatedEvent struct {
 	state           protoimpl.MessageState `protogen:"open.v1"`
 	EventId         int64                  `protobuf:"varint,1,opt,name=event_id,json=eventId,proto3" json:"event_id,omitempty"`
 	AggregateType   string                 `protobuf:"bytes,2,opt,name=aggregate_type,json=aggregateType,proto3" json:"aggregate_type,omitempty"`
 	AggregateNodeId int64                  `protobuf:"varint,3,opt,name=aggregate_node_id,json=aggregateNodeId,proto3" json:"aggregate_node_id,omitempty"`
 	AggregateId     int64                  `protobuf:"varint,4,opt,name=aggregate_id,json=aggregateId,proto3" json:"aggregate_id,omitempty"`
-	Hlc             string                 `protobuf:"bytes,5,opt,name=hlc,proto3" json:"hlc,omitempty"`
-	OriginNodeId    int64                  `protobuf:"varint,6,opt,name=origin_node_id,json=originNodeId,proto3" json:"origin_node_id,omitempty"`
+	// hlc 是事件发生时的混合逻辑时钟时间戳。
+	Hlc          string `protobuf:"bytes,5,opt,name=hlc,proto3" json:"hlc,omitempty"`
+	OriginNodeId int64  `protobuf:"varint,6,opt,name=origin_node_id,json=originNodeId,proto3" json:"origin_node_id,omitempty"`
 	// Types that are valid to be assigned to Body:
 	//
 	//	*ReplicatedEvent_UserCreated
@@ -916,6 +956,7 @@ func (*ReplicatedEvent_UserLoginNameUpserted) isReplicatedEvent_Body() {}
 
 func (*ReplicatedEvent_UserLoginNameDeleted) isReplicatedEvent_Body() {}
 
+// UserCreatedEvent 表示用户账户被创建。
 type UserCreatedEvent struct {
 	state               protoimpl.MessageState `protogen:"open.v1"`
 	NodeId              int64                  `protobuf:"varint,1,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
@@ -1064,6 +1105,7 @@ func (x *UserCreatedEvent) GetOriginNodeId() int64 {
 	return 0
 }
 
+// UserUpdatedEvent 表示用户账户信息被更新。
 type UserUpdatedEvent struct {
 	state               protoimpl.MessageState `protogen:"open.v1"`
 	NodeId              int64                  `protobuf:"varint,1,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
@@ -1228,6 +1270,7 @@ func (x *UserUpdatedEvent) GetOriginNodeId() int64 {
 	return 0
 }
 
+// UserDeletedEvent 表示用户账户被删除。
 type UserDeletedEvent struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	NodeId        int64                  `protobuf:"varint,1,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
@@ -1288,6 +1331,7 @@ func (x *UserDeletedEvent) GetDeletedAtHlc() string {
 	return ""
 }
 
+// ClusterUserRef 唯一标识集群中的用户。
 type ClusterUserRef struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	NodeId        int64                  `protobuf:"varint,1,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
@@ -1340,6 +1384,7 @@ func (x *ClusterUserRef) GetUserId() int64 {
 	return 0
 }
 
+// MessageCreatedEvent 表示一条消息被创建。
 type MessageCreatedEvent struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Recipient     *ClusterUserRef        `protobuf:"bytes,1,opt,name=recipient,proto3" json:"recipient,omitempty"`
@@ -1424,6 +1469,7 @@ func (x *MessageCreatedEvent) GetCreatedAtHlc() string {
 	return ""
 }
 
+// UserAttachmentUpsertedEvent 表示用户附件被创建或更新。
 type UserAttachmentUpsertedEvent struct {
 	state          protoimpl.MessageState `protogen:"open.v1"`
 	Owner          *ClusterUserRef        `protobuf:"bytes,1,opt,name=owner,proto3" json:"owner,omitempty"`
@@ -1508,6 +1554,7 @@ func (x *UserAttachmentUpsertedEvent) GetOriginNodeId() int64 {
 	return 0
 }
 
+// UserAttachmentDeletedEvent 表示用户附件被删除。
 type UserAttachmentDeletedEvent struct {
 	state          protoimpl.MessageState `protogen:"open.v1"`
 	Owner          *ClusterUserRef        `protobuf:"bytes,1,opt,name=owner,proto3" json:"owner,omitempty"`
@@ -1600,6 +1647,7 @@ func (x *UserAttachmentDeletedEvent) GetOriginNodeId() int64 {
 	return 0
 }
 
+// UserMetadataUpsertedEvent 表示用户元数据被创建或更新。
 type UserMetadataUpsertedEvent struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Owner         *ClusterUserRef        `protobuf:"bytes,1,opt,name=owner,proto3" json:"owner,omitempty"`
@@ -1684,6 +1732,7 @@ func (x *UserMetadataUpsertedEvent) GetOriginNodeId() int64 {
 	return 0
 }
 
+// UserMetadataDeletedEvent 表示用户元数据被删除。
 type UserMetadataDeletedEvent struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Owner         *ClusterUserRef        `protobuf:"bytes,1,opt,name=owner,proto3" json:"owner,omitempty"`
@@ -1752,6 +1801,7 @@ func (x *UserMetadataDeletedEvent) GetOriginNodeId() int64 {
 	return 0
 }
 
+// UserLoginNameUpsertedEvent 表示登录名被绑定到用户。
 type UserLoginNameUpsertedEvent struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	LoginName     string                 `protobuf:"bytes,1,opt,name=login_name,json=loginName,proto3" json:"login_name,omitempty"`
@@ -1828,6 +1878,7 @@ func (x *UserLoginNameUpsertedEvent) GetOriginNodeId() int64 {
 	return 0
 }
 
+// UserLoginNameDeletedEvent 表示登录名与用户的绑定被删除。
 type UserLoginNameDeletedEvent struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	LoginName     string                 `protobuf:"bytes,1,opt,name=login_name,json=loginName,proto3" json:"login_name,omitempty"`
@@ -1912,12 +1963,16 @@ func (x *UserLoginNameDeletedEvent) GetOriginNodeId() int64 {
 	return 0
 }
 
+// PullEvents 请求从指定原始节点拉取事件。
 type PullEvents struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	OriginNodeId  int64                  `protobuf:"varint,1,opt,name=origin_node_id,json=originNodeId,proto3" json:"origin_node_id,omitempty"`
-	AfterEventId  uint64                 `protobuf:"varint,2,opt,name=after_event_id,json=afterEventId,proto3" json:"after_event_id,omitempty"`
-	Limit         uint32                 `protobuf:"varint,3,opt,name=limit,proto3" json:"limit,omitempty"`
-	RequestId     uint64                 `protobuf:"varint,4,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
+	state        protoimpl.MessageState `protogen:"open.v1"`
+	OriginNodeId int64                  `protobuf:"varint,1,opt,name=origin_node_id,json=originNodeId,proto3" json:"origin_node_id,omitempty"`
+	// after_event_id 是已应用的最高事件ID，请求此ID之后的事件。
+	AfterEventId uint64 `protobuf:"varint,2,opt,name=after_event_id,json=afterEventId,proto3" json:"after_event_id,omitempty"`
+	// limit 是最大返回事件数。
+	Limit uint32 `protobuf:"varint,3,opt,name=limit,proto3" json:"limit,omitempty"`
+	// request_id 是此请求的唯一标识符。
+	RequestId     uint64 `protobuf:"varint,4,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1980,6 +2035,8 @@ func (x *PullEvents) GetRequestId() uint64 {
 	return 0
 }
 
+// SnapshotDigest 包含存储各分区状态的摘要信息。
+// 用于快速检测节点间的状态分歧。
 type SnapshotDigest struct {
 	state           protoimpl.MessageState     `protogen:"open.v1"`
 	SnapshotVersion string                     `protobuf:"bytes,1,opt,name=snapshot_version,json=snapshotVersion,proto3" json:"snapshot_version,omitempty"`
@@ -2032,15 +2089,18 @@ func (x *SnapshotDigest) GetPartitions() []*SnapshotPartitionDigest {
 	return nil
 }
 
+// SnapshotChunk 是单个快照分区的数据传输。
+// request=true时表示请求分区数据；request=false时包含实际数据。
 type SnapshotChunk struct {
 	state           protoimpl.MessageState `protogen:"open.v1"`
 	Partition       string                 `protobuf:"bytes,1,opt,name=partition,proto3" json:"partition,omitempty"`
 	Rows            []*SnapshotRow         `protobuf:"bytes,2,rep,name=rows,proto3" json:"rows,omitempty"`
 	SnapshotVersion string                 `protobuf:"bytes,3,opt,name=snapshot_version,json=snapshotVersion,proto3" json:"snapshot_version,omitempty"`
 	Kind            SnapshotPartitionKind  `protobuf:"varint,4,opt,name=kind,proto3,enum=notifier.cluster.v1.SnapshotPartitionKind" json:"kind,omitempty"`
-	Request         bool                   `protobuf:"varint,5,opt,name=request,proto3" json:"request,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// request 为true时表示请求分区数据而非携带数据。
+	Request       bool `protobuf:"varint,5,opt,name=request,proto3" json:"request,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *SnapshotChunk) Reset() {
@@ -2108,12 +2168,15 @@ func (x *SnapshotChunk) GetRequest() bool {
 	return false
 }
 
+// SnapshotPartitionDigest 是单个分区的摘要。
 type SnapshotPartitionDigest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Partition     string                 `protobuf:"bytes,1,opt,name=partition,proto3" json:"partition,omitempty"`
-	Kind          SnapshotPartitionKind  `protobuf:"varint,2,opt,name=kind,proto3,enum=notifier.cluster.v1.SnapshotPartitionKind" json:"kind,omitempty"`
-	RowCount      uint64                 `protobuf:"varint,3,opt,name=row_count,json=rowCount,proto3" json:"row_count,omitempty"`
-	Hash          []byte                 `protobuf:"bytes,4,opt,name=hash,proto3" json:"hash,omitempty"`
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	Partition string                 `protobuf:"bytes,1,opt,name=partition,proto3" json:"partition,omitempty"`
+	Kind      SnapshotPartitionKind  `protobuf:"varint,2,opt,name=kind,proto3,enum=notifier.cluster.v1.SnapshotPartitionKind" json:"kind,omitempty"`
+	// row_count 是分区中的总行数。
+	RowCount uint64 `protobuf:"varint,3,opt,name=row_count,json=rowCount,proto3" json:"row_count,omitempty"`
+	// hash 是分区内容的SHA-256哈希。
+	Hash          []byte `protobuf:"bytes,4,opt,name=hash,proto3" json:"hash,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2176,6 +2239,7 @@ func (x *SnapshotPartitionDigest) GetHash() []byte {
 	return nil
 }
 
+// SnapshotRow 是快照分区中的一行数据。
 type SnapshotRow struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Types that are valid to be assigned to Body:
@@ -2322,6 +2386,7 @@ func (*SnapshotRow_UserMetadata) isSnapshotRow_Body() {}
 
 func (*SnapshotRow_LoginName) isSnapshotRow_Body() {}
 
+// SnapshotUserRow 是快照中的用户行。
 type SnapshotUserRow struct {
 	state               protoimpl.MessageState `protogen:"open.v1"`
 	UserId              int64                  `protobuf:"varint,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
@@ -2486,6 +2551,7 @@ func (x *SnapshotUserRow) GetOriginNodeId() int64 {
 	return 0
 }
 
+// SnapshotTombstoneRow 是表示已删除实体的墓碑记录。
 type SnapshotTombstoneRow struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	EntityType    string                 `protobuf:"bytes,1,opt,name=entity_type,json=entityType,proto3" json:"entity_type,omitempty"`
@@ -2562,6 +2628,7 @@ func (x *SnapshotTombstoneRow) GetEntityNodeId() int64 {
 	return 0
 }
 
+// SnapshotMessageRow 是快照中的消息行。
 type SnapshotMessageRow struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Recipient     *ClusterUserRef        `protobuf:"bytes,1,opt,name=recipient,proto3" json:"recipient,omitempty"`
@@ -2646,6 +2713,7 @@ func (x *SnapshotMessageRow) GetSeq() int64 {
 	return 0
 }
 
+// SnapshotAttachmentRow 是快照中的附件行。
 type SnapshotAttachmentRow struct {
 	state          protoimpl.MessageState `protogen:"open.v1"`
 	Owner          *ClusterUserRef        `protobuf:"bytes,1,opt,name=owner,proto3" json:"owner,omitempty"`
@@ -2738,6 +2806,7 @@ func (x *SnapshotAttachmentRow) GetOriginNodeId() int64 {
 	return 0
 }
 
+// SnapshotUserMetadataRow 是快照中的用户元数据行。
 type SnapshotUserMetadataRow struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Owner         *ClusterUserRef        `protobuf:"bytes,1,opt,name=owner,proto3" json:"owner,omitempty"`
@@ -2830,6 +2899,7 @@ func (x *SnapshotUserMetadataRow) GetOriginNodeId() int64 {
 	return 0
 }
 
+// SnapshotLoginNameRow 是快照中的登录名行。
 type SnapshotLoginNameRow struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	LoginName     string                 `protobuf:"bytes,1,opt,name=login_name,json=loginName,proto3" json:"login_name,omitempty"`
@@ -2914,10 +2984,13 @@ func (x *SnapshotLoginNameRow) GetOriginNodeId() int64 {
 	return 0
 }
 
+// TimeSyncRequest 是NTP风格时间同步的请求消息。
+// 包含客户端发送时间（T1），服务器回复T2和T3，客户端记录T4。
 type TimeSyncRequest struct {
-	state            protoimpl.MessageState `protogen:"open.v1"`
-	RequestId        uint64                 `protobuf:"varint,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
-	ClientSendTimeMs int64                  `protobuf:"varint,2,opt,name=client_send_time_ms,json=clientSendTimeMs,proto3" json:"client_send_time_ms,omitempty"`
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	RequestId uint64                 `protobuf:"varint,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
+	// client_send_time_ms 是请求发起时客户端的物理时间（T1）。
+	ClientSendTimeMs int64 `protobuf:"varint,2,opt,name=client_send_time_ms,json=clientSendTimeMs,proto3" json:"client_send_time_ms,omitempty"`
 	unknownFields    protoimpl.UnknownFields
 	sizeCache        protoimpl.SizeCache
 }
@@ -2966,14 +3039,17 @@ func (x *TimeSyncRequest) GetClientSendTimeMs() int64 {
 	return 0
 }
 
+// TimeSyncResponse 是时间同步的响应消息。
 type TimeSyncResponse struct {
-	state               protoimpl.MessageState `protogen:"open.v1"`
-	RequestId           uint64                 `protobuf:"varint,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
-	ClientSendTimeMs    int64                  `protobuf:"varint,2,opt,name=client_send_time_ms,json=clientSendTimeMs,proto3" json:"client_send_time_ms,omitempty"`
-	ServerReceiveTimeMs int64                  `protobuf:"varint,3,opt,name=server_receive_time_ms,json=serverReceiveTimeMs,proto3" json:"server_receive_time_ms,omitempty"`
-	ServerSendTimeMs    int64                  `protobuf:"varint,4,opt,name=server_send_time_ms,json=serverSendTimeMs,proto3" json:"server_send_time_ms,omitempty"`
-	unknownFields       protoimpl.UnknownFields
-	sizeCache           protoimpl.SizeCache
+	state            protoimpl.MessageState `protogen:"open.v1"`
+	RequestId        uint64                 `protobuf:"varint,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
+	ClientSendTimeMs int64                  `protobuf:"varint,2,opt,name=client_send_time_ms,json=clientSendTimeMs,proto3" json:"client_send_time_ms,omitempty"`
+	// server_receive_time_ms 是服务器接收请求的物理时间（T2）。
+	ServerReceiveTimeMs int64 `protobuf:"varint,3,opt,name=server_receive_time_ms,json=serverReceiveTimeMs,proto3" json:"server_receive_time_ms,omitempty"`
+	// server_send_time_ms 是服务器发送响应的物理时间（T3）。
+	ServerSendTimeMs int64 `protobuf:"varint,4,opt,name=server_send_time_ms,json=serverSendTimeMs,proto3" json:"server_send_time_ms,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *TimeSyncResponse) Reset() {
@@ -3034,6 +3110,7 @@ func (x *TimeSyncResponse) GetServerSendTimeMs() int64 {
 	return 0
 }
 
+// QueryLoggedInUsersRequest 查询目标节点上的已登录用户列表。
 type QueryLoggedInUsersRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	RequestId     uint64                 `protobuf:"varint,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
@@ -3102,6 +3179,7 @@ func (x *QueryLoggedInUsersRequest) GetRemainingHops() int32 {
 	return 0
 }
 
+// QueryLoggedInUsersResponse 返回已登录用户列表。
 type QueryLoggedInUsersResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	RequestId     uint64                 `protobuf:"varint,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
@@ -3194,6 +3272,7 @@ func (x *QueryLoggedInUsersResponse) GetRemainingHops() int32 {
 	return 0
 }
 
+// QueryResolveUserSessionsRequest 查询指定用户的在线会话。
 type QueryResolveUserSessionsRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	RequestId     uint64                 `protobuf:"varint,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
@@ -3270,6 +3349,7 @@ func (x *QueryResolveUserSessionsRequest) GetUser() *ClusterUserRef {
 	return nil
 }
 
+// QueryResolveUserSessionsResponse 返回用户的在线会话列表。
 type QueryResolveUserSessionsResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	RequestId     uint64                 `protobuf:"varint,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
@@ -3370,6 +3450,7 @@ func (x *QueryResolveUserSessionsResponse) GetUser() *ClusterUserRef {
 	return nil
 }
 
+// ClusterLoggedInUser 表示集群中的一个已登录用户。
 type ClusterLoggedInUser struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	NodeId        int64                  `protobuf:"varint,1,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
@@ -3438,6 +3519,7 @@ func (x *ClusterLoggedInUser) GetLoginName() string {
 	return ""
 }
 
+// ClusterSessionRef 引用集群中的用户会话。
 type ClusterSessionRef struct {
 	state            protoimpl.MessageState `protogen:"open.v1"`
 	ServingNodeId    int64                  `protobuf:"varint,1,opt,name=serving_node_id,json=servingNodeId,proto3" json:"serving_node_id,omitempty"`
@@ -3506,6 +3588,7 @@ func (x *ClusterSessionRef) GetTransientCapable() bool {
 	return false
 }
 
+// ClusterOnlineNodePresence 表示一个用户的服务节点存在信息。
 type ClusterOnlineNodePresence struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	User          *ClusterUserRef        `protobuf:"bytes,1,opt,name=user,proto3" json:"user,omitempty"`
@@ -3574,13 +3657,16 @@ func (x *ClusterOnlineNodePresence) GetTransportHint() string {
 	return ""
 }
 
+// OnlinePresenceSnapshot 是节点的在线状态快照。
 type OnlinePresenceSnapshot struct {
-	state         protoimpl.MessageState       `protogen:"open.v1"`
-	OriginNodeId  int64                        `protobuf:"varint,1,opt,name=origin_node_id,json=originNodeId,proto3" json:"origin_node_id,omitempty"`
-	Generation    uint64                       `protobuf:"varint,2,opt,name=generation,proto3" json:"generation,omitempty"`
-	Items         []*ClusterOnlineNodePresence `protobuf:"bytes,3,rep,name=items,proto3" json:"items,omitempty"`
-	RuntimeEpoch  uint64                       `protobuf:"varint,4,opt,name=runtime_epoch,json=runtimeEpoch,proto3" json:"runtime_epoch,omitempty"`
-	LoggedInUsers []*ClusterLoggedInUser       `protobuf:"bytes,5,rep,name=logged_in_users,json=loggedInUsers,proto3" json:"logged_in_users,omitempty"`
+	state        protoimpl.MessageState `protogen:"open.v1"`
+	OriginNodeId int64                  `protobuf:"varint,1,opt,name=origin_node_id,json=originNodeId,proto3" json:"origin_node_id,omitempty"`
+	// generation 是此快照的代数，用于冲突解决。
+	Generation uint64                       `protobuf:"varint,2,opt,name=generation,proto3" json:"generation,omitempty"`
+	Items      []*ClusterOnlineNodePresence `protobuf:"bytes,3,rep,name=items,proto3" json:"items,omitempty"`
+	// runtime_epoch 是发送节点的运行时纪元。
+	RuntimeEpoch  uint64                 `protobuf:"varint,4,opt,name=runtime_epoch,json=runtimeEpoch,proto3" json:"runtime_epoch,omitempty"`
+	LoggedInUsers []*ClusterLoggedInUser `protobuf:"bytes,5,rep,name=logged_in_users,json=loggedInUsers,proto3" json:"logged_in_users,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3650,6 +3736,7 @@ func (x *OnlinePresenceSnapshot) GetLoggedInUsers() []*ClusterLoggedInUser {
 	return nil
 }
 
+// NodeConnectivityRumor 传播节点可能已断开连接的传闻。
 type NodeConnectivityRumor struct {
 	state                protoimpl.MessageState `protogen:"open.v1"`
 	TargetNodeId         int64                  `protobuf:"varint,1,opt,name=target_node_id,json=targetNodeId,proto3" json:"target_node_id,omitempty"`
@@ -3734,11 +3821,13 @@ func (x *NodeConnectivityRumor) GetReason() string {
 	return ""
 }
 
+// MembershipUpdate 包含对等节点发现信息。
 type MembershipUpdate struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	OriginNodeId  int64                  `protobuf:"varint,1,opt,name=origin_node_id,json=originNodeId,proto3" json:"origin_node_id,omitempty"`
-	Generation    uint64                 `protobuf:"varint,2,opt,name=generation,proto3" json:"generation,omitempty"`
-	Peers         []*PeerAdvertisement   `protobuf:"bytes,3,rep,name=peers,proto3" json:"peers,omitempty"`
+	state        protoimpl.MessageState `protogen:"open.v1"`
+	OriginNodeId int64                  `protobuf:"varint,1,opt,name=origin_node_id,json=originNodeId,proto3" json:"origin_node_id,omitempty"`
+	Generation   uint64                 `protobuf:"varint,2,opt,name=generation,proto3" json:"generation,omitempty"`
+	// peers 是此节点已知的对等节点列表。
+	Peers         []*PeerAdvertisement `protobuf:"bytes,3,rep,name=peers,proto3" json:"peers,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3794,6 +3883,7 @@ func (x *MembershipUpdate) GetPeers() []*PeerAdvertisement {
 	return nil
 }
 
+// PeerAdvertisement 广告一个已知的对等节点。
 type PeerAdvertisement struct {
 	state                      protoimpl.MessageState `protogen:"open.v1"`
 	NodeId                     int64                  `protobuf:"varint,1,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
@@ -3870,6 +3960,7 @@ func (x *PeerAdvertisement) GetZeromqCurveServerPublicKey() string {
 	return ""
 }
 
+// TransientPacket 是通过集群网格路由的瞬时消息包。
 type TransientPacket struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	PacketId      uint64                 `protobuf:"varint,1,opt,name=packet_id,json=packetId,proto3" json:"packet_id,omitempty"`

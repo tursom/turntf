@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -176,6 +177,57 @@ func TestUserAndMessageHTTPAPI(t *testing.T) {
 	doJSONWithHeaders(t, handler, http.MethodGet, userPath(createdUser.NodeID, createdUser.UserID), nil, map[string]string{
 		"Authorization": "Bearer " + adminToken,
 	}, http.StatusNotFound)
+}
+
+func TestUnauthenticatedHTTPListUsersSupportsFilters(t *testing.T) {
+	t.Parallel()
+
+	handler := newTestHandler(t)
+
+	var alice struct {
+		NodeID int64 `json:"node_id"`
+		UserID int64 `json:"user_id"`
+	}
+	mustJSON(t, doJSON(t, handler, http.MethodPost, "/users", map[string]any{
+		"username":   "alice",
+		"login_name": "alice.login",
+		"password":   "password-1",
+		"profile": map[string]any{
+			"display_name": "Alice Display",
+		},
+	}, http.StatusCreated), &alice)
+
+	var orders struct {
+		NodeID int64 `json:"node_id"`
+		UserID int64 `json:"user_id"`
+	}
+	mustJSON(t, doJSON(t, handler, http.MethodPost, "/users", map[string]any{
+		"username": "orders",
+		"role":     store.RoleChannel,
+		"profile": map[string]any{
+			"display_name": "Orders Channel",
+		},
+	}, http.StatusCreated), &orders)
+
+	var users []authUserItem
+	mustJSON(t, doJSON(t, handler, http.MethodGet, "/users", nil, http.StatusOK), &users)
+	if !responseUsersContainKey(users, store.UserKey{NodeID: alice.NodeID, UserID: alice.UserID}) ||
+		!responseUsersContainKey(users, store.UserKey{NodeID: orders.NodeID, UserID: orders.UserID}) {
+		t.Fatalf("expected unauthenticated list users to include created users: %+v", users)
+	}
+
+	mustJSON(t, doJSON(t, handler, http.MethodGet, "/users?name=alice.login", nil, http.StatusOK), &users)
+	if len(users) != 1 || users[0].UserID != alice.UserID || users[0].LoginName != "alice.login" {
+		t.Fatalf("expected unauthenticated name filter to match login_name: %+v", users)
+	}
+
+	uid := strconv.FormatInt(alice.NodeID, 10) + ":" + strconv.FormatInt(alice.UserID, 10)
+	mustJSON(t, doJSON(t, handler, http.MethodGet, "/users?uid="+url.QueryEscape(uid), nil, http.StatusOK), &users)
+	if len(users) != 1 || users[0].UserID != alice.UserID {
+		t.Fatalf("expected unauthenticated uid filter to return alice: %+v", users)
+	}
+
+	doJSON(t, handler, http.MethodGet, "/users?uid=broken", nil, http.StatusBadRequest)
 }
 
 func TestCreateUserAllowsDuplicateUsername(t *testing.T) {

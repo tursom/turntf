@@ -113,6 +113,21 @@ func (s *clientWSSession) readLoop(ctx context.Context) error {
 			if err := s.handleDeleteUser(ctx, body.DeleteUser); err != nil {
 				return err
 			}
+		case *internalproto.ClientEnvelope_ListUsers:
+			if s.realtimeOnly {
+				if err := s.writeError("invalid_request", "realtime stream does not support list_users", requestIDForClientEnvelopeBody(body)); err != nil {
+					return err
+				}
+				continue
+			}
+			s.logRequest("list_users", requestIDForClientEnvelopeBody(body)).
+				Str("name", body.ListUsers.GetName()).
+				Int64("uid_node_id", body.ListUsers.GetUid().GetNodeId()).
+				Int64("uid_user_id", body.ListUsers.GetUid().GetUserId()).
+				Msg("client transport request")
+			if err := s.handleListUsers(ctx, body.ListUsers); err != nil {
+				return err
+			}
 		case *internalproto.ClientEnvelope_ListMessages:
 			if s.realtimeOnly {
 				if err := s.writeError("invalid_request", "realtime stream does not support list_messages", requestIDForClientEnvelopeBody(body)); err != nil {
@@ -349,6 +364,8 @@ func requestIDForClientEnvelopeBody(body any) uint64 {
 		return req.UpdateUser.GetRequestId()
 	case *internalproto.ClientEnvelope_DeleteUser:
 		return req.DeleteUser.GetRequestId()
+	case *internalproto.ClientEnvelope_ListUsers:
+		return req.ListUsers.GetRequestId()
 	case *internalproto.ClientEnvelope_ListMessages:
 		return req.ListMessages.GetRequestId()
 	case *internalproto.ClientEnvelope_GetUserMetadata:

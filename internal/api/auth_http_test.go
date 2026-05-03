@@ -199,6 +199,142 @@ func TestAuthenticatedHTTPLoginAndAuthorization(t *testing.T) {
 	}, http.StatusOK)
 }
 
+func TestAuthenticatedHTTPListUsersSupportsCommunicableFilteringAndSearch(t *testing.T) {
+	t.Parallel()
+
+	testAPI := newAuthenticatedTestAPI(t)
+	handler := testAPI.handler
+
+	adminKey := store.UserKey{NodeID: testNodeID(1), UserID: store.BootstrapAdminUserID}
+	adminToken := loginToken(t, handler, adminKey, "root-password")
+	aliceKey := createUserAsWithOptions(t, handler, adminToken, "alice", "alice-password", store.RoleUser, "alice.login", map[string]any{
+		"display_name": "Alice Display",
+	})
+	bobKey := createUserAsWithOptions(t, handler, adminToken, "bob", "bob-password", store.RoleUser, "bob.login", map[string]any{
+		"display_name": "Bob Hidden",
+	})
+	carolKey := createUserAsWithOptions(t, handler, adminToken, "carol", "carol-password", store.RoleUser, "carol.login", map[string]any{
+		"display_name": "Carol Visible",
+	})
+	ordersKey := createUserAsWithOptions(t, handler, adminToken, "orders", "", store.RoleChannel, "", map[string]any{
+		"display_name": "Orders Channel",
+	})
+	writersKey := createUserAsWithOptions(t, handler, adminToken, "writers", "", store.RoleChannel, "", map[string]any{
+		"display_name": "Writers Channel",
+	})
+	hiddenChannelKey := createUserAsWithOptions(t, handler, adminToken, "hidden", "", store.RoleChannel, "", map[string]any{
+		"display_name": "Hidden Channel",
+	})
+
+	aliceToken := loginToken(t, handler, aliceKey, "alice-password")
+	bobToken := loginToken(t, handler, bobKey, "bob-password")
+
+	doJSONWithHeaders(t, handler, http.MethodPost, subscriptionsPath(aliceKey.NodeID, aliceKey.UserID), map[string]any{
+		"channel_node_id": ordersKey.NodeID,
+		"channel_user_id": ordersKey.UserID,
+	}, map[string]string{
+		"Authorization": "Bearer " + aliceToken,
+	}, http.StatusCreated)
+	doJSONWithHeaders(t, handler, http.MethodPut, attachmentPath(writersKey, store.AttachmentTypeChannelWriter, aliceKey), map[string]any{
+		"config_json": map[string]any{},
+	}, map[string]string{
+		"Authorization": "Bearer " + adminToken,
+	}, http.StatusCreated)
+	doJSONWithHeaders(t, handler, http.MethodPost, blacklistPath(aliceKey.NodeID, aliceKey.UserID), map[string]any{
+		"blocked_node_id": bobKey.NodeID,
+		"blocked_user_id": bobKey.UserID,
+	}, map[string]string{
+		"Authorization": "Bearer " + aliceToken,
+	}, http.StatusCreated)
+	doJSONWithHeaders(t, handler, http.MethodPost, blacklistPath(bobKey.NodeID, bobKey.UserID), map[string]any{
+		"blocked_node_id": aliceKey.NodeID,
+		"blocked_user_id": aliceKey.UserID,
+	}, map[string]string{
+		"Authorization": "Bearer " + bobToken,
+	}, http.StatusCreated)
+	doJSONWithHeaders(t, handler, http.MethodPost, blacklistPath(aliceKey.NodeID, aliceKey.UserID), map[string]any{
+		"blocked_node_id": carolKey.NodeID,
+		"blocked_user_id": carolKey.UserID,
+	}, map[string]string{
+		"Authorization": "Bearer " + aliceToken,
+	}, http.StatusCreated)
+
+	var users []authUserItem
+	mustJSON(t, doJSONWithHeaders(t, handler, http.MethodGet, "/users", nil, map[string]string{
+		"Authorization": "Bearer " + aliceToken,
+	}, http.StatusOK), &users)
+	if !responseUsersContainKey(users, aliceKey) || !responseUsersContainKey(users, adminKey) || !responseUsersContainKey(users, carolKey) {
+		t.Fatalf("expected communicable users to include self/admin/carol: %+v", users)
+	}
+	if !responseUsersContainKey(users, ordersKey) || !responseUsersContainKey(users, writersKey) {
+		t.Fatalf("expected communicable channels to include subscribed and writable channels: %+v", users)
+	}
+	broadcastKey := store.UserKey{NodeID: testNodeID(1), UserID: store.BroadcastUserID}
+	if !responseUsersContainKey(users, broadcastKey) {
+		t.Fatalf("expected broadcast user in communicable list: %+v", users)
+	}
+	nodeKey := store.UserKey{NodeID: testNodeID(1), UserID: store.NodeIngressUserID}
+	if responseUsersContainKey(users, bobKey) || responseUsersContainKey(users, hiddenChannelKey) || responseUsersContainKey(users, nodeKey) {
+		t.Fatalf("unexpected hidden users/channels in communicable list: %+v", users)
+	}
+	aliceItem, ok := responseUserByKey(users, aliceKey)
+	if !ok || aliceItem.LoginName != "alice.login" {
+		t.Fatalf("expected self login_name to remain visible: %+v", aliceItem)
+	}
+	carolItem, ok := responseUserByKey(users, carolKey)
+	if !ok || carolItem.LoginName != "" {
+		t.Fatalf("expected other user's login_name to be hidden: %+v", carolItem)
+	}
+
+	var filtered []authUserItem
+	mustJSON(t, doJSONWithHeaders(t, handler, http.MethodGet, "/users?name=carol%20visible", nil, map[string]string{
+		"Authorization": "Bearer " + aliceToken,
+	}, http.StatusOK), &filtered)
+	if len(filtered) != 1 || filtered[0].UserID != carolKey.UserID {
+		t.Fatalf("expected name filter to match carol display name: %+v", filtered)
+	}
+
+	mustJSON(t, doJSONWithHeaders(t, handler, http.MethodGet, "/users?name=carol.login", nil, map[string]string{
+		"Authorization": "Bearer " + aliceToken,
+	}, http.StatusOK), &filtered)
+	if len(filtered) != 0 {
+		t.Fatalf("expected non-admin login_name search to return empty: %+v", filtered)
+	}
+
+	carolUID := strconv.FormatInt(carolKey.NodeID, 10) + ":" + strconv.FormatInt(carolKey.UserID, 10)
+	mustJSON(t, doJSONWithHeaders(t, handler, http.MethodGet, "/users?uid="+url.QueryEscape(carolUID), nil, map[string]string{
+		"Authorization": "Bearer " + aliceToken,
+	}, http.StatusOK), &filtered)
+	if len(filtered) != 1 || filtered[0].UserID != carolKey.UserID {
+		t.Fatalf("expected uid filter to return only carol: %+v", filtered)
+	}
+
+	mustJSON(t, doJSONWithHeaders(t, handler, http.MethodGet, "/users?name=carol&uid="+url.QueryEscape(carolUID), nil, map[string]string{
+		"Authorization": "Bearer " + aliceToken,
+	}, http.StatusOK), &filtered)
+	if len(filtered) != 1 || filtered[0].UserID != carolKey.UserID {
+		t.Fatalf("expected combined name+uid filter to keep carol: %+v", filtered)
+	}
+
+	mustJSON(t, doJSONWithHeaders(t, handler, http.MethodGet, "/users?name=nomatch&uid="+url.QueryEscape(carolUID), nil, map[string]string{
+		"Authorization": "Bearer " + aliceToken,
+	}, http.StatusOK), &filtered)
+	if len(filtered) != 0 {
+		t.Fatalf("expected combined name+uid filter to apply AND semantics: %+v", filtered)
+	}
+
+	doJSONWithHeaders(t, handler, http.MethodGet, "/users?uid=1025", nil, map[string]string{
+		"Authorization": "Bearer " + aliceToken,
+	}, http.StatusBadRequest)
+
+	mustJSON(t, doJSONWithHeaders(t, handler, http.MethodGet, "/users?name=carol.login", nil, map[string]string{
+		"Authorization": "Bearer " + adminToken,
+	}, http.StatusOK), &filtered)
+	if len(filtered) != 1 || filtered[0].UserID != carolKey.UserID || filtered[0].LoginName != "carol.login" {
+		t.Fatalf("expected admin login_name search to return full user info: %+v", filtered)
+	}
+}
+
 func TestHTTPAdminAndSuperAdminPermissionSeparation(t *testing.T) {
 	t.Parallel()
 
@@ -1763,6 +1899,191 @@ func TestClientWebSocketRPCRespectsUserAuthorizationAndSubscriptions(t *testing.
 	}
 }
 
+func TestClientWebSocketListUsersSupportsFiltersAndVisibility(t *testing.T) {
+	t.Parallel()
+
+	testAPI := newAuthenticatedTestAPI(t)
+	server := newIPv4TestServer(t, testAPI.handler)
+	defer server.Close()
+
+	adminKey := store.UserKey{NodeID: testNodeID(1), UserID: store.BootstrapAdminUserID}
+	adminToken := loginToken(t, testAPI.handler, adminKey, "root-password")
+	aliceKey := createUserAsWithOptions(t, testAPI.handler, adminToken, "alice", "alice-password", store.RoleUser, "alice.login", map[string]any{
+		"display_name": "Alice Display",
+	})
+	bobKey := createUserAsWithOptions(t, testAPI.handler, adminToken, "bob", "bob-password", store.RoleUser, "bob.login", map[string]any{
+		"display_name": "Bob Hidden",
+	})
+	carolKey := createUserAsWithOptions(t, testAPI.handler, adminToken, "carol", "carol-password", store.RoleUser, "carol.login", map[string]any{
+		"display_name": "Carol Visible",
+	})
+	ordersKey := createUserAsWithOptions(t, testAPI.handler, adminToken, "orders", "", store.RoleChannel, "", map[string]any{
+		"display_name": "Orders Channel",
+	})
+	writersKey := createUserAsWithOptions(t, testAPI.handler, adminToken, "writers", "", store.RoleChannel, "", map[string]any{
+		"display_name": "Writers Channel",
+	})
+	hiddenChannelKey := createUserAsWithOptions(t, testAPI.handler, adminToken, "hidden", "", store.RoleChannel, "", map[string]any{
+		"display_name": "Hidden Channel",
+	})
+
+	aliceToken := loginToken(t, testAPI.handler, aliceKey, "alice-password")
+	bobToken := loginToken(t, testAPI.handler, bobKey, "bob-password")
+	doJSONWithHeaders(t, testAPI.handler, http.MethodPost, subscriptionsPath(aliceKey.NodeID, aliceKey.UserID), map[string]any{
+		"channel_node_id": ordersKey.NodeID,
+		"channel_user_id": ordersKey.UserID,
+	}, map[string]string{
+		"Authorization": "Bearer " + aliceToken,
+	}, http.StatusCreated)
+	doJSONWithHeaders(t, testAPI.handler, http.MethodPut, attachmentPath(writersKey, store.AttachmentTypeChannelWriter, aliceKey), map[string]any{
+		"config_json": map[string]any{},
+	}, map[string]string{
+		"Authorization": "Bearer " + adminToken,
+	}, http.StatusCreated)
+	doJSONWithHeaders(t, testAPI.handler, http.MethodPost, blacklistPath(aliceKey.NodeID, aliceKey.UserID), map[string]any{
+		"blocked_node_id": bobKey.NodeID,
+		"blocked_user_id": bobKey.UserID,
+	}, map[string]string{
+		"Authorization": "Bearer " + aliceToken,
+	}, http.StatusCreated)
+	doJSONWithHeaders(t, testAPI.handler, http.MethodPost, blacklistPath(bobKey.NodeID, bobKey.UserID), map[string]any{
+		"blocked_node_id": aliceKey.NodeID,
+		"blocked_user_id": aliceKey.UserID,
+	}, map[string]string{
+		"Authorization": "Bearer " + bobToken,
+	}, http.StatusCreated)
+	doJSONWithHeaders(t, testAPI.handler, http.MethodPost, blacklistPath(aliceKey.NodeID, aliceKey.UserID), map[string]any{
+		"blocked_node_id": carolKey.NodeID,
+		"blocked_user_id": carolKey.UserID,
+	}, map[string]string{
+		"Authorization": "Bearer " + aliceToken,
+	}, http.StatusCreated)
+
+	conn := dialClientWebSocket(t, server.URL)
+	defer conn.Close()
+	loginClientWebSocket(t, conn, aliceKey, "alice-password")
+
+	writeClientEnvelope(t, conn, &internalproto.ClientEnvelope{
+		Body: &internalproto.ClientEnvelope_ListUsers{
+			ListUsers: &internalproto.ListUsersRequest{RequestId: 330},
+		},
+	})
+	listResp := readServerEnvelope(t, conn).GetListUsersResponse()
+	if listResp == nil || listResp.RequestId != 330 {
+		t.Fatalf("unexpected websocket list users response: %+v", listResp)
+	}
+	if !protoUsersContainKey(listResp.Items, aliceKey) || !protoUsersContainKey(listResp.Items, adminKey) || !protoUsersContainKey(listResp.Items, carolKey) {
+		t.Fatalf("expected websocket communicable list to include self/admin/carol: %+v", listResp)
+	}
+	if !protoUsersContainKey(listResp.Items, ordersKey) || !protoUsersContainKey(listResp.Items, writersKey) {
+		t.Fatalf("expected websocket communicable list to include subscribed/writable channels: %+v", listResp)
+	}
+	broadcastKey := store.UserKey{NodeID: testNodeID(1), UserID: store.BroadcastUserID}
+	if !protoUsersContainKey(listResp.Items, broadcastKey) {
+		t.Fatalf("expected websocket communicable list to include broadcast: %+v", listResp)
+	}
+	nodeKey := store.UserKey{NodeID: testNodeID(1), UserID: store.NodeIngressUserID}
+	if protoUsersContainKey(listResp.Items, bobKey) || protoUsersContainKey(listResp.Items, hiddenChannelKey) || protoUsersContainKey(listResp.Items, nodeKey) {
+		t.Fatalf("unexpected websocket hidden users/channels in list: %+v", listResp)
+	}
+	aliceProto, ok := protoUserByKey(listResp.Items, aliceKey)
+	if !ok || aliceProto.GetLoginName() != "alice.login" {
+		t.Fatalf("expected websocket self login_name to remain visible: %+v", aliceProto)
+	}
+	carolProto, ok := protoUserByKey(listResp.Items, carolKey)
+	if !ok || carolProto.GetLoginName() != "" {
+		t.Fatalf("expected websocket other user's login_name to be hidden: %+v", carolProto)
+	}
+
+	writeClientEnvelope(t, conn, &internalproto.ClientEnvelope{
+		Body: &internalproto.ClientEnvelope_ListUsers{
+			ListUsers: &internalproto.ListUsersRequest{RequestId: 331, Name: "carol visible"},
+		},
+	})
+	nameResp := readServerEnvelope(t, conn).GetListUsersResponse()
+	if nameResp == nil || nameResp.RequestId != 331 || nameResp.Count != 1 || !protoUsersContainKey(nameResp.Items, carolKey) {
+		t.Fatalf("expected websocket name filter to match carol: %+v", nameResp)
+	}
+
+	writeClientEnvelope(t, conn, &internalproto.ClientEnvelope{
+		Body: &internalproto.ClientEnvelope_ListUsers{
+			ListUsers: &internalproto.ListUsersRequest{RequestId: 332, Name: "carol.login"},
+		},
+	})
+	hiddenResp := readServerEnvelope(t, conn).GetListUsersResponse()
+	if hiddenResp == nil || hiddenResp.RequestId != 332 || hiddenResp.Count != 0 {
+		t.Fatalf("expected websocket non-admin login_name search to return empty: %+v", hiddenResp)
+	}
+
+	writeClientEnvelope(t, conn, &internalproto.ClientEnvelope{
+		Body: &internalproto.ClientEnvelope_ListUsers{
+			ListUsers: &internalproto.ListUsersRequest{
+				RequestId: 333,
+				Uid:       &internalproto.UserRef{NodeId: carolKey.NodeID},
+			},
+		},
+	})
+	if rpcErr := readServerEnvelope(t, conn).GetError(); rpcErr == nil || rpcErr.RequestId != 333 || rpcErr.Code != "invalid_request" {
+		t.Fatalf("unexpected websocket invalid uid error: %+v", rpcErr)
+	}
+
+	writeClientEnvelope(t, conn, &internalproto.ClientEnvelope{
+		Body: &internalproto.ClientEnvelope_ListUsers{
+			ListUsers: &internalproto.ListUsersRequest{
+				RequestId: 334,
+				Uid:       &internalproto.UserRef{NodeId: carolKey.NodeID, UserId: carolKey.UserID},
+			},
+		},
+	})
+	uidResp := readServerEnvelope(t, conn).GetListUsersResponse()
+	if uidResp == nil || uidResp.RequestId != 334 || uidResp.Count != 1 || !protoUsersContainKey(uidResp.Items, carolKey) {
+		t.Fatalf("expected websocket uid filter to return only carol: %+v", uidResp)
+	}
+
+	writeClientEnvelope(t, conn, &internalproto.ClientEnvelope{
+		Body: &internalproto.ClientEnvelope_ListUsers{
+			ListUsers: &internalproto.ListUsersRequest{
+				RequestId: 335,
+				Name:      "nomatch",
+				Uid:       &internalproto.UserRef{NodeId: carolKey.NodeID, UserId: carolKey.UserID},
+			},
+		},
+	})
+	combinedResp := readServerEnvelope(t, conn).GetListUsersResponse()
+	if combinedResp == nil || combinedResp.RequestId != 335 || combinedResp.Count != 0 {
+		t.Fatalf("expected websocket name+uid filter to apply AND semantics: %+v", combinedResp)
+	}
+
+	adminConn := dialClientWebSocket(t, server.URL)
+	defer adminConn.Close()
+	loginClientWebSocket(t, adminConn, adminKey, "root-password")
+	writeClientEnvelope(t, adminConn, &internalproto.ClientEnvelope{
+		Body: &internalproto.ClientEnvelope_ListUsers{
+			ListUsers: &internalproto.ListUsersRequest{RequestId: 336, Name: "carol.login"},
+		},
+	})
+	adminResp := readServerEnvelope(t, adminConn).GetListUsersResponse()
+	if adminResp == nil || adminResp.RequestId != 336 || adminResp.Count != 1 {
+		t.Fatalf("expected admin websocket login_name search to return carol: %+v", adminResp)
+	}
+	adminCarol, ok := protoUserByKey(adminResp.Items, carolKey)
+	if !ok || adminCarol.GetLoginName() != "carol.login" {
+		t.Fatalf("expected admin websocket response to include login_name: %+v", adminCarol)
+	}
+
+	realtimeConn := dialClientRealtimeWebSocket(t, server.URL)
+	defer realtimeConn.Close()
+	loginClientWebSocketWithOptions(t, realtimeConn, aliceKey, "alice-password", true)
+	writeClientEnvelope(t, realtimeConn, &internalproto.ClientEnvelope{
+		Body: &internalproto.ClientEnvelope_ListUsers{
+			ListUsers: &internalproto.ListUsersRequest{RequestId: 337},
+		},
+	})
+	if rpcErr := readServerEnvelope(t, realtimeConn).GetError(); rpcErr == nil || rpcErr.RequestId != 337 || rpcErr.Code != "invalid_request" {
+		t.Fatalf("unexpected realtime websocket list_users error: %+v", rpcErr)
+	}
+}
+
 func TestClientWebSocketSelfScopedRPCSupportsImplicitCurrentUser(t *testing.T) {
 	t.Parallel()
 
@@ -2386,16 +2707,28 @@ func loginToken(t *testing.T, handler http.Handler, key store.UserKey, password 
 
 func createUserAs(t *testing.T, handler http.Handler, token, username, password, role string) store.UserKey {
 	t.Helper()
+	return createUserAsWithOptions(t, handler, token, username, password, role, "", nil)
+}
+
+func createUserAsWithOptions(t *testing.T, handler http.Handler, token, username, password, role, loginName string, profile any) store.UserKey {
+	t.Helper()
 
 	var response struct {
 		NodeID int64 `json:"node_id"`
 		UserID int64 `json:"user_id"`
 	}
-	mustJSON(t, doJSONWithHeaders(t, handler, http.MethodPost, "/users", map[string]any{
+	payload := map[string]any{
 		"username": username,
 		"password": password,
 		"role":     role,
-	}, map[string]string{
+	}
+	if loginName != "" {
+		payload["login_name"] = loginName
+	}
+	if profile != nil {
+		payload["profile"] = profile
+	}
+	mustJSON(t, doJSONWithHeaders(t, handler, http.MethodPost, "/users", payload, map[string]string{
 		"Authorization": "Bearer " + token,
 	}, http.StatusCreated), &response)
 	key := store.UserKey{NodeID: response.NodeID, UserID: response.UserID}
@@ -2429,8 +2762,29 @@ func blockedUserPath(nodeID, userID int64, blocked store.UserKey) string {
 	return blacklistPath(nodeID, userID) + "/" + strconv.FormatInt(blocked.NodeID, 10) + "/" + strconv.FormatInt(blocked.UserID, 10)
 }
 
+type authUserItem struct {
+	NodeID    int64  `json:"node_id"`
+	UserID    int64  `json:"user_id"`
+	Username  string `json:"username"`
+	LoginName string `json:"login_name"`
+}
+
 type authMessageItem struct {
 	Body []byte `json:"body"`
+}
+
+func responseUsersContainKey(users []authUserItem, key store.UserKey) bool {
+	_, ok := responseUserByKey(users, key)
+	return ok
+}
+
+func responseUserByKey(users []authUserItem, key store.UserKey) (authUserItem, bool) {
+	for _, user := range users {
+		if user.NodeID == key.NodeID && user.UserID == key.UserID {
+			return user, true
+		}
+	}
+	return authUserItem{}, false
 }
 
 func responseMessagesContainBody(messages []authMessageItem, body string) bool {
@@ -2440,6 +2794,20 @@ func responseMessagesContainBody(messages []authMessageItem, body string) bool {
 		}
 	}
 	return false
+}
+
+func protoUsersContainKey(users []*internalproto.User, key store.UserKey) bool {
+	_, ok := protoUserByKey(users, key)
+	return ok
+}
+
+func protoUserByKey(users []*internalproto.User, key store.UserKey) (*internalproto.User, bool) {
+	for _, user := range users {
+		if user != nil && user.GetNodeId() == key.NodeID && user.GetUserId() == key.UserID {
+			return user, true
+		}
+	}
+	return nil, false
 }
 
 func dialClientWebSocket(t *testing.T, serverURL string) *websocket.Conn {

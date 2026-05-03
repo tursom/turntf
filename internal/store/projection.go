@@ -50,6 +50,7 @@ type UserRepository interface {
 // 由 sqliteUserAttachmentRepository 实现。
 type AttachmentRepository interface {
 	ListActiveByOwner(context.Context, UserKey, AttachmentType) ([]Attachment, error)
+	ListActiveBySubject(context.Context, UserKey, AttachmentType) ([]Attachment, error)
 	HasActive(context.Context, UserKey, UserKey, AttachmentType, *clock.Timestamp) (bool, error)
 }
 

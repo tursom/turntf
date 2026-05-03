@@ -66,6 +66,7 @@ printf 'secret' | go run ./cmd/turntf hash --stdin
 |---|---|---|
 | `POST` | `/auth/login` | 公开登录 |
 | `POST` | `/users` | 管理员创建用户 |
+| `GET` | `/users` | 查询当前用户可通讯用户列表（支持 `name` / `uid` 过滤） |
 | `GET` | `/nodes/{node_id}/users/{user_id}` | 查询用户（本人或管理员） |
 | `PATCH` | `/nodes/{node_id}/users/{user_id}` | 管理员更新用户 |
 | `DELETE` | `/nodes/{node_id}/users/{user_id}` | 管理员删除用户 |
@@ -91,6 +92,8 @@ printf 'secret' | go run ./cmd/turntf hash --stdin
 | `GET` | `/healthz` | 健康检查（公开） |
 
 支持通过 `sync_mode: force_sync` 或 `no_sync` 控制单条消息的 Pebble 持久化方式（仅 `store.engine = "pebble"` 时生效）。
+
+`GET /users` 默认返回“当前用户可通讯的活跃用户集合”。可选的 `name` 参数会在该集合内做大小写不敏感子串匹配；可选的 `uid` 参数使用 `node_id:user_id` 格式做精确过滤。普通用户返回的其他联系人会隐藏 `login_name`，管理员和超级管理员仍可看到完整字段。
 
 对“本人作用域”的 HTTP 接口，路径中的 `{node_id,user_id}` 还支持使用 `/nodes/0/users/0` 表示“当前 Bearer token 对应的登录用户”。仅完整的 `0/0` 组合有效；`0/x`、`x/0`、负数或非数字仍会返回 `400`。该快捷写法适用于查询本人信息、本人消息、本人元数据、本人附件、本人订阅和本人黑名单，不适用于 `PATCH /users`、`DELETE /users` 或 `POST /messages` 这类目标地址型接口。
 

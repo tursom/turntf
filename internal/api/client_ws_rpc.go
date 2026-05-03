@@ -263,6 +263,46 @@ func (s *clientWSSession) handleDeleteUser(ctx context.Context, req *internalpro
 	})
 }
 
+// handleListUsers 处理可通讯用户列表查询请求，支持按 name 和 uid 过滤。
+func (s *clientWSSession) handleListUsers(ctx context.Context, req *internalproto.ListUsersRequest) error {
+	if req == nil {
+		return s.writeError("invalid_request", "list_users cannot be empty", 0)
+	}
+	uid, empty, err := optionalUserKeyFromProto(req.Uid, "uid")
+	if err != nil {
+		return s.writeStoreOrRequestError(req.RequestId, err)
+	}
+	var uidFilter *store.UserKey
+	if !empty {
+		uidFilter = &uid
+	}
+	users, err := s.http.service.ListCommunicableUsers(ctx, actorFromPrincipal(s.principal), store.UserListFilter{
+		Name: req.Name,
+		UID:  uidFilter,
+	})
+	if err != nil {
+		return s.writeStoreOrRequestError(req.RequestId, err)
+	}
+
+	items := make([]*internalproto.User, 0, len(users))
+	for _, user := range users {
+		item, err := s.clientProtoUserForResponse(ctx, user)
+		if err != nil {
+			return s.writeStoreOrRequestError(req.RequestId, err)
+		}
+		items = append(items, item)
+	}
+	return s.writeEnvelope(&internalproto.ServerEnvelope{
+		Body: &internalproto.ServerEnvelope_ListUsersResponse{
+			ListUsersResponse: &internalproto.ListUsersResponse{
+				RequestId: req.RequestId,
+				Items:     items,
+				Count:     int32(len(items)),
+			},
+		},
+	})
+}
+
 // handleListMessages 处理查询用户消息列表请求，默认返回最近 100 条。
 func (s *clientWSSession) handleListMessages(ctx context.Context, req *internalproto.ListMessagesRequest) error {
 	if req == nil {
@@ -946,7 +986,7 @@ func (s *clientWSSession) clientProtoUserForResponse(ctx context.Context, user s
 	if s == nil || s.http == nil || s.http.service == nil {
 		return clientProtoUser(user), nil
 	}
-	loginName, err := s.http.service.GetUserLoginName(ctx, user.Key())
+	loginName, err := s.http.service.GetVisibleUserLoginName(ctx, actorFromPrincipal(s.principal), user)
 	if err != nil {
 		return nil, err
 	}

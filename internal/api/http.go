@@ -368,7 +368,7 @@ func (h *HTTP) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 	}
 	h.invalidateTargetRoleCache(user.Key())
 
-	resp, err := h.buildUserResponse(r.Context(), user)
+	resp, err := h.buildUserResponse(r.Context(), actorFromPrincipal(principal), user)
 	if err != nil {
 		writeStoreError(w, err)
 		return
@@ -397,7 +397,7 @@ func (h *HTTP) handleGetUser(w http.ResponseWriter, r *http.Request) {
 	}
 	h.invalidateTargetRoleCache(user.Key())
 
-	resp, err := h.buildUserResponse(r.Context(), user)
+	resp, err := h.buildUserResponse(r.Context(), actorFromPrincipal(principal), user)
 	if err != nil {
 		writeStoreError(w, err)
 		return
@@ -410,12 +410,15 @@ func (h *HTTP) handleListUsers(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := h.authorizer.ListUsers(actorFromPrincipal(principal)); err != nil {
+	uid, err := userListUIDFromQuery(r)
+	if err != nil {
 		writeStoreError(w, err)
 		return
 	}
-
-	users, err := h.service.ListUsers(r.Context())
+	users, err := h.service.ListCommunicableUsers(r.Context(), actorFromPrincipal(principal), store.UserListFilter{
+		Name: strings.TrimSpace(r.URL.Query().Get("name")),
+		UID:  uid,
+	})
 	if err != nil {
 		writeStoreError(w, err)
 		return
@@ -423,7 +426,7 @@ func (h *HTTP) handleListUsers(w http.ResponseWriter, r *http.Request) {
 
 	resp := make([]userResponse, 0, len(users))
 	for _, user := range users {
-		item, err := h.buildUserResponse(r.Context(), user)
+		item, err := h.buildUserResponse(r.Context(), actorFromPrincipal(principal), user)
 		if err != nil {
 			writeStoreError(w, err)
 			return
@@ -489,7 +492,7 @@ func (h *HTTP) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp, err := h.buildUserResponse(r.Context(), user)
+	resp, err := h.buildUserResponse(r.Context(), actorFromPrincipal(principal), user)
 	if err != nil {
 		writeStoreError(w, err)
 		return
@@ -1290,11 +1293,11 @@ func userResponseFromStore(user store.User, loginName string) userResponse {
 	}
 }
 
-func (h *HTTP) buildUserResponse(ctx context.Context, user store.User) (userResponse, error) {
+func (h *HTTP) buildUserResponse(ctx context.Context, viewer *store.User, user store.User) (userResponse, error) {
 	loginName := ""
 	if h != nil && h.service != nil {
 		var err error
-		loginName, err = h.service.GetUserLoginName(ctx, user.Key())
+		loginName, err = h.service.GetVisibleUserLoginName(ctx, viewer, user)
 		if err != nil {
 			return userResponse{}, err
 		}
@@ -1770,6 +1773,30 @@ func attachmentTypeFromQuery(r *http.Request) (store.AttachmentType, error) {
 		return "", nil
 	}
 	return store.NormalizeAttachmentType(raw)
+}
+
+func userListUIDFromQuery(r *http.Request) (*store.UserKey, error) {
+	if r == nil {
+		return nil, nil
+	}
+	raw := strings.TrimSpace(r.URL.Query().Get("uid"))
+	if raw == "" {
+		return nil, nil
+	}
+	parts := strings.Split(raw, ":")
+	if len(parts) != 2 {
+		return nil, fmt.Errorf("%w: uid must be in node_id:user_id format", store.ErrInvalidInput)
+	}
+	nodeID, err := strconv.ParseInt(strings.TrimSpace(parts[0]), 10, 64)
+	if err != nil || nodeID <= 0 {
+		return nil, fmt.Errorf("%w: uid node_id must be a positive integer", store.ErrInvalidInput)
+	}
+	userID, err := strconv.ParseInt(strings.TrimSpace(parts[1]), 10, 64)
+	if err != nil || userID <= 0 {
+		return nil, fmt.Errorf("%w: uid user_id must be a positive integer", store.ErrInvalidInput)
+	}
+	key := &store.UserKey{NodeID: nodeID, UserID: userID}
+	return key, nil
 }
 
 func userMetadataKeyFromPath(w http.ResponseWriter, r *http.Request) (string, bool) {

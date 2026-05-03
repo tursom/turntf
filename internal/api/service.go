@@ -9,6 +9,7 @@ import (
 
 	"github.com/tursom/turntf/internal/app"
 	"github.com/tursom/turntf/internal/clock"
+	"github.com/tursom/turntf/internal/permission"
 	"github.com/tursom/turntf/internal/store"
 )
 
@@ -85,9 +86,9 @@ type Service struct {
 	presence        OnlinePresenceResolver
 	sessions        OnlineSessionResolver
 	transientRecvMu sync.RWMutex
-	transientRecv   TransientPacketReceiver  // 当前活跃的即时包接收器（通常是 HTTP 层）
-	nextTransientID atomic.Uint64              // 即时包 ID 自增计数器
-	blacklistHits   atomic.Uint64              // 黑名单命中次数统计
+	transientRecv   TransientPacketReceiver // 当前活跃的即时包接收器（通常是 HTTP 层）
+	nextTransientID atomic.Uint64           // 即时包 ID 自增计数器
+	blacklistHits   atomic.Uint64           // 黑名单命中次数统计
 }
 
 // New 创建 Service 实例。eventSink 同时作为可选接口的来源：
@@ -215,6 +216,19 @@ func (s *Service) GetUserLoginName(ctx context.Context, key store.UserKey) (stri
 // ListUsers 列出系统中所有用户。
 func (s *Service) ListUsers(ctx context.Context) ([]store.User, error) {
 	return s.store.ListUsers(ctx)
+}
+
+// ListCommunicableUsers 列出当前操作者可通讯的用户，并应用可选过滤条件。
+func (s *Service) ListCommunicableUsers(ctx context.Context, actor *store.User, filter store.UserListFilter) ([]store.User, error) {
+	return s.store.ListCommunicableUsers(ctx, actor, filter)
+}
+
+// GetVisibleUserLoginName 根据查看者身份决定是否返回目标用户的登录名。
+func (s *Service) GetVisibleUserLoginName(ctx context.Context, viewer *store.User, user store.User) (string, error) {
+	if viewer == nil || permission.IsAdminRole(viewer.Role) || viewer.Key() == user.Key() {
+		return s.store.GetUserLoginName(ctx, user.Key())
+	}
+	return "", nil
 }
 
 // CreateMessage 创建一条持久化消息。如果发送者被接收者拉黑，返回 ErrBlockedByBlacklist。

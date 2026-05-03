@@ -164,6 +164,12 @@ type UserKey struct {
 	UserID int64 `json:"user_id"`
 }
 
+// UserListFilter 定义用户列表查询的可选过滤条件。
+type UserListFilter struct {
+	Name string
+	UID  *UserKey
+}
+
 // Validate 验证 UserKey 是否合法（NodeID 和 UserID 必须为正数）。
 func (k UserKey) Validate() error {
 	if k.NodeID <= 0 || k.UserID <= 0 {

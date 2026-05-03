@@ -229,7 +229,7 @@ ServerEnvelope {
 
 当前支持：
 
-- 用户管理：`create_user`、`get_user`、`update_user`、`delete_user`
+- 用户管理：`create_user`、`get_user`、`update_user`、`delete_user`、`list_users`
 - 消息与订阅查询：`list_messages`、`list_subscriptions`
 - 订阅管理：`subscribe_channel`、`unsubscribe_channel`
 - 黑名单管理：`block_user`、`unblock_user`、`list_blocked_users`
@@ -279,6 +279,35 @@ ClientEnvelope {
   list_subscriptions: ListSubscriptionsRequest {
     request_id: 1002
     subscriber: { node_id: 4096, user_id: 1025 }
+  }
+}
+```
+
+示例：查询当前可通讯用户列表
+
+```protobuf
+ClientEnvelope {
+  list_users: ListUsersRequest {
+    request_id: 1007
+    name: "carol"
+    uid: { node_id: 4096, user_id: 1027 }
+  }
+}
+```
+
+```protobuf
+ServerEnvelope {
+  list_users_response: ListUsersResponse {
+    request_id: 1007
+    items: [
+      {
+        node_id: 4096
+        user_id: 1027
+        username: "carol"
+        profile_json: "{\"display_name\":\"Carol\"}"
+      }
+    ]
+    count: 1
   }
 }
 ```
@@ -397,6 +426,7 @@ ServerEnvelope {
 - 系统保留用户（bootstrap `super_admin`、`broadcast`、`node`）仍不能通过管理 RPC 修改或删除。
 - `list_cluster_nodes` 只要求当前连接已登录，普通用户可用。
 - `list_node_logged_in_users` 只要求当前连接已登录，普通用户可用；目标节点不可达时返回错误，不返回空列表。
+- `list_users` 只要求当前连接已登录。管理员与超级管理员返回全量活跃用户；普通用户返回当前可通讯用户集合，并支持 `name` 与 `uid` 组合过滤。
 - `get_user` 允许本人或管理员。
 - `list_messages` 对可登录用户允许本人或管理员；对 channel/broadcast 目标仅管理员可直接查询。
 - 用户元数据 RPC 允许本人或管理员；空 `owner` 仅是“本人”的便捷写法，不会放宽权限。
@@ -409,6 +439,9 @@ ServerEnvelope {
 字段约定：
 
 - `profile_json` 和 `event_json` 是原始 JSON 字节。
+- `list_users.name` 会在可见用户集合内做大小写不敏感子串匹配。普通用户匹配 `username` 与 `profile_json.display_name/displayName`；管理员额外匹配 `login_name`。
+- `list_users.uid` 使用 `UserRef` 表示精确目标。省略该字段或传 `{node_id:0,user_id:0}` 表示“不按 uid 过滤”；只填一个字段或填负数会返回 `invalid_request`。
+- 普通用户通过 `list_users` 看到他人时，`login_name` 会被隐藏；查看自己或管理员查看任意用户时，`login_name` 保持可见。
 - `block_user` 只会拦截后续新的普通用户直发消息，不会删除已存在历史消息，也不会影响 channel/broadcast/node 地址。
 - 列表响应统一包含 `items` 和 `count`。
 - `metrics_response.text` 直接返回 Prometheus 文本，与 HTTP `/metrics` 内容一致。

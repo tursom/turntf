@@ -66,18 +66,13 @@ RUN set -eu; \
         done; \
     }; \
     retry apk add --no-cache ca-certificates tzdata; \
-    if [ "${ENABLE_ZEROMQ}" = "true" ]; then retry apk add --no-cache zeromq; fi; \
-    addgroup -S -g 10001 turntf; \
-    adduser -S -D -H -h /app -u 10001 -G turntf turntf
+    if [ "${ENABLE_ZEROMQ}" = "true" ]; then retry apk add --no-cache zeromq; fi
 
 WORKDIR /app
 
 COPY --from=builder /out/turntf /usr/local/bin/turntf
 
-RUN mkdir -p /app/data && \
-    chown -R turntf:turntf /app
-
-USER turntf:turntf
+RUN mkdir -p /app/data
 
 EXPOSE 8080
 VOLUME ["/app/data"]

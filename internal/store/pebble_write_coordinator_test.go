@@ -112,24 +112,24 @@ func TestPebbleWriteCoordinatorFlushesBySizeAndDelay(t *testing.T) {
 		}
 	})
 
-	for i := 0; i < groupCommitMaxOps; i++ {
-		batch := db.NewBatch()
+	batch := db.NewBatch()
+	for i := range groupCommitMaxOps {
 		if err := batch.Set([]byte{byte(i), 1}, []byte("v"), nil); err != nil {
-			t.Fatalf("set size batch %d: %v", i, err)
+			t.Fatalf("set size batch op %d: %v", i, err)
 		}
-		if err := coordinator.Apply(batch, false); err != nil {
-			t.Fatalf("apply size batch %d: %v", i, err)
-		}
+	}
+	if err := coordinator.Apply(batch, false); err != nil {
+		t.Fatalf("apply size batch: %v", err)
 	}
 	if stats := coordinator.statsSnapshot(); stats.FlushesBySize == 0 {
 		t.Fatalf("expected size-based flush, got %+v", stats)
 	}
 
-	batch := db.NewBatch()
-	if err := batch.Set([]byte("delay-key"), []byte("delay-value"), nil); err != nil {
+	delayBatch := db.NewBatch()
+	if err := delayBatch.Set([]byte("delay-key"), []byte("delay-value"), nil); err != nil {
 		t.Fatalf("set delay batch: %v", err)
 	}
-	if err := coordinator.Apply(batch, false); err != nil {
+	if err := coordinator.Apply(delayBatch, false); err != nil {
 		t.Fatalf("apply delay batch: %v", err)
 	}
 	waitForCoordinatorStat(t, time.Second, func(stats pebbleWriteCoordinatorStats) bool {

@@ -126,11 +126,8 @@ func userMetadataPrefixUpperBound(prefix string) (string, bool) {
 }
 
 // validateUserMetadataOwner 校验用户角色是否允许拥有元数据。
-// 允许：普通用户、管理员、超级管理员、频道；禁止系统保留用户。
+// 允许：普通用户、管理员、超级管理员、频道。
 func validateUserMetadataOwner(user User) error {
-	if user.SystemReserved {
-		return fmt.Errorf("%w: metadata owner cannot be a system reserved user", ErrInvalidInput)
-	}
 	switch user.Role {
 	case RoleUser, RoleAdmin, RoleSuperAdmin, RoleChannel:
 		return nil

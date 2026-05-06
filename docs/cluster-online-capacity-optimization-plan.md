@@ -1,6 +1,6 @@
 # 集群在线连接容量优化方案
 
-本文档把“如何提高当前集群模式下的真实在线连接上限”整理为可执行方案。它不讨论泛泛的扩容建议，而是基于当前代码路径、最近补充的多节点在线容量 benchmark，以及我们已经观测到的具体瓶颈来排序优化项。
+本文档用于校准“当前 `turntf/` 在大规模在线连接下到底测了什么、已经优化到了哪里、剩余瓶颈在哪里”。它不再把已经落地的能力继续写成待办，而是把历史结论、当前实现和后续工作拆开描述。
 
 相关基线与 benchmark 见：
 
@@ -9,26 +9,37 @@
 
 ## 1. 当前结论
 
-在当前实现下，我们已经补了更贴近真实在线负载的 benchmark：
+当前唯一直接覆盖“大量在线会话 + 跨节点 transient 前台延迟”的 benchmark 仍然是：
 
 - `BenchmarkClientWebSocketTransientSendMessageAuthenticatedLinearMeshWithOnlineUsers`
 
-这组 benchmark 的语义是：
+但这组 benchmark 的语义，需要按**当前代码**重新理解：
 
-- 先在 `3` 节点 / `7` 节点线性拓扑上建立大量**真实已登录 WebSocket 会话**。
-- 这些会话保持后台轮询和正常登录态。
-- 再测一条跨节点 `transient` 消息的端到端延迟。
+- 拓扑仍是 `3` 节点 / `7` 节点线性 mesh。
+- 当前只跑 `SQLite` 场景。
+- 背景在线连接不是“标准 `/ws/client` + 持久化补推 + 持久化消息分发”，而是通过 `dialAndLoginBenchmarkIdleClientWebSocketsWithOptions(..., true)` 建立的 `/ws/realtime` 登录连接；它们会登录、注册在线状态、参与 transient 收包，但不会进入持久化补发路径。
+- 被测的前台发送端和接收端使用 `/ws/client`，但登录时显式传 `TransientOnly=true`，同样不会注册持久化消息推送。
+- benchmark 在造完用户后会先裁剪一次 event log，并把 event log 上限压到 `32`，目的是尽量把观测重点放在“在线连接和 transient 路径本身”，而不是历史事件积压。
 
-### 1.1 当前已验证结果
+因此，这组 benchmark 当前测到的是：
 
-以下结果来自 **2026-04-26** 的本地基准采样，运行环境与 [performance-baseline.md](/root/dev/sys/turntf/turntf/docs/performance-baseline.md) 中的基线环境一致：
+- **大量 realtime / transient-only 在线会话存在时**
+- **一条跨节点 transient `SendMessage` 的前台端到端延迟**
 
+它**不是**下面这些能力的直接容量证明：
+
+- 标准 `/ws/client` 持久化客户端的稳态在线上限
+- 大量历史消息补发时的登录吞吐
+- 大量 broadcast / channel / direct 持久消息 fanout 时的稳态成本
+
+### 1.1 历史样本
+
+以下结果仍可保留为**历史本地样本**，但只代表这一个 benchmark 场景，不应直接当作当前版本的通用对外承诺：
+
+- 采样日期：**2026-04-26**
 - CPU：`12th Gen Intel(R) Core(TM) i5-12400`
 - `goos=linux`
 - `goarch=amd64`
-- 本轮在线容量 benchmark 暂时只跑 `SQLite` 场景，用于优先隔离“在线连接与会话模型”的开销，而不是存储引擎差异
-
-关键结果：
 
 | 场景 | 结果 | accept_ms/op | push_ms/op |
 | --- | --- | ---: | ---: |
@@ -38,487 +49,200 @@
 | `3-nodes / 10000-online / 256B` | 未在 `2m` 内进入稳态 | - | - |
 | `7-nodes / 10000-online / 256B` | 未在 `2m` 内进入稳态 | - | - |
 
-### 1.2 当前可对外使用的保守口径
+### 1.2 当前可用口径
 
-- 当前实现下，`5000` 总在线用户/集群可以视为**已验证稳定量级**。
-- `10000` 总在线用户/集群目前**不能视为已验证稳定量级**。
-- 如果没有进一步优化，我不建议直接承诺五位数以上的稳态在线连接能力。
+目前更准确的说法应是：
 
-这里说的“在线用户”是更接近真实生产的定义：
+- 这组 benchmark 曾经验证过“`5000` 总在线 realtime / transient-only 会话 + 跨节点 transient 前台路径”这一特定场景。
+- 这组 benchmark 还没有把 `10000` 总在线 realtime / transient-only 会话稳定跑进 `2m` 稳态窗口。
+- 它不能直接推出“当前 `turntf` 已验证支持 `5000` 或 `10000` 个标准持久化 WebSocket 客户端”。
+- 在没有重新采样前，也不应该把这组历史样本升级成今天的官方容量 SLA。
 
-- 已完成登录
-- 持有真实 WebSocket 连接
-- 后台会继续跑当前实现里的 push loop
-- 集群仍然需要承受跨节点 transient 消息的正常端到端路径
+## 2. 当前实现已与旧版分析不同
 
-## 2. 当前瓶颈
+旧版文档把不少已经落地的优化仍写成“计划中”。下面这些点在当前实现里已经不是未来工作，而是现有基线。
 
-当前在线连接上限主要不是被 `transient` 消息写入本身卡住，而是被“每个已登录会话的后台维护成本”卡住。
+### 2.1 已落地能力
 
-### 2.1 每个会话都有 1Hz 事件轮询
+- 已有 `LoginRequest.transient_only`，并且 `/ws/realtime` 会强制采用同样的“只收发 transient、不接持久化推送”语义。
+- 持久化客户端登录时，会先读取 `LastEventSequence()` 作为 `afterSequence` 初始水位；不再存在“默认从 `afterSequence = 0` 扫全历史 event log”的行为。
+- `HTTP` 已经维护常驻 `onlineUsers` registry，并用 `onlineUserCount` 预估容量；`ListLoggedInUsers()` 不再靠遍历整张 session map 组装在线列表。
+- 客户端 session 已经改成 `256` 个 shard 的分片存储，并且每个用户桶维护稳定快照 `snapshot`，本地 transient 投递不再每次复制一份新的 session slice。
+- 持久化消息推送已切到节点级共享分发器：后台只启动一个 `runPersistentDispatcher()` 轮询 event log，再把事件分发给需要持久化推送的 session。
+- 黑名单、频道订阅、目标角色都已经有短 TTL 缓存；频道订阅和黑名单更新后也会主动失效对应缓存。
+- 当前协议已经包含 `session_ref`、`resolve_user_sessions` 和 `target_session`，瞬时包可以精确路由到某个在线会话，而不只是“打给这个用户的所有在线节点”。
 
-当前 `clientWSSession.pushLoop()` 为每个已登录客户端启动一个独立 ticker，每秒执行一次：
+### 2.2 已过期的旧判断
 
-- `ListEvents(afterSequence, 100)`
-- 对结果逐条做可见性判断
-- 把可见的持久消息推给客户端
+下面这些旧结论与当前代码已不一致，应视为过期：
 
-代码位置：
+- “每个会话都有一个独立 `pushLoop()`，并以 `O(连接数)` 轮询 event log。”
+- “普通登录默认从 `afterSequence = 0` 开始追旧事件。”
+- “`ListLoggedInUsers()` 仍然动态遍历整张 sessions map。”
+- “`ReceiveTransientPacket()` 每次都会复制目标用户的 session slice。”
+- “连接模型还没有区分 transient-only 客户端和持久消息客户端。”
 
-- [client_push.go](/root/dev/sys/turntf/turntf/internal/api/client_push.go:12)
-- [client_push.go](/root/dev/sys/turntf/turntf/internal/api/client_push.go:30)
+## 3. 当前真正的瓶颈
 
-这意味着在线连接成本近似是：
+在现状下，在线容量的主要风险点已经从“每连接一条持久化轮询 goroutine”转移到了别处。
 
-- `O(连接数)` 个 goroutine
-- `O(连接数)` 个 ticker
-- `O(连接数)` 次/秒的 event log 轮询
+### 3.1 当前 benchmark 仍然没有覆盖 full client 路径
 
-对于“纯 transient 即时消息”场景，这部分成本几乎全部是额外负担。
+最先需要澄清的不是代码，而是结论边界：
 
-### 2.2 登录后的 push 路径默认会从旧事件开始追
+- 现在的在线容量 benchmark 主要覆盖 realtime / transient-only 连接。
+- 它没有压到 `pushInitialMessages()`、共享持久化分发器、管理员全量可见、频道订阅 fanout、broadcast fanout 这些 full client 成本。
 
-当前 WebSocket 登录后会先：
+所以当前最大的“文档风险”是：
 
-- `pushInitialMessages()`
-- 然后启动 `pushLoop()`
+- transient 路径样本被误读成整个客户端模型的容量上限。
 
-代码位置：
+### 3.2 full client 路径的结构性热点，已经变成共享持久化分发器
 
-- [client_session.go](/root/dev/sys/turntf/turntf/internal/api/client_session.go:123)
-- [client_push.go](/root/dev/sys/turntf/turntf/internal/api/client_push.go:17)
+当前 `runPersistentDispatcher()` 的复杂度来源主要是：
 
-而 `pushLoop()` 默认从 `afterSequence = 0` 开始，[client_push.go](/root/dev/sys/turntf/turntf/internal/api/client_push.go:31)。
+- 每秒每节点一次 `ListEvents(afterSequence, 100)` 轮询。
+- 对 direct 消息，需要解析候选接收 session。
+- 对 broadcast / channel 消息，需要克隆全部持久化 session，再逐个做可见性判定。
+- `canSeeMessage()` 虽然已有缓存，但缓存 miss 时仍然可能触发黑名单、频道订阅和目标角色查询。
 
-这会导致两个问题：
+这意味着当前 full client 路径的热点已经不再是“每连接一个 ticker”，而是：
 
-- 新连接刚登录时，即使它只关心 transient 消息，也会扫描一遍当前事件流。
-- 大规模连接爬升时，前面先登录的连接可能已经在空转轮询，后面还在建连，整体进入稳态的时间被显著拉长。
+- **共享 dispatcher 的候选集合构建**
+- **高 fanout 持久消息的授权判断**
 
-### 2.3 本地在线用户表是“动态遍历 sessions map”
+### 3.3 登录风暴成本仍然真实存在
 
-当前本地在线用户列表来自 `HTTP.ListLoggedInUsers()`，它会：
+即便“从 0 扫 event log”的旧问题已经修掉，full client 登录仍然不是零成本：
 
-- 持 `sessionsMu.RLock()`
-- 遍历 `map[UserKey]map[*clientWSSession]struct{}`
-- 构造并排序结果 slice
+- 登录成功后仍会执行 `pushInitialMessages()`，最多补发最近 `1000` 条历史消息。
+- 会话会注册到本地在线表和 cluster session registry。
+- 如果后续存在大量持久化消息，这些会话还会加入共享持久化分发器的候选集。
 
-代码位置：
+所以“能否快速建立很多连接”与“steady-state 是否稳定”仍然要分开看。
 
-- [http.go](/root/dev/sys/turntf/turntf/internal/api/http.go:866)
+### 3.4 单用户多会话下，本地 transient fanout 仍然线性依赖 bucket 大小
 
-这对“偶发管理查询”还可以接受，但当在线连接数变大时：
+当前 `ReceiveTransientPacket()` 对未指定 `target_session` 的 transient 包仍会：
 
-- 查询成本与在线用户数线性相关
-- 列表构造和排序都会产生额外分配
-- 远端节点查询在线用户时，也会放大这条路径的成本
+- 取出目标用户的 `bucket.snapshot`
+- 顺序给桶里的每个 session 执行 `pushPacket`
 
-### 2.4 本地 transient 投递仍依赖全局 session 桶复制
+这已经比“复制 slice + 全局锁”轻很多，但如果某一个用户自己挂了很多终端，会话内 fanout 成本仍然与该用户在线 session 数线性相关。
 
-当前 `HTTP.ReceiveTransientPacket()` 会：
+因此在“单用户多终端很多”的业务里，更合适的做法会是：
 
-- 在 `sessionsMu` 下找到目标用户会话桶
-- 把桶里的 session 复制到新 slice
-- 释放锁后逐个 `pushPacket`
+- 先用 `resolve_user_sessions` 拿到会话列表
+- 再通过 `target_session` 精确投递
 
-代码位置：
+### 3.5 在线用户查询已经降级为次要问题
 
-- [http.go](/root/dev/sys/turntf/turntf/internal/api/http.go:841)
+`onlineUsers` registry 和 shard 化之后，`ListLoggedInUsers()` 已经不再是最主要的容量瓶颈。它现在仍然会：
 
-这在单目标少会话时问题不大，但用户量继续增长后：
+- 构造结果 slice
+- 最后按 `node_id / user_id` 排序
 
-- 登录/登出与 transient 投递会在同一把锁上竞争
-- 每次投递都要分配一个新的 `sessions` slice
+但这更像是管理查询路径的固定开销，而不是当前 online benchmark 失败与否的首要原因。
 
-### 2.5 连接模型没有区分“transient-only 客户端”和“持久消息客户端”
+## 4. 计划状态
 
-当前客户端只要登录到 `/ws/client`，就会自动获得：
+| 工作点 | 当前状态 | 说明 |
+| --- | --- | --- |
+| 1. `transient-only` 会话模式 | 已完成 | `LoginRequest.transient_only` 已存在，`/ws/realtime` 也已落地。 |
+| 2. 登录默认从当前事件水位起步 | 已完成 | 持久化会话登录时会先读取 `LastEventSequence()`。 |
+| 3. 本地在线用户 registry 常驻化 | 已完成 | `onlineUsers` + `onlineUserCount` 已是当前实现。 |
+| 4. session registry 分片 | 已完成 | 当前是 `256` shard，并为每个用户维护 `snapshot`。 |
+| 5. 节点级 shared event tailer | 已完成 | 当前持久化推送由 `runPersistentDispatcher()` 统一负责。 |
+| 6. 可见性判断缓存化 | 已完成 | 黑名单、频道订阅、目标角色都已有 TTL 缓存和局部失效。 |
+| 7. transient / persistent 路径拆分 | 部分完成 | `/ws/client` 与 `/ws/realtime` 已分流，但 ZeroMQ 仍复用标准客户端语义，也还没有单独的 edge 接入层。 |
+| 8. 接入层与 cluster 节点角色拆分 | 未开始 | 当前节点仍同时承载 API、连接、store 和 mesh。 |
+| 9. 用户或 session 粘性放置 | 未开始 | 还没有 consistent hash / sticky routing，但 `session_ref` / `resolve_user_sessions` / `target_session` 已具备前置能力。 |
+| 10. 在线连接分级、配额与背压 | 未开始 | 当前代码里还没有明确的每节点连接上限、每用户并发上限或连接爬升限速。 |
 
-- 持久消息初始补推
-- 持久事件轮询
-- transient 包直推
+## 5. 现在最值得继续做的事
 
-也就是说，**纯 transient** 场景仍然被迫承担持久消息那一整套后台成本。
+### 5.1 第一优先级：先把 benchmark 结论补齐
 
-这在语义上是兼容的，但在容量上非常不划算。
+如果今天要继续推进在线容量，最先该补的不是“再实现一次 `transient_only`”，而是把 benchmark 分层补全：
 
-## 3. 优化方向总览
+- 保留现有 realtime / transient-only 场景，重新采样当前代码。
+- 额外增加 full client 版本：
+  - 背景连接走 `/ws/client`
+  - 不启用 `TransientOnly`
+  - 让共享持久化分发器、历史补发和可见性判断真正进入场景
 
-建议把优化分成三批推进。
+否则我们仍然只能回答：
 
-### 第一批：先去掉最明显的“空转成本”
+- transient realtime 场景大概能到哪里
 
-- 工作点 1：引入 `transient-only` 会话模式
-- 工作点 2：普通登录默认从“当前事件水位”开始，而不是从 `0` 开始扫
-- 工作点 3：本地在线用户 registry 常驻化，避免每次全量遍历
-- 工作点 4：session registry 分片，降低锁竞争
+而不能回答：
 
-目标：
+- 标准持久化客户端到底能稳定挂多少
 
-- 在不大改 wire protocol 的前提下，把 `5000` 稳态在线拉到更高。
-- 优先争取让 `10000` 在线能够在 benchmark 的稳态窗口内通过。
+### 5.2 第二优先级：继续优化共享持久化分发器
 
-### 第二批：从“每连接轮询”改成“节点级共享分发”
+如果要做下一项代码优化，我会优先投在共享持久化分发器，而不是再回头优化已经不存在的 per-session `pushLoop`。
 
-- 工作点 5：把 per-session `pushLoop` 改成节点级 shared event tailer
-- 工作点 6：把持久消息可见性判断做缓存和索引化
-- 工作点 7：为 transient 和 persistent 拆分独立客户端路径
+更具体地说，最值得继续做的是：
 
-目标：
+- 为 direct / broadcast / channel 建立更细的候选 session 索引
+- 避免 broadcast / channel 每次都从“所有持久化 session”开始筛
+- 补缓存命中率、候选集大小、授权 miss 的观测指标
 
-- 从根上把 `O(连接数)` 的轮询模型改掉。
-- 为更高数量级在线连接打基础。
+这才是当前 full client 在线上限的真实结构性热点。
 
-### 第三批：架构层在线容量扩展
+### 5.3 第三优先级：补连接治理能力
 
-- 工作点 8：接入层与 cluster 节点角色拆分
-- 工作点 9：按用户或 session 做 sticky placement
-- 工作点 10：在线连接分级、配额与背压
+在还没有 edge 拆层之前，比较务实的增强项是：
 
-目标：
+- 每节点最大客户端连接数
+- 每用户最大并发会话数
+- 每连接待发送队列上限
+- 短时连接爬升速率限制
 
-- 让“连接数扩展”与“节点间复制/转发”解耦。
-- 解决单节点既做存储又做 API/连接承载的天然上限。
+这些能力不一定立刻抬高 benchmark 数字，但能显著改善“接近极限时系统怎么退化”。
 
-## 4. 第一批工作点
+## 6. 修订后的验收口径
 
-## 4.1 工作点 1：引入 `transient-only` 会话模式
+### 6.1 realtime / transient-only 路径
 
-### 目标
+现有 benchmark 可以继续作为 realtime / transient-only 路径的验收基线，但应该单独表述：
 
-- 让纯即时消息客户端不再承担持久消息补推和 event log 轮询成本。
+- `3-nodes / 1000|5000|10000-online / 256B`
+- `7-nodes / 1000|5000|10000-online / 256B`
+- 记录：
+  - 是否能在 `2m` 内进入稳态
+  - `accept_ms/op`
+  - `push_ms/op`
 
-### 当前问题
+### 6.2 full client 路径
 
-- 只要登录 `/ws/client`，就会自动启动 `pushInitialMessages()` 和 `pushLoop()`。
-- 对于只发送/接收 transient 包的客户端，这两步完全不是必须。
+标准持久化客户端需要单独的验收场景，至少应覆盖：
 
-### 具体改动
+- 背景连接为 `/ws/client`
+- 不启用 `TransientOnly`
+- 有历史补发
+- 有共享持久化分发器参与
 
-- 在 `LoginRequest` 中新增一个轻量字段，表达客户端能力或订阅模式，例如：
-  - `transient_only = true`
-  - 或 `subscription_mode = TRANSIENT_ONLY | FULL`
-- 当处于 `transient_only` 模式时：
-  - 跳过 `pushInitialMessages()`
-  - 不启动 `pushLoop()`
-  - 保留 `PacketPushed` 和 RPC 能力
-- 保持默认行为不变；只有显式声明时才走轻量模式。
+在没有这组 benchmark 前，不应把 realtime / transient-only 路径的结果外推成 full client 容量。
 
-### 受影响模块
+### 6.3 对外承诺
 
-- [proto/client.proto](/root/dev/sys/turntf/turntf/proto/client.proto)
-- [client_session.go](/root/dev/sys/turntf/turntf/internal/api/client_session.go)
-- [client_push.go](/root/dev/sys/turntf/turntf/internal/api/client_push.go)
-- `turntf-js` / `turntf-go` 客户端
+在重新采样之前，这份文档不再给出“`10000` 在线必须达成”或“下一步直接承诺 `15000` / `20000`”这样的刚性目标。
 
-### 预期收益
+更稳妥的口径是：
 
-- 对纯 transient 业务，在线连接后台成本可显著下降。
-- 这是最有可能直接把 `10000` 在线 benchmark 拉回稳态窗口的改动。
+- 先补齐当前实现对应的 benchmark
+- 再分别给出 realtime / transient-only 与 full client 的独立容量数字
 
-### 风险
+## 7. 当前最推荐的答案
 
-- 需要明确协议语义，避免客户端误以为还能收到持久消息推送。
+如果只让我从今天的现状里选一个“最值得继续做”的方向，我会选：
 
-## 4.2 工作点 2：普通登录默认从“当前事件水位”开始
-
-### 目标
-
-- 避免新连接从 `afterSequence = 0` 开始扫描全历史事件。
-
-### 当前问题
-
-- `pushLoop()` 的起始游标是 `0`，[client_push.go](/root/dev/sys/turntf/turntf/internal/api/client_push.go:31)。
-- 这会把“首次登录成本”与“稳态在线成本”绑在一起。
-
-### 具体改动
-
-- 登录成功后，给 session 初始化一个默认 `afterSequence`：
-  - 如果客户端提供了 `seen_messages`，按现有语义处理。
-  - 如果客户端没有提供任何游标，默认从 `Store.LastEventSequence()` 开始。
-- 这样“没有历史补推需求”的客户端不会扫历史 event log。
-- 若仍需要历史持久消息，可以继续保留 `pushInitialMessages()` 路径，或在协议层增加显式的“登录后补历史”开关。
-
-### 受影响模块
-
-- [client_session.go](/root/dev/sys/turntf/turntf/internal/api/client_session.go)
-- [client_push.go](/root/dev/sys/turntf/turntf/internal/api/client_push.go)
-
-### 预期收益
-
-- 明显降低大规模连接爬升时的进入稳态时间。
-- 对 5k+ 在线 benchmark 会有直接帮助。
-
-### 风险
-
-- 要非常明确“默认不补历史”的兼容性边界，避免现有依赖登录补历史的客户端被悄悄改语义。
-
-## 4.3 工作点 3：本地在线用户 registry 常驻化
-
-### 目标
-
-- 让本地在线用户查询从“遍历所有 session”变成“读现成 registry”。
-
-### 当前问题
-
-- `HTTP.ListLoggedInUsers()` 每次都要全量遍历 [http.go](/root/dev/sys/turntf/turntf/internal/api/http.go:866)。
-
-### 具体改动
-
-- 在 `HTTP` 内维护一个常驻 presence registry：
-  - `onlineUsers map[UserKey]onlineUserState`
-  - `onlineUserCount int64`
-- 登录成功时注册，连接关闭时注销。
-- `ListLoggedInUsers()` 直接读取 registry 并返回。
-- 后续如有需要，可再增加：
-  - `ListLoggedInUsersCount()`
-  - `IterLoggedInUsers(func(...))`
-
-### 预期收益
-
-- 降低在线用户查询和容量 benchmark 的辅助开销。
-- 为后续 cluster presence 同步打基础。
-
-### 风险
-
-- 需要保证重复连接、重复登录、异常断开下的计数一致性。
-
-## 4.4 工作点 4：session registry 分片
-
-### 目标
-
-- 降低登录/登出和 transient 本地投递之间的锁竞争。
-
-### 当前问题
-
-- 目前所有客户端 session 共用 `sessionsMu`，[http.go](/root/dev/sys/turntf/turntf/internal/api/http.go:28)。
-
-### 具体改动
-
-- 把 `sessions` 改为固定分片，例如 `256` 个 shard。
-- 每个 shard 单独持有：
-  - `map[UserKey]map[*clientWSSession]struct{}`
-  - `RWMutex`
-- `registerClientSession`、`unregisterClientSession`、`ReceiveTransientPacket`、`ListLoggedInUsers` 全部按 shard 访问。
-
-### 预期收益
-
-- 降低高在线数下的热点锁竞争。
-- 减少 transient 包本地投递时的暂停时间。
-
-### 风险
-
-- `ListLoggedInUsers()` 需要遍历所有 shard，代码会稍复杂。
-
-## 5. 第二批工作点
-
-## 5.1 工作点 5：用节点级 shared event tailer 替代 per-session `pushLoop`
-
-### 目标
-
-- 把“每个连接每秒一次 `ListEvents`”改成“每个节点一个事件 tailer，再按订阅关系 fanout”。
-
-### 当前问题
-
-- 这是当前在线容量的最大结构性瓶颈。
-
-### 具体改动
-
-- 新增节点级 dispatcher：
-  - 后台只有一个或少量 goroutine 追 event log
-  - 把新事件投递给订阅该类消息的本地 session
-- session 本身不再持有独立 ticker。
-- 对 direct / broadcast / channel 分别建立更细粒度的订阅索引：
-  - direct: `recipient -> sessions`
-  - broadcast: 全局广播会话集
-  - channel: `channel -> subscriber sessions`
-
-### 预期收益
-
-- 轮询复杂度从 `O(连接数)` 降到接近 `O(节点数)`。
-- 这是一项真正能把在线连接上限从几千拉到更高量级的结构性优化。
-
-### 风险
-
-- 实现复杂度明显高于第一批。
-- 需要谨慎处理 direct / channel / broadcast 的授权语义。
-
-## 5.2 工作点 6：持久消息可见性判断缓存化
-
-### 目标
-
-- 降低 shared tailer 或现有 push path 中的授权判断成本。
-
-### 当前问题
-
-- `canSeeMessage()` 会触发：
-  - `IsMessageBlockedByBlacklist`
-  - `GetUser`
-  - `IsSubscribedToChannel`
-- 这些在高 fanout 下会很贵。
-
-### 具体改动
-
-- 为 session 增加短 TTL 可见性缓存：
-  - `channel subscription cache`
-  - `sender blacklist cache`
-  - `target role cache`
-- 失效策略先采用短 TTL，不先做复杂主动失效。
-
-### 预期收益
-
-- 降低 persistent 消息推送在高在线数下的 DB/存储读放大。
-
-### 风险
-
-- 会引入“短 TTL 近实时”而不是“严格实时”的授权视图。
-
-## 5.3 工作点 7：拆分 transient 与 persistent 客户端路径
-
-### 目标
-
-- 在协议和服务实现上彻底承认“在线即时消息”和“持久消息补推”是两条不同产品路径。
-
-### 具体改动
-
-- 提供两个明确的接入模式：
-  - `full client stream`
-  - `transient realtime stream`
-- 两者都可以复用现有登录语义，但服务端行为不同。
-- 后者只保留：
-  - 登录
-  - transient send / receive
-  - ping/pong
-  - 必要的 presence 能力
-
-### 预期收益
-
-- 把“纯 transient 用户”从持久事件系统里解耦出来。
-- 是长期在线容量优化里收益最高的一类方案。
-
-## 6. 第三批工作点
-
-## 6.1 工作点 8：接入层与 cluster 节点角色拆分
-
-### 目标
-
-- 不再让每个节点既承担存储与 mesh，又承担大量终端 WS 连接。
-
-### 具体改动
-
-- 引入 dedicated API edge 节点：
-  - 只承载客户端连接和认证
-  - 内部把 transient/persistent 请求路由到 cluster 节点
-- cluster 节点主要承载：
-  - store
-  - mesh runtime
-  - replication / snapshot / query
-
-### 预期收益
-
-- 在线连接扩展和数据面扩展可以分别规划。
-- 更适合走到五位数甚至更高在线连接。
-
-### 风险
-
-- 架构复杂度明显上升。
-- 需要重新定义 edge 与 cluster 之间的内部协议。
-
-## 6.2 工作点 9：用户或 session 粘性放置
-
-### 目标
-
-- 让某个用户的大部分连接与消息尽量停留在同一入口节点，减少跨节点跳转。
-
-### 具体改动
-
-- 对登录用户做：
-  - consistent hash
-  - sticky routing
-  - 或 gateway affinity
-
-### 预期收益
-
-- 降低跨节点 transient 比例。
-- 在线连接越大，粘性越有价值。
-
-## 6.3 工作点 10：在线连接分级、配额与背压
-
-### 目标
-
-- 避免单节点在连接风暴或异常客户端下被拖死。
-
-### 具体改动
-
-- 增加：
-  - 每节点最大客户端连接数
-  - 每用户最大并发连接数
-  - 每连接最大待发送队列
-  - 短时连接爬升速率限制
-
-### 预期收益
-
-- 提高系统在接近上限时的可控性。
-- 让“上限附近的退化”可预期，而不是直接雪崩。
-
-## 7. 推荐执行顺序
-
-建议按下面顺序推进：
-
-1. `transient-only` 会话模式
-2. 登录游标从“当前事件水位”起步
-3. 本地在线用户 registry 常驻化
-4. session registry 分片
-5. shared event tailer
-6. 可见性缓存
-7. transient / persistent 路径拆分
-8. 架构级角色拆分与 sticky routing
-
-这个顺序的考虑是：
-
-- 前四项基本不需要改整体架构，风险相对可控。
-- 前两项最可能直接改善 `10000` 在线 benchmark 的稳态通过率。
-- shared tailer 是中期真正决定上限的工作，但应该在我们先把协议和轻量模式收敛之后再做。
-
-## 8. 验收口径
-
-建议把“在线连接容量”分成两层验收。
-
-### 8.1 稳态在线验收
-
-基于 `BenchmarkClientWebSocketTransientSendMessageAuthenticatedLinearMeshWithOnlineUsers`：
-
-- `3-nodes / 10000-online / 256B` 可以在 `2m` 内进入稳态并完成 1 次测量
-- `7-nodes / 10000-online / 256B` 可以在 `2m` 内进入稳态并完成 1 次测量
-- `push_ms/op < 0.5ms`
-
-### 8.2 后续目标
-
-在第一批完成后，再尝试把目标提高到：
-
-- `3-nodes / 15000-online`
-- `7-nodes / 20000-online`
-
-如果 shared tailer 落地，再重新设更高目标。
-
-## 9. 当前最推荐的答案
-
-如果只让我从这份文档里选一个“最值得先做”的优化项，我会选：
-
-- **工作点 1：`transient-only` 会话模式**
+- **先补 full client 在线容量 benchmark，再围绕共享持久化分发器做优化**
 
 原因：
 
-- 它最直接命中当前测试场景。
-- 它不需要先做大的架构重写。
-- 它能把纯 transient 业务从持久消息轮询里解放出来。
-- 它最有希望让当前 `10000` 在线 benchmark 从“不稳定”变成“可稳定进入稳态”。
-
-如果让我选一个“长期最重要”的优化项，我会选：
-
-- **工作点 5：shared event tailer**
-
-原因：
-
-- 这是当前 per-session 轮询模型的根本替代方案。
-- 它决定的是系统的长期在线连接天花板，而不是某个局部 patch 的小幅改善。
+- `transient_only`、登录水位、在线用户 registry、session shard、shared dispatcher、可见性缓存都已经落地。
+- 当前文档里最容易误导人的地方，不再是“还没实现哪些优化”，而是“拿 transient realtime 样本去替代整个客户端模型的容量结论”。
+- 真正决定 full client 在线上限的，已经是共享持久化分发器及其高 fanout 授权路径，而不是旧版文档中描述的 per-session 轮询模型。

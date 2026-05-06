@@ -7,16 +7,18 @@
 - 大多数 `cluster` 延迟 / 恢复基线仍限定默认 WebSocket 传输；新增的点对点 transient 吞吐基线会额外比较 libp2p 和 ZeroMQ。
 - `cluster` 基线现在同时覆盖稳态多节点复制、多跳路由，以及 retention 截断后的 snapshot repair / catchup repair。
 - `store` 与 `api` 层新增 `SQLite` / `Pebble` 对照，用于补充低层热点差异。
-- `Pebble` 范围按当前实现定义：事件日志和消息投影走 Pebble，元数据仍保留在 SQLite。
+- `Pebble` 范围按当前实现定义：事件日志、消息投影、消息序号计数、peer ack / origin cursor、pending projection 都走 Pebble；用户、登录名、订阅、黑名单、附件和 `user_metadata` 仍保留在 SQLite。
 - benchmark 实现在：
   - [internal/cluster/mesh_benchmark_test.go](/root/dev/sys/turntf/turntf/internal/cluster/mesh_benchmark_test.go)
   - [internal/cluster/mesh_point_to_point_throughput_benchmark_test.go](/root/dev/sys/turntf/turntf/internal/cluster/mesh_point_to_point_throughput_benchmark_test.go)
+  - [internal/cluster/mesh_point_to_point_throughput_benchmark_zeromq_test.go](/root/dev/sys/turntf/turntf/internal/cluster/mesh_point_to_point_throughput_benchmark_zeromq_test.go)
   - [internal/cluster/mesh_recovery_benchmark_test.go](/root/dev/sys/turntf/turntf/internal/cluster/mesh_recovery_benchmark_test.go)
   - [internal/store/store_benchmark_test.go](/root/dev/sys/turntf/turntf/internal/store/store_benchmark_test.go)
   - [internal/store/store_degradation_benchmark_test.go](/root/dev/sys/turntf/turntf/internal/store/store_degradation_benchmark_test.go)
   - [internal/api/http_benchmark_test.go](/root/dev/sys/turntf/turntf/internal/api/http_benchmark_test.go)
   - [internal/api/client_benchmark_test.go](/root/dev/sys/turntf/turntf/internal/api/client_benchmark_test.go)
   - [internal/api/client_point_to_point_throughput_benchmark_test.go](/root/dev/sys/turntf/turntf/internal/api/client_point_to_point_throughput_benchmark_test.go)
+  - [internal/api/client_point_to_point_throughput_benchmark_zeromq_test.go](/root/dev/sys/turntf/turntf/internal/api/client_point_to_point_throughput_benchmark_zeromq_test.go)
   - [internal/api/client_point_to_point_throughput_zeromq_client_benchmark_test.go](/root/dev/sys/turntf/turntf/internal/api/client_point_to_point_throughput_zeromq_client_benchmark_test.go)
 
 当前基线覆盖以下场景：
@@ -24,10 +26,12 @@
 - `BenchmarkMeshReplicationPebbleLinear3Nodes`：3 节点线性拓扑下的持久消息复制，校验最远端节点已应用且源节点已收到 `Ack`。
 - `BenchmarkMeshQueryLoggedInUsersPebbleLinear`：3 节点 / 7 节点线性拓扑下的多跳在线用户查询，校验返回条数和代表性 payload。
 - `BenchmarkMeshTransientRoutePebbleLinear`：3 节点 / 7 节点线性拓扑下的瞬时包多跳转发，校验 `packet_id`、payload 和最终 TTL。
-- `BenchmarkMeshTransientPointToPointThroughput`：服务端 transient 数据面点对点吞吐；覆盖单节点、2 节点纯协议直连、7 节点纯协议线性 `WebSocket/libp2p/ZeroMQ`，以及 `3/5` 节点 mixed bridge（`ws -> libp2p`、`ws -> zeromq`）。
+- `BenchmarkMeshTransientPointToPointThroughput`：服务端 transient 数据面点对点吞吐；固定使用 `SQLite`。默认构建覆盖单节点、2 节点纯协议直连、7 节点纯协议线性 `WebSocket/libp2p`，以及 `3/5` 节点 mixed bridge（`ws -> libp2p`）；带 `-tags zeromq` 时再追加 `ZeroMQ` 直连 / 线性与 `ws -> zeromq` mixed bridge。
 - `BenchmarkMeshSnapshotRepairPebbleLinear3Nodes`：3 节点线性拓扑下的 snapshot repair，校验目标节点通过快照修复收敛。
 - `BenchmarkMeshTruncatedCatchupRepairPebble`：retention 截断后的 truncated pull + snapshot repair 恢复路径。
 - `BenchmarkStoreCreateMessage`：`SQLite` / `Pebble` 下直接消息写入；`Pebble` 子场景会继续细分 `balanced/throughput` 与 `no_sync/force_sync`。
+- `BenchmarkStoreCreateMessageSteadyState`：先把单用户历史写到 `2 * message_window_size`，再继续写入，观察消息窗口进入稳态后的持续写入成本。
+- `BenchmarkStoreCreateMessageParallel`：固定 `256B` payload 的并行写入，对比 `hotspot` 与 `uniform-1000` 两种用户分布。
 - `BenchmarkStoreListMessagesByUser`：`SQLite` / `Pebble` 下典型读路径。
 - `BenchmarkStorePruneEventLogOnce`：`SQLite` / `Pebble` 下 retention 截断成本。
 - `BenchmarkDegradationStoreListMessagesByUser`：按历史消息量分层，观察 `SQLite` / `Pebble` 读路径的退化倍数和单位规模增量成本。
@@ -35,15 +39,15 @@
 - `BenchmarkHTTPCreateMessageAuthenticated`：带鉴权的 `POST /nodes/{node_id}/users/{user_id}/messages`；`Pebble` 子场景会继续细分 `balanced/throughput` 与 `no_sync/force_sync`。
 - `BenchmarkHTTPListMessagesByUserAuthenticated`：带鉴权的 `GET /nodes/{node_id}/users/{user_id}/messages?limit=50`。
 - `BenchmarkClientWebSocketTransientSendMessageAuthenticated`：带鉴权的 `WS /ws/client` transient `SendMessage` RPC，发送端校验 `TransientAccepted`，接收端校验 `PacketPushed`，并确认消息未落盘。
-- `BenchmarkClientWebSocketTransientSendMessageAuthenticatedLinearMesh`：3 节点 / 7 节点线性拓扑下的带鉴权 `WS /ws/client` transient `SendMessage` RPC，发送端连接源节点 API，接收端连接目标节点 API，校验多跳 mesh 后的 `TransientAccepted` / `PacketPushed` 端到端路径。
-- `BenchmarkClientWebSocketTransientSendMessageAuthenticatedLinearMeshWithOnlineUsers`：在 3 节点 / 7 节点线性拓扑下先建立大批已登录 WebSocket 会话，再测一条跨节点 transient `SendMessage`，用于观察更贴近稳态在线连接负载下的端到端延迟。
-- `BenchmarkClientWebSocketTransientSendMessageAuthenticatedPointToPointThroughput`：客户端 transient 端到端点对点吞吐；固定使用 SQLite，覆盖单节点、2 节点纯协议直连，以及 7 节点纯协议线性 `WebSocket/libp2p/ZeroMQ`。这里刻意不做 mixed bridge，因为当前桥接拓扑不支持复制，源节点无法按真实语义解析目标用户。这两组点对点吞吐 benchmark 不再切 `tmp/disk` 子场景。
-- `BenchmarkClientZeroMQTransientSendMessageAuthenticatedPointToPointThroughput`：客户端通过 ZeroMQ 长连接接入时的 transient 端到端点对点吞吐；覆盖 `2` 节点直连与 `7` 节点纯 ZeroMQ 线性拓扑，用于把“客户端 ZeroMQ 入口开销”和“节点间 ZeroMQ mesh hop 开销”单独拉平观察。
+- `BenchmarkClientWebSocketTransientSendMessageAuthenticatedLinearMesh`：3 节点 / 7 节点线性拓扑下的带鉴权 WebSocket transient `SendMessage` RPC；发送端和接收端都走 `/ws/realtime`，校验多跳 mesh 后的 `TransientAccepted` / `PacketPushed` 端到端路径，并确认消息未落盘。
+- `BenchmarkClientWebSocketTransientSendMessageAuthenticatedLinearMeshWithOnlineUsers`：当前仅跑 `SQLite`；在 3 节点 / 7 节点线性拓扑下先建立大批常驻在线的实时会话，再测一条跨节点 transient `SendMessage`，用于观察大规模在线连接负载下的端到端延迟。背景连接走 `/ws/realtime`，被测发送/接收连接使用 `TransientOnly` 登录，不经过持久化补发路径。
+- `BenchmarkClientWebSocketTransientSendMessageAuthenticatedPointToPointThroughput`：客户端 transient 端到端点对点吞吐；固定使用 `SQLite`。默认构建覆盖单节点、2 节点纯协议直连和 7 节点纯协议线性 `WebSocket/libp2p`；带 `-tags zeromq` 时再追加 `ZeroMQ` 直连 / 线性。当前不包含 mixed bridge 子场景，并且统一走实时客户端路径，不切 `tmp/disk` 子场景。
+- `BenchmarkClientZeroMQTransientSendMessageAuthenticatedPointToPointThroughput`：客户端通过 ZeroMQ 长连接接入时的 transient 端到端点对点吞吐；固定使用 `SQLite`，需要 `-tags zeromq`。客户端先发送 `ZeroMQMuxHello{role=CLIENT}` 再登录，覆盖 `2` 节点直连与 `7` 节点纯 `ZeroMQ` 线性拓扑，用于把“客户端 ZeroMQ 入口开销”和“节点间 ZeroMQ mesh hop 开销”单独拉平观察。
 
 ## 采集策略
 
 - benchmark 名称现在会显式带上介质 mode：`/tmp/...` 或 `/disk/...`。
-- 例外：两组点对点 transient 吞吐 benchmark 不再切 `tmp/disk`，输出名称也不会带 `/tmp` 或 `/disk`。
+- 例外：点对点 transient 吞吐 benchmark 不再切 `tmp/disk`，输出名称也不会带 `/tmp` 或 `/disk`。
 - `tmp` 子场景始终运行，继续使用默认临时目录语义。
 - 如果默认临时目录所在文件系统是内存文件系统，例如当前机器的 `/tmp` 是 `tmpfs`，同一条 `go test` 命令会自动补跑 `disk` 子场景。
 - `disk` 子场景固定写入仓库根目录下的 `./.benchdata`。
@@ -75,13 +79,17 @@ go test -tags zeromq ./internal/api -run '^$' -bench 'BenchmarkClientWebSocketTr
 go test -tags zeromq ./internal/api -run '^$' -bench 'BenchmarkClientZeroMQTransientSendMessageAuthenticatedPointToPointThroughput' -benchmem -count=1
 ```
 
-这两组点对点吞吐 benchmark 现在固定只跑一组临时目录场景，因此结果名称不会再出现 `/tmp` 或 `/disk`。
+不带 `-tags zeromq` 时，这些点对点吞吐 benchmark 只会覆盖 `WebSocket/libp2p` 子场景；带 tag 后才会追加 `ZeroMQ` 子场景。
+
+这些点对点吞吐 benchmark 现在固定只跑一组临时目录场景，因此结果名称不会再出现 `/tmp` 或 `/disk`。
 
 `store/api` benchmark：
 
 ```bash
 go test ./internal/store ./internal/api -run '^$' -bench 'Benchmark(Store|HTTP|ClientWebSocket)' -benchmem -count=1
 ```
+
+这条命令当前会命中 `BenchmarkStoreCreateMessage*`、`BenchmarkStoreListMessagesByUser`、`BenchmarkStorePruneEventLogOnce`、`BenchmarkHTTP*` 和 `BenchmarkClientWebSocket*`；`BenchmarkClientZeroMQTransientSendMessageAuthenticatedPointToPointThroughput` 仍需单独加 `-tags zeromq` 执行。
 
 退化曲线 benchmark：
 
@@ -134,7 +142,7 @@ go test -tags zeromq ./internal/api -run '^$' -bench 'BenchmarkClientZeroMQTrans
 以下结果来自 **2026-04-25** 的一次本地基线采集。
 这批数据发生在“自适应 `tmp` / `disk` 基线”引入之前，应按当前语义视为一组 **`tmp` 历史样本**，不能直接代表今天文档里所说的“官方非内存文件系统结果”。
 
-`BenchmarkClientWebSocketTransientSendMessageAuthenticated`、`BenchmarkClientWebSocketTransientSendMessageAuthenticatedLinearMesh` 和 `BenchmarkClientWebSocketTransientSendMessageAuthenticatedLinearMeshWithOnlineUsers` 是在 **2026-04-26** 之后加入的，因此不包含在下面这组历史命令和耗时统计里；后续重新采集时再补充它们的 `tmp` / `disk` 样本。
+下面这组 **2026-04-25** 的历史样本只整理了当时采集入表的 `cluster`、`store` 和 `HTTP` 数据；当前 benchmark 集合里的 `BenchmarkStoreCreateMessageSteadyState`、`BenchmarkStoreCreateMessageParallel`、全部 `BenchmarkClientWebSocket*`，以及 `-tags zeromq` 才会出现的点对点吞吐场景，都还没有对应的历史样本表格。
 
 - `cluster` 命令：`go test ./internal/cluster -run '^$' -bench 'BenchmarkMesh(Replication|QueryLoggedInUsers|TransientRoute|SnapshotRepair|TruncatedCatchup)' -benchmem -count=1`
 - `cluster` 总耗时：`103.271s`
@@ -197,6 +205,8 @@ go test -tags zeromq ./internal/api -run '^$' -bench 'BenchmarkClientZeroMQTrans
 | pebble / 256B | 1,139,831 | 256B | 463,911 | 4,263 |
 | pebble / 4KiB | 2,920,456 | 4KiB | 2,299,220 | 4,200 |
 
+这份历史样本仍是旧版聚合结果，没有拆出当前 `pebble/balanced|throughput/no_sync|force_sync` 四类子场景，也没有包含 `BenchmarkStoreCreateMessageSteadyState` / `BenchmarkStoreCreateMessageParallel`。
+
 #### ListMessagesByUser
 
 | 场景 | ns/op | history | B/op | allocs/op |
@@ -232,7 +242,7 @@ go test -tags zeromq ./internal/api -run '^$' -bench 'BenchmarkClientZeroMQTrans
 `BenchmarkClientWebSocketTransientSendMessageAuthenticatedLinearMesh` 也已加入当前 benchmark 集合，但同样还没有这份历史样本里的结果。
 后续重新采集时，应按 `3-nodes` / `7-nodes` 和 payload 分层补录多跳 mesh 下的 `accept_ms/op`、`push_ms/op`、`ns/op`、`B/op` 和 `allocs/op`。
 
-`BenchmarkClientWebSocketTransientSendMessageAuthenticatedLinearMeshWithOnlineUsers` 则用于观察“很多真实已登录会话在后台轮询时”的前台跨节点 transient 延迟。
+`BenchmarkClientWebSocketTransientSendMessageAuthenticatedLinearMeshWithOnlineUsers` 则用于观察“大量常驻在线实时会话存在时”的前台跨节点 transient 延迟，而不是 HTTP 轮询或历史补发路径。
 后续重新采集时，应至少按总在线用户数、节点数和 `256B` payload 记录它的 `accept_ms/op`、`push_ms/op` 与是否能在设定时间内进入稳态。
 
 ## 如何使用这份基线

@@ -1,619 +1,246 @@
-# 新服务异构转发路由架构实施计划
+# 异构转发与路由规划
 
-本文档基于当前仓库实现状态，整理“多 transport 拓扑控制平面 + 费用感知策略路由 + 逐跳数据平面”这一新架构的落地计划。它不是纯概念设计稿，而是面向当前代码库的实施说明，用于指导后续 proto 定稿、模块拆分、里程碑排期和验收。
+本文档文件名沿用早期 `plan` 命名，但正文以当前 `turntf/` 实现为准。它不再把 mesh、mixed transport 和 forwarding 主链路描述成“未来方案”，而是记录当前基线、已落地边界，以及后续仍值得继续收口的演进方向。
 
-## 目标与边界
+## 目标与非目标
 
-目标架构如下：
+当前架构目标已经明确：
 
-- 不保留旧路由和旧兼容层，直接采用新的 mesh 协议与转发模型。
-- 原生支持两类 transport：`libp2p`、`zeromq`。
-- forwarding 是节点级显式能力，默认开启。
-- 引入 `node_fee_weight` 和按消息类别的策略路由。
-- 路由核心采用链路状态多层图最短路，图状态为 `(node_id, transport)`。
+- 节点间控制面和跨节点数据面统一走 mesh runtime。
+- 路由图以 `(node_id, transport)` 为状态，支持 `websocket`、`libp2p`、`zeromq` 三类 transport。
+- forwarding 是节点级显式能力，默认开启；bridge 也是显式能力，默认开启。
+- 路由决策同时考虑链路状态、`node_fee_weight`、每类流量的 disposition，以及是否允许跨 transport bridge。
 - 数据面采用逐跳重算，不使用源路由。
 
-本文档不覆盖以下内容：
+本文档仍然不覆盖以下内容：
 
-- 旧协议与新协议长期混部方案。
-- relay-only 独立节点角色设计。
+- 旧协议与新协议的长期双栈混部方案。
+- `relay-only` 独立节点角色设计。
 - 动态计费系统或实时账单反馈。
-- 为兼容旧 `RoutingUpdate` 协议而保留的长期双栈运行模式。
+- 默认开启“复制流 / 快照流跨 transport bridge”这一类高风险策略。
 
 ## 当前仓库状态
 
-### 已有基础件
+### mesh 已是主链路
 
-仓库里已经存在一组新的 mesh 雏形实现：
+当前生产路径里，真正承担节点间控制面和多跳数据面语义的是 mesh runtime，而不是旧的 `RoutingUpdate` 模型：
 
-- `proto/mesh.proto` 已定义新的枚举、`ClusterEnvelope`、`NodeHello`、`TopologyUpdate`、`ForwardedPacket` 等消息。
-- `internal/mesh/types.go` 已定义 `TransportAdapter`、`TopologyStore`、`RoutePlanner`、`ForwardingEngine`、`TrafficClassifier` 等核心接口。
-- `internal/mesh/topology.go` 已提供内存版 `TopologyStore`。
-- `internal/mesh/planner.go` 已实现基于 `(node_id, transport)` 状态的路径搜索。
-- `internal/mesh/forwarding.go` 已实现 TTL、去重、逐跳转发和简单防环。
-- `internal/mesh/policy.go` 已实现费用权重、`DISCOURAGE`/`DENY`、bridge 白名单等基础规则。
-- `internal/mesh/*_test.go` 已覆盖部分图路由、bridge、费用和转发行为。
+- `Manager.Start()` 会自动启动 mesh runtime，并把它作为主控制面。
+- WebSocket、libp2p、ZeroMQ 的入站连接都会优先注入 mesh runtime。
+- `NodeHello`、topology flooding、查询、瞬时包、复制批次、补拉、`Ack`、快照摘要/分片、membership、presence、connectivity rumor 都已经有 mesh 路由入口。
+- 旧 `cluster.proto` 里仍保留部分历史字段和消息定义，但当前主链路不再依赖旧 `RoutingUpdate` 或旧的 `supports_membership` 协商来驱动拓扑。
 
-这说明新架构不是从零开始，已经有了 proto、策略和算法层面的初始骨架。
+因此，这份文档讨论的重点不再是“如何把 mesh 接进来”，而是“当前基线已经是什么、哪些边界是故意保守、后续还要往哪里收口”。
 
-### 当前主链路已切到 mesh
+### 协议与 runtime 基线已落地
 
-当前真正承担多跳控制面与数据面转发语义的是 mesh runtime：
+`proto/mesh.proto` 已经不是草稿状态，而是当前 mesh 主链路的正式协议基础：
 
-- 节点间 hello、topology flooding、查询、瞬时包、复制流与快照流都统一走 `internal/mesh` runtime。
-- 旧 `RoutingUpdate`、旧 transient/query wire 入口和旧节点间 `Envelope` 会话主循环已经从生产路径移除。
-- `internal/api/operations.go` 与 `internal/cluster/status.go` 已暴露 mesh 观测字段，作为生产排障主入口。
-- `internal/cluster/transport.go` 仍承载底层连接建立，但多 transport 入站连接已优先注入 `internal/mesh` runtime。
+- `TransportKind` 已包含 `LIBP2P`、`ZEROMQ`、`WEBSOCKET`。
+- `ClusterEnvelope` 已包含 `NodeHello`、`TimeSyncRequest/Response`、`TopologyUpdate`、query、`ForwardedPacket`、复制批次、补拉、`Ack`、快照、membership、presence、connectivity rumor。
+- mesh 信封已经具备 `hmac` 字段，并在 runtime 中接入了签名与验签。
+- `MeshRouteDiagnostic` 目前只停留在 proto / classifier 类型层；当前生产排障主要还是依赖 `/ops/status` 与 `/metrics`，没有单独的诊断消息闭环。
 
-因此，后续工作重点不再是“新旧并存过渡”，而是继续补齐规模验证与运维收口。
+`internal/mesh/runtime.go` 当前已经实现了运行时主骨架，而不是“待建立”状态：
 
-## 关键差距
+- transport adapter 生命周期管理。
+- `NodeHello` 握手与邻接建立。
+- generation 维护、topology flooding、stale update 去重。
+- `TimeSyncRequest/Response` RTT / jitter 测量。
+- 链路 tombstone 发布与拓扑收敛。
+- 逐跳 forwarding、TTL、防环、去重和按流量类别选路。
 
-### 1. 协议已起草，但还未完成主链路接入
+### forwarding、bridge 和费用策略已定型
 
-`proto/mesh.proto` 已具备主要消息结构，但还没有替换现有 `cluster` 主协议循环，也没有成为 transport 握手和业务复制的唯一承载格式。
+当前默认行为已经在代码和测试里固定，不再属于待定项：
 
-### 2. 算法层已存在，但运行时尚未建立
+- `cluster.forwarding.enabled` 默认启用。
+- `cluster.forwarding.bridge_enabled` 默认启用。
+- `cluster.forwarding.node_fee_weight <= 0` 会规范化为 `1`。
+- 当 `node_fee_weight == 1` 时，五类流量默认都允许 transit。
+- 当 `node_fee_weight > 1` 时：
+  - `control_critical`：`ALLOW`
+  - `control_query`：`ALLOW`
+  - `transient_interactive`：`DISCOURAGE`
+  - `replication_stream`：`DENY`
+  - `snapshot_bulk`：`DENY`
+- bridge 白名单当前只允许：
+  - `control_critical`
+  - `control_query`
+  - `transient_interactive`
+- `replication_stream` 与 `snapshot_bulk` 目前默认不允许跨 transport bridge。
 
-`internal/mesh` 已经有：
+这意味着“高费用 transit 不承载复制/快照”和“复制/快照默认不跨协议桥接”已经是当前实现语义，而不是未来才要接入的规则。
 
-- 拓扑存储
-- 路由规划
-- 策略默认值
-- 逐跳转发引擎
+### transport 能力与 mixed transport 已落地
 
-但还缺少：
+当前仓库已经不是“只支持两类 transport 的规划稿”，而是三类 transport 都已进入 mesh 视角：
 
-- 邻接建立与 `NodeHello` 交换
-- `TopologyUpdate` flooding runtime
-- 链路 RTT/jitter 测量与更新
-- transport 能力发布
-- 实际业务消息到 `TrafficClassifier` 和 `ForwardingEngine` 的接线
+- WebSocket 是正式的 mesh transport，不再是临时过渡层。
+- libp2p capability 已暴露入站 / 出站 / native relay client / native relay service。
+- ZeroMQ capability 会受 `services.zeromq.enabled` 和 `ZeroMQForwardingEnabled()` 共同约束。
+- 当 ZeroMQ forwarding 关闭时：
+  - ZeroMQ capability 仍可生成，但入站 / 出站 forwarding 会被标记为关闭。
+  - advertised endpoint 会被隐藏。
+  - mesh runtime 不会装配 ZeroMQ adapter。
 
-### 3. 配置、观测、业务接入都尚未完成
+mixed transport 当前已具备真实回归覆盖，而不是只有 planner 层单测：
 
-新架构要求的不只是协议重写，还包括：
+- `websocket -> libp2p` bridge：控制查询和瞬时包可达。
+- `websocket -> zeromq` bridge：在 `zeromq` build tag 下可达。
+- 交替 mixed transport 大拓扑下，控制面 / query / transient 可跨 bridge 收敛。
+- mixed bridge 场景下，复制流和快照流会显式返回 `ErrNoRoute`，并记录 no-path 指标。
 
-- 新配置树
-- 新 `/ops/status`
-- 新 Prometheus 指标
-- 查询流、瞬时包、复制流、快照流迁移到新分类和转发模型
+### 数据面映射已经接线
 
-### 4. 当前默认值需要与集群设计目标对齐
+当前 mesh runtime 不只是承载“控制面”，业务流量也已经接到新分类模型：
 
-当前 `internal/mesh/policy.go` 中 `DefaultForwardingPolicy` 已默认开启 `TransitEnabled`，但还没有把 `BridgeEnabled`、高费用策略和配置默认值整体对齐到“广域网单集群”的设计目标。这部分需要在实施最前期统一，避免协议、配置和测试各自维护不同默认值。
+- `TimeSyncRequest/Response`、拓扑更新、`Ack`、membership、presence、connectivity rumor 走 `control_critical`。
+- 查询类 RPC（包括 `resolve_user_sessions`）走 `control_query`。
+- 瞬时包走 `transient_interactive`。
+- 复制批次与补拉走 `replication_stream`。
+- 快照摘要与快照分片走 `snapshot_bulk`。
 
-## 实施原则
+需要特别强调的当前边界：
 
-- 先冻结协议与默认语义，再接运行时，避免边实现边改枚举和默认策略。
-- 优先构建新 mesh 闭环，不继续扩大旧 `RoutingUpdate` 模型的能力范围。
-- transport 先适配，业务后迁移；先让 transport 成为 mesh runtime 的输入，再让复制、查询、快照等业务消息接入。
-- 控制面先行，数据面后续分批切换。
-- 旧实现只作为过渡期基线和回归参照，不作为新能力长期承载层。
+- 线性同 transport 多跳场景下，复制和快照已经可以通过 mesh 主链路传输。
+- mixed transport 场景下，复制和快照目前不会跨 bridge；这是当前实现边界，不是文档遗漏。
+- 多跳只改变传输路径，不改变复制、补拉、`Ack` 与快照语义。
 
-## 分阶段实施
+### discovery 与拨号种子已接到 mesh runtime
 
-## Phase 1：协议与默认值定稿
+当前发现能力并不是“控制面改完后再考虑”的后置项：
 
-目标：把新架构的“语言”和“默认行为”先固定下来。
+- 静态 `cluster.peers` 会在启动时转成 mesh dial seeds。
+- 当前可拨号的 discovered peers 也会转成 mesh dial seeds。
+- discovered peer 状态变化会驱动 `AddDialSeed` / `RemoveDialSeed`。
+- topology generation 已持久化到 store，重启后会恢复并继续递增。
 
-工作项：
+这意味着 mesh runtime 已经直接消费静态 peer 和 discovery 的结果，而不是停留在内部 fake adapter 演练阶段。
 
-- 定稿 `proto/mesh.proto` 中的枚举、消息字段和命名。
-- 明确 `ClusterEnvelope` 是否作为新 mesh 协议唯一入口。
-- 固化 `TrafficClass`、`ForwardingDisposition`、`PathClass` 的语义。
-- 修正 forwarding 默认值：
-  - `cluster.forwarding.enabled = true`
-  - `cluster.forwarding.bridge_enabled = true`
-  - `cluster.forwarding.node_fee_weight = 1`
-- 固化高费用节点默认策略：
-  - `TRAFFIC_CONTROL_CRITICAL = ALLOW`
-  - `TRAFFIC_CONTROL_QUERY = ALLOW`
-  - `TRAFFIC_TRANSIENT_INTERACTIVE = DISCOURAGE`
-  - `TRAFFIC_REPLICATION_STREAM = DENY`
-  - `TRAFFIC_SNAPSHOT_BULK = DENY`
-- 固化跨协议 bridge 白名单：
-  - 允许：`TRAFFIC_CONTROL_CRITICAL`、`TRAFFIC_CONTROL_QUERY`、`TRAFFIC_TRANSIENT_INTERACTIVE`
-  - 禁止：`TRAFFIC_REPLICATION_STREAM`、`TRAFFIC_SNAPSHOT_BULK`
+### 观测与安全能力已接线
 
-交付物：
+`/ops/status` 与 `/metrics` 已经面向 mesh 主链路输出观测信息：
 
-- 定稿后的 `proto/mesh.proto`
-- 重新生成的 `internal/proto/mesh.pb.go`
-- 同步后的 `internal/mesh/policy.go`
-
-验收标准：
-
-- 新 proto 可稳定作为后续实现唯一依据。
-- 默认值与设计文档完全一致。
-- 所有后续模块不再自行推导 forwarding 默认行为。
-
-## Phase 2：配置模型与策略落地
-
-目标：让节点能够以配置方式表达 forwarding、bridge、费用和 transport 能力。
-
-工作项：
-
-- 在 `internal/cluster/config.go` 增加最小配置集合：
-  - `[cluster]`
-    - `node_id`
-  - `[cluster.forwarding]`
-    - `enabled`
-    - `bridge_enabled`
-    - `node_fee_weight`
-  - `[cluster.forwarding.traffic]`
-    - `control_critical`
-    - `control_query`
-    - `transient_interactive`
-    - `replication_stream`
-    - `snapshot_bulk`
-  - `[services.libp2p]`
-    - `native_relay_client_enabled`
-    - `native_relay_service_enabled`
-  - `[services.zeromq]`
-    - `forwarding_enabled`
-- 在 `config.example.toml` 增加对应示例。
-- 提供从配置到 `mesh.ForwardingPolicy`、`mesh.TransportCapability` 的转换函数。
-- 为配置默认值、非法枚举值、策略覆盖关系补单测。
-
-交付物：
-
-- 更新后的配置结构与校验逻辑
-- 示例配置文档
-- 配置转换单测
-
-验收标准：
-
-- 节点重启后可以稳定得到一致的 forwarding/bridge/fee 策略对象。
-- 不同 transport 的启用状态与本地 capability 能正确映射。
-
-## Phase 3：transport 适配层
-
-目标：把现有 `libp2p`、`zeromq` 运行能力包装成 mesh runtime 可直接消费的 adapter。
-
-工作项：
-
-- 在现有 `cluster` transport 基础上实现 `mesh.TransportAdapter`。
-- 为 `libp2p` 适配器提供：
-  - `Kind()`
-  - `Accept()`
-  - `Dial()`
-  - `LocalCapabilities()`
-  - native relay client/service 能力发布
-- 为 `zeromq` 适配器提供：
-  - `Kind()`
-  - `Accept()`
-  - `Dial()`
-  - `LocalCapabilities()`
-  - 应用层 forwarding 能力表达
-- 明确 `RemoteNodeHint()` 的来源和语义。
-- 建立 adapter 生命周期与 `Manager`/runtime 生命周期的绑定。
-
-注意事项：
-
-- 这一步先做 transport 适配，不直接修改业务复制语义。
-- libp2p 的 relay/hole punching 细节仍留在 transport 层；路由层只消费“链路是否可用”和“链路代价”。
-- zeromq 不引入 broker 角色，仍采用业务节点上的逐跳 forwarding。
-
-交付物：
-
-- `libp2p` mesh adapter
-- `zeromq` mesh adapter
-- adapter 层测试
-
-验收标准：
-
-- mesh runtime 可以不依赖旧 `cluster.TransportConn` 直接收发新协议消息。
-- 两个 transport 都能建立邻接并交换新 `NodeHello`。
-
-## Phase 4：控制平面运行时
-
-目标：把“静态算法模块”补成真正工作的控制平面，并直接替换旧 `RoutingUpdate` 控制面。Phase 4 只交付控制面收敛能力，不迁移复制、查询、瞬时包、快照等业务消息；业务数据面迁移继续留到 Phase 5/6。
-
-为了降低一次性改动风险，Phase 4 拆成 6 个可独立合并的小阶段。推进顺序是：先补协议与 store 能力，再做纯 `internal/mesh` runtime 闭环，然后加入链路测量，最后接入 `cluster.Manager` 切换旧控制面。
-
-### Phase 4.1：协议与拓扑存储补齐
-
-工作项：
-
-- 在 `proto/mesh.proto` 增加 `TRANSPORT_KIND_WEBSOCKET`，让 WebSocket 成为正式 mesh transport。
-- 在 `MeshTopologyUpdate` 中加入 origin 节点的 transport capabilities，用于远端计算 bridge、transit 和多 transport 图。
-- 运行 `./scripts/gen-proto.sh`，提交 regenerated `internal/proto/*.pb.go`。
-- 同步 `internal/mesh/types.go` 中的 transport 常量。
-- 扩展 `TopologyStore.ApplyTopologyUpdate`，让远端 update 能更新 origin policy、transport capabilities 和 links。
-- 保持 generation 保护：低 generation 不覆盖高 generation；同 generation 只允许幂等替换当前 origin 状态。
-
-交付物：
-
-- 更新后的 `proto/mesh.proto`
-- regenerated `internal/proto/*.pb.go`
-- 支持 capabilities 的 `TopologyStore`
-- topology store 单测
-
-验收标准：
-
-- WebSocket transport 能进入 topology snapshot。
-- `TopologyUpdate` 可以同时更新 policy、capabilities、links。
-- stale generation 不会覆盖新状态。
-
-### Phase 4.2：纯 mesh runtime 骨架
-
-工作项：
-
-- 在 `internal/mesh` 新增 runtime，不先接入 `cluster.Manager`。
-- runtime 通过 `TransportAdapter` 管理 transport 生命周期。
-- 使用 fake adapter/fake conn 做 runtime 单测，避免一开始就依赖真实 libp2p、ZeroMQ、WebSocket。
-- 实现主动拨号 seed、接收入站连接、连接读循环和连接关闭清理。
-- 实现 `NodeHello` 点对点握手。
-- `NodeHello` 校验规则：
-  - `node_id > 0`
-  - `node_id != local_node_id`
-  - `protocol_version == mesh.ProtocolVersion`
-  - hello 中声明的 transport 与连接 transport 一致
-  - forwarding policy 可规范化
-- 每条成功握手的连接登记为 adjacency。
-- adjacency key 使用 remote node id、transport kind、remote hint/endpoint。
-- 同一 peer 多连接时保留可用连接集合，为后续选择最佳链路做准备。
-- 预留 signer/verifier 或 codec 钩子，默认 no-op；本阶段不修改 wire format，不增加 HMAC 字段。
-
-交付物：
-
-- `internal/mesh` runtime 基础结构
-- fake transport 测试工具
-- hello 握手与 adjacency 单测
-- verifier 拒绝路径单测
-
-验收标准：
-
-- runtime 可以不依赖 `cluster.Manager` 建立双向邻接。
-- 非法 hello 会被拒绝并关闭连接。
-- verifier 拒绝时不会注册 adjacency。
-- 连接关闭后 adjacency 状态会被清理或标记失效。
-
-### Phase 4.3：generation 与 topology flooding
-
-工作项：
-
-- runtime 维护本地 generation。
-- generation 初始化为 `max(persisted_generation, unix_millis)`；没有持久化值时使用当前时间毫秒。
-- 本地 capability、邻接建立、链路状态变化、连接关闭时递增 generation。
-- generation 每次递增后 best-effort 持久化。
-- 发布本节点 origin 全量 `TopologyUpdate`，内容包括当前 policy、transport capabilities 和 local link advertisements。
-- 接收远端 `TopologyUpdate` 后按 `(origin_node_id, generation)` 去重。
-- 只接受不落后于已知 generation 的远端状态。
-- flooding 只转发严格更新的 generation。
-- 转发给除入站 adjacency 外的所有已建立 adjacency，避免立即回传。
-
-交付物：
-
-- 本地 generation manager
-- topology publisher
-- flooding 去重与转发逻辑
-- generation/flooding 单测
-
-验收标准：
-
-- 本地 generation 单调递增。
-- stale update 被忽略。
-- 重复 `(origin, generation)` 不重复 flooding。
-- 新 generation 会写入 `TopologyStore` 并转发给其他邻接。
-- update 不会被立即回传给入站邻接。
-
-### Phase 4.4：链路测量与 link advertisement
-
-工作项：
-
-- 使用 mesh `TimeSyncRequest/Response` 作为 runtime 内部 ping/pong。
-- mesh time sync 只用于链路测量，不参与旧 clock write gate。
-- 每条 adjacency 维护 EWMA RTT 和 jitter。
-- 将测量结果写入 `MeshLinkAdvertisement.cost_ms` 和 `jitter_ms`。
-- link advertisement 使用 `established` 表达链路是否可用。
-- 连接关闭时立即发布包含 `established=false` tombstone 的一代更新。
-- tombstone 发布后一代允许移除失效链路。
-- `path_class` 判定规则：
-  - WebSocket 为 `DIRECT`
-  - ZeroMQ 普通直连为 `DIRECT`
-  - libp2p 普通直连为 `DIRECT`
-  - libp2p 地址包含 relay/circuit 特征时为 `NATIVE_RELAY`
-  - 跨 transport bridge 不由链路直接标记，仍由 planner 根据 capabilities 和 policy 计算
-
-交付物：
-
-- runtime 链路测量循环
-- RTT/jitter 统计
-- established/tombstone 发布逻辑
-- link measurement 单测
-
-验收标准：
-
-- `TimeSyncRequest/Response` 会更新 cost/jitter。
-- 链路关闭后 topology 会先出现 `established=false` tombstone。
-- tombstone 生效后 planner 不再使用该链路。
-- native relay 链路能被标记为 `NATIVE_RELAY`。
-
-### Phase 4.5：接入 cluster transport 与 Manager 生命周期
-
-工作项：
-
-- 新增 WebSocket mesh adapter，发送和接收 `mesh.ClusterEnvelope`。
-- 复用已有 libp2p 和 ZeroMQ mesh adapter，并补齐 runtime 所需能力。
-- `Manager.Start()` 启动 mesh runtime。
-- 不再启动旧 `routingLoop()`。
-- 静态 `cluster.peers` 转换为 runtime 主动拨号 seed。
-- 当前可拨号 discovered peers 转换为 runtime 主动拨号 seed。
-- WebSocket、libp2p、ZeroMQ 入站连接全部进入 mesh runtime。
-- 旧 discovery 仍负责 peer 发现、持久化和候选过期；Phase 4 不重写 discovery 存储逻辑。
-- 旧 business session 代码保留编译，但不作为 Phase 4 控制面运行路径。
-- 不再广播或消费旧 `RoutingUpdate` 作为拓扑来源。
-
-交付物：
-
-- WebSocket mesh adapter
-- `Manager` 与 mesh runtime 生命周期接线
-- 静态 peers/discovered peers seed 接入
-- 旧控制面停止运行的回归测试
-
-验收标准：
-
-- `Manager.Start()` 后 mesh runtime 会启动。
-- 三种 transport 的入站连接都进入 runtime。
-- 静态 peers 和可拨号 discovered peers 会触发主动拨号。
-- 旧 `routingLoop()` 不再运行。
-- 旧 `RoutingUpdate` 不再影响 topology。
-
-### Phase 4.6：集成测试与回归收口
-
-工作项：
-
-- 增加三节点拓扑集成测试。
-- 增加链路关闭后的收敛测试。
-- 增加 WebSocket、libp2p、ZeroMQ 混合拓扑测试。
-- 增加 discovered peer seed 拨号测试。
-- 增加旧 `RoutingUpdate` 不再参与控制面拓扑的回归测试。
-
-交付物：
-
-- `internal/mesh` runtime 单测
-- `internal/cluster` Manager 接线测试
-- 三节点和异构拓扑集成测试
-
-验收标准：
-
-- A-B-C 线性拓扑中，A/C 最终都能看到全局拓扑。
-- 关闭 B-C 后，全网最终收敛为无可用路由。
-- WebSocket、libp2p、ZeroMQ 混合邻接能形成多层图。
-- 允许 bridge 的流量可由 planner 规划跨 transport 路径。
-- 禁止 bridge 的流量不会跨 transport。
-- 不可拨号 discovered peer 不会阻塞 runtime。
-
-### Phase 4 公共接口与边界
-
-runtime 对外保留最小接口：
-
-- `Start(ctx)`：启动 adapters、accept loops、dial loops、measurement loops 和 topology publisher。
-- `Close()`：关闭 runtime、adjacency 和 adapters。
-- `Snapshot()`：返回当前 topology snapshot 或 runtime 状态快照。
-
-runtime 通过 options 注入：
-
-- local node id
-- adapters
-- local forwarding policy
-- topology store
-- dial seeds
-- signer/verifier 或 codec
-- generation persistence
-
-本阶段明确不做：
-
-- 不迁移复制、查询、瞬时包、快照业务消息。
-- 不实现 wire-level HMAC。
-- 不重写 discovered peer 持久化和候选过期逻辑。
-- 不保留旧 `RoutingUpdate` 与新 runtime 的兼容分流。
-
-### Phase 4 测试命令
-
-基础回归：
-
-```bash
-go test ./internal/mesh ./internal/cluster -count=1
-```
-
-如果 proto 变更影响更广，再运行：
-
-```bash
-go test ./... -count=1
-```
-
-## Phase 5：策略路由与逐跳转发接线
-
-目标：让 `internal/mesh` 中已有的 `RoutePlanner` 和 `ForwardingEngine` 真正进入消息路径。
-
-工作项：
-
-- 建立统一 `TrafficClassifier` 入口。
-- 所有需要跨节点转发的消息，在发送前都先分类。
-- 将以下消息映射到固定流量类别：
-  - `Hello`、`Keepalive/TimeSync`、`TopologyUpdate` -> `TRAFFIC_CONTROL_CRITICAL`
-  - 查询类 RPC -> `TRAFFIC_CONTROL_QUERY`
-  - 非持久化即时包 -> `TRAFFIC_TRANSIENT_INTERACTIVE`
-  - 复制批次与补拉 -> `TRAFFIC_REPLICATION_STREAM`
-  - 快照清单与快照分片 -> `TRAFFIC_SNAPSHOT_BULK`
-- 将旧瞬时包路由逻辑从 `internal/cluster/routing.go` 迁移到 `mesh.ForwardingEngine`。
-- 统一执行：
-  - TTL 递减
-  - `(source_node_id, packet_id)` 去重
-  - `last_hop_node_id` 防立即回环
-  - 每跳独立重算
-
-注意事项：
-
-- 不继续扩展旧 `RoutingUpdate` distance-vector 逻辑。
-- 新转发链路已切主，旧路由不再作为任何生产流量的兜底或回归基线。
-
-交付物：
-
-- mesh 数据平面消息分发入口
-- 新瞬时包/查询包 forwarding 路径
-- 转发与防环测试
-
-验收标准：
-
-- 控制面、查询流、瞬时包可以基于新图路由正常转发。
-- forwarding 关闭的节点不会被错误地选为 transit。
-- bridge 关闭或策略 `DENY` 时，路径会立即失效。
-
-## Phase 6：复制流与快照流迁移
-
-目标：把大流量业务流量接入新策略路由，并严格执行费用与桥接限制。
-
-工作项：
-
-- 将复制批次、补拉请求接入 `TRAFFIC_REPLICATION_STREAM`。
-- 将快照清单、快照分片接入 `TRAFFIC_SNAPSHOT_BULK`。
-- 确保高费用节点默认不承载复制流和快照流 transit。
-- 确保复制和快照默认不允许跨协议 bridge。
-- 当仅有高费用 transit 可达时：
-  - 控制面允许通过
-  - 复制流与快照流不走该路径，等待更便宜路径恢复
-
-交付物：
-
-- 复制与快照的数据面迁移
-- 费用策略和 bridge 限制测试
-
-验收标准：
-
-- 大流量路径不会误走高费用 transit。
-- A 仅 `libp2p`、B 双栈、C 仅 `zeromq` 的场景下：
-  - 控制面可 A -> B -> C
-  - 复制流不可经由 B 做跨协议桥接
-
-## Phase 7：切换主链路并清理旧实现
-
-目标：完成从旧路由模型到新 mesh 模型的切主。
-
-工作项：
-
-- 让新的 mesh 协议栈成为默认控制面和数据面入口。
-- 从旧 `cluster` 主循环中移除对旧 `RoutingUpdate` 的依赖。
-- 停止扩展旧 `routeAdvertisement` 和 `routingTable` 模型。
-- 清理不再使用的旧路由代码、旧测试和冗余状态字段。
-- 更新开发文档与运维文档，移除“新旧路由并存”的临时描述。
-
-交付物：
-
-- 新 mesh 主链路
-- 清理后的旧路由代码
-- 更新后的文档与测试
-
-验收标准：
-
-- 新路径成为唯一有效转发实现。
-- 旧 `RoutingUpdate` 不再承担生产语义。
-- 回归测试仅验证新路由模型。
-
-## Phase 8：运维观测与压测
-
-目标：补齐新架构上线所需的可观测性和容量验证。
-
-工作项：
-
-- 在 `/ops/status` 暴露：
-  - 节点 transport 能力
-  - forwarding 开关
-  - bridge 开关
+- `/ops/status.mesh` 会暴露：
+  - `enabled`
+  - `forwarding_enabled`
+  - `bridge_enabled`
   - `node_fee_weight`
-  - 每类流量准入策略
-  - 当前拓扑 generation
-  - 每个目的节点按流量类别的当前路由
-- 在 `/metrics` 暴露至少以下指标：
-  - `forwarded_packets_total{traffic_class,path_class}`
-  - `forwarded_bytes_total{traffic_class,path_class}`
-  - `routing_decision_cost{traffic_class}`
-  - `routing_no_path_total{traffic_class}`
   - `topology_generation`
-  - `node_fee_weight`
-  - `bridge_forward_total{traffic_class}`
-- 增加稳定性与压测场景：
-  - 50/100 节点 flooding 收敛
-  - 高费用节点字节增长受控
-  - next-hop 失效后重路由
-  - topology generation 前进后旧路径失效
+  - `transport_capabilities`
+  - `traffic_rules`
+  - 每个目标节点按流量类别计算出的 route
+  - forwarding / no-path / decision-cost / bridge 指标快照
+- `/metrics` 已经暴露：
+  - `forwarded_packets_total`
+  - `forwarded_bytes_total`
+  - `routing_decision_cost`
+  - `routing_no_path_total`
+  - `bridge_forward_total`
 
-交付物：
+安全边界方面，mesh runtime 当前也不是“预留 signer/verifier 钩子但默认 no-op”：
 
-- `/ops/status` 新字段
-- 新指标
-- 压测脚本或测试方案
+- mesh `ClusterEnvelope` 已经通过 `meshEnvelopeAuthenticator` 做 HMAC-SHA256 签名与验签。
+- runtime 在发送时会签名，在读取 `NodeHello` 和后续 envelope 时都会验签。
+- 相关安全测试已经覆盖合法、密钥不一致、重复 HMAC 字段、空 HMAC 字段和 legacy/appended wire 兼容。
 
-验收标准：
+### 时钟测量边界
 
-- 运维可以直接观察“为什么无路由”“为什么选了该路径”“为什么未发生 bridge”。
-- 在规模测试下控制平面可以稳定收敛。
+mesh `TimeSyncRequest/Response` 当前已用于链路测量，但边界需要写清楚：
 
-## 推荐首批实施范围
+- RTT / jitter 会进入邻接观测和 link advertisement。
+- mesh time sync 当前只服务路由测量与会话 RTT 观测。
+- 它不会把 peer 时钟直接提升为可信时钟来源，也不会打开旧 clock write gate。
+- 当前写 gate / trusted clock 规则仍然需要单独看 `clock-protection.md` 的说明。
 
-如果只启动第一批开发工作，建议把范围控制在以下四项：
+## 已落地边界
 
-1. 协议与默认值修正。
-2. 新配置模型与策略转换。
-3. `libp2p`/`zeromq` 的 mesh adapter 骨架。
-4. mesh 控制平面 runtime 骨架。
+以下能力已经在当前仓库中落地，不应继续按“后续阶段”描述：
 
-这样做的原因是：
+### 已完成
 
-- 这四项能先把新架构从“算法草图”推进成“可启动、可建邻、可同步拓扑”的最小闭环。
-- 这四项完成后，后续数据面迁移会清晰很多。
-- 这四项也最能提前暴露接口设计问题，避免复制流和快照流接线时返工。
+- mesh runtime 已成为 `turntf` 的主控制面与主跨节点数据面。
+- `proto/mesh.proto` 已纳入 WebSocket / libp2p / ZeroMQ 三类 transport。
+- forwarding / bridge / fee-aware 默认值已在配置与测试中固定。
+- WebSocket、libp2p、ZeroMQ 入站连接都能进入 mesh runtime。
+- `cluster.peers` 与 discovered peers 都能转成 mesh dial seeds。
+- 查询、瞬时包、复制、补拉、`Ack`、快照、membership、presence、connectivity rumor 都已接到 mesh 路由分类。
+- `/ops/status` 和 `/metrics` 已能输出 mesh 路由与 bridge 观测。
+- mesh wire-level HMAC 已实现并接入 runtime。
 
-## 测试计划
+### 当前实现明确限制
 
-### 路由图单测
+- 复制流与快照流默认不跨 transport bridge。
+- 高费用 transit 默认不承载复制流与快照流。
+- ZeroMQ mixed transport 相关回归依赖 `zeromq` build tag 与本地 libzmq 环境。
+- mesh time sync 只测链路，不参与 trusted clock 建立。
 
-- 单 transport 最短路正确。
-- `forwarding=false` 的节点不会被选为 transit。
-- `bridge_enabled=false` 时不会生成跨协议路径。
-- `DISCOURAGE` 路径仅在无 `ALLOW` 路径时被选中。
+这些限制是当前实现的明确边界，不应误写成“尚未接入导致缺失”。
 
-### 费用感知单测
+## 尚未落地或仍待收口的部分
 
-- 控制面消息可走高费用节点。
-- 复制流与快照流不能走高费用 transit。
-- 高费用节点对 `TRAFFIC_TRANSIENT_INTERACTIVE` 仅作为兜底路径。
+虽然主链路已经切到 mesh，但并不意味着这条线已经完全收尾。当前仍适合继续推进的事项主要有以下几类：
 
-### transport 场景测试
+### 1. 诊断解释能力还可以更细
 
-- libp2p 直连失败但 native relay 成功时，控制面仍能收敛。
-- 路由结果可正确标记 `NATIVE_RELAY`。
-- zeromq 两跳和三跳 hop-by-hop forwarding 成功。
-- 关闭 forwarding 后路径立即失效。
+当前排障主要依赖 `/ops/status.mesh.routes` 和 mesh 指标；proto 虽然已有 `MeshRouteDiagnostic`，但还没有形成单独的生产诊断闭环。后续如果要继续提升运维可解释性，更合理的方向是：
 
-### 跨协议桥接测试
+- 明确 no-path 的具体原因输出。
+- 区分“被 transit 禁止”“被 bridge 禁止”“被高费用策略拒绝”“拓扑尚未收敛”等场景。
+- 视需要再决定是否把 `MeshRouteDiagnostic` 接到 API 或运维接口。
 
-- A 仅 `libp2p`，B 双栈，C 仅 `zeromq`。
-- 控制面允许 A -> B -> C。
-- 复制流不能通过 B 跨协议桥接。
+### 2. 规模验证与 mixed transport 压测仍要继续
 
-### 防环与恢复测试
+当前仓库已经有 runtime scale test、large-cluster integration test 和 mixed transport benchmark / integration test，但这部分仍属于持续演进区：
 
-- 有环拓扑下 TTL 与去重能阻止包循环。
-- next-hop 失效后重新选路。
-- topology generation 前进后旧路径不再沿用。
+- 需要继续跟进 50/100 节点 flooding、重路由和拓扑收敛。
+- 需要继续补 mixed transport 下的压测、回归和 rollout 纪律。
+- 需要持续观察 `bridge_forward_total`、`routing_no_path_total` 和 `routing_decision_cost` 在大规模拓扑中的解释性。
 
-### 压测
+### 3. relay-only 角色与动态计费仍未进入实现
 
-- 控制面 flooding 在 50/100 节点规模下稳定收敛。
-- 高费用节点不会因复制流误路由而出现大字节增长。
+以下事项依旧是未落地区域，而不是“当前实现的隐藏能力”：
 
-## 风险与注意事项
+- `relay-only` 独立节点角色。
+- 动态计费系统、实时账单反馈或按链路实时调价。
+- 基于费用或 bridge 的更复杂运营策略编排。
 
-- 新旧路由模型长期并存会显著提高复杂度，因此过渡期必须短。
-- forwarding 默认值一旦修错，会直接影响路径选择、运维预期和测试结论。
-- 如果在 transport adapter 尚未稳定前就接入业务流量，排障会混合 transport 问题与路由问题。
-- `/ops/status` 和 metrics 若跟不上主链路切换，上线后将很难解释路径选择结果。
-- 文档中的“默认禁止复制流和快照流走高费用 transit”必须在测试中锁死，不能依赖口头约定。
+当前实现只有静态 `node_fee_weight` 与静态 disposition 规则，不要把它误解成已经具备动态费用控制面。
+
+### 4. 是否允许复制 / 快照跨 bridge 仍应保持审慎
+
+如果未来业务确实要求“WebSocket <-> libp2p”或“WebSocket <-> ZeroMQ”之间转发复制流 / 快照流，需要把它视为新能力，而不是现状：
+
+- 当前默认行为是不允许。
+- 当前 mixed transport 回归也明确断言 `ErrNoRoute`。
+- 若未来要开放，需要单独补策略、benchmark、故障恢复和运维文档，而不是只改 bridge 白名单。
+
+## 后续演进建议
+
+基于当前实现状态，更合理的后续顺序是：
+
+1. 继续收紧 `/ops/status` 与 metrics 的解释能力，必要时再考虑 route diagnostic 的独立接口。
+2. 继续做规模回归、mixed transport 压测和 bridge / no-route 边界验证。
+3. 在安全、身份治理和 rollout 纪律上继续收口，而不是回退到旧路由模型。
+4. 只有在业务明确需要时，才单独评估复制 / 快照跨 bridge 或 relay-only 这类高风险扩展。
+
+## 测试关注点
+
+当前文档对应的核心回归面应理解为：
+
+- `internal/mesh`：
+  - runtime 建邻、flooding、拨号种子、TTL、防环、bridge、native relay path class、scale / reroute。
+- `internal/cluster`：
+  - mesh runtime 自动启动。
+  - configured peer / discovered peer 与 dial seed 接线。
+  - mixed transport query / transient 成功路径。
+  - 同 transport 多跳复制 / 快照成功路径。
+  - mixed transport 复制 / 快照 no-route 边界。
+  - mesh HMAC 安全测试。
+- `zeromq` build tag：
+  - WebSocket <-> ZeroMQ mixed bridge 与相关 benchmark / integration test。
 
 ## 结论
 
-当前仓库已经完成 mesh 主链路切换：节点间控制面与数据面统一由 mesh runtime 承载，旧 `RoutingUpdate` 模型不再承担生产语义，`/ops/status` 与 `/metrics` 也已转向 mesh 观测。后续若继续演进，重点应放在规模压测、链路安全加固和更细粒度的运维解释能力，而不是恢复旧路由模型。
+`turntf/` 当前已经完成 mesh 主链路切换，并且把 forwarding、mixed transport 和主要业务数据面都接到了新模型上。需要更新的认知不是“mesh 什么时候落地”，而是“哪些能力已经是现状、哪些限制是有意保守、哪些后续工作应该围绕观测、规模和 rollout 继续推进”。后续如果继续演进，重点应放在观测解释、规模验证、安全收口和审慎扩展，而不是恢复旧 `RoutingUpdate` 路由模型。

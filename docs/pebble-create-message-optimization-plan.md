@@ -1,303 +1,322 @@
 # Pebble CreateMessage 优化计划
 
-本文档聚焦 `store` 层 `CreateMessage` 在 `Pebble` 模式下的热点问题，目标是解释“为什么当前 `Pebble` 写入仍明显慢于 `SQLite`”，并把后续优化拆成可执行的工作点。
+本文档聚焦 `store` 层 `CreateMessage` 在 `Pebble` 模式下的当前热点。和早期版本相比，这条写路径已经经历了多轮优化，文档里的很多旧前提已经不再成立；因此这里的目标不再是解释“为什么 `Pebble` 明显慢于 `SQLite`”，而是记录当前真实边界：哪些优化已经落地，哪些仍值得继续推进。
 
-相关基线见 [performance-baseline.md](/root/dev/sys/turntf/turntf/docs/performance-baseline.md)。
+相关基线见 [performance-baseline.md](./performance-baseline.md)。
 
-## 1. 背景
+## 1. 当前结论
 
-当前 `BenchmarkStoreCreateMessage` 的结果说明，`Pebble` 的典型消息写入吞吐仍明显落后于 `SQLite`：
+### 1.1 `Pebble` 已不能简单视为“明显慢于 SQLite”
 
-- `sqlite / 256B`：约 `0.26ms/op`
-- `sqlite / 4KiB`：约 `0.29ms/op`
-- `pebble / 256B`：约 `0.88ms/op`
-- `pebble / 4KiB`：约 `2.8ms/op`
+当前 `BenchmarkStoreCreateMessage` 已拆成以下矩阵：
 
-这不是因为 “`Pebble` 一定比 `SQLite` 慢”，而是因为当前仓库里的 `Pebble` 模式仍然是“SQLite 控制面 + Pebble 事件日志/投影”的混合写路径，而且 `Pebble` 侧存在明显的写放大。
+- `sqlite`
+- `pebble/balanced/no_sync`
+- `pebble/throughput/no_sync`
+- `pebble/balanced/force_sync`
+- `pebble/throughput/force_sync`
 
-## 2. 当前瓶颈
+同时还新增了：
 
-### 2.1 Pebble 模式并没有绕开 SQLite 热路径
+- `BenchmarkStoreCreateMessageSteadyState`
+- `BenchmarkStoreCreateMessageParallel`
 
-`CreateMessage()` 先进入 SQLite 事务做用户读取、黑名单判断、消息序号分配，然后才进入事件写入和投影阶段，[messages.go](/root/dev/sys/turntf/turntf/internal/store/messages.go:21)。
+我在 2026-05-06 本地执行了一次快速核对：
 
-具体来说：
+```bash
+go test ./internal/store -run '^$' -bench '^BenchmarkStoreCreateMessage$' -benchtime=1x -count=1
+```
 
-- `recipient` / `sender` 查询仍走 SQLite。
-- `nextMessageSeqTx()` 仍通过 `message_sequence_counters` 和 `messages` 表维护序号，[messages.go](/root/dev/sys/turntf/turntf/internal/store/messages.go:92)。
-- 成功写完投影后，仍会额外执行一次 `clearPendingProjection()` 的 SQLite delete，[messages.go](/root/dev/sys/turntf/turntf/internal/store/messages.go:82)。
+这次快速结果里：
 
-因此当前 `Pebble` 并不是“单引擎写入”，而是“先做一段 SQLite 事务，再做一段 Pebble 写入”。
+- `tmp` 和 `disk` 场景下，`pebble/*/no_sync` 都已经明显快于 `sqlite`。
+- 当前最贵的子场景是 `pebble/*/force_sync`，尤其是 `disk` 模式下单次同步提交成本很高。
 
-### 2.2 Pebble 事件日志本地写入仍然偏重
+因此，当前问题已经不是“`Pebble` 天生比 `SQLite` 慢”，而是：
 
-在 `Pebble` 模式下，`insertEvent()` 直接走 `eventLog.Append()`，[events.go](/root/dev/sys/turntf/turntf/internal/store/events.go:27)。
+- `force_sync` 的 durability 成本仍然很高。
+- `CreateMessage` 仍包含一部分 SQLite 元数据读取和多索引写放大。
+- 大量订阅者 / 超窗 trim / 快照修复等边界路径仍会放大成本。
 
-而 `pebbleEventLogRepository.appendStored()` 当前本地写入仍会做这些事：
+### 1.2 `performance-baseline.md` 里的旧表格是历史样本
 
-- 先对 `originKey` 做一次 `Get` 查重，[pebble_projection.go](/root/dev/sys/turntf/turntf/internal/store/pebble_projection.go:74)。
-- 再读取 `meta/event_sequence` 推导下一序号，[pebble_projection.go](/root/dev/sys/turntf/turntf/internal/store/pebble_projection.go:82)。
-- 最终一次消息事件会落成 3 个 key：
-  - `event/seq/...`
-  - `event/origin/...`
-  - `meta/event_sequence`
-  见 [pebble_projection.go](/root/dev/sys/turntf/turntf/internal/store/pebble_projection.go:88)。
+[performance-baseline.md](./performance-baseline.md) 中 `CreateMessage` 的旧表格仍保留了早期聚合样本，那里还没有拆出 `balanced|throughput` 与 `no_sync|force_sync` 四类子场景，也不包含 steady-state / parallel benchmark。当前优化决策应以现有 benchmark 矩阵和代码实现为准，而不能继续沿用“`Pebble` 整体显著慢于 `SQLite`”这一旧结论。
 
-对“本地新建消息”来说，前置查重实际上没有必要，因为 `EventID` 本来就是本地新生成的。
+## 2. 当前 Pebble 写路径
 
-### 2.3 消息投影存在明显写放大
+### 2.1 仍然是混合引擎，但热路径已经不再走 SQLite 事务
 
-`ApplyMessageCreated()` 在 `Pebble` 模式下会：
+`CreateMessage()` 入口仍会先做参数校验，然后在 `Pebble` 后端里执行：
 
-- 先 `messageExists()` 做一次点查，[pebble_projection.go](/root/dev/sys/turntf/turntf/internal/store/pebble_projection.go:284)。
-- 再 `putMessage()` 写入投影，[pebble_projection.go](/root/dev/sys/turntf/turntf/internal/store/pebble_projection.go:289)。
-- 最后立即 `trimMessagesForUser()`，[pebble_projection.go](/root/dev/sys/turntf/turntf/internal/store/pebble_projection.go:292)。
+- `recipient` / `sender` 读取
+- 黑名单检查
 
-其中最重的问题是 `putMessage()`：
+对应实现见 [`store_backend.go`](../internal/store/store_backend.go) 的 `pebbleStoreBackend.CreateMessage()`。
 
-- 它会为同一条消息写 3 个 key，[pebble_projection.go](/root/dev/sys/turntf/turntf/internal/store/pebble_projection.go:483)。
-- 这 3 个 key 的 value 都是完整 protobuf 消息，[pebble_projection.go](/root/dev/sys/turntf/turntf/internal/store/pebble_projection.go:571)。
-- 对 `4KiB` payload，这意味着消息体被重复序列化、重复复制、重复落盘。
+这些读取仍然依赖 `UserRepository`、`BlacklistRepository`、`SubscriptionRepository` 等仓储；按当前实现边界，它们背后仍主要是 SQLite 数据，而不是 Pebble。
 
-这也是为什么 `Pebble / 4KiB` 比 `Pebble / 256B` 恶化得更明显。
+但是，完成这些前置检查之后，本地消息写入已经不再进入 SQLite 事务。当前路径会直接进入 [`pebble_local_message_writer.go`](../internal/store/pebble_local_message_writer.go) 的本地批处理循环，由 Pebble 批量完成：
 
-### 2.4 Pebble trim 是“写后立刻全量读一遍”
+- 本地消息序号预留
+- 本地事件日志写入
+- 消息投影写入
+- 用户消息状态更新
+- 必要时的同步 trim
 
-`trimMessagesForUser()` 当前逻辑是：
+### 2.2 本地消息已经有专门的 Pebble fast path
 
-- 先 `listRawMessagesByUser()` 把该用户的消息全部迭代出来，[pebble_projection.go](/root/dev/sys/turntf/turntf/internal/store/pebble_projection.go:529)。
-- 迭代过程中还要把每条记录反序列化成 `Message`，[pebble_projection.go](/root/dev/sys/turntf/turntf/internal/store/pebble_projection.go:511)。
-- 再删除超窗消息的 3 组索引 key，[pebble_projection.go](/root/dev/sys/turntf/turntf/internal/store/pebble_projection.go:539)。
+当前 `Pebble` 本地消息不会再走“通用 `Append()` + 通用投影”的老路径，而是通过 `submitLocalMessage()` 把请求送进本地批处理循环：
 
-也就是说，当前一次写入路径实际上是：
+- 同一个 batch 最多聚合 `128` 个请求。
+- batch 内会按 `PebbleMessageSyncMode` 分段，保证 `no_sync` / `force_sync` 不混写。
+- 每段在持有 `eventLog.mu` 和用户分片锁的情况下，直接拼装一份 Pebble batch。
+- 本地消息事件直接写 `event/seq`、`event/origin`、`meta/event_sequence`，不再做复制路径需要的幂等查重。
 
-- SQLite 前置检查
-- Pebble 事件日志写
-- Pebble 投影写
-- Pebble 全量读该用户消息
-- Pebble 删除超窗索引
-- SQLite 清理 pending projection
+对应实现见：
 
-而 `SQLite` 对应路径只是：
+- [`pebble_local_message_writer.go`](../internal/store/pebble_local_message_writer.go)
+- [`pebble_projection.go`](../internal/store/pebble_projection.go)
 
-- 一次 SQLite 事务内写事件
-- 一次 SQLite 事务内写消息投影
-- 一条 SQL 做 trim
+复制事件仍保留单独的幂等路径：`AppendReplicated()` 会先检查 `originKey` 是否已存在。这条边界仍然存在，但已经只属于复制路径，而不是本地 `CreateMessage` 主路径。
 
-见 [sqlite_projection.go](/root/dev/sys/turntf/turntf/internal/store/sqlite_projection.go:212) 和 [sqlite_projection.go](/root/dev/sys/turntf/turntf/internal/store/sqlite_projection.go:698)。
+### 2.3 消息序号、cursor、pending projection 已经迁到 Pebble
 
-## 3. 优化目标
+旧版文档把 `message_sequence_counters`、`peer_ack_cursors`、`origin_cursors`、`pending_projections` 都视为 SQLite 热路径，这已经不准确。
 
-本轮优化目标：
+当前现状：
 
-- 把 `BenchmarkStoreCreateMessage/*/pebble/256B` 压到接近 `0.6ms/op` 量级。
-- 把 `BenchmarkStoreCreateMessage/*/pebble/4KiB` 压到接近 `1.2ms/op` 量级。
-- 不改变外部 API。
-- 不改变“成功返回后消息已本地可见”的语义。
+- 消息序号由 [`pebble_message_sequence.go`](../internal/store/pebble_message_sequence.go) 管理。
+- `peer ack cursor` / `origin cursor` 由 [`pebble_metadata.go`](../internal/store/pebble_metadata.go) 管理。
+- `pending projection` 也由 [`pebble_metadata.go`](../internal/store/pebble_metadata.go) 管理。
+
+这些 Pebble 元数据仍保留了对旧 SQLite 数据的兼容 seed 逻辑，例如：
+
+- 首次读取消息序号时，会尝试从旧的 SQLite 计数器和旧投影里取最大值作为起点。
+- 但一旦进入 Pebble 路径，后续就不再继续更新 SQLite 里的同名计数表。
+
+对应验证见 [`store_pebble_test.go`](../internal/store/store_pebble_test.go) 中的：
+
+- `TestPebbleMessageSequenceSeedsFromLegacySQLiteCounter`
+- `TestPebblePeerAndOriginCursorsBypassSQLite`
+- `TestPebblePendingProjectionsBypassSQLite`
+
+## 3. 已落地的优化阶段
+
+### 3.1 旧工作点 1：消息 body 单副本化
+
+状态：已落地，但实现形态比旧计划更细。
+
+当前实现不是“所有索引都统一存引用”，而是：
+
+- `message/id/...` 始终保存完整消息主记录。
+- `message/producer/...` 当前走引用值。
+- `message/user/...` 与部分 inbox 热索引默认走引用值。
+- `throughput` profile 下，小 value 会允许直接内联在热点索引里；大 value 仍保留引用。
+
+对应实现见 [`pebble_projection.go`](../internal/store/pebble_projection.go) 的：
+
+- `pebbleMessageIndexValue()`
+- `messageIndexValueForProfile()`
+- `messageFromIndexValue()`
+
+对应验证见 [`store_pebble_test.go`](../internal/store/store_pebble_test.go) 的：
+
+- `TestPebbleThroughputProfileInlinesSmallHotIndexes`
+- `TestPebbleThroughputProfileKeepsLargeHotIndexesReferenced`
+
+这意味着旧版“3 份完整 protobuf value”已经不再是当前主路径的现状描述。
+
+### 3.2 旧工作点 2：Pebble 本地 append 快路径
+
+状态：已落地，并进一步演化为本地批处理写入器。
+
+当前不只是 `Append()` / `AppendReplicated()` 分流了，本地消息甚至已经不再逐条调用通用 event log append，而是：
+
+- 在 `pebble_local_message_writer.go` 里直接生成 `EventID` / `Sequence`
+- 直接把 event log 和消息投影塞进同一个 batch
+- 再按 `force_sync` 或 `no_sync` 一次提交
+
+因此，旧版“本地消息也会先查 `originKey` 去重”的描述已经失效。
+
+### 3.3 旧工作点 3：trim 阈值化 / 延迟化
+
+状态：已落地，并且已经有后台 trim worker。
+
+当前消息写入后不会无条件同步 trim，而是使用：
+
+- `windowSize + 32` 作为普通 trim 调度阈值
+- `windowSize + 128` 作为硬阈值；超过后会尝试同步 trim
+- 后台 trim worker 会异步消费 dirty user 集合
+
+对应实现见：
+
+- [`pebble_message_state.go`](../internal/store/pebble_message_state.go)
+- [`pebble_projection.go`](../internal/store/pebble_projection.go)
+
+对应验证见 [`store_pebble_test.go`](../internal/store/store_pebble_test.go) 的：
+
+- `TestPebbleDeferredTrimKeepsVisibleWindowBounded`
+- `TestPebbleBackgroundTrimEventuallyUpdatesMessageUserState`
+- `TestPebbleSnapshotApplyRepairsMessageUserState`
+
+因此，旧版“每次写完都会立即全量读该用户消息并同步 trim”的说法也已经不再准确；它只在超过硬阈值或快照修复等边界场景下才会同步发生。
+
+### 3.4 旧工作点 4：成功路径跳过无意义的 pending projection delete
+
+状态：已落地。
+
+当前 `Pebble` 成功路径不会再在 `CreateMessage()` 末尾额外做一次 SQLite `clearPendingProjection()`。`pending projection` 的记录与清理都已经切到 Pebble 元数据仓储，并只在真正的 deferred / replay 路径上使用。
+
+### 3.5 旧工作点 5：消息序号与热点元数据去 SQLite 化
+
+状态：部分落地。
+
+已迁出 SQLite 的部分：
+
+- `message sequence`
+- `peer ack cursor`
+- `origin cursor`
+- `pending projection`
+
+仍保留在 SQLite 的部分：
+
+- 用户 / 登录名
+- 订阅关系
+- 黑名单
+- 附件
+- `user_metadata`
+
+也就是说，当前 `Pebble` 仍然是混合引擎，但“消息序号和复制游标仍完全依赖 SQLite”的旧表述已经过期。
+
+## 4. 当前仍然值得优化的点
+
+### 4.1 `force_sync` 仍然是最重的子场景
+
+当前本地消息 batch 在 `force_sync` 模式下会直接执行 `batch.Commit(pebble.Sync)`，对应实现见 [`pebble_local_message_writer.go`](../internal/store/pebble_local_message_writer.go) 的 `commitLocalMessageBatch()`。
+
+这意味着：
+
+- `force_sync` 的最终成本主要受磁盘同步影响。
+- 当前本地消息 fast path 不会复用 [`pebble_write_coordinator.go`](../internal/store/pebble_write_coordinator.go) 的 relaxed group commit。
+- 如果未来要继续优化 `force_sync`，需要单独评估它的语义边界，而不是简单套用 `no_sync` 的思路。
+
+这是当前最值得继续单独盯住的热点。
+
+### 4.2 SQLite 元数据读取仍然在主路径前半段
+
+虽然消息写入本身已经走 Pebble，但下面这些读仍然存在：
+
+- `recipient` / `sender` 查询
+- 黑名单检查
+- channel 消息时的订阅者查询
+
+其中 channel / broadcast / inbox 扇出还会进一步触发订阅和收件箱索引写入。对于高扇出场景，当前成本不再主要来自“消息 body 重复存 3 份”，而是来自：
+
+- 元数据读取
+- inbox fan-out
+- 多 key 写入
+
+### 4.3 消息投影仍然是多索引写路径
+
+当前一条直接消息通常至少会写：
+
+- `message/id`
+- `message/user`
+- `message/producer`
+- `message/session`
+- 登录用户自己的 `inbox`
+
+如果接收方是 channel，还会为每个订阅者追加：
+
+- `inbox`
+- `inbox_source`
+
+所以，哪怕 body 单副本化已经完成，当前写路径仍然不是“单 key 写入”。如果后续还要继续压榨吞吐，高扇出 inbox 路径比“消息主记录本身”更值得重点 profile。
+
+### 4.4 硬 trim / snapshot repair 仍会触发全量扫描
+
+一旦进入：
+
+- 超过硬阈值的同步 trim
+- `ApplyMessageSnapshotRows()` 后的强制 trim
+
+当前实现仍会：
+
+- 枚举该用户当前已存消息
+- 删除超窗消息的主记录与索引
+- 刷新 `message user state`
+
+对应实现见 [`pebble_message_state.go`](../internal/store/pebble_message_state.go) 的 `trimMessagesForUserLocked()`。
+
+这条路径已经不再是“每次写入都发生”的主路径问题，但在：
+
+- 超大窗口
+- 历史堆积后首次回收
+- 快照修复
+
+这些场景下，仍然会是值得继续优化的点。
+
+## 5. 当前阶段计划
+
+### 阶段 A：保持现有 fast path 不回退
+
+目标：
+
+- 不破坏本地消息 loop 的顺序与批处理语义。
+- 不破坏 `message sequence` / `cursor` / `pending projection` 的 Pebble 持久化边界。
+- 不把成功路径重新引回 SQLite 事务。
+
+### 阶段 B：针对 `force_sync` 单独做 profile
+
+目标：
+
+- 明确 `force_sync` 当前成本究竟主要来自磁盘同步、batch 切分，还是前置元数据读取。
+- 评估是否需要额外的批量提交策略，或者仅把 `force_sync` 视为高可靠低吞吐模式而单独监控。
 
 非目标：
 
-- 本轮不先改 `ListMessagesByUser` 聚合读路径。
-- 本轮不先改 snapshot message rebuild 的整体结构。
-- 本轮不要求一步把所有 SQLite 热路径完全移除。
+- 不为了 benchmark 数字去削弱 `force_sync` 的 durability 语义。
 
-## 4. 优先级与工作点
+### 阶段 C：评估 inbox fan-out 与混合元数据读取
 
-建议分两批推进。
+目标：
 
-### 第一批：直接降低 CreateMessage 写放大
+- 重点看 channel / 广播 / 大量登录用户在线时的 inbox 写放大。
+- 评估是否要继续把更多只读元数据迁离 SQLite，还是先接受混合引擎边界。
 
-- 工作点 1：消息 body 单副本化
-- 工作点 2：Pebble 本地 append 快路径
-- 工作点 3：写后立即 trim 改阈值化/延迟化
+### 阶段 D：按需优化 trim / snapshot repair
 
-### 第二批：继续去掉 SQLite 控制面残留
+目标：
 
-- 工作点 4：成功路径跳过无意义的 pending projection delete
-- 工作点 5：消息序号与热点元数据去 SQLite 化
+- 只在 profile 证明 trim 或 snapshot repair 成为热点时，再考虑更复杂的增量回收策略。
+- 在优化前保持当前 `visible window bounded`、`snapshot repair 可收敛` 的行为语义不变。
 
-## 5. 工作点 1：消息 body 单副本化
+## 6. 验收与验证
 
-### 目标
-
-- 避免同一条消息在 `Pebble` 中存 3 份完整 value。
-- 显著降低 `4KiB` payload 的序列化、复制和写盘成本。
-
-### 当前问题
-
-- `putMessage()` 会把完整消息写入 `message/id`、`message/user`、`message/producer` 三类 key，[pebble_projection.go](/root/dev/sys/turntf/turntf/internal/store/pebble_projection.go:643)。
-
-### 具体改动
-
-- 保留 `message/id/...` 作为完整消息主记录。
-- 把 `message/user/...` 和 `message/producer/...` 改成轻量引用值：
-  - 只保存 `recipient node_id/user_id + message node_id/seq`
-  - 或等价的固定长二进制引用
-- `listRawMessagesByUser()` 遍历用户索引时，先读引用，再回查 `message/id/...` 取完整消息。
-- `BuildMessageSnapshotRows()` 读取 `message/producer/...` 时，同样通过引用回查主记录。
-
-### 预期收益
-
-- `4KiB` payload 的写放大从 “3 份完整 value” 降到 “1 份完整 value + 2 份小引用”。
-- `B/op` 和 `allocs/op` 都会明显下降。
-
-### 风险
-
-- 读取路径会增加一次附加查主记录的 KV 访问。
-- 但当前基线显示 `Pebble` 读路径仍优于 `SQLite`，这一点可以接受。
-
-## 6. 工作点 2：Pebble 本地 append 快路径
-
-### 目标
-
-- 去掉本地消息事件写入里的无效查重。
-- 减少事件日志 append 的点查和元信息读取次数。
-
-### 当前问题
-
-- `appendStored()` 本地和复制共用同一套逻辑，[pebble_projection.go](/root/dev/sys/turntf/turntf/internal/store/pebble_projection.go:62)。
-- 本地消息事件也会先查 `originKey` 是否已存在。
-
-### 具体改动
-
-- 把 `Append()` 和 `AppendReplicated()` 分开：
-  - `Append()` 走本地快路径
-  - `AppendReplicated()` 保留幂等查重逻辑
-- 本地快路径直接：
-  - 分配 `EventID`
-  - 分配 `Sequence`
-  - 组 batch
-  - 提交
-- 保持现有 `r.mu`，继续保证本地 sequence 单调递增。
-
-### 预期收益
-
-- 降低 `256B` 小消息场景里事件日志 append 的固定成本。
-- 对 `BenchmarkStoreCreateMessage/*/pebble/256B` 收益更明显。
-
-### 风险
-
-- 需要确认本地路径没有任何“可能重复提交同一 EventID” 的入口。
-- 第一版通过只对 `Append()` 启用快路径规避风险。
-
-## 7. 工作点 3：写后立即 trim 改阈值化/延迟化
-
-### 目标
-
-- 避免每次写入都立即触发“全量读该用户消息 + 删超窗索引”。
-
-### 当前问题
-
-- `ApplyMessageCreated()` 每次写入后都会同步 trim，[pebble_projection.go](/root/dev/sys/turntf/turntf/internal/store/pebble_projection.go:292)。
-- trim 前还会全量扫描用户消息列表。
-
-### 具体改动
-
-- 第一版先不做后台 worker，先做低风险阈值化：
-  - 增加每用户近似计数或超窗探测
-  - 只有当消息数可能超过 `windowSize + 32` 时才真正 trim
-- 如果当前计数未超阈值：
-  - 直接返回
-  - 不触发全量扫描
-- 第二版再考虑后台 trim worker，把 trim 从同步写路径里彻底移出。
-
-### 预期收益
-
-- 在消息窗口未逼近上限时，写路径不再携带读放大。
-- 对稳定写入的新用户或中小历史用户效果明显。
-
-### 风险
-
-- 短时间内某些用户消息数可能略超窗。
-- 控制方式：
-  - 允许短暂超窗
-  - 读取时仍按最终排序截断
-
-## 8. 工作点 4：成功路径跳过无意义的 pending projection delete
-
-### 目标
-
-- 去掉成功投影后额外的 SQLite delete。
-
-### 当前问题
-
-- `CreateMessage()` 成功执行后总会调用 `clearPendingProjection()`，[messages.go](/root/dev/sys/turntf/turntf/internal/store/messages.go:82)。
-- 但大多数成功路径下，根本没有对应的 pending 记录。
-
-### 具体改动
-
-- 第一版改为“仅在投影曾失败过或重试路径里执行 clear”。
-- 普通成功路径默认不再发这条 SQLite delete。
-
-### 预期收益
-
-- 每次消息成功写入少一次 SQLite 往返。
-
-### 风险
-
-- 需要确认失败重试路径仍能清掉旧记录。
-
-## 9. 工作点 5：消息序号与热点元数据去 SQLite 化
-
-### 目标
-
-- 进一步减少 `Pebble` 模式下的混合引擎往返。
-
-### 当前问题
-
-- `nextMessageSeqTx()` 完全依赖 SQLite 的 `message_sequence_counters` 和 `messages` 表，[messages.go](/root/dev/sys/turntf/turntf/internal/store/messages.go:100)。
-
-### 具体改动
-
-- 为 `Pebble` 模式增加独立的 `message_sequence` key 空间。
-- `CreateMessage()` 在 `Pebble` 模式下直接从 Pebble 获取并推进下一序号。
-- 仅保留必要的 SQLite 元数据，不再让消息序号落回 SQL 表。
-
-### 预期收益
-
-- 进一步降低 `CreateMessage()` 的固定 SQLite 开销。
-
-### 风险
-
-- 需要明确与现有 `messages` 表历史数据的兼容策略。
-- 建议作为第二批工作推进。
-
-## 10. 验收标准
-
-每完成一个工作点，至少跑以下命令：
+每次继续优化这条路径时，至少应跑：
 
 ```bash
 go test ./internal/store -count=1
-go test ./internal/store -run '^$' -bench 'BenchmarkStore(CreateMessage|ListMessagesByUser|PruneEventLogOnce)' -benchmem -count=1
+go test ./internal/store -run '^$' -bench 'BenchmarkStore(CreateMessage|CreateMessageSteadyState|CreateMessageParallel|ListMessagesByUser|PruneEventLogOnce)' -benchmem -count=1
 ```
 
 重点关注：
 
-- `BenchmarkStoreCreateMessage/*/pebble/256B`
-- `BenchmarkStoreCreateMessage/*/pebble/4KiB`
-- `BenchmarkStoreListMessagesByUser/*/pebble`
-- `BenchmarkStorePruneEventLogOnce/*/pebble`
+- `BenchmarkStoreCreateMessage/*/pebble/balanced/no_sync/*`
+- `BenchmarkStoreCreateMessage/*/pebble/throughput/no_sync/*`
+- `BenchmarkStoreCreateMessage/*/pebble/*/force_sync/*`
+- `BenchmarkStoreCreateMessageSteadyState/*/pebble/*`
+- `BenchmarkStoreCreateMessageParallel/*/pebble/*`
 
 通过标准：
 
-- `CreateMessage/pebble` 明显改善。
-- `ListMessagesByUser/pebble` 不出现异常回退。
-- `PruneEventLogOnce/pebble` 不出现明显恶化。
+- `no_sync` 主路径不出现明显回退。
+- `force_sync` 的任何优化都必须单独看语义与成本，不能只看吞吐数字。
+- `ListMessagesByUser`、`PruneEventLogOnce`、snapshot repair 相关路径不能因为写入优化而出现异常退化。
 
-## 11. 建议执行顺序
+## 7. 一句话总结
 
-建议按下面顺序推进：
+当前 `Pebble` `CreateMessage` 的核心事实已经从“整体慢于 SQLite”变成了：
 
-1. 消息 body 单副本化
-2. Pebble 本地 append 快路径
-3. trim 阈值化
-4. 成功路径跳过 pending projection delete
-5. 热点元数据去 SQLite 化
-
-原因：
-
-- 前三项都直接命中 `CreateMessage` 主路径。
-- 第 1 项最能改善 `4KiB` payload。
-- 第 2 项最能改善 `256B` 小消息。
-- 第 3 项能降低每次写入绑定的读放大。
-- 后两项收益更偏“继续收尾”，可以放在第二轮。
+- 主写路径上的本地 fast path、消息序号去 SQLite 化、body 去重、延迟 trim 都已经落地。
+- 现在真正需要继续关注的是 `force_sync`、inbox fan-out、混合元数据读取，以及硬 trim / snapshot repair 的边界成本。

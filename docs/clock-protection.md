@@ -11,14 +11,14 @@
 
 ## 相关组件
 
-- HLC 实现在 [internal/clock/hlc.go](/root/dev/sys/turntf/internal/clock/hlc.go)。`Clock.Now` 和 `Clock.Observe` 使用“本地物理时钟 + 当前 offset”生成或推进 HLC，并保证单调递增。
-- 集群校时和保护状态机主要在 [internal/cluster/clock_guard.go](/root/dev/sys/turntf/internal/cluster/clock_guard.go) 和 [internal/cluster/manager.go](/root/dev/sys/turntf/internal/cluster/manager.go)。
-- 配置默认值在 [internal/cluster/config.go](/root/dev/sys/turntf/internal/cluster/config.go)。
-- 本地写闸门通过 `api.WriteGate` 接入写接口，见 [internal/api/service.go](/root/dev/sys/turntf/internal/api/service.go)。
+- HLC 实现在 [internal/clock/hlc.go](/root/dev/sys/turntf/turntf/internal/clock/hlc.go)。`Clock.Now` 和 `Clock.Observe` 使用“本地物理时钟 + 当前 offset”生成或推进 HLC，并保证单调递增。
+- 集群时钟保护状态机主要在 [internal/cluster/clock_guard.go](/root/dev/sys/turntf/turntf/internal/cluster/clock_guard.go)、[internal/cluster/manager.go](/root/dev/sys/turntf/turntf/internal/cluster/manager.go) 和 [internal/cluster/manager_time_sync.go](/root/dev/sys/turntf/turntf/internal/cluster/manager_time_sync.go)。
+- 配置默认值在 [internal/cluster/config.go](/root/dev/sys/turntf/turntf/internal/cluster/config.go)。
+- 本地写闸门通过 `api.WriteGate` 接入写接口，见 [internal/api/service.go](/root/dev/sys/turntf/turntf/internal/api/service.go)。
 
 ## 校时采样
 
-peer 连接完成 `Hello` 后，节点会先执行一次校时；连接保持期间，每 30 秒周期性再次校时。校时失败或被拒绝会影响 peer 的时钟状态，严重时关闭 session。
+代码里已经实现了单轮校时、7 次采样择优和 30 秒周期循环这套机制；对应逻辑在 [internal/cluster/manager_time_sync.go](/root/dev/sys/turntf/turntf/internal/cluster/manager_time_sync.go)。但当前 transport 会话生命周期里还没有自动调用 `performTimeSync` / `sessionSyncLoop` 的入口，因此下面描述的是“已有校时实现本身”的行为，而不是“连接建立后一定会自动发生的事”。另外，mesh runtime 的 `TimeSyncObservation` 仅更新 RTT，不会把 peer 置为 `trusted`，也不会打开旧的写闸门。
 
 单轮校时使用 `TimeSyncRequest` 和 `TimeSyncResponse`，采集四个时间点：
 
@@ -52,17 +52,17 @@ jitter = maxRTT - minRTT
 | `probing` | 已知 peer，但还没有可信校时样本。 |
 | `trusted` | 最近有可信校时样本，且当前 session 可作为 offset 来源。 |
 | `observing` | peer 仍可连接，但校时质量、偏差边界或 session 状态需要观察。 |
-| `rejected` | 连续校时失败或确认偏差超限，复制事件和快照流量会被保护逻辑拒绝。 |
+| `rejected` | 连续校时失败或确认偏差超限。对基于传输连接的复制事件和快照流量会被保护逻辑拒绝。 |
 
 可信样本进入后会更新 `clockOffsetMs`、`clockUncertaintyMs` 和 `lastCredibleClockSync`。慢样本不会更新可信 offset，只会让 peer 保持或进入 `observing`。
 
 当 `cluster.clock.max_skew_ms > 0` 时，会按 offset 的不确定区间判断偏差：
 
-- `abs(offsetMs) - uncertaintyMs > max_skew_ms`：偏差下界已经超过阈值，记为确认超限；连续达到 `reject_after_skew_samples` 次后，peer 进入 `rejected`。
+- `abs(offsetMs) - uncertaintyMs > max_skew_ms`：偏差下界已经超过阈值，记为确认超限；连续达到 `cluster.clock.reject_after_skew_samples` 次后，peer 进入 `rejected`。
 - `abs(offsetMs) + uncertaintyMs > max_skew_ms`：偏差上界可能超过阈值，但下界尚未确认超限，peer 进入 `observing`。
-- 区间未超过阈值：样本健康；如果 peer 正在恢复，需要连续达到 `clock_recover_after_healthy_samples` 次健康样本后才回到 `trusted`。
+- 区间未超过阈值：样本健康；如果 peer 正在恢复，需要连续达到 `cluster.clock.recover_after_healthy_samples` 次健康样本后才回到 `trusted`。
 
-校时请求失败会累加 `clockFailureStreak`。如果连续失败达到 `clock_reject_after_failures`，peer 进入 `rejected`。
+校时请求失败会累加 `clockFailureStreak`。如果连续失败达到 `cluster.clock.reject_after_failures`，peer 进入 `rejected`。
 
 ## 节点聚合状态机
 
@@ -70,15 +70,19 @@ jitter = maxRTT - minRTT
 
 | 状态 | 进入条件 | 写入 |
 | --- | --- | --- |
-| `trusted` | 单节点模式，或存在新鲜可信 peer 校时。 | 允许 |
-| `observing` | 最近有可信校时，但已经超过 `clock_trusted_fresh_ms`，仍处于观察宽限期。 | 允许 |
-| `degraded` | 可信校时进一步过期，但还未超过写闸门宽限。 | 拒绝本地写入 |
-| `unwritable` | 最近可信校时超过 `clock_write_gate_grace_ms`。 | 拒绝本地写入 |
-| `unsynced` | 集群模式下从未获得可信校时。 | 拒绝本地写入 |
+| `trusted` | 单节点模式，或仍存在 `trustedSession` 且最近可信校时年龄不超过 `cluster.clock.trusted_fresh_ms`。 | 允许 |
+| `observing` | 最近曾有可信校时，但当前已没有新鲜可信 session；或最近可信校时年龄已经超过 `cluster.clock.trusted_fresh_ms`、但仍不超过 `cluster.clock.observe_grace_ms`。 | 允许 |
+| `degraded` | 最近可信校时年龄已经超过 `cluster.clock.observe_grace_ms`，但仍不超过 `cluster.clock.write_gate_grace_ms`。 | 拒绝本地写入 |
+| `unwritable` | 最近可信校时年龄超过 `cluster.clock.write_gate_grace_ms`。 | 拒绝本地写入 |
+| `unsynced` | 集群模式下尚无任何可信校时记录。 | 拒绝本地写入 |
 
 当前实现中，本地写闸门只允许 `trusted` 和 `observing`。写接口遇到未同步状态会返回 `app.ErrClockNotSynchronized`，HTTP 层映射为 `503 Service Unavailable`。
 
-复制事件应用的保护略有不同：单节点模式直接允许；如果节点状态为 `unwritable`，或来源 peer 是 `rejected`，则拒绝应用事件。快照流量更严格，只允许节点状态为 `trusted` 或 `observing`，且 peer 未被 `rejected`。
+`cluster.clock.observe_grace_ms` 和 `cluster.clock.write_gate_grace_ms` 都按“距离最近一次可信校时的总年龄”判断，不是在前一阶段基础上的增量追加窗口。
+
+复制事件应用的保护略有不同：对基于传输连接的会话，单节点模式直接允许；否则只有节点状态为 `unwritable`，或来源 peer 是 `rejected` 时才拒绝应用事件。也就是说，`unsynced` 和 `degraded` 不会阻止继续应用来自 transport peer 的复制事件。快照流量更严格，只允许节点状态为 `trusted` 或 `observing`，且 peer 未被 `rejected`。
+
+如果会话是 mesh 合成会话（`sess.conn == nil`），上述两道旧 gate 都会被绕过；但后面的未来 HLC 检查仍然执行。
 
 ## Offset 聚合
 
@@ -93,11 +97,11 @@ jitter = maxRTT - minRTT
 
 ## 未来 HLC 拒绝
 
-即使 peer 当前未被拒绝，事件和快照仍会做未来时间戳检查。
+即使某些复制流量绕过了旧的状态 gate，事件和快照仍会做未来时间戳检查。
 
 事件批次检查：
 
-- `Envelope.sent_at_hlc` 必须存在并能解析。
+- 非空批次要求 `Envelope.sent_at_hlc` 非空；当 `cluster.clock.max_skew_ms > 0` 时还会解析它并做未来时间检查。
 - `sent_at_hlc.wall_time_ms` 不能超过本地修正 wall time 加 `max_skew_ms`。
 - 每个 replicated event 的 HLC wall time 不能超过同一未来时间边界。
 - `sent_at_hlc` 不能早于批次内最大 event HLC。
@@ -117,8 +121,8 @@ jitter = maxRTT - minRTT
 | `cluster.clock.sync_timeout_ms` | `8000` | 单轮校时等待响应的超时时间。 |
 | `cluster.clock.credible_rtt_ms` | `4000` | 校时样本可被视为可信的最大 RTT。 |
 | `cluster.clock.trusted_fresh_ms` | `60000` | 聚合状态保持 `trusted` 的新鲜窗口。 |
-| `cluster.clock.observe_grace_ms` | `180000` | 从可信过期到 `observing` 的宽限窗口。 |
-| `cluster.clock.write_gate_grace_ms` | `300000` | 可信校时过期后允许继续复制事件应用的最大窗口。 |
+| `cluster.clock.observe_grace_ms` | `180000` | 最近可信校时年龄不超过该值时，节点仍可停留在 `observing`。 |
+| `cluster.clock.write_gate_grace_ms` | `300000` | 最近可信校时年龄不超过该值时，节点会停留在 `degraded`；超过后进入 `unwritable`。 |
 | `cluster.clock.reject_after_failures` | `3` | 连续校时失败多少次后拒绝 peer。 |
 | `cluster.clock.reject_after_skew_samples` | `3` | 连续确认偏差超限多少次后拒绝 peer。 |
 | `cluster.clock.recover_after_healthy_samples` | `2` | 从观察状态恢复到可信所需的连续健康样本数。 |
@@ -130,6 +134,8 @@ jitter = maxRTT - minRTT
 - `write_gate_ready`：当前是否允许本地写入。
 - `clock_state`、`clock_reason`、`last_trusted_clock_sync`：节点聚合状态、原因和最近可信校时。
 - peer 级 `clock_state`、`clock_offset_ms`、`clock_uncertainty_ms`、`clock_failures`、`last_clock_error`、`last_clock_sync`、`last_credible_clock_sync`、`trusted_for_offset`。
+
+当前实现导出 peer 级 `clock_state` 时直接读取最近一次写入的 `peer.clockState`；不会在导出时按 freshness 重新推导 `trusted_sample_stale` / `trusted_session_missing` 这类状态。因此判断 peer 的可信样本是否已经过期，需要结合 `trusted_for_offset`、`last_credible_clock_sync`、`last_clock_sync` 和节点级 `clock_state` 一起看。
 
 Prometheus 指标包括：
 
@@ -144,9 +150,9 @@ Prometheus 指标包括：
 常见判断：
 
 - `write_gate_ready = false` 且 `clock_state = unsynced`：节点启动后尚未完成首次可信校时，或所有 peer 都不可达。
-- peer `clock_state = observing` 且 reason 为 `slow_time_sync_sample`：网络 RTT 太高，样本不可信，优先检查网络延迟和代理链路。
-- peer `clock_state = observing` 且 reason 为 `clock_skew_near_limit`：offset 不确定区间触及阈值，优先检查 NTP 和宿主机时钟。
-- peer `clock_state = rejected` 且 reason 为 `clock_skew_rejected`：连续确认偏差超限，需先修正系统时间，再等待重新校时或重连恢复。
+- peer `clock_state = observing` 且 `last_clock_error = slow_time_sync_sample`：网络 RTT 太高，样本不可信，优先检查网络延迟和代理链路。
+- peer `clock_state = observing` 且 `last_clock_error = clock_skew_near_limit`：offset 不确定区间触及阈值，优先检查 NTP 和宿主机时钟。
+- peer `clock_state = rejected` 且 `last_clock_error = clock_skew_rejected`：连续确认偏差超限，需先修正系统时间，再等待重新校时或重连恢复。
 - 日志中出现 future HLC 拒绝：对端可能系统时间超前，或本节点 offset 已被错误样本修正，应同时检查两端 `/ops/status` 中的 offset 和状态。
 
 ## 当前边界
@@ -155,3 +161,5 @@ Prometheus 指标包括：
 - offset 修正来自 peer 间校时，不替代生产环境 NTP；所有节点仍应使用可靠系统时间源。
 - `observing` 是一个可写宽限状态，用于避免短暂校时波动直接造成不可用；它不表示时钟完全健康。
 - `cluster.clock.max_skew_ms = 0` 只关闭超限拒绝和未来 HLC 上界检查，不关闭首次可信校时前的写闸门。
+- 当前 transport 会话生命周期尚未自动启动 `performTimeSync` / `sessionSyncLoop`；如果没有额外调用这些入口或直接注入可信样本，节点会一直停留在 `unsynced`，`write_gate_ready` 不会自动打开。
+- mesh runtime 的 time sync 目前只用于链路 RTT 观测，不参与旧的时钟信任状态机；mesh 合成会话会绕过旧的 event/snapshot gate，但不会绕过未来 HLC 检查。

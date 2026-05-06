@@ -2,6 +2,8 @@
 
 本文档记录当前分布式通知服务在未来几个版本中的重点演进方向，用于指导后续 issue 拆分、里程碑排期和设计评审。它不是实现细节设计稿，也不直接定义最终协议，而是明确“为什么做、先做什么、依赖什么、验收到什么程度才算完成”。
 
+说明：部分工作点已经在当前仓库完成第一轮落地。本文会同时记录“当前已实现基线”和“下一步演进方向”，避免把已上线能力继续误写成纯未来计划。
+
 当前基线能力如下：
 
 - 节点间通过 mesh runtime 在 WebSocket、libp2p 或 ZeroMQ transport 上复制，`peer` 关系来自静态 `cluster.peers` 和自动发现
@@ -11,7 +13,7 @@
 - 用户数据按字段级 `LWW`、删除墓碑和幂等事件最终收敛
 - 消息按每节点 `message_window_size` 窗口收敛
 - 瞬时包通过 mesh 策略路由与逐跳转发尽力送达，旧 `RoutingUpdate` 不再承担生产路由语义
-- 集群内部消息当前使用共享 `cluster.secret` 做 HMAC 鉴权，并通过首次校时和最大时钟偏差阈值保护 `HLC`
+- 集群内部消息当前使用共享 `cluster.secret` 做 HMAC 鉴权，并已落地 peer / 节点两级时钟状态机与写闸门保护 `HLC`
 
 ## 演进原则
 
@@ -19,72 +21,67 @@
 - 优先保持最终一致模型可解释，避免在没有文档和测试约束前引入无法描述的隐式语义。
 - 任何更强的安全、时钟或冲突机制，都必须先定义迁移期、兼容边界和失败时的退化行为。
 - 优先补齐复制语义文档和分布式测试，再放大协议复杂度或替换底层传输。
-- 对实验性方向保持克制：允许预研 `libp2p` 和 `zeromq`，但它们不能改变现有复制语义，只能承载既有协议能力。
+- 对已接入的 `libp2p` 和 `zeromq` 保持克制：它们可以继续扩展承载能力和观测，但不能反向改变现有复制语义。
 
 ## Phase 1：基础语义与安全补强
 
-### 1. 复制语义文档优化
+### 1. 复制语义文档维护（第一阶段已完成）
 
 当前状态：
 
-- README 和运维文档已经说明了补拉、反熵、`Ack`、动态路由、写闸门等基础行为
-- 但“写入成功代表什么”“哪些资源最终一致”“快照与事件重叠时如何收敛”等关键语义仍分散在多处描述中
+- [README.md](/root/dev/sys/turntf/turntf/README.md)、[docs/replication-semantics.md](/root/dev/sys/turntf/turntf/docs/replication-semantics.md) 和 [docs/operations.md](/root/dev/sys/turntf/turntf/docs/operations.md) 已经收敛了 `Ack`、补拉、反熵、消息窗口、黑名单、瞬时包和写闸门等当前语义
+- 测试结果文档也已开始直接复用这套术语，例如 [docs/distributed-test-framework-enhancement-results.md](/root/dev/sys/turntf/turntf/docs/distributed-test-framework-enhancement-results.md) 已明确把回归断言对齐到复制语义边界
 
 问题：
 
-- 后续引入黑名单、mTLS、自动发现、向量时钟时，如果没有统一语义文档，设计评审会不断重复解释基本边界
-- 测试覆盖很难对齐“期望行为”与“允许的最终状态”
+- 复制语义文档已经不是“缺失”，但后续黑名单、mTLS、自动发现、向量时钟或 mixed transport 能力继续演进时，仍然容易出现 README、专题文档、运维手册和测试断言漂移
+- 如果路线图继续把这项工作写成“未来新增一份文档”，会掩盖当前仓库其实已经把第一阶段落地完成
 
 目标能力：
 
-- 新增一份复制语义专题文档，系统说明以下问题：
+- 维持“先收紧当前承诺，再扩展实现”的文档纪律，而不是重复新建平行说明
+- 新分布式特性落地前，先明确以下边界：
   - 本地写入成功与集群收敛成功的区别
-  - `Ack` 代表“已应用到本地状态”，不代表全局提交
-  - 网络分区、断线重连、重复投递、乱序到达下允许出现的暂态结果
-  - 快照修复与事件补拉重叠时的优先级与幂等吸收原则
-  - 哪些资源是最终一致的持久状态，哪些是非持久瞬时包
-  - 当前冲突处理策略，包括字段级 `LWW`、删除墓碑、消息窗口和订阅可见性边界
+  - `Ack`、补拉、快照和瞬时包分别承诺什么
+  - 哪些行为是当前保证，哪些仍属于未定义或不保证
 
 分阶段落地：
 
-1. 更新 [README.md](/root/dev/sys/turntf/README.md) 中“当前同步实现已经收紧到以下边界”和“当前集群同步行为”两节，统一术语。
-2. 新增复制语义专题文档，集中描述协议语义、故障场景和收敛规则。
-3. 更新 [docs/operations.md](/root/dev/sys/turntf/docs/operations.md)，把“如何判断异常”“哪些是预期最终一致延迟”写得更明确。
+1. 新增或调整分布式语义时，优先更新 [docs/replication-semantics.md](/root/dev/sys/turntf/turntf/docs/replication-semantics.md)，把当前保证与非保证写清楚。
+2. 再同步 [README.md](/root/dev/sys/turntf/turntf/README.md) 与 [docs/operations.md](/root/dev/sys/turntf/turntf/docs/operations.md) 中的入口说明、排障语义和观测约定。
+3. 测试与执行结果文档继续复用同一套术语，避免断言和文档各说各话。
 
 验收标准：
 
 - 新成员只读 README、复制语义专题文档和运维手册，就能判断某个行为是 bug、允许的暂态，还是尚未定义
-- 测试命名和断言可以直接引用文档中的语义术语
+- 新特性测试命名和断言可以直接引用文档中的语义术语，而不是重新发明口径
 
 风险与兼容性：
 
 - 文档收紧会暴露现有实现里的模糊区，需要先承认“不承诺的行为”，避免文档写得比实现更强
 
-### 2. 用户拒收（黑名单）配置
+### 2. 用户拒收（黑名单）能力补完
 
 当前状态：
 
-- 系统已支持用户、消息、订阅和瞬时包路由，但没有“用户主动拒收某些来源”的持久化关系模型
+- 系统已经支持 `user_blacklist` 持久化关系、HTTP 管理接口、事件复制、快照修复和查询
+- 当前语义已经明确：黑名单阻止后续新的普通用户直发持久消息与瞬时包，不回溯删除历史消息，`channel`、`broadcast` 和 `node` 入口消息不受影响
 
 问题：
 
-- 仅在发送路径做本地过滤无法覆盖跨节点复制和重连后补发
-- 如果不先定义语义，黑名单很容易与历史消息、广播地址、channel 地址和管理员操作产生冲突
+- 第一版黑名单已经落地，但后续若扩展批量管理、可观测性或更细粒度拒收策略，仍必须保持写侧校验、读侧可见性和复制语义一致
+- 这项能力已经不再适合被描述为“尚无持久化模型”的未来计划
 
 目标能力：
 
-- 引入用户级拒收关系，支持持久化、复制和查询
-- 默认语义建议为“阻止后续新消息送达，不回溯删除历史已存在消息”
-- 管理员能力、广播地址、channel 地址、节点入口瞬时包是否受黑名单影响必须逐项定义
+- 在不改变当前语义承诺的前提下，补齐黑名单的管理、观测和性能演进空间
+- 继续把管理员能力、广播地址、`channel` 地址、节点入口瞬时包边界保持显式定义
 
 分阶段落地：
 
-1. 先完成语义设计：
-   - 黑名单是否以 `(owner_node_id, owner_user_id, blocked_node_id, blocked_user_id)` 持久化
-   - 是否通过事件日志复制并参与快照修复
-   - 是否只影响发送前校验，还是同时影响复制应用阶段的投影可见性
-2. 第一版建议落“持久化黑名单 + 本地发送前校验 + 事件复制 + 文档说明”。
-3. 第二版再考虑跨节点缓存、批量查询、管理接口和指标。
+1. 把当前已实现语义持续固定在 [docs/replication-semantics.md](/root/dev/sys/turntf/turntf/docs/replication-semantics.md)、[README.md](/root/dev/sys/turntf/turntf/README.md) 和回归测试中。
+2. 如有需要，再补批量查询、批量管理、更细粒度指标或缓存优化，但不能悄悄扩大语义作用面。
+3. 若未来扩展到新的地址类型或投递规则，必须先补文档和测试，再改写路径。
 
 验收标准：
 
@@ -96,66 +93,68 @@
 - 如果黑名单影响复制应用而不是仅影响发送路径，必须非常小心历史消息可见性和窗口裁剪行为
 - 对 `role=broadcast`、`role=channel`、`role=node` 的影响不应默认继承普通用户语义
 
-### 3. 分布式测试框架增强
+### 3. 分布式测试框架维护（第一轮已完成）
 
-详细实现计划见 [docs/distributed-test-framework-enhancement.md](/root/dev/sys/turntf/docs/distributed-test-framework-enhancement.md)。
-当前执行结果见 [docs/distributed-test-framework-enhancement-results.md](/root/dev/sys/turntf/docs/distributed-test-framework-enhancement-results.md)。
+详细实现计划见 [docs/distributed-test-framework-enhancement.md](/root/dev/sys/turntf/turntf/docs/distributed-test-framework-enhancement.md)。
+当前执行结果见 [docs/distributed-test-framework-enhancement-results.md](/root/dev/sys/turntf/turntf/docs/distributed-test-framework-enhancement-results.md)。
 
 当前状态：
 
-- 现有 `store` 和 `cluster manager` 已有一批覆盖补拉、快照修复、未来时间戳拒绝等单元测试
+- 三层测试策略、统一节点夹具、固定回归集、故障注入场景驱动器和扩展点测试已经落地
+- 当前仓库已经不再只有“点状单测”，而是具备可以承载后续黑名单、自动发现、时钟和 mixed transport 演进的回归骨架
 
 问题：
 
-- 后续能力会同时扩大状态机、协议分支和兼容路径，现有测试更偏点状验证
+- 测试框架本身已完成第一轮建设，但后续新能力仍有可能绕开既有夹具，重新堆出一次性测试路径
+- mixed transport、自动发现和未来身份治理会继续扩大状态机，如果不强制纳入统一回归，测试风格会再次发散
 
 目标能力：
 
-- 建立分层测试策略：
+- 维持已经落地的三层测试策略：
   - `store` 层收敛测试
   - `cluster manager` 协议测试
   - 多节点仿真测试
+- 要求后续特性优先复用现有夹具、驱动器和语义断言，而不是重新拼装一次性 helper
 
 分阶段落地：
 
-1. 提炼多节点测试夹具，统一模拟分区、乱序、重复投递、重连、快照并发。
-2. 把已有关键场景收编为固定回归集。
-3. 为后续黑名单、mTLS、自动发现预留可插拔测试入口。
+1. 新增分布式能力时，先声明它会落在哪一层测试，再补实现。
+2. 把已支持的 transport、membership 和路由边界继续收编到固定回归集，而不是只留在临时验证里。
+3. 为后续黑名单增强、mTLS、自动发现扩展或新的冲突元数据继续复用现有扩展点。
 
 验收标准：
 
 - 新增协议特性时，可以先补测试夹具再落实现，而不是每次单独拼装临时测试
+- 已有复制语义、自动发现和 mixed transport 边界不会因为新能力接入而失去固定回归覆盖
 
 风险与兼容性：
 
-- 测试框架本身不要绑死当前 WebSocket 传输细节，否则后面抽象传输接口时仍需大改
+- 测试框架本身不要绑死某一种 transport 或当前 build tag 组合，否则后续 mixed transport 演进时仍需大改
 
 ## Phase 2：时钟治理与集群身份强化
 
-### 4. 更严格的时钟保护
+### 4. 时钟保护与告警治理
 
 当前状态：
 
-- 当前有首次成功校时才能写入、`cluster.clock.max_skew_ms` 限制，以及未来时间戳事件拒绝
+- 当前已经实现 peer 级 `probing/trusted/observing/rejected` 与节点级 `trusted/observing/degraded/unwritable/unsynced` 状态机
+- 本地写闸门、未来 HLC 拒绝、offset 中位数聚合、`/ops/status` 与 Prometheus 指标也已落地，详见 [docs/clock-protection.md](/root/dev/sys/turntf/turntf/docs/clock-protection.md)
 
 问题：
 
-- 当前策略更像“单次校时 + 阈值拒绝”，对连续失败、漂移抖动、重连后可信度恢复没有明确状态模型
+- 这项能力已经不再是“单次校时 + 阈值拒绝”的草案；后续重点转为阈值调优、告警分级、恢复策略和跨传输运行经验沉淀
+- 如果路线图仍按旧表述描述，会低估当前实现和运维边界
 
 目标能力：
 
-- 引入时钟可信度状态机，覆盖未校时、可信、观察中、降级、不可写等状态
-- 明确写闸门进入和退出条件，以及快照、事件应用、瞬时包路由各自受哪些时钟状态影响
+- 在现有状态机基础上继续收紧运维可解释性，而不是重新定义一套并不存在的时钟模型
+- 明确不同状态下写入、事件复制、快照和 peer 接纳的运维判断约定
 
 分阶段落地：
 
-1. 定义时钟状态机和状态转换事件：
-   - 首次成功校时
-   - 连续校时失败
-   - 偏差超限
-   - 长时间未与可信 peer 同步
-2. 统一事件批次、快照应用和握手阶段的时钟检查，避免不同路径采用不同容错。
-3. 增加分级告警和指标，让运维能区分“可读不可写”“即将降级”“已拒绝 peer”。
+1. 基于现有状态机持续校准阈值、日志事件和告警文案，保证 `trusted/observing/degraded/unwritable/unsynced` 的语义稳定。
+2. 当 mixed transport、自动发现或身份治理继续扩展时，保持校时与写闸门规则跨传输一致。
+3. 如未来需要更强策略，再在 [docs/clock-protection.md](/root/dev/sys/turntf/turntf/docs/clock-protection.md) 和测试中先定义恢复/降级规则，再调整实现。
 
 验收标准：
 
@@ -170,7 +169,8 @@
 
 当前状态：
 
-- 当前集群内部主要依赖共享 `cluster.secret` 做 HMAC 鉴权
+- 当前集群内部逻辑身份和复制鉴权仍主要依赖共享 `cluster.secret` 做 HMAC
+- WebSocket/ZeroMQ 可以分别通过 `wss` 或 ZeroMQ `curve` 提供链路安全能力，但还没有把证书身份与 `node_id` 绑定成统一的 cluster mTLS 模型
 
 问题：
 
@@ -199,33 +199,32 @@
 
 风险与兼容性：
 
-- mTLS 不是简单叠加；它会影响握手、运维部署、自动发现和未来的传输层抽象
+- mTLS 不是简单叠加；它会影响握手、运维部署、自动发现和未来的多传输层治理
 
 ## Phase 3：成员管理与 membership 演进
 
-### 6. peer 自动发现
+### 6. peer 自动发现与 membership 稳定化
 
 当前状态：
 
-- 当前 peer 关系完全依赖静态 `cluster.peers`
+- 当前已经支持基于 membership update 的 peer 自动发现、`discovered_peers` 持久化恢复，以及 `GET /ops/status` / `/metrics` 观测
+- 自动发现与静态 `cluster.peers` 并存，并已支持 WebSocket、ZeroMQ 和 libp2p 候选地址传播，详见 [docs/peer-discovery.md](/root/dev/sys/turntf/turntf/docs/peer-discovery.md)
 
 问题：
 
-- 静态配置适合小规模固定节点，但扩容、缩容、地址漂移和故障恢复都依赖人工同步配置
+- 当前第一版自动发现主要依赖集群内广告和本地持久化；外部 discovery backend、专门运维 API 和更激进的地址治理仍未形成统一方案
+- 如果仍把这项能力描述成“完全依赖静态 peer”，会掩盖当前 membership 基线和后续真正剩余的工作
 
 目标能力：
 
-- 自动发现只负责 membership 和 bootstrap，不替代当前复制、补拉、反熵和路由语义
-- 支持“静态 peer + 自动发现”并存，避免一次性迁移
+- 在现有 discovery 基线上继续完善 membership 稳定性、地址治理和运维可控性
+- 保持“静态 peer + 自动发现”并存，且 discovery 不能绕过身份校验
 
 分阶段落地：
 
-1. 先定义 membership 边界：
-   - 自动发现如何提供候选地址
-   - 候选地址何时升级为可信 peer
-   - 如何与证书身份或静态身份绑定
-2. 第一版支持自动发现与静态配置并存，并具备地址去重和节点身份去重能力。
-3. 第二版补健康探测、失效摘除、地址更新和多环境发现后端。
+1. 继续稳定当前 advertisement、候选筛选、去重、过期和动态拨号策略。
+2. 视需要补充 discovered peer 的运维接口、失效治理、地址迁移和更多观测维度。
+3. 如果未来引入外部 discovery backend，先明确它只提供候选地址，不替代 `Hello`、HMAC、校时和 peer identity 绑定。
 
 验收标准：
 
@@ -271,45 +270,45 @@
 - 向量时钟会带来存储和快照体积膨胀，也会抬高接口复杂度
 - 如果没有先收紧复制语义文档，向量时钟会把现有模糊边界进一步放大
 
-## Phase 5：传输层扩展与协议抽象
+## Phase 5：多传输层稳定化与协议边界
 
-### 8. 接入 `libp2p` 和 `zeromq`
+### 8. 多传输层稳定化与 mixed transport 演进
 
 当前状态：
 
-- 现有复制和路由协议与 WebSocket 长连接耦合较深
+- `TransportConn` / mesh runtime 抽象已经存在，WebSocket、ZeroMQ 和 libp2p 都可以承载当前 cluster protocol
+- 当前仓库已经有 mixed transport 集成测试、mesh bridge 行为验证和 benchmark 基线；ZeroMQ 仍受 `zeromq` build tag 与 libzmq 环境约束，libp2p 仍只服务节点间通信
 
 问题：
 
-- 如果未来需要更丰富的 membership、NAT 穿透、多路连接或更高吞吐分发，现有传输层会逐渐成为实验瓶颈
+- 这项工作已经不再是“先抽象接口再试点接入”；后续重点是 mixed transport 的长期边界、观测和 rollout 纪律
+- 不同 transport 的能力差异可能诱发“某个 transport 反向定义上层语义”的风险
 
 目标能力：
 
-- 先抽象“传输接口”和“集群协议语义”的边界
-- 允许不同传输层承载现有 Envelope、握手、补拉、反熵和路由更新，但不改变现有复制模型
+- 保持复制语义高于 transport 选择，继续稳定跨 transport 的路由、发现、观测和性能基线
+- 明确哪些跨 transport 组合已支持，哪些仍显式不支持或只作为实验路径
 
 分阶段落地：
 
-1. 提炼统一的连接、收发、身份注入和观测接口。
-2. 分别评估两条实验方向：
-   - `libp2p`：成员发现、NAT、多路连接、身份体系
-   - `zeromq`：高性能消息分发和更灵活的传输模式
-3. 仅在协议抽象完成后，选一条路线做试点，不承诺两者都最终落地。
+1. 维持当前 transport 抽象与 mesh traffic class 边界稳定，避免新 transport 直接侵入上层语义。
+2. 持续补 mixed transport 的回归、benchmark 和观测，特别是 bridge、route fallback、snapshot / replication no-route 等显式边界。
+3. 若未来继续扩 transport 能力，先更新文档和测试，再决定是否扩大默认 rollout 范围。
 
 验收标准：
 
-- 不改复制语义的前提下，可以在测试环境中用新传输层跑通握手、广播、补拉和反熵
+- 不改复制语义的前提下，跨 transport 已支持的路径都有测试与文档，未支持的路径也有明确拒绝或降级说明
 
 风险与兼容性：
 
 - 新传输层不能反向定义上层语义
-- 如果传输抽象过早，会在 mTLS、自动发现和现有 WebSocket 兼容性未稳定前制造额外重构成本
+- mixed transport 扩容会放大观测与排障成本，必须与测试、文档和 rollout 纪律同步推进
 
 ## Phase 6：分布式测试体系完善
 
 ### 9. 分布式逻辑测试覆盖清单
 
-后续测试体系至少覆盖以下场景：
+当前回归体系已经覆盖其中大部分场景；后续新增能力或扩大 rollout 时，至少继续覆盖以下场景：
 
 - 网络分区与分区恢复
 - 乱序到达、重复投递与补拉重放
@@ -335,33 +334,34 @@
 
 以下内容属于未来可能新增的公共面，用于帮助设计评审时提前留意兼容边界，不代表这些接口已经定版：
 
-- `cluster` 配置可能新增 discovery 后端、TLS/mTLS、证书路径、信任根、时钟保护策略项
-- 用户关系模型可能新增 blacklist / deny-list 持久化关系、管理接口和查询能力
-- 集群协议可能新增成员发现、证书身份信息、冲突元数据、向量时钟字段
-- 运维和观测面可能新增时钟状态、证书状态、membership 状态、黑名单拒收计数等指标
+- `cluster` 配置可能继续扩展外部 discovery 后端、TLS/mTLS、证书路径、信任根和更细粒度时钟治理策略
+- 用户关系模型可能扩展黑名单的批量管理接口、查询能力或更细粒度拒收策略
+- 集群协议可能继续扩展证书身份信息、冲突元数据和向量时钟字段；成员发现与 transport hint 已有基线
+- 运维和观测面可能在现有时钟状态、membership 状态和黑名单计数基础上继续细化指标与告警
 
 所有新增公共面都应优先采用“兼容扩展、双栈迁移、先文档后落地”的策略，避免在未来版本中做一次性破坏性切换。
 
 ## 文档与里程碑要求
 
 - README 持续维护“当前已实现边界”，不直接承载过长的未来规划
-- 本路线图用于承载阶段目标、依赖关系和验收标准
+- 本路线图用于同时记录“已落地基线 + 下一步阶段目标 + 关键依赖关系”，避免现状与规划脱节
 - 复制语义专题文档用于承载当前系统的规范语义
+- [docs/peer-discovery.md](/root/dev/sys/turntf/turntf/docs/peer-discovery.md) 和 [docs/clock-protection.md](/root/dev/sys/turntf/turntf/docs/clock-protection.md) 负责记录当前 membership / 时钟保护实现边界
 - 运维手册负责记录上线、证书、时钟治理、告警和排障策略
 
 里程碑顺序建议如下：
 
-1. 复制语义文档优化、黑名单语义设计、测试框架增强
-2. 更严格时钟保护、mTLS 双向认证
-3. 自动发现与成员管理
+1. 持续维护复制语义文档、黑名单语义和分布式测试基线
+2. 时钟治理调优与 mTLS 双向认证
+3. 自动发现稳定化与成员管理扩展
 4. 向量时钟的受限引入
-5. 传输层抽象，评估并试点 `libp2p` / `zeromq`
+5. 多传输层稳定化、mixed transport 观测与 rollout 边界收紧
 
 关键依赖关系如下：
 
 - 向量时钟依赖复制语义文档先收紧
-- 自动发现依赖身份认证与 peer 身份绑定更明确
-- `libp2p` / `zeromq` 依赖传输抽象稳定，且不能早于 mTLS 与身份治理讨论
+- 更激进的自动发现扩展依赖身份认证与 peer 身份绑定更明确
+- mixed transport 的进一步放量依赖既有语义边界、观测能力和回归覆盖持续稳定
 
 ## 本文档的使用方式
 

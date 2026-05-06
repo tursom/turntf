@@ -1,8 +1,8 @@
 # 运维与上线手册
 
-本文档记录分布式通知服务的小规模上线建议、备份策略、节点恢复流程和核心监控项。默认每个节点使用本地 SQLite，节点间通过 mesh runtime 承载 WebSocket/libp2p/ZeroMQ 等传输上的控制面、复制流、快照流和瞬时包；事件日志和消息投影也可配置为 Pebble 后端。复制语义边界请先参考 [复制语义专题文档](/root/dev/sys/turntf/docs/replication-semantics.md)，时钟保护细节请参考 [时钟保护算法](/root/dev/sys/turntf/docs/clock-protection.md)。
+本文档记录分布式通知服务的小规模上线建议、备份策略、节点恢复流程和核心监控项。默认每个节点使用本地 SQLite，节点间通过 mesh runtime 承载 WebSocket/libp2p/ZeroMQ 等传输上的控制面、复制流、快照流和瞬时包；启用 `store.engine = "pebble"` 后，高吞吐数据路径（事件日志、消息投影、消息序号、peer ack/origin cursor、pending projection）会迁到 Pebble，关系型与控制面元数据仍保留在 SQLite。复制语义边界请先参考 [复制语义专题文档](replication-semantics.md)，时钟保护细节请参考 [时钟保护文档](clock-protection.md)。
 
-peer 自动发现的协议、状态机和排查细节见 [peer 自动发现专题文档](/root/dev/sys/turntf/docs/peer-discovery.md)。
+peer 自动发现的协议、状态机和排查细节见 [peer 自动发现专题文档](peer-discovery.md)。
 
 ## 小规模部署建议
 
@@ -10,10 +10,10 @@ peer 自动发现的协议、状态机和排查细节见 [peer 自动发现专�
 - 所有节点使用相同的 `auth.token_secret`，否则跨节点登录 token 无法互认。
 - 所有节点使用相同的 `cluster.secret`，并确保它不同于 `auth.token_secret`。
 - 生产环境建议所有节点使用相同的 `store.message_window_size`，避免消息反熵因窗口不一致而跳过消息分片修复。
-- `store.engine` 默认 `sqlite`；配置为 `pebble` 时，事件日志和消息投影写入 Pebble，但用户、订阅、游标、pending projection 和运维统计仍写入 SQLite。
+- `store.engine` 默认 `sqlite`；配置为 `pebble` 时，事件日志、消息投影、消息序号、peer ack/origin cursor 和 pending projection 走 Pebble；用户、订阅、附件、metadata、发现到的 peer、`schema_meta.node_id` 以及裁剪/冲突统计仍依赖 SQLite。
 - `store.event_log.enabled` 默认 `true`；服务会在启动时和后台周期性裁剪 `event_log`，按 `origin_node_id` 保留最近 `store.event_log.max_events_per_origin` 条事件。
-- 将 `services.http.listen_addr` 暴露给业务调用方，同时只允许可信节点访问固定内部集群入口 `/internal/cluster/ws`。
-- 至少保留一组可连通的静态 `cluster.peers` 作为自动发现种子；自动发现可以减少全量配置，但不能在没有入口的情况下凭空发现节点。
+- 将 `services.http.listen_addr` 暴露给业务调用方；如果集群使用 WebSocket，同步只允许可信节点访问固定内部入口 `/internal/cluster/ws`；如果启用 ZeroMQ 或 libp2p，也要把 `services.zeromq.bind_url` 和 `services.libp2p.listen_addrs` 放在可信内网或受控安全域内。
+- 至少保留一种可用的集群入口来源：静态 `cluster.peers`、已恢复的 `discovered_peers`，或启用 libp2p 时可达的 `services.libp2p.bootstrap_peers`；自动发现可以减少全量配置，但不能在没有任何入口的情况下凭空发现节点。
 - 保持节点系统时钟同步。集群模式下，节点首次成功校时前会拒绝写入；时钟偏差超过 `cluster.clock.max_skew_ms` 会导致 peer 被拒绝或断开。
 - 远端在线查询与目标用户瞬时包仅依赖 mesh 策略路由；旧 `RoutingUpdate` 不再承担生产转发或兜底语义。
 - `route_retry` 瞬时包只在 mesh 无可用路径时进入内存重试队列；节点重启后，未送达的重试包会直接丢失。
@@ -24,22 +24,25 @@ peer 自动发现的协议、状态机和排查细节见 [peer 自动发现专�
 
 - `GET /healthz`：公开存活检查，只返回服务进程是否可响应。
 - `GET /cluster/nodes`：已登录接口，返回当前节点视角下已连接的集群节点列表，包含 `node_id`、`is_local`、`configured_url` 和 peer 来源 `source`。发现 peer 会把发现到的 URL 放在兼容字段 `configured_url` 中。
-- `GET /cluster/nodes/{node_id}/logged-in-users`：已登录接口，查询某个节点当前 WebSocket 已登录用户列表，返回 `node_id`、`user_id`、`username`。
-- `GET /ops/status`：管理员接口，返回本节点事件进度、peer 连接状态、自动发现状态、未确认事件数、反熵状态、mesh 路由状态、冲突数和消息裁剪统计。
-- `GET /metrics`：管理员接口，返回 Prometheus text exposition 格式指标，包含 mesh 转发、路由成本、无路由和 bridge 指标。
-- `GET /events?after=0&limit=100`：管理员接口，用于调试本地事件日志。
+- `GET /cluster/nodes/{node_id}/logged-in-users`：已登录接口，查询某个节点当前客户端长连接已登录用户列表，返回 `target_node_id`、`count` 和 `items[]`；每项包含 `node_id`、`user_id`、`username`、`login_name`。
+- `GET /ops/status`：管理员接口，返回本节点 `write_gate_ready`、`clock_state/clock_reason/last_trusted_clock_sync`、事件/裁剪/待重放 projection 统计、自动发现状态、mesh 路由状态，以及每个 peer 的 transport、session_direction、remote message window、clock/snapshot/replication 细节。
+- `GET /metrics`：管理员接口，返回 Prometheus text exposition 格式指标，包含写闸门、clock state、pending projection、自动发现、复制、snapshot 与 mesh 转发/路由/bridge 观测。
+- `GET /events?after=0&limit=100`：管理员接口，用于调试当前节点本地 `event_log`。
 
 示例：
 
 ```bash
+# 默认示例假设 `auth.bootstrap_admin.login_name = "root"` 且密码为 `root`。
+# 如果未配置 `login_name`，请改用实际的 `node_id + user_id` 登录。
 TOKEN="$(curl -sS -X POST http://127.0.0.1:8080/auth/login \
   -H 'Content-Type: application/json' \
-  -d '{"node_id":4096,"user_id":1,"password":"root"}' | jq -r .token)"
+  -d '{"login_name":"root","password":"root"}' | jq -r .token)"
+NODE_ID="$(curl -sS -H "Authorization: Bearer ${TOKEN}" http://127.0.0.1:8080/ops/status | jq -r .node_id)"
 
 curl -H "Authorization: Bearer ${TOKEN}" http://127.0.0.1:8080/ops/status
 curl -H "Authorization: Bearer ${TOKEN}" http://127.0.0.1:8080/metrics
 curl -H "Authorization: Bearer ${TOKEN}" http://127.0.0.1:8080/cluster/nodes
-curl -H "Authorization: Bearer ${TOKEN}" http://127.0.0.1:8080/cluster/nodes/4096/logged-in-users
+curl -H "Authorization: Bearer ${TOKEN}" http://127.0.0.1:8080/cluster/nodes/${NODE_ID}/logged-in-users
 ```
 
 ## 预期延迟与异常判断
@@ -71,14 +74,14 @@ sqlite3 ./data/turntf.db ".backup './backup/turntf-$(date +%Y%m%d%H%M%S).db'"
 1. 停止故障节点进程。
 2. 确认恢复时仍使用原来的 SQLite 数据库或至少保留 `schema_meta.node_id`，不要把同一个身份同时启动两份。
 3. 从最近备份恢复 SQLite 数据库文件；Pebble 模式下同时恢复 Pebble 数据目录。
-4. 使用原配置启动节点，确保 `cluster.peers` 或已恢复的 `discovered_peers` 至少包含一个当前可用入口。
-5. 观察 `/ops/status` 中该节点的 `discovery`、各 peer 下各 `origin_node_id` 的 `unconfirmed_events`、`pending_catchup`，以及 peer 顶层的 `pending_snapshot_partitions` 是否逐步归零。
-6. 观察 `/metrics` 中 `notifier_peer_connected`、`notifier_discovered_peers`、`notifier_peer_origin_applied_event_id`、`notifier_peer_pending_snapshot_partitions`，以及 `routing_no_path_total`、`forwarded_packets_total`。
+4. 使用原配置启动节点，确保 `cluster.peers`、已恢复的 `discovered_peers`，或启用 libp2p 时的 `services.libp2p.bootstrap_peers` 至少提供一个当前可用入口。
+5. 观察 `/ops/status` 中该节点的 `write_gate_ready`、`clock_state`、`projection.pending_total`、`discovery`，以及各 peer 下各 `origin_node_id` 的 `unconfirmed_events`、`pending_catchup` 和 peer 顶层的 `pending_snapshot_partitions` 是否逐步归零。
+6. 观察 `/metrics` 中 `notifier_write_gate_ready`、`notifier_clock_state`、`notifier_pending_projections`、`notifier_peer_connected`、`notifier_discovered_peers`、`notifier_peer_origin_acked_event_id`、`notifier_peer_origin_applied_event_id`、`notifier_peer_pending_snapshot_partitions`，以及 `routing_no_path_total`、`forwarded_packets_total`。
 7. 如果长时间无法追平，检查集群 HMAC 密钥、peer URL、发现候选状态、时钟偏差和网络连通性。
 
 目标用户瞬时包额外排查点：
 
-1. 确认目标用户当前在线，且登录在目标节点的 `GET /ws/client` 连接上。
+1. 确认目标用户当前在线，且登录在目标节点的客户端长连接上（`GET /ws/client` 或启用时 `services.zeromq.bind_url` 对应的客户端入口）。
 2. 确认基础 peer 网络仍连通；mesh 策略路由只解决多跳寻路，不替代底层 `cluster.peers`、libp2p 或 ZeroMQ 建链。
 3. 如果依赖 `route_retry`，确认节点没有重启，且问题发生在内存 TTL 窗口内。
 
@@ -88,16 +91,22 @@ sqlite3 ./data/turntf.db ".backup './backup/turntf-$(date +%Y%m%d%H%M%S).db'"
 
 - `enabled`、`forwarding_enabled`、`bridge_enabled` 和 `node_fee_weight` 表示本节点是否启用 mesh、是否允许 transit、是否允许跨 transport bridge，以及当前费用权重。
 - `transport_capabilities` 暴露本节点每种 transport 的入站、出站、native relay 能力和广播端点。
-- `traffic_rules` 暴露每类流量的准入策略，例如 `control_query`、`transient_interactive`、`replication_stream` 和 `snapshot_bulk`。
+- `traffic_rules` 暴露每类流量的准入策略，例如 `control_critical`、`control_query`、`transient_interactive`、`replication_stream` 和 `snapshot_bulk`。
 - `topology_generation` 表示当前拓扑版本；路由排查时应确认多个节点看到的 generation 是否持续前进。
 - `routes` 按目的节点和流量类别列出当前 next hop、出站 transport、path class、估算成本以及是否可达。
 - `metrics` 是 `/metrics` 中 mesh 指标的 JSON 快照，便于无需 Prometheus 时快速定位路由行为。
 
 ## 核心指标
 
+- peer 级与 origin 级指标在能识别具体 transport 时，会额外带 `transport` label（`websocket`、`zeromq` 或 `libp2p`）。
+
 - `notifier_event_log_last_sequence{node_id}`：本地事件日志最新 sequence。持续增长代表本节点有写入或复制事件入库。
 - `notifier_event_log_trimmed_total{node_id}`：累计被本地 retention 裁剪掉的事件日志行数。
+- `notifier_blacklist_rejected_total{node_id}`：累计被黑名单规则拒绝的消息或瞬时包投递次数。
+- `notifier_pending_projections{node_id}`：待重放的 projection 事件数。持续非零通常表示有事件投影失败后尚未成功回放。
+- `notifier_clock_state{node_id,state}`：当前节点聚合时钟状态。常见 `state` 包括 `unsynced`、`observing` 和 `trusted`。
 - `notifier_peer_connected{node_id,peer_node_id}`：peer 是否已连接。正常值为 `1`。
+- `notifier_peer_origin_acked_event_id{node_id,peer_node_id,origin_node_id}`：该 peer 已确认应用到的最高 `event_id`，对应“远端确认进度”。
 - `notifier_peer_origin_unconfirmed_events{node_id,peer_node_id,origin_node_id}`：本地某个 origin 的事件尚未被 peer `Ack` 的数量，对应“本地已写入但尚未收到该 peer 本地应用确认”的复制阶段。持续升高通常表示对端断开或复制阻塞。
 - `notifier_peer_origin_applied_event_id{node_id,peer_node_id,origin_node_id}`：本地对该 origin 已应用到的最新 `event_id`，对应“本节点本地复制应用进度”。
 - `notifier_peer_origin_remote_last_event_id{node_id,peer_node_id,origin_node_id}`：最近从 peer 观察到的该 origin 最新 `event_id`。
@@ -105,10 +114,14 @@ sqlite3 ./data/turntf.db ".backup './backup/turntf-$(date +%Y%m%d%H%M%S).db'"
 - `notifier_user_conflicts_total{node_id}`：累计用户冲突记录数。
 - `notifier_message_trimmed_total{node_id}`：累计被本地消息窗口裁剪的消息数。
 - `notifier_clock_offset_ms{node_id,peer_node_id}`：最近一次可信校时偏移。
+- `notifier_peer_clock_state{node_id,peer_node_id,state}`：指定 peer 的当前时钟状态。
+- `notifier_peer_clock_uncertainty_ms{node_id,peer_node_id}`：指定 peer 最近一次可信校时样本的不确定区间。
+- `notifier_peer_clock_failures_total{node_id,peer_node_id}`：指定 peer 的累计校时失败次数。
 - `notifier_write_gate_ready{node_id}`：本节点是否允许本地写入，对应“写闸门是否已进入可信复制状态”。集群模式下为 `0` 通常表示尚未完成可信校时。
+- `notifier_clock_state_transitions_total{node_id,from,to,reason}`：节点聚合时钟状态迁移累计次数。频繁在 `unsynced/observing/trusted` 间抖动时可用来定位根因。
 - `notifier_discovered_peers{node_id}`：本节点已知发现记录数。
 - `notifier_discovered_peers_by_state{node_id,state}`：按 `candidate`、`dialing`、`connected`、`failed`、`expired` 聚合的发现记录数。
-- `notifier_discovered_peers_by_scheme{node_id,scheme}`：按 URL scheme 聚合的发现记录数，可用来区分 `ws`、`wss`、`zmq+tcp` 候选。
+- `notifier_discovered_peers_by_scheme{node_id,scheme}`：按 URL scheme 聚合的发现记录数，可用来区分 `ws`、`wss`、`zmq+tcp`、`libp2p` 候选。
 - `notifier_dynamic_peer_dialers{node_id}`：由自动发现启动的动态 peer 拨号器数量，当前每节点最多 8 个。
 - `notifier_zeromq_listener_running{node_id,mode,security}`：本地 ZeroMQ listener 运行状态；`mode` 为 `disabled`、`outbound_only` 或 `listening`，`security` 为 `none` 或 `curve`。
 - `notifier_libp2p_enabled{node_id,mode}`：libp2p 集群传输是否启用；`mode` 当前为 `disabled` 或 `listening`。
@@ -141,8 +154,8 @@ file_path = "./data/turntf.log"
 
 ## 常见告警排查
 
-- peer 长期未连接：检查 `cluster.peers.url`、发现到的 `discovered_url`、防火墙、反向代理 WebSocket 支持、ZeroMQ CURVE key、libp2p multiaddr 是否包含正确 `/p2p/<peer_id>`，以及固定内部集群入口 `/internal/cluster/ws`。
-- `discovery.discovered_peers = 0` 且 membership update 计数不增长：确认至少有一个静态 peer 已连接，双方协议支持 membership，且 `cluster.secret` 一致。
+- peer 长期未连接：检查 `cluster.peers.url`、发现到的 `discovered_url`、防火墙、反向代理 WebSocket 支持、ZeroMQ CURVE key、libp2p multiaddr 是否包含正确 `/p2p/<peer_id>`，以及对应 transport 的监听入口是否可达（WebSocket `/internal/cluster/ws`、ZeroMQ `services.zeromq.bind_url`、libp2p `services.libp2p.listen_addrs`）。
+- `discovery.discovered_peers = 0` 且 membership update 计数不增长：确认至少有一个集群入口已连通，例如静态 `cluster.peers`、已恢复的发现记录，或启用 libp2p 时可达的 `services.libp2p.bootstrap_peers`；同时检查双方协议支持 membership 且 `cluster.secret` 一致。
 - 发现候选长期 `failed` 或 `expired`：查看 peer 的 `last_discovery_error`、`notifier_discovered_peers_by_state` 和 `peer_dial_failed` 日志；常见原因是 URL 不可达、反向代理不支持 WebSocket、HMAC 不一致、候选不再被任何在线节点广告。
 - `notifier_write_gate_ready` 为 `0`：检查是否至少有一个 peer 完成校时，或是否时钟偏差超过 `cluster.clock.max_skew_ms`。如果只是刚启动且尚未完成首次校时，属于预期延迟。
 - `notifier_peer_origin_unconfirmed_events` 持续升高：先区分是短暂补拉中的预期积压，还是长时间无下降的异常；异常时检查对端是否在线、是否能应用该 origin 的事件、日志中是否有 HMAC、HLC 或 schema 错误。

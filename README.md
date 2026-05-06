@@ -86,6 +86,7 @@ printf 'secret' | go run ./cmd/turntf hash --stdin
 | `DELETE` | `/nodes/{node_id}/users/{user_id}/blacklist/{blocked_node_id}/{blocked_user_id}` | 取消拉黑普通用户 |
 | `GET` | `/nodes/{node_id}/users/{user_id}/blacklist` | 查询黑名单 |
 | `GET` | `/cluster/nodes` | 已连接集群节点列表（需登录） |
+| `GET` | `/cluster/nodes/{node_id}/logged-in-users` | 查询指定节点当前已登录用户（需登录） |
 | `GET` | `/events?after=0&limit=100` | 事件列表（管理员） |
 | `GET` | `/ops/status` | 节点运维快照（管理员） |
 | `GET` | `/metrics` | Prometheus 文本指标（管理员） |
@@ -93,7 +94,9 @@ printf 'secret' | go run ./cmd/turntf hash --stdin
 
 支持通过 `sync_mode: force_sync` 或 `no_sync` 控制单条消息的 Pebble 持久化方式（仅 `store.engine = "pebble"` 时生效）。
 
-`GET /users` 默认返回“当前用户可通讯的活跃用户集合”。可选的 `name` 参数会在该集合内做大小写不敏感子串匹配；可选的 `uid` 参数使用 `node_id:user_id` 格式做精确过滤。普通用户返回的其他联系人会隐藏 `login_name`，管理员和超级管理员仍可看到完整字段。若目标用户或频道显式写入 metadata `system.visible_to_others=false`，它会从普通用户的可见集合中隐藏，但不影响已知 `uid` 时继续发消息。
+`GET /users` 默认返回“当前用户可通讯的活跃用户集合”。可选的 `name` 参数会在该集合内做大小写不敏感子串匹配；普通用户只匹配 `username` 与 `profile.display_name/displayName`，管理员和超级管理员额外匹配 `login_name`。可选的 `uid` 参数使用 `node_id:user_id` 格式做精确过滤。普通用户返回的其他联系人会隐藏 `login_name`，管理员和超级管理员仍可看到完整字段。若目标用户或频道显式写入 metadata `system.visible_to_others=false`，它会从普通用户的可见集合中隐藏，但不影响已知 `uid` 时继续发消息。
+
+`GET /nodes/{node_id}/users/{user_id}/messages` 在 `limit` 之外，还支持同时传入 `peer_node_id` 和 `peer_user_id`，按“目标用户与 peer 之间的会话”筛选消息；此时管理员、目标用户本人，或会话另一端的 peer 本人都可以查询。
 
 `/metadata` 现支持所有非系统保留用户作为 owner：普通用户、管理员、超级管理员和 `channel` 都可挂 metadata；`broadcast` / `node` 等系统保留用户仍不允许。HTTP JSON 在保留原始 `value` 字段的同时，新增可选 `typed_value` 视图，便于按 `bool|string|number|json|bytes` 读写 metadata；WebSocket / protobuf 仍只传输原始字节数组。
 
@@ -101,8 +104,11 @@ printf 'secret' | go run ./cmd/turntf hash --stdin
 
 ### 客户端长连接
 
-- **WebSocket**：`/ws/client`，首帧发送 `LoginRequest`，登录后可复用全部已登录 HTTP API 能力
+- **WebSocket `/ws/client`**：首帧发送 `LoginRequest`，支持历史消息补发、持久消息/瞬时包，以及除 HTTP 登录之外的主要客户端与运维 RPC
+- **WebSocket `/ws/realtime`**：首帧同样发送 `LoginRequest`，保留 `list_cluster_nodes`、`list_node_logged_in_users`、`resolve_user_sessions` 这类在线态查询，以及 `delivery_kind=transient` 的瞬时流量；不会补发历史消息，也不支持持久化或管理类 RPC
 - **ZeroMQ**：启用后通过 `zmq+tcp://host:port` 连接，首包发送 `ZeroMQMuxHello{role=CLIENT}`，之后复用与 WebSocket 相同的 `ClientEnvelope/ServerEnvelope` 协议
+
+客户端登录同时支持 `node_id + user_id + password` 与 `login_name + password` 两种选择器；`LoginResponse` 会返回 `session_ref`，客户端可先用 `resolve_user_sessions` 查询在线会话，再通过瞬时消息里的 `target_session` 精确投递到某个在线会话。
 
 详见 [客户端全流程接入文档](docs/client-flow.md) 和 [客户端 WebSocket 接口](docs/client-websocket.md)。
 
@@ -118,7 +124,7 @@ printf 'secret' | go run ./cmd/turntf hash --stdin
 
 ## 认证与授权
 
-- 登录使用 `node_id + user_id + password`，签发的 token 在所有共享 `auth.token_secret` 的节点间通用
+- 登录支持 `node_id + user_id + password` 或 `login_name + password`，HTTP/长连接都要求二选一；签发的 token 在所有共享 `auth.token_secret` 的节点间通用
 - `user_id = 1`：保底超级管理员 (`role=super_admin`)，管理面高风险动作只能由 `super_admin` 执行；系统保留用户仍不可通过管理接口修改或删除
 - `user_id = 2`：系统广播地址 (`role=broadcast`)，不可登录、不可删除
 - `user_id = 3`：系统节点入口地址 (`role=node`)，不可登录、不可删除
@@ -135,7 +141,7 @@ printf 'secret' | go run ./cmd/turntf hash --stdin
 | 查询本人信息、本人消息、本人元数据、管理本人订阅或黑名单 | 登录用户 |
 | 发送消息到可登录用户或已授权 channel | 登录用户 |
 | 发送瞬时包到 `(node_id, 3)` | 登录用户 |
-| 查询集群节点 | 登录用户 |
+| 查询集群节点、查询指定节点当前已登录用户 | 登录用户 |
 | 创建普通用户、管理普通用户和 channel、事件查询、运维/监控 | `admin` 或 `super_admin` |
 | 创建 `role=admin`、管理员升降权、修改或删除管理员用户 | 仅 `super_admin` |
 
@@ -170,7 +176,7 @@ docker compose up -d --build
 
 预构建镜像：`ghcr.io/tursom/turntf:latest`
 
-镜像标签规则：`main` 分支推送生成 `main`、`sha-<commit>` 和 `latest`；版本标签 `v1.2.3` 生成同名标签。
+镜像标签规则：推送到 `main` 或 `master` 会生成对应分支标签与 `sha-<commit>`，其中 `latest` 只在 `main`/`master` 上发布；版本标签 `v1.2.3` 生成同名标签。
 
 ## 本地验证
 
@@ -180,6 +186,12 @@ go test ./... -count=1
 ```
 
 `smoke.sh` 会编译临时二进制，启动单节点，验证 `GET /healthz`、登录、运维状态、指标、创建用户、自收消息和事件列表等最小可用路径。
+
+当前 CI 默认运行的是不带 `zeromq` build tag 的测试集；如果本机已安装 libzmq 开发库，还可以额外执行：
+
+```bash
+go test -tags zeromq ./... -count=1
+```
 
 ## zsh 补全
 
@@ -229,12 +241,17 @@ cp ./config.example.toml ./config.toml   # 完整配置模板
 - [分布式系统演进路线图](docs/distributed-system-roadmap.md)
 - [复制语义](docs/replication-semantics.md)
 - [性能基线](docs/performance-baseline.md)
+- [分布式测试框架增强结果](docs/distributed-test-framework-enhancement-results.md)
 - [吞吐优化](docs/throughput-optimization-plan.md)
+- [Pebble 写入优化计划](docs/pebble-create-message-optimization-plan.md)
+- [集群在线容量优化计划](docs/cluster-online-capacity-optimization-plan.md)
 - [节点自动发现](docs/peer-discovery.md)
 - [时钟保护](docs/clock-protection.md)
 - [客户端接入流程](docs/client-flow.md)
 - [客户端 WebSocket 接口](docs/client-websocket.md)
 - [运维手册](docs/operations.md)
+- [异构转发与路由规划](docs/heterogeneous-forwarding-routing-plan.md)
 - [libp2p 接入计划](docs/libp2p-plan.md)
 - [ZeroMQ 传输计划](docs/zeromq-transport-plan.md)
 - [Mesh 路由邻接表计划](docs/mesh-routing-adjacency-list-plan.md)
+- [分布式测试框架增强计划](docs/distributed-test-framework-enhancement.md)

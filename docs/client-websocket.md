@@ -1,31 +1,94 @@
 # 客户端长连接接口
 
-本文档描述业务客户端使用的长连接 + Protobuf 接口。客户端可以通过 WebSocket 或 ZeroMQ 连接服务端；节点间集群同步仍使用 `GET /internal/cluster/ws` 或 `services.zeromq.bind_url` 对应的集群链路，不要和本文的客户端接口混用。完整接入步骤见 [客户端全流程接入文档](/root/dev/sys/turntf/docs/client-flow.md)。
+本文档描述业务客户端使用的长连接 + Protobuf 接口。客户端可以通过 WebSocket 或 ZeroMQ 连接服务端；节点间集群同步仍使用 `GET /internal/cluster/ws` 或 `services.zeromq.bind_url` 对应的集群链路，不要和本文的客户端接口混用。完整接入步骤见 [客户端全流程接入文档](client-flow.md)。
 
-当前客户端长连接已覆盖除 `POST /auth/login` 之外的全部 HTTP 客户端能力：既能收发消息，也能执行用户管理、订阅管理、历史查询和运维查询。
+当前长连接接口的“标准流”是 `GET /ws/client` 和 ZeroMQ 客户端连接。它覆盖了当前客户端的大部分能力：持久化消息收发、瞬时包收发、用户/附件/元数据管理、历史查询和运维查询；但它与 HTTP API 不是逐个路由一比一映射，订阅和黑名单能力在长连接协议中统一通过 `user_attachment` RPC 暴露。`GET /ws/realtime` 只暴露受限子集，见下文“实现边界”。
 
-## 连接地址
+## 连接与传输
 
-- WebSocket：`GET /ws/client`
-- ZeroMQ：`zmq+tcp://host:port`，其中 `host:port` 对应服务端 `services.zeromq.bind_url`
-- WebSocket frame 或 ZeroMQ message 内容：每一帧都是一个完整 protobuf message
+- 标准 WebSocket：`GET /ws/client`
+- 受限实时流：`GET /ws/realtime`
+- ZeroMQ 客户端：`zmq+tcp://host:port`，其中 `host:port` 对应服务端 `services.zeromq.bind_url`
+- WebSocket binary frame 或 ZeroMQ message payload：每一帧都是一个完整 protobuf message
 - 客户端发送类型：`notifier.client.v1.ClientEnvelope`
 - 服务端发送类型：`notifier.client.v1.ServerEnvelope`
-- ZeroMQ 首包：`notifier.transport.v1.ZeroMQMuxHello`
 - 协议定义：`proto/client.proto`、`proto/transport.proto`
 
 服务端不使用 query token 或 HTTP `Authorization` header 做长连接鉴权。
 
 - WebSocket：连接升级成功后，客户端发送的第一帧必须是 `ClientEnvelope.login`
-- ZeroMQ：第一帧必须发送 `ZeroMQMuxHello{role=CLIENT, protocol_version="zeromq-mux-v1"}`，第二帧必须是 `ClientEnvelope.login`
+- ZeroMQ：第一帧必须先发送 `notifier.transport.v1.ZeroMQMuxHello{role=ZERO_MQ_ROLE_CLIENT, protocol_version="zeromq-mux-v1"}`，第二帧必须是 `ClientEnvelope.login`
+- 当前客户端协议版本常量是 `client-v1alpha4`
+- 当前 ZeroMQ mux 协议版本常量是 `zeromq-mux-v1`
 
-如果服务端启用了 `services.zeromq.security = "curve"`，客户端在连接 ZeroMQ 前还必须配置服务端 `server_public_key` 以及自己的 CURVE `client_public_key`/`client_secret_key`。客户端 public key 必须出现在服务端 `services.zeromq.curve.allowed_client_public_keys` 中；CURVE 只完成链路加密和传输层公钥白名单，业务身份仍以 `ClientEnvelope.login` 为准。
+如果服务端启用了 `services.zeromq.security = "curve"`，客户端在连接 ZeroMQ 前还必须配置服务端 `server_public_key` 以及自己的 CURVE `client_public_key` / `client_secret_key`。客户端 public key 必须出现在服务端 `services.zeromq.curve.allowed_client_public_keys` 中；CURVE 只完成链路加密和传输层公钥白名单，业务身份仍以 `ClientEnvelope.login` 为准。
 
 ZeroMQ TLS 不在应用内实现，也不新增 `zmq+tls` URL。需要 TLS 证书体系时，应在 ZeroMQ TCP 端口外层使用 TCP TLS 隧道，或选择 WebSocket `wss`。
 
+## 当前消息类型
+
+当前 `ClientEnvelope` oneof 包含：
+
+- `login`
+- `send_message`
+- `ack_message`
+- `ping`
+- `create_user`
+- `get_user`
+- `update_user`
+- `delete_user`
+- `list_messages`
+- `upsert_user_attachment`
+- `delete_user_attachment`
+- `list_user_attachments`
+- `list_events`
+- `operations_status`
+- `metrics`
+- `list_cluster_nodes`
+- `list_node_logged_in_users`
+- `resolve_user_sessions`
+- `get_user_metadata`
+- `upsert_user_metadata`
+- `delete_user_metadata`
+- `scan_user_metadata`
+- `list_users`
+
+当前 `ServerEnvelope` oneof 包含：
+
+- `login_response`
+- `message_pushed`
+- `send_message_response`
+- `error`
+- `pong`
+- `packet_pushed`
+- `create_user_response`
+- `get_user_response`
+- `update_user_response`
+- `delete_user_response`
+- `list_messages_response`
+- `upsert_user_attachment_response`
+- `delete_user_attachment_response`
+- `list_user_attachments_response`
+- `list_events_response`
+- `operations_status_response`
+- `metrics_response`
+- `list_cluster_nodes_response`
+- `list_node_logged_in_users_response`
+- `resolve_user_sessions_response`
+- `get_user_metadata_response`
+- `upsert_user_metadata_response`
+- `delete_user_metadata_response`
+- `scan_user_metadata_response`
+- `list_users_response`
+
+当前协议里已经没有专用的 `subscribe_channel`、`unsubscribe_channel`、`list_subscriptions`、`block_user`、`unblock_user`、`list_blocked_users` 消息名：
+
+- 频道订阅管理改为 `upsert_user_attachment` / `delete_user_attachment` / `list_user_attachments` + `ATTACHMENT_TYPE_CHANNEL_SUBSCRIPTION`
+- 黑名单管理改为 `upsert_user_attachment` / `delete_user_attachment` / `list_user_attachments` + `ATTACHMENT_TYPE_USER_BLACKLIST`
+
 ## 登录流程
 
-客户端第一帧：
+客户端第一帧示例：
 
 ```protobuf
 ClientEnvelope {
@@ -40,11 +103,26 @@ ClientEnvelope {
 }
 ```
 
+也可以改用登录名：
+
+```protobuf
+ClientEnvelope {
+  login: LoginRequest {
+    login_name: "alice.login"
+    password: "alice-password"
+    transient_only: true
+  }
+}
+```
+
 字段说明：
 
-- `node_id` 和 `user_id`：登录用户身份，对应 HTTP 登录接口中的同名字段。
-- `password`：用户密码。`role=channel`、`role=broadcast` 和 `role=node` 用户不可登录。
+- `user` 与 `login_name` 二选一，而且必须恰好提供一个。两者同时提供、两者都不提供，都会按登录失败处理。
+- `password`：用户密码。只有可登录用户能通过长连接登录；`role=channel`、`role=broadcast`、`role=node` 仍不可登录。
 - `seen_messages`：客户端已经持久化的消息游标集合。每个游标是消息生产节点和该节点消息序号的二元组 `(node_id, seq)`。
+- `transient_only`：只关闭持久化历史补发与后续 `MessagePushed` 推送，不会把该连接变成 `/ws/realtime` 那种“受限消息集”。
+
+`/ws/realtime` 的登录仍然使用同一个 `LoginRequest`，但服务端会强制采用 `transient_only` 语义：不补发历史消息，也不注册持久化推送。
 
 登录成功后，服务端返回：
 
@@ -56,31 +134,50 @@ ServerEnvelope {
       user_id: 1025
       username: "alice"
       role: "user"
+      login_name: "alice.login"
     }
-    protocol_version: "client-v1alpha1"
+    protocol_version: "client-v1alpha4"
+    session_ref: {
+      serving_node_id: 4096
+      session_id: "..."
+    }
   }
 }
 ```
 
-登录失败时，服务端返回 `ServerEnvelope.error`，然后关闭连接。
+字段说明：
 
-## 消息身份与客户端游标
+- `login_response.user` 是当前登录用户的可见信息；如果该用户设置了 `login_name`，这里会返回。
+- `session_ref` 是本次连接的全局会话引用，后续可作为瞬时包的 `target_session` 使用。
+- `session_ref` 是不透明标识，客户端应原样保存和回传，不要自行拼接或猜测语义。
+
+登录失败时，服务端返回 `ServerEnvelope.error{code="unauthorized"}`，然后关闭连接。
+
+## 持久化消息、游标与 ack
 
 客户端用 `MessageCursor{node_id, seq}` 维护已收消息进度：
 
-- `node_id`：生产该消息的节点。
-- `seq`：该生产节点为目标用户生成的消息序号。
+- `node_id`：生产这条消息的节点。
+- `seq`：该生产节点为这条目标消息分配的序号。
 - 客户端收到并持久化消息后，应保存 `(node_id, seq)`。
-- 客户端重连登录时，把已持久化的游标放入 `LoginRequest.seen_messages`，服务端会跳过这些消息。
-- 服务端推送的 `Message` 通过 `recipient: UserRef` 标识该消息归属的目标用户、channel 或 broadcast 地址。
+- 客户端重连登录时，把已持久化游标放入 `LoginRequest.seen_messages`，服务端会在连接内去重时跳过这些消息。
 
-注意：当前服务端只在连接内存中使用 `AckMessage` 更新去重集合，不会把客户端 ack 状态写入数据库。可靠重连依赖客户端在下次 `LoginRequest.seen_messages` 中上报已持久化游标。
+标准流在登录成功后会这样处理持久化消息：
 
-## 接收消息
+- `/ws/client` 和 ZeroMQ 标准连接在 `transient_only=false` 时，会补发当前用户可见、且不在 `seen_messages` 内的历史消息。
+- 当前登录补发批量上限是 `1000` 条，发送顺序是从旧到新。
+- 补发结束后，连接会继续收到新的 `MessagePushed`。
+- `transient_only=true` 或 `/ws/realtime` 都不会收到历史补发，也不会再收到新的 `MessagePushed`。
 
-登录成功后，服务端会先补发当前用户可见且不在 `seen_messages` 中的历史消息，然后继续推送实时消息。
+当前实现里的可见范围：
 
-服务端消息：
+- 登录用户自己的消息。
+- 所有仍在本地消息窗口内的 `role=broadcast` 消息。
+- 登录用户已订阅频道，且订阅时间之后的 `role=channel` 消息。
+- 管理员用户可见任意目标地址的持久化消息。
+- 普通用户自己的直发消息仍受黑名单时序约束影响：被拉黑后的新直发消息不会进入该用户可见结果。
+
+服务端推送持久化消息：
 
 ```protobuf
 ServerEnvelope {
@@ -97,7 +194,26 @@ ServerEnvelope {
 }
 ```
 
-目标用户瞬时包推送：
+客户端收到并落盘后，可以发送：
+
+```protobuf
+ClientEnvelope {
+  ack_message: AckMessage {
+    cursor: { node_id: 4096, seq: 3 }
+  }
+}
+```
+
+`AckMessage` 的语义边界：
+
+- 它只是当前连接内的可选去重提示。
+- 服务端会把这个游标写进当前会话内存中的 `seen` 集合。
+- 服务端不会把 `AckMessage` 状态持久化到数据库。
+- 可靠重连仍然依赖客户端在下次 `LoginRequest.seen_messages` 中重新上报。
+
+## 瞬时包
+
+服务端推送瞬时包时使用 `PacketPushed`：
 
 ```protobuf
 ServerEnvelope {
@@ -110,39 +226,25 @@ ServerEnvelope {
       sender: { node_id: 4096, user_id: 1 }
       body: "\xff\x00payload"
       delivery_mode: CLIENT_DELIVERY_MODE_BEST_EFFORT
+      target_session: {
+        serving_node_id: 8192
+        session_id: "..."
+      }
     }
   }
 }
 ```
 
-可见消息范围：
-
-- 登录用户自己的消息。
-- 所有仍在本地窗口内的 `role=broadcast` 消息。
-- 登录用户已订阅 channel 且订阅时间之后的 channel 消息。
-- 管理员用户可见任意目标地址的消息。
-
 `PacketPushed` 与 `MessagePushed` 的区别：
 
-- `PacketPushed` 只用于 `delivery_kind = TRANSIENT` 的瞬时包。
+- `PacketPushed` 只用于 `delivery_kind = CLIENT_DELIVERY_KIND_TRANSIENT` 的瞬时包。
 - 瞬时包没有 `(node_id, seq)` 游标，不参与 `seen_messages` 和 `AckMessage`。
-- 瞬时包不会在重连后补发；只有目标用户当前在线时才能收到。
-
-客户端收到并落盘后，可以发送：
-
-```protobuf
-ClientEnvelope {
-  ack_message: AckMessage {
-    cursor: { node_id: 4096, seq: 3 }
-  }
-}
-```
-
-`AckMessage` 是可选的连接内去重提示。即使不发送 ack，只要下次登录带上 `seen_messages`，服务端也会跳过已见消息。
+- 瞬时包不会在重连后补发。
+- `packet.target_session` 只在发送端显式指定了目标会话时出现。
 
 ## 发送消息
 
-客户端发送：
+发送持久化消息：
 
 ```protobuf
 ClientEnvelope {
@@ -155,7 +257,7 @@ ClientEnvelope {
 }
 ```
 
-发送目标用户瞬时包：
+发送定向瞬时包：
 
 ```protobuf
 ClientEnvelope {
@@ -165,6 +267,10 @@ ClientEnvelope {
     body: "\xff\x00payload"
     delivery_kind: CLIENT_DELIVERY_KIND_TRANSIENT
     delivery_mode: CLIENT_DELIVERY_MODE_ROUTE_RETRY
+    target_session: {
+      serving_node_id: 8192
+      session_id: "..."
+    }
   }
 }
 ```
@@ -172,19 +278,20 @@ ClientEnvelope {
 字段说明：
 
 - `request_id`：客户端生成的请求 ID，服务端在响应或错误中原样返回。
-- `target`：消息目标用户、channel 或 broadcast 地址。
-- `sender`：不再由客户端传入，服务端会根据已认证连接生成 `UserRef { node_id, user_id }`。
+- `target`：消息目标用户、频道或 broadcast 地址；但瞬时包只允许目标是“可登录用户”。
 - `body`：原始字节数组，不能为空；不要求 UTF-8。
-- `delivery_kind`：可选 `CLIENT_DELIVERY_KIND_PERSISTENT` 或 `CLIENT_DELIVERY_KIND_TRANSIENT`，默认是持久化消息。
-- `delivery_mode`：仅在 `delivery_kind = CLIENT_DELIVERY_KIND_TRANSIENT` 时生效；可选 `CLIENT_DELIVERY_MODE_BEST_EFFORT` 或 `CLIENT_DELIVERY_MODE_ROUTE_RETRY`。
-- `sync_mode`：仅在 `delivery_kind = CLIENT_DELIVERY_KIND_PERSISTENT` 时生效；可选 `CLIENT_MESSAGE_SYNC_MODE_FORCE_SYNC`、`CLIENT_MESSAGE_SYNC_MODE_NO_SYNC`，省略时走服务端默认值。
+- `delivery_kind`：可选 `CLIENT_DELIVERY_KIND_PERSISTENT` 或 `CLIENT_DELIVERY_KIND_TRANSIENT`；省略时按持久化消息处理。
+- `delivery_mode`：只允许用于瞬时包；可选 `CLIENT_DELIVERY_MODE_BEST_EFFORT` 或 `CLIENT_DELIVERY_MODE_ROUTE_RETRY`。
+- `sync_mode`：只允许用于持久化消息；可选 `CLIENT_MESSAGE_SYNC_MODE_FORCE_SYNC`、`CLIENT_MESSAGE_SYNC_MODE_NO_SYNC`。当前在 Pebble 后端上会影响消息写入同步策略；SQLite 后端接受该字段，但不会提供额外同步语义。
+- `target_session`：只允许用于瞬时包；必须是先前登录或 `resolve_user_sessions` 返回的有效 `session_ref`。
 
 权限规则与 HTTP 写消息接口一致：
 
-- 普通用户可以给任意可登录用户（包括自己）发送消息。
-- 普通用户可以给已授权写入的 `role=channel` 地址发消息。
-- 管理员可以给任意用户、channel 或 broadcast 地址发消息。
-- 以上规则同时适用于持久消息和瞬时消息。
+- 普通用户可以给自己发消息。
+- 普通用户可以给其他可登录用户发消息。
+- 普通用户可以给自己具备写权限的 `role=channel` 地址发消息。
+- 管理员可以给任意用户、频道或 broadcast 地址发持久化消息。
+- 瞬时包只允许目标是可登录用户；给 `channel`、`broadcast`、`node` 发瞬时包会返回 `invalid_request`。
 
 成功响应：
 
@@ -204,6 +311,11 @@ ServerEnvelope {
 }
 ```
 
+持久化发送的实现边界：
+
+- 服务端会把响应里的 `(node_id, seq)` 立即标记为当前连接已见。
+- 因此“给自己发持久化消息”的同一条连接通常只会收到 `send_message_response.message`，不会再额外收到一份重复的 `message_pushed`。
+
 目标用户瞬时包受理响应：
 
 ```protobuf
@@ -216,95 +328,107 @@ ServerEnvelope {
       target_node_id: 8192
       recipient: { node_id: 8192, user_id: 1025 }
       delivery_mode: CLIENT_DELIVERY_MODE_ROUTE_RETRY
+      target_session: {
+        serving_node_id: 8192
+        session_id: "..."
+      }
     }
   }
 }
 ```
 
-`transient_accepted` 只表示瞬时包已进入本地路由层，不代表目标用户已经收到。
+`transient_accepted` 的语义边界：
+
+- 只表示瞬时包已经进入本地路由层。
+- 不代表目标用户已经收到。
+- 若指定了 `target_session`，但该会话不存在、已离线，或不属于目标用户，会返回 `not_found`。
+- `CLIENT_DELIVERY_MODE_ROUTE_RETRY` 只表示节点间会短时间尝试重新寻路；它仍然是非持久化、非可靠投递。
 
 ## 查询与管理 RPC
 
-登录成功后，客户端还可以在同一条 WS 连接上发送 RPC 请求，补齐原先 HTTP JSON API 的能力。所有这类请求都使用独立的 `request_id`，成功响应和 `ServerEnvelope.error` 都会原样回传该值。
-
-当前支持：
+标准流支持的 RPC 请求如下：
 
 - 用户管理：`create_user`、`get_user`、`update_user`、`delete_user`、`list_users`
-- 消息与订阅查询：`list_messages`、`list_subscriptions`
-- 订阅管理：`subscribe_channel`、`unsubscribe_channel`
-- 黑名单管理：`block_user`、`unblock_user`、`list_blocked_users`
-- 附件与用户元数据：`upsert_user_attachment`、`delete_user_attachment`、`list_user_attachments`、`get_user_metadata`、`upsert_user_metadata`、`delete_user_metadata`、`scan_user_metadata`
-- 集群与运维查询：`list_cluster_nodes`、`list_node_logged_in_users`、`list_events`、`operations_status`、`metrics`
+- 消息查询：`list_messages`
+- 附件管理：`upsert_user_attachment`、`delete_user_attachment`、`list_user_attachments`
+- 用户元数据：`get_user_metadata`、`upsert_user_metadata`、`delete_user_metadata`、`scan_user_metadata`
+- 集群与在线态：`list_cluster_nodes`、`list_node_logged_in_users`、`resolve_user_sessions`
+- 运维查询：`list_events`、`operations_status`、`metrics`
+- 辅助消息：`ack_message`、`ping`
 
-自作用目标兼容：
+`/ws/realtime` 只支持以下子集：
 
-- `get_user.user`、`list_messages.user`、用户元数据请求中的 `owner` 为空时（字段省略，或 `node_id/user_id` 都为 `0`），服务端会自动解释为当前登录用户。
-- `list_user_attachments.owner` 也支持同样的空值回退，但仅适用于列出当前登录用户自己的附件。
-- `upsert_user_attachment.owner`、`delete_user_attachment.owner` 只在 `attachment_type=channel_subscription` 或 `user_blacklist` 时支持空值回退；`channel_manager` / `channel_writer` 仍必须显式指定频道 owner。
+- `send_message`，但只允许 `delivery_kind=CLIENT_DELIVERY_KIND_TRANSIENT`
+- `list_cluster_nodes`
+- `list_node_logged_in_users`
+- `resolve_user_sessions`
+- `ack_message`
+- `ping`
+
+其余请求在 `/ws/realtime` 上都会返回 `invalid_request`。
+
+ZeroMQ 没有独立的“realtime path”：
+
+- ZeroMQ 普通连接默认等价于 `/ws/client`
+- `LoginRequest.transient_only=true` 只关闭持久化推送
+- 它不会把 ZeroMQ 连接变成 `/ws/realtime` 那种受限 RPC 集
+
+### 订阅与黑名单的当前映射
+
+- 订阅频道：`upsert_user_attachment{attachment_type=ATTACHMENT_TYPE_CHANNEL_SUBSCRIPTION}`
+- 取消订阅：`delete_user_attachment{attachment_type=ATTACHMENT_TYPE_CHANNEL_SUBSCRIPTION}`
+- 查询订阅：`list_user_attachments{attachment_type=ATTACHMENT_TYPE_CHANNEL_SUBSCRIPTION}`
+- 拉黑用户：`upsert_user_attachment{attachment_type=ATTACHMENT_TYPE_USER_BLACKLIST}`
+- 取消拉黑：`delete_user_attachment{attachment_type=ATTACHMENT_TYPE_USER_BLACKLIST}`
+- 查询黑名单：`list_user_attachments{attachment_type=ATTACHMENT_TYPE_USER_BLACKLIST}`
+
+示例：订阅频道
+
+```protobuf
+ClientEnvelope {
+  upsert_user_attachment: UpsertUserAttachmentRequest {
+    request_id: 1001
+    owner: { node_id: 4096, user_id: 1025 }
+    subject: { node_id: 4096, user_id: 2048 }
+    attachment_type: ATTACHMENT_TYPE_CHANNEL_SUBSCRIPTION
+    config_json: "{}"
+  }
+}
+```
+
+### 自作用目标兼容
+
+- `get_user.user`、`list_messages.user`、用户元数据请求中的 `owner` 为空时，服务端会自动解释为当前登录用户。
+- `list_user_attachments.owner` 为空时，也支持回退为当前登录用户；当前请求里的 `attachment_type` 允许为空、`ATTACHMENT_TYPE_CHANNEL_SUBSCRIPTION` 或 `ATTACHMENT_TYPE_USER_BLACKLIST`。
+- `upsert_user_attachment.owner`、`delete_user_attachment.owner` 只在 `attachment_type=ATTACHMENT_TYPE_CHANNEL_SUBSCRIPTION` 或 `ATTACHMENT_TYPE_USER_BLACKLIST` 时支持空值回退；`ATTACHMENT_TYPE_CHANNEL_MANAGER` / `ATTACHMENT_TYPE_CHANNEL_WRITER` 仍必须显式指定频道 owner。
 - `node_id`、`user_id` 只填一个、填负数或其他无效组合仍会返回 `invalid_request`，不会回退到当前登录用户。
 
-示例：管理员创建用户
+### `resolve_user_sessions`
+
+`resolve_user_sessions` 用于拿到某个用户当前在线的节点和会话细节，供定向瞬时包使用：
 
 ```protobuf
 ClientEnvelope {
-  create_user: CreateUserRequest {
-    request_id: 1001
-    username: "alice"
-    password: "alice-password"
-    profile_json: "{\"display_name\":\"Alice\"}"
-    role: "user"
-  }
-}
-```
-
-```protobuf
-ServerEnvelope {
-  create_user_response: CreateUserResponse {
-    request_id: 1001
-    user: {
-      node_id: 4096
-      user_id: 1025
-      username: "alice"
-      role: "user"
-      profile_json: "{\"display_name\":\"Alice\"}"
-    }
-  }
-}
-```
-
-示例：查询自己的订阅列表
-
-```protobuf
-ClientEnvelope {
-  list_subscriptions: ListSubscriptionsRequest {
+  resolve_user_sessions: ResolveUserSessionsRequest {
     request_id: 1002
-    subscriber: { node_id: 4096, user_id: 1025 }
-  }
-}
-```
-
-示例：查询当前可通讯用户列表
-
-```protobuf
-ClientEnvelope {
-  list_users: ListUsersRequest {
-    request_id: 1007
-    name: "carol"
-    uid: { node_id: 4096, user_id: 1027 }
+    user: { node_id: 4096, user_id: 1025 }
   }
 }
 ```
 
 ```protobuf
 ServerEnvelope {
-  list_users_response: ListUsersResponse {
-    request_id: 1007
+  resolve_user_sessions_response: ResolveUserSessionsResponse {
+    request_id: 1002
+    user: { node_id: 4096, user_id: 1025 }
+    presence: [
+      { serving_node_id: 4096, session_count: 2, transport_hint: "ws" }
+    ]
     items: [
       {
-        node_id: 4096
-        user_id: 1027
-        username: "carol"
-        profile_json: "{\"display_name\":\"Carol\"}"
+        session: { serving_node_id: 4096, session_id: "sess-a" }
+        transport: "ws"
+        transient_capable: true
       }
     ]
     count: 1
@@ -312,140 +436,27 @@ ServerEnvelope {
 }
 ```
 
-示例：拉黑某个普通用户
+实现边界：
 
-```protobuf
-ClientEnvelope {
-  block_user: BlockUserRequest {
-    request_id: 1006
-    owner: { node_id: 4096, user_id: 1025 }
-    blocked: { node_id: 4096, user_id: 1026 }
-  }
-}
-```
+- 该 RPC 的权限校验与 `send_message` 共用同一套“能否给目标发消息”的规则。
+- 返回结果里的 `session` 可直接作为后续瞬时包 `target_session` 的输入。
+- `presence` 表示节点级在线存在性，`items` 表示已解析到的具体会话。
 
-```protobuf
-ServerEnvelope {
-  block_user_response: BlockUserResponse {
-    request_id: 1006
-    entry: {
-      owner: { node_id: 4096, user_id: 1025 }
-      blocked: { node_id: 4096, user_id: 1026 }
-      blocked_at: "..."
-    }
-  }
-}
-```
+### 权限与可见性边界
 
-```protobuf
-ServerEnvelope {
-  list_subscriptions_response: ListSubscriptionsResponse {
-    request_id: 1002
-    items: [
-      {
-        subscriber: { node_id: 4096, user_id: 1025 }
-        channel: { node_id: 4096, user_id: 1026 }
-        subscribed_at: "..."
-      }
-    ]
-    count: 1
-  }
-}
-```
-
-示例：管理员查询 metrics
-
-```protobuf
-ClientEnvelope {
-  metrics: MetricsRequest { request_id: 1003 }
-}
-```
-
-```protobuf
-ServerEnvelope {
-  metrics_response: MetricsResponse {
-    request_id: 1003
-    text: "# HELP notifier_event_log_last_sequence ..."
-  }
-}
-```
-
-示例：普通用户查询已连接集群节点
-
-```protobuf
-ClientEnvelope {
-  list_cluster_nodes: ListClusterNodesRequest { request_id: 1004 }
-}
-```
-
-示例：普通用户查询某个节点当前已登录用户
-
-`node_id` 表示最终目标节点，可以是非直连节点。只要集群路由可达，服务端会在节点间多跳转发该查询；查询与响应都会按当前节点路由继续转发，不要求原路返回。该查询链路带有内部最大跳数限制，超过限制或无可达路由时会返回 `service_unavailable`。
-
-```protobuf
-ClientEnvelope {
-  list_node_logged_in_users: ListNodeLoggedInUsersRequest {
-    request_id: 1005
-    node_id: 4096
-  }
-}
-```
-
-```protobuf
-ServerEnvelope {
-  list_node_logged_in_users_response: ListNodeLoggedInUsersResponse {
-    request_id: 1005
-    target_node_id: 4096
-    items: [
-      { node_id: 4096, user_id: 1025, username: "alice" },
-      { node_id: 4096, user_id: 1026, username: "bob" }
-    ]
-    count: 2
-  }
-}
-```
-
-```protobuf
-ServerEnvelope {
-  list_cluster_nodes_response: ListClusterNodesResponse {
-    request_id: 1004
-    items: [
-      { node_id: 4096, is_local: true },
-      { node_id: 8192, is_local: false, configured_url: "ws://127.0.0.1:9081/internal/cluster/ws", source: "static" },
-      { node_id: 12288, is_local: false, configured_url: "ws://127.0.0.1:9082/internal/cluster/ws", source: "discovered" }
-    ]
-    count: 3
-  }
-}
-```
-
-权限边界与 HTTP 完全一致：
-
-- `list_events`、`operations_status`、`metrics` 允许 `role=admin` 和 `role=super_admin`。
-- `create_user`、`update_user`、`delete_user` 允许 `role=admin` 和 `role=super_admin`，但以下高风险动作仅 `super_admin` 可用：创建 `role=admin` 用户、把用户提升为 `admin`、把 `admin` 降权回普通角色、修改或删除 `role=admin` 用户。
+- `list_cluster_nodes`、`list_node_logged_in_users`：任意已登录用户都可调用。
+- `resolve_user_sessions`：任意已登录用户可调用，但目标必须满足与 `send_message` 一致的权限约束。
+- `list_events`、`operations_status`、`metrics`：只允许 `role=admin` 和 `role=super_admin`。
+- `create_user`、`update_user`、`delete_user`：只允许 `role=admin` 和 `role=super_admin`；其中创建 `admin`、把用户提升为 `admin`、把 `admin` 降权回普通角色、修改或删除 `admin`，仅 `super_admin` 可执行。
 - 系统保留用户（bootstrap `super_admin`、`broadcast`、`node`）仍不能通过管理 RPC 修改或删除。
-- `list_cluster_nodes` 只要求当前连接已登录，普通用户可用。
-- `list_node_logged_in_users` 只要求当前连接已登录，普通用户可用；目标节点不可达时返回错误，不返回空列表。
-- `list_users` 只要求当前连接已登录。管理员与超级管理员返回全量活跃用户；普通用户返回当前可通讯用户集合，并支持 `name` 与 `uid` 组合过滤。
-- `get_user` 允许本人或管理员。
-- `list_messages` 对可登录用户允许本人或管理员；对 channel/broadcast 目标仅管理员可直接查询。
-- 用户元数据 RPC 对普通用户 owner 允许本人或管理员；对 `role=channel` owner 允许频道管理员或管理员；空 `owner` 仅是“本人”的便捷写法，不会放宽权限。
-- `list_user_attachments` 允许本人或管理员；空 `owner` 仅回退到当前登录用户自己。
-- `subscribe_channel`、`unsubscribe_channel`、`list_subscriptions` 允许本人或管理员。
-- `block_user`、`unblock_user`、`list_blocked_users` 允许本人或管理员；只能针对 `role=user` 的目标用户配置。
-- `upsert_user_attachment`、`delete_user_attachment` 的权限仍按附件类型区分：订阅/黑名单允许本人或管理员，频道管理/写入关系仍要求显式频道 owner 和原有管理权限。
-- `send_message` 的权限规则保持不变。
-
-字段约定：
-
-- `profile_json` 和 `event_json` 是原始 JSON 字节。
-- `list_users.name` 会在可见用户集合内做大小写不敏感子串匹配。普通用户匹配 `username` 与 `profile_json.display_name/displayName`；管理员额外匹配 `login_name`。
-- `list_users.uid` 使用 `UserRef` 表示精确目标。省略该字段或传 `{node_id:0,user_id:0}` 表示“不按 uid 过滤”；只填一个字段或填负数会返回 `invalid_request`。
+- `list_users`：普通用户返回当前可通讯用户集合；管理员和超级管理员返回全量活跃用户。
+- 普通用户的 `list_users.name` 匹配 `username` 与 `profile_json.display_name/displayName`；管理员额外匹配 `login_name`。
 - 普通用户通过 `list_users` 看到他人时，`login_name` 会被隐藏；查看自己或管理员查看任意用户时，`login_name` 保持可见。
-- 若目标用户或频道显式写入 metadata `system.visible_to_others=false`，它会从普通用户的 `list_users` 结果中隐藏；管理员和本人仍可看到，且该属性不影响知道 `uid` 后继续发消息。
-- `block_user` 只会拦截后续新的普通用户直发消息，不会删除已存在历史消息，也不会影响 channel/broadcast/node 地址。
-- 列表响应统一包含 `items` 和 `count`。
-- `metrics_response.text` 直接返回 Prometheus 文本，与 HTTP `/metrics` 内容一致。
+- 若目标用户或频道显式写入 metadata `system.visible_to_others=false`，它会从普通用户的 `list_users` 结果中隐藏；管理员和本人仍可看到，且该属性不影响已知 `uid` 后继续发消息。
+- `list_messages`：对可登录用户允许本人或管理员；对频道或 broadcast 目标仅管理员可直接查询。
+- 用户元数据：普通用户对自己可读写；管理员可读写任意普通用户；频道 owner 的元数据允许频道管理员或管理员访问。
+- 附件权限按类型区分：订阅/黑名单允许本人或管理员；频道管理/写入关系仍要求显式频道 owner 和原有频道管理权限。
+- `list_node_logged_in_users_response.items` 当前会直接带回 `login_name` 字段，不再额外做 `list_users` 那套可见性裁剪。
 
 ## Ping/Pong
 
@@ -465,7 +476,7 @@ ServerEnvelope {
 }
 ```
 
-## 错误
+## 错误语义
 
 错误统一使用：
 
@@ -479,30 +490,48 @@ ServerEnvelope {
 }
 ```
 
-常见 `code`：
+登录阶段：
 
-- `unauthorized`：登录失败、第一帧不是登录消息或登录帧无法解码。
-- `invalid_frame`：客户端发送了非 binary frame。
-- `invalid_protobuf`：binary frame 不是合法 `ClientEnvelope`。
-- `invalid_message`：不支持的客户端消息类型。
-- `already_authenticated`：登录成功后再次发送 login。
-- `invalid_request`：请求字段缺失、正文为空或参数非法。
-- `forbidden`：当前用户没有执行该操作的权限。
-- `not_found`：请求的用户、订阅或其他资源不存在。
-- `conflict`：资源状态冲突。
-- `service_unavailable`：当前节点暂时不可写，例如集群模式下仍未完成首轮校时。
-- `not_found`：目标资源不存在。
-- `internal_error`：服务端内部错误。
+- 第一帧不是 `login`
+- 第一帧不是 binary protobuf
+- 登录帧无法解码
+- `user` 与 `login_name` 选择器非法
+- 用户名/密码错误
 
-登录阶段返回错误后服务端会关闭连接。登录成功后的请求级错误通常不会立即关闭连接。
+这些情况都会被映射成 `code="unauthorized"`，然后关闭连接。
+
+登录成功后的常见错误码：
+
+- `invalid_frame`：WebSocket 收到了非 binary frame
+- `invalid_protobuf`：binary frame 不是合法 `ClientEnvelope`
+- `invalid_message`：消息体类型不受当前实现支持
+- `already_authenticated`：登录成功后再次发送 `login`
+- `invalid_request`：字段缺失、参数非法、`body` 为空、`target_session` 格式不合法、在错误的 `delivery_kind` 下使用 `sync_mode` / `delivery_mode` / `target_session` 等
+- `forbidden`：当前用户没有执行该操作的权限，或被黑名单拦截
+- `not_found`：目标用户、目标资源或目标会话不存在
+- `conflict`：资源状态冲突
+- `service_unavailable`：当前节点暂时不可写或相关集群查询能力暂不可用
+- `internal_error`：服务端内部错误
+
+`request_id` 规则：
+
+- 对请求级 RPC，服务端会在成功响应和 `error` 中原样回传客户端的 `request_id`
+- 对登录、`ack_message`、协议层错误等无 `request_id` 的场景，返回 `0`
+
+连接关闭规则：
+
+- 登录阶段返回错误后，服务端会关闭连接
+- 登录成功后的请求级错误通常不会立即关闭连接；客户端可以继续发送后续合法请求
 
 ## 客户端实现建议
 
 - 持久化消息时至少保存完整 `Message` 和游标 `(node_id, seq)`。
-- 重连时把本地已持久化游标放入 `LoginRequest.seen_messages`。
+- 重连时把本地已持久化游标放入 `LoginRequest.seen_messages`；不要依赖单独的 `AckMessage`。
 - 收到重复 `(node_id, seq)` 时应幂等忽略。
-- 收到 `PacketPushed` 时不要写入消息游标表；如果业务要本地暂存，应自行按 `packet_id` 做去重。
+- 如果业务会缓存瞬时包，应自行按 `packet_id` 做去重；不要把它混进持久化消息游标表。
+- `session_ref` 与 `target_session` 都应按不透明标识保存和回传。
 - `body` 是原始字节，不要按字符串处理；需要文本时由业务层自行约定编码。
-- 如果客户端切换连接节点，仍应按 `(node_id, seq)` 去重；不同节点的可见窗口可能暂时不完全一致，集群最终会收敛。
-- 当前服务端补发历史消息上限来自本地消息窗口和一次登录补发批量，客户端不要依赖服务端保存无限历史。
-- `CLIENT_DELIVERY_MODE_ROUTE_RETRY` 只表示节点间在短时间内尝试重新寻路；它仍然是非持久化、非可靠投递。
+- 如果客户端切换连接节点，仍应按 `(node_id, seq)` 去重；不同节点的本地消息窗口可能暂时不完全一致，集群最终会收敛。
+- 不要依赖服务端保存无限历史；当前登录自动补发最多 `1000` 条，历史范围还受本地消息窗口影响。
+- 如果你只想禁用持久化推送但仍要保留完整 RPC 能力，使用 `/ws/client` 或 ZeroMQ，并在登录时设置 `transient_only=true`。
+- 如果你选择 `/ws/realtime`，要预期它只能做瞬时收发和在线态查询，不能执行 `list_messages`、用户/元数据/附件管理或运维查询。

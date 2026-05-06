@@ -1,21 +1,21 @@
 # 分布式测试框架增强计划
 
-本文档面向后续测试基础设施的研发实现者，用于把 roadmap 中“分布式测试框架增强”从方向性目标细化为可执行设计。它不替代 [复制语义专题文档](/root/dev/sys/turntf/docs/replication-semantics.md) 和 [分布式系统未来演进路线图](/root/dev/sys/turntf/docs/distributed-system-roadmap.md)，而是回答“现有测试基础是什么、下一步要抽什么夹具、按什么顺序落地、什么算完成”。
+本文档面向后续测试基础设施的研发实现者，用于把 roadmap 中“分布式测试框架增强”从方向性目标细化为可执行设计。它不替代 [复制语义专题文档](replication-semantics.md) 和 [分布式系统未来演进路线图](distributed-system-roadmap.md)，而是回答“现有测试基础是什么、下一步要抽什么夹具、按什么顺序落地、什么算完成”。
 
-当前仓库基于本计划的实际落地结果，见 [分布式测试框架增强执行结果](/root/dev/sys/turntf/docs/distributed-test-framework-enhancement-results.md)。
+说明：仓库中仍保留 [分布式测试框架增强执行结果](distributed-test-framework-enhancement-results.md)，但其中引用的 `cluster_test_fixture_test.go`、`cluster_regression_test.go`、`cluster_fault_simulation_test.go`、`cluster_extension_points_test.go` 等文件当前并不在 `turntf/` 代码树中；核对当前实现边界时，应以本文和 `internal/cluster` 现有测试文件为准。
 
 ## 背景与目标
 
 当前仓库已经具备以下分布式测试基础：
 
 - `internal/store` 已覆盖字段级 `LWW`、删除墓碑、消息窗口、订阅复制、幂等吸收等收敛语义。
-- `internal/cluster/manager_test.go` 已覆盖握手、`Ack`、补拉、快照修复、校时保护、动态路由、多跳查询等协议路径。
-- 测试中已经存在真实多节点场景：通过 `net.Listener + HTTP API + WebSocket + Store + Manager` 启动两个或三个节点，验证复制收敛和路由行为。
+- `internal/cluster/manager_test.go`、`replication_batcher_test.go`、`ephemeral_state_test.go`、`transport_*_test.go` 与 `mesh_security_test.go` 已覆盖握手、`Ack`、补拉、快照修复、校时保护、路由、batching、transport 与鉴权边界。
+- 测试中已经存在真实多节点场景：通过 `manager_test_helpers_test.go`、`linear_websocket_test_helpers_test.go` 和多组 `mesh_*_integration_test.go` 启动两个到多个节点的 WebSocket、libp2p、ZeroMQ 拓扑，验证多跳复制、路由、presence、membership 和混合传输边界。
 
 这些基础已经足以支撑当前实现，但仍存在明显短板：
 
-- 多节点测试夹具散落在 `internal/cluster/manager_test.go` 末尾，复用方式偏“复制已有 helper 再局部改造”。
-- 多数复杂场景依赖用例内直接拼装监听器、节点启动、轮询等待和 HTTP 请求，导致新增场景成本偏高。
+- 多节点测试夹具已经抽到 `manager_test_helpers_test.go` 与 `linear_websocket_test_helpers_test.go`，但仍以函数集合分散存在，离统一“节点句柄 / 场景驱动器”还有距离。
+- 多数复杂场景虽然已有共用 helper，但仍常在各测试文件内继续拼装专用拓扑、节点启动与路由等待逻辑，新增场景成本依然偏高。
 - 当前夹具更擅长“真实链路 happy path + 少量故障路径”，对网络分区、乱序、重复投递、丢包、并发快照等故障注入支持不足。
 - 测试覆盖已经触达复制语义，但尚未形成清晰的“三层测试策略 + 固定回归集 + 新能力接入规则”。
 
@@ -24,7 +24,7 @@
 ## 设计原则
 
 - 先抽象测试职责，再补新场景；不要把业务能力改动和测试框架重写绑在同一轮。
-- 统一夹具必须显式对齐 [复制语义专题文档](/root/dev/sys/turntf/docs/replication-semantics.md) 的术语，断言优先表达“收敛语义”而不是局部实现细节。
+- 统一夹具必须显式对齐 [复制语义专题文档](replication-semantics.md) 的术语，断言优先表达“收敛语义”而不是局部实现细节。
 - 多节点测试框架应按“消息收发 + 连接生命周期 + 故障注入点”建模，不把 WebSocket 细节硬编码为唯一传输假设。
 - 优先收编现有 helper 与回归用例，避免为了框架整洁而重写一整套不同风格的测试模型。
 - 新增基础设施只服务仓库内部测试，不新增对外公共 API，也不引入外部测试编排系统。
@@ -44,7 +44,7 @@
 
 ### 2. `cluster manager` 协议测试
 
-当前这一层主要集中在 [internal/cluster/manager_test.go](/root/dev/sys/turntf/internal/cluster/manager_test.go)，已覆盖：
+当前这一层不再只集中在 [`../internal/cluster/manager_test.go`](../internal/cluster/manager_test.go)，而是分布在 `manager_test.go`、`replication_batcher_test.go`、`ephemeral_state_test.go`、`transport_*_test.go` 和 `mesh_security_test.go`，已覆盖：
 
 - 握手合法性、版本兼容与方向裁决。
 - `Ack` 语义、补拉请求构造、快照摘要与分片请求。
@@ -57,14 +57,13 @@
 
 当前仓库已经拥有多节点集成测试雏形，例如：
 
-- 双节点复制与 `Ack`
-- 双节点相同/不同窗口大小下的消息收敛
-- 晚加入节点补拉追平
-- 快照修复收敛
-- 三节点字段级收敛与删除优先
-- 多跳瞬时包路由与登录用户查询
+- mesh 多跳复制与快照修复
+- 多跳在线用户查询、presence 传播和 `resolve_user_sessions`
+- WebSocket/libp2p 与 WebSocket/ZeroMQ 混合桥接
+- 大规模线性拓扑路由
+- discovered peer 回填、membership 广播和 mesh 时钟边界
 
-这类测试已经证明“真实节点启动 + 真实 HTTP/WebSocket”路径是可行的，但目前缺少统一的场景驱动器，导致以下问题：
+这类测试已经证明“真实节点启动 + 真实 mesh/transport 组合”路径是可行的，但目前缺少统一的场景驱动器，导致以下问题：
 
 - 节点创建、启动、轮询等待、日志采集散落在 helper 和用例里。
 - 难以系统性注入网络故障，更多依赖自然重连而不是受控模拟。
@@ -177,9 +176,11 @@
 
 ### Phase 1：抽取现有夹具，不改语义
 
+当前状态：部分落地。`manager_test_helpers_test.go` 已提供 `newReplicationTestStore*`、`newPebbleReplicationTestStore*`、`newReplicationTestManager*`、`waitFor`、`newClusterHTTPTestServer` 和 `doJSON*`；`linear_websocket_test_helpers_test.go` 已提供 `startLinearMeshManagers`、`startLinearWebSocketManagers*` 与 `waitForMeshRoute`。但当前还没有统一的 `clusterTestNode`/`clusterTestNodeConfig` 一类节点句柄对象，混合传输场景也仍保留各自的专用启动 helper。
+
 目标：
 
-- 从 [internal/cluster/manager_test.go](/root/dev/sys/turntf/internal/cluster/manager_test.go) 提炼现有节点构造器、等待函数、HTTP helper、日志采集 helper。
+- 从 [`../internal/cluster/manager_test.go`](../internal/cluster/manager_test.go) 及现有 helper 文件提炼节点构造器、等待函数、HTTP helper、日志采集 helper。
 - 形成统一测试支撑层，替换“每个复杂场景单独拼装”的模式。
 
 交付物：
@@ -193,6 +194,8 @@
 - 新增多节点测试时，不再直接在业务用例中手写监听器、HTTP server 启动和基础轮询逻辑。
 
 ### Phase 2：收编关键回归场景
+
+当前状态：基本落地。核心回归场景已经存在，但它们分散在 `manager_test.go`、`mesh_replication_integration_test.go`、`mesh_data_plane_integration_test.go`、`mesh_mixed_transport*_integration_test.go`、`mesh_membership_clock_test.go` 和 `mesh_large_cluster_integration_test.go`，而不是集中在单独的 `cluster_regression_test.go`。
 
 目标：
 
@@ -213,6 +216,8 @@
 
 ### Phase 3：补齐故障注入与多节点仿真
 
+当前状态：未落地。当前仓库里没有统一的 `clusterTestScenario`、`Partition`、`Heal`、`DropNext`、`DuplicateNext`、`Hold`、`DelayNext`、`FlushHeld` 这类通用故障注入 API；现有负向场景更多是针对高费率 transit、bridge 限制和 clock gate 的定向断言，而不是可复用的故障模拟框架。
+
 目标：
 
 - 让框架具备主动制造复杂分布式场景的能力，而不是只验证自然路径。
@@ -230,6 +235,8 @@
 - 多节点仿真测试可复用相同驱动器表达故障场景，而不是为每个场景再造一套私有控制逻辑。
 
 ### Phase 4：为后续能力预留扩展点
+
+当前状态：部分落地。mixed transport、membership/discovery、routing 开关和 mesh clock 观测等扩展边界已经有测试覆盖，代表性文件包括 `mesh_manager_integration_test.go`、`mesh_membership_clock_test.go`、`mesh_mixed_transport_integration_test.go`、`mesh_mixed_transport_zeromq_integration_test.go` 和 `config_test.go`；但黑名单、mTLS 等未来能力还没有接入统一的扩展点层。
 
 目标：
 
@@ -270,7 +277,7 @@
 
 ### 当前风险
 
-- 当前仓库测试基线并非完全稳定，已经存在失败用例；因此第一优先级是提升可测试性与回归稳定性，而不是一边重构框架、一边同时修改业务语义。
+- 当前仓库测试面已经明显扩展到 mesh、多传输和 membership 语义；因此第一优先级仍是控制回归噪声，而不是一边重构夹具、一边同时修改业务语义。
 - 如果在 Phase 1 就强推全量迁移，容易把“夹具重组”做成“测试逻辑重写”，增加回归噪声。
 - 如果故障注入过早绑定当前 WebSocket 实现细节，后续做传输抽象时仍会重复返工。
 
@@ -282,8 +289,8 @@
 
 ## 与其他文档的关系
 
-- [复制语义专题文档](/root/dev/sys/turntf/docs/replication-semantics.md) 负责定义当前已承诺的语义边界。
-- [分布式系统未来演进路线图](/root/dev/sys/turntf/docs/distributed-system-roadmap.md) 负责定义阶段目标、依赖关系和验收顺序。
+- [复制语义专题文档](replication-semantics.md) 负责定义当前已承诺的语义边界。
+- [分布式系统未来演进路线图](distributed-system-roadmap.md) 负责定义阶段目标、依赖关系和验收顺序。
 - 本文档负责把“分布式测试框架增强”拆成研发可执行的实现计划。
 
 后续如果 roadmap 中的测试增强目标发生变化，应优先更新本文档中的阶段拆分、覆盖清单和验收标准，并在 roadmap 中保留摘要与链接，而不是把完整设计重新复制回路线图。

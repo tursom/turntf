@@ -6,42 +6,47 @@
 
 - 本地写入成功：写接口已经把变更提交到当前节点本地持久状态，并准备异步复制；它不代表其他节点已经看到该变更。
 - 复制应用成功：某个 peer 已经把收到的事件或快照分片合并到自己的本地状态。
-- `Ack`：对端返回的复制确认，表示“某个 `origin_node_id/event_id` 已应用到对端本地状态”。
+- `Ack`：对端返回的复制确认，表示“某个 `origin_node_id` 的本地连续应用游标已经推进到 `acked_event_id`”。
 - 最终一致：系统允许短暂差异，但在网络恢复、补拉完成、反熵修复完成后，状态会收敛到当前规则允许的结果。
 - 收敛：不同节点经过广播、补拉、快照修复、冲突处理和幂等吸收后，得到相同或规则允许范围内一致的结果。
 - 暂态：复制过程中允许短时间出现、随后会被收敛规则吸收的中间状态。
 - 补拉：节点根据 `origin_cursors` 和远端 `origin_progress` 主动拉取缺失事件的过程。
 - 反熵：节点周期性比较摘要并修补差异的过程。
-- 快照修复：当事件补拉不足以恢复状态时，按分片传输当前状态快照并增量合并到本地的过程。
+- 快照修复：当事件补拉不足以恢复状态时，按分片传输当前状态快照并增量合并到本地的过程；当前分区包括 `users/full`、`login_names/full`、`attachments/full`、`user_metadata/full`，以及在消息窗口一致时才参与的 `messages/{origin_node_id}`。
 - 墓碑：删除标记，用于防止旧事件在延迟到达时把已删除对象重新复活。
 - 瞬时包：发往 `(node_id, 3)` 的非持久化数据包，只做尽力路由，不进入事件日志和快照修复流程。
+- mesh 转发：当 `MeshRuntime` 可用时，事件批次、补拉、`Ack`、快照和瞬时包优先走 mesh 多跳转发；语义以终点 peer 的本地应用结果为准，不因中间 hop 改变。
 
 ## 已承诺的语义边界
 
-### 本地成功与 `Ack`
+### 本地成功、mesh 主链路与 `Ack`
 
-- `POST /users`、`PATCH /nodes/{node_id}/users/{user_id}`、`DELETE /nodes/{node_id}/users/{user_id}`、订阅变更和持久消息写入，在返回成功时只承诺本地写入成功。
+- 所有会写入事件日志的持久变更，包括用户、`login_name`、附件关系（含订阅与黑名单）、用户 metadata 和持久消息，在返回成功时只承诺本地写入成功。
 - 本地成功后，节点会异步广播对应事件；其他节点是否已经应用，不影响当前请求是否返回成功。
-- `Ack` 只表示接收方已经把对应事件应用到自己的本地状态。
+- 当前实现中，`MeshRuntime` 可用时事件批次与 `PullEvents` 走 `replication_stream`，`Ack` 走 `control_critical`，快照摘要与分片走 `snapshot_bulk`；mesh 未启用时才退回直连会话。多跳只改变传输路径，不改变复制语义。
+- `Ack` 只表示接收方已经把某个 `origin_node_id` 的连续应用游标推进到 `acked_event_id` 并落到本地状态；它可能覆盖刚收到的整批事件，也可能只确认到补拉缺口之前的连续前缀。
 - `Ack` 不表示全局提交，不表示所有节点都已应用，也不表示相关快照修复已经完成。
 
 ### 哪些数据参与最终一致
 
-- 用户、订阅关系、事件日志、墓碑和持久消息属于最终一致持久状态。
-- 用户黑名单关系也属于最终一致持久状态。
+- 用户、`login_name` 绑定、附件关系（含 `channel_manager`、`channel_writer`、`channel_subscription`、`user_blacklist`）、用户 metadata、墓碑和持久消息投影属于最终一致持久状态。
+- 事件日志也会复制，但它只是有限保留的追赶状态；超过 retention 后不再承诺旧事件仍可直接补拉，而是改走快照修复。
 - 广播地址和节点入口等保留用户标记也会通过事件复制和快照修复保持一致。
 - 瞬时包不是最终一致持久状态。它不写入事件日志，不参与 `Ack`、补拉、反熵快照、消息窗口或重启恢复。
 
 ### 收敛规则
 
 - 用户按 `(node_id, user_id)` 定位，并按字段级 `LWW` 合并；用户名允许重复，不作为唯一键。
+- `login_name` 绑定按 `bound_at` / `deleted_at` 的时间顺序收敛；较旧绑定或删除不会覆盖较新的结果。
+- 用户 metadata 按 `(owner_node_id, owner_user_id, key)` 定位，并按 `updated_at` / `deleted_at` 的时间顺序做 `LWW`；旧值或旧删除不会覆盖较新的 metadata 状态。
 - 删除通过墓碑传播，旧的创建或更新事件不能复活已删除用户。
 - 重复事件通过 `applied_events(source_node_id, event_id)` 幂等吸收，避免实时广播与补拉重放重叠时重复生效。
 - 消息按 `(user_node_id, user_id, node_id, seq)` 幂等去重。
 - 消息在本地写入和复制应用时都会按本地 `message_window_size` 裁剪，只保留最近 N 条。
 - 当所有节点使用相同的 `message_window_size` 时，同一用户最近 N 条消息会收敛到相同结果。
 - channel 订阅通过事件日志和快照复制；订阅者只会看到订阅时间之后的 channel 消息，取消订阅后不再合并后续 channel 消息。
-- 黑名单通过事件日志和快照复制；它只影响 `sender.role = user` 的新直发消息，不回溯删除拉黑前历史消息，也不影响 channel、broadcast 或 node 入口消息。
+- 黑名单通过事件日志和快照复制；写侧会阻止 `sender.role = user` 发往“可登录用户”的新直发持久消息和瞬时包，读侧会按 `blocked_at` 隐藏拉黑后到达的直发普通用户消息；拉黑前历史消息仍可见，channel、broadcast 和 node 入口消息不受影响。
+- `GET /users` / `list_users` 的可见性是本地读侧规则：普通用户会忽略 `system.visible_to_others=false` 的非系统保留用户或频道，管理员和本人仍可见；该 metadata 不改变复制语义，也不改变已知 `uid` 时的授权/投递规则。黑名单只有在双方互相拉黑时，才会把对方从普通用户的可通讯列表里移除。
 - 广播消息只存一份；读取普通用户消息时会动态合并本地窗口内的广播消息。
 
 ## 允许的暂态与故障场景
@@ -50,6 +55,8 @@
 
 - 节点短时离线或网络分区时，不同节点可能暂时看到不同的用户、订阅或消息集合。
 - 连接恢复后，节点会按 `origin_cursors` 逐个 `origin_node_id` 补拉缺失事件。
+- 如果请求的 `after_event_id` 已经落到对端 retention 窗口之前，对端会返回 truncated pull 响应；本地会先把该 `origin_node_id` 的 cursor 推到 `truncated_before_event_id`，再请求 `users/full`、`login_names/full`、`attachments/full`、`user_metadata/full`，并且只在双方 `message_window_size` 一致时追加 `messages/{origin_node_id}`，随后再从新 cursor 继续补拉。
+- 在 mesh 模式下，中间 hop、桥接传输和路由决策可能变化，导致事件批次、`Ack`、补拉和快照的到达时间抖动；这属于允许暂态，只要最终仍能恢复连通并继续收敛。
 - 补拉完成前，`unconfirmed_events` 或本地查询结果短暂落后是预期现象；长期不恢复才视为异常。
 
 ### 重复投递、乱序到达与快照重叠
@@ -66,7 +73,8 @@
 
 ## 非承诺行为与未定义边界
 
-- 当节点 `message_window_size` 不一致时，当前只承诺用户等持久元数据能继续收敛；不承诺消息分片在全局得到相同窗口结果。
+- 当节点 `message_window_size` 不一致时，当前只承诺用户、`login_name`、附件关系、用户 metadata 和墓碑等非消息分区继续收敛；不承诺消息分片在全局得到相同窗口结果，也不承诺 retention 截断后仍会为该 origin 发送消息快照分区。
+- 不承诺无限事件历史保留；超过 `event_log` retention 后，旧事件可能只剩“快照修复 + 新 cursor 继续补拉”这一路径，而不能再被直接 `PullEvents` 拉回。
 - 瞬时包只承诺尽力转发给目标节点当前在线用户；不承诺持久化、不承诺补拉、不承诺节点重启后的恢复。
 - `route_retry` 只依赖内存 TTL 重试队列；节点重启后，尚未送达的瞬时包会丢失。
 - 未在本文档、README 或运维手册中定义的跨特性组合行为，应视为当前未定义，而不是隐式承诺。

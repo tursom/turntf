@@ -1,501 +1,331 @@
 # 吞吐优化落地方案
 
-本文档把“如何提高当前系统吞吐”整理为可执行的工作清单，按每个工作点组织。它基于当前代码路径和已采集的性能基线，不是泛泛而谈的优化建议。
+本文档记录当前 `turntf` 吞吐优化的已落地基线、仍然存在的真实瓶颈，以及后续 backlog。文件名沿用早期 `plan` 命名，但正文以当前实现和现有 benchmark 集合为准，不再把已经完成的优化继续描述成“未来工作”。
 
-当前性能基线见 [performance-baseline.md](/root/dev/sys/turntf/turntf/docs/performance-baseline.md)。
+当前性能基线见 [performance-baseline.md](performance-baseline.md)。
 
-## 1. 背景与目标
+## 1. 适用范围
 
-当前系统的吞吐瓶颈主要来自三类路径：
+在阅读这份方案前，需要先明确当前 benchmark 与 mesh / mixed transport 的覆盖边界：
 
-- `cluster` 层的复制与恢复控制面偏“细粒度”，每条事件、每次 `Ack`、每次 digest 检查都单独推进，放大了多节点写放大成本。
-- `store` 层在 `Pebble` 模式下仍然保留了大量 SQLite 热路径，而且 `Pebble` 写入大量使用同步提交，导致持久写入成本偏高。
-- `read` 路径仍以“临时拼装结果”为主，例如消息列表需要聚合 direct、broadcast、subscription，再做去重与排序。
+- 持久写、复制、snapshot repair、truncated catchup 的主基线，当前仍以纯 `WebSocket` 线性 mesh 为准：
+  - [mesh_benchmark_test.go](../internal/cluster/mesh_benchmark_test.go)
+  - [mesh_recovery_benchmark_test.go](../internal/cluster/mesh_recovery_benchmark_test.go)
+- 服务端 transient 点对点吞吐基线已经覆盖纯 `WebSocket`、纯 `libp2p`，以及 `WebSocket -> libp2p` bridge；带 `zeromq` build tag 时再追加纯 `ZeroMQ` 和 `WebSocket -> ZeroMQ` bridge：
+  - [mesh_point_to_point_throughput_benchmark_test.go](../internal/cluster/mesh_point_to_point_throughput_benchmark_test.go)
+  - [mesh_point_to_point_throughput_benchmark_zeromq_test.go](../internal/cluster/mesh_point_to_point_throughput_benchmark_zeromq_test.go)
+- 客户端 transient 点对点吞吐当前覆盖纯 `WebSocket/libp2p` 与纯 `ZeroMQ`，但不包含 mixed bridge：
+  - [client_point_to_point_throughput_benchmark_test.go](../internal/api/client_point_to_point_throughput_benchmark_test.go)
+  - [client_point_to_point_throughput_benchmark_zeromq_test.go](../internal/api/client_point_to_point_throughput_benchmark_zeromq_test.go)
+  - [client_point_to_point_throughput_zeromq_client_benchmark_test.go](../internal/api/client_point_to_point_throughput_zeromq_client_benchmark_test.go)
+- mixed transport bridge 当前只承载 `control_critical`、`control_query`、`transient_interactive`；`replication_stream` 和 `snapshot_bulk` 不会跨 bridge 转发，因此 mixed transport 的 transient 结果不能直接外推到持久复制吞吐：
+  - [libp2p-plan.md](libp2p-plan.md)
+  - [mesh_mixed_transport_integration_test.go](../internal/cluster/mesh_mixed_transport_integration_test.go)
+  - [mesh_mixed_transport_zeromq_integration_test.go](../internal/cluster/mesh_mixed_transport_zeromq_integration_test.go)
 
-本文档目标：
+## 2. 当前已经落地的吞吐优化基线
 
-- 提高持久写入吞吐。
-- 降低多节点复制和恢复路径的控制面成本。
-- 提高典型读路径吞吐。
-- 保持默认语义边界不被悄悄改变；任何会影响一致性或本地可见性的改动都单列为独立工作点。
+### 2.1 复制控制面不再是“单事件直推 + 每次都发 digest”
 
-不在本轮优先级内的方向：
+早期版本把“复制批量化与 `Ack` 合并”列为第一优先级，但当前代码已经完成这条主线：
 
-- 先优化 HTTP handler 的细枝末节。
-- 先扩 mixed transport 对比。
-- 先做认证路径专项优化。
-
-## 2. 优先级与执行顺序
-
-建议分三批推进。
-
-### 第一批：直接影响写吞吐的低风险工作
-
-- 工作点 1：复制批量化与 `Ack` 合并
-- 工作点 2：snapshot digest 去抖与脏标记调度
-- 工作点 3：Pebble group commit 与同步策略收敛
-- 工作点 4：Pebble projection 分片锁与延迟裁剪
-
-目标：
-
-- 先把当前“每条消息跨节点持久复制”的基线显著抬高。
-- 不改外部 API，不引入语义变化。
-
-### 第二批：继续压缩本地热路径
-
-- 工作点 5：Pebble 模式热点元数据去 SQLite 化
-- 工作点 6：本地消息投影异步化
-- 工作点 7：收件箱预聚合读投影
-
-目标：
-
-- 降低单节点写放大。
-- 明显改善 `Pebble` 下的读写吞吐差异。
-
-### 第三批：架构级吞吐扩展
-
-- 工作点 8：在线用户查询短 TTL 缓存
-- 工作点 9：sticky write / shard owner
-- 工作点 10：持久消息与瞬时消息通道拆分
-
-目标：
-
-- 提升跨节点查询和写入规模上限。
-- 解决“任意节点可写 + 强持久复制”天然带来的吞吐上限。
-
-## 3. 工作点 1：复制批量化与 `Ack` 合并
-
-### 目标
-
-- 把当前“单事件复制”改成“小批量复制”。
-- 降低每条消息对应的 envelope、路由、`Ack` 和日志开销。
-
-### 当前瓶颈
-
-- `broadcastEvent()` 当前按单个事件直接发送复制包，[manager_replication.go](/root/dev/sys/turntf/turntf/internal/cluster/manager_replication.go:14)。
-- `handleEventBatch()` 会逐条 `ApplyReplicatedEvent()`，然后按本批次发送一次 `Ack`，[manager_replication.go](/root/dev/sys/turntf/turntf/internal/cluster/manager_replication.go:173)。
-- 当前虽然 wire protocol 支持 `EventBatch.Events`，但源端没有真正利用“批量化”的能力。
-
-### 具体改动
-
-- 在 `Manager.publishCh` 下游增加按 peer 的复制聚合器。
-- 聚合器按“单个 origin + 单个 peer”维度收集事件，触发条件为：
-  - 达到固定事件数上限。
-  - 达到固定 payload 字节上限。
-  - 达到固定时间窗口上限。
-- 第一版建议使用包内常量，不暴露配置：
+- `publishLoop` 会把本地事件送入复制批处理器，并按 `maxBatchDelay` 周期性 flush，而不是直接把每条事件逐条广播：
+  - [manager_lifecycle.go](../internal/cluster/manager_lifecycle.go)
+  - [replication_batcher.go](../internal/cluster/replication_batcher.go)
+- 复制批处理器已经按 `(peerID, originNodeID)` 聚合，并使用当前实现常量：
   - `maxBatchEvents = 32`
   - `maxBatchBytes = 64KiB`
   - `maxBatchDelay = 2ms`
-- 保持 wire protocol 不变，仍然发送 `EventBatch`，只是让 `Events` 真正承载多条事件。
-- `Ack` 仍按 origin 维度返回“已应用到哪个 event_id”，但合并到批量 flush 后发送。
+- `handleEventBatch()` 已按整批应用后返回同一 `origin` 的连续 `Ack` 游标，而不是“每条事件一个 `Ack` 包”：
+  - [manager_replication.go](../internal/cluster/manager_replication.go)
 
-### 受影响模块
+这意味着“工作点 1：复制批量化与 `Ack` 合并”已经从待实现项变成当前吞吐基线的一部分。
 
-- [internal/cluster/manager_replication.go](/root/dev/sys/turntf/turntf/internal/cluster/manager_replication.go)
-- [internal/cluster/manager.go](/root/dev/sys/turntf/turntf/internal/cluster/manager.go)
-- 现有 `cluster` benchmark 与恢复 benchmark
+### 2.2 snapshot digest 已经改成 dirty 标记 + 定时 sweep
 
-### 验收标准
+文档旧版把“snapshot digest 去抖与脏标记调度”列为未来工作，但当前实现已经具备：
 
-- `BenchmarkMeshReplicationPebbleLinear3Nodes` 的 `ns/op`、`ack_ms/op` 明显下降。
-- `Ack` 语义不变，现有复制回归测试全部通过。
-- 不引入“同一批次内事件乱序应用”。
-
-### 风险与回滚
-
-- 风险：批量窗口会增加单条消息尾延迟。
-- 控制：窗口严格限制在毫秒级，且支持立即 flush 的 fast path。
-- 回滚：保留单事件直发实现，通过内部开关快速切回。
-
-## 4. 工作点 2：snapshot digest 去抖与脏标记调度
-
-### 目标
-
-- 降低复制收尾时的控制面噪声。
-- 避免每批事件后都尝试发送 digest。
-
-### 当前瓶颈
-
-- `handleEventBatch()` 在没有 pending pull 时会继续走 `sendSnapshotDigest()`，[manager_replication.go](/root/dev/sys/turntf/turntf/internal/cluster/manager_replication.go:223)。
-- 这会让高频复制下出现大量 digest 尝试，即使实际没有需要修复的分片。
-
-### 具体改动
-
-- 为每个 peer 增加 snapshot dirty 标记。
-- 只在以下场景把 peer 标为 dirty：
-  - 完成一轮 pull/catchup。
-  - 应用了 snapshot chunk。
-  - 本地进入“可能存在分片差异”的状态。
-- 新增定时调度器，每个 peer 在固定最小间隔内最多发送一次 digest。
-- 第一版建议：
+- 空 pull 完成后只标记 peer 的 snapshot digest 为 dirty，不再在每批 steady-state push 后立刻尝试 digest：
+  - [manager_replication.go](../internal/cluster/manager_replication.go)
+- `snapshotDigestLoop` 会按固定 sweep 周期扫描 dirty peer，再受 `snapshotDigestMinInterval` 限流发送：
+  - [manager_lifecycle.go](../internal/cluster/manager_lifecycle.go)
+  - [snapshot.go](../internal/cluster/snapshot.go)
+- 当前实现常量已经固定为：
   - `snapshotDigestMinInterval = 250ms`
-  - `snapshotDigestImmediateAfterRepair = true`
+  - `snapshotDigestSweepInterval = 25ms`
 
-### 受影响模块
+因此，“工作点 2：snapshot digest 去抖与脏标记调度”也已经落地，不应继续作为现状缺口描述。
 
-- [internal/cluster/snapshot.go](/root/dev/sys/turntf/turntf/internal/cluster/snapshot.go)
-- [internal/cluster/manager_replication.go](/root/dev/sys/turntf/turntf/internal/cluster/manager_replication.go)
+### 2.3 Pebble 写路径已经有 group commit、profile 和本地批写
 
-### 验收标准
+旧版方案里把“Pebble group commit 与同步策略收敛”当作下一步，但当前代码已经完成了三层基线能力：
 
-- 复制 benchmark 的 `allocs/op` 和 `ns/op` 有可见下降。
-- `BenchmarkMeshSnapshotRepairPebbleLinear3Nodes` 不出现功能回退。
-- snapshot repair 仍然能在恢复路径下自动触发。
+- 通用 Pebble 写入已经由 [pebble_write_coordinator.go](../internal/store/pebble_write_coordinator.go) 负责 group commit，当前实现常量为：
+  - `groupCommitMaxOps = 128`
+  - `groupCommitMaxDelay = 5ms`
+- 本地 `CreateMessage` 在 `Pebble` 后端下不再是“每次单条消息单独落盘”，而是由 [pebble_local_message_writer.go](../internal/store/pebble_local_message_writer.go) 做同 `sync_mode` 批写，单批最多 `128` 条。
+- `Pebble` 已经具备 `balanced/throughput` profile 和 `no_sync/force_sync` 两类消息同步模式，对应 benchmark 名称也已经拆开：
+  - [store_benchmark_test.go](../internal/store/store_benchmark_test.go)
+  - [http_benchmark_test.go](../internal/api/http_benchmark_test.go)
 
-### 风险与回滚
+因此，“当前 `Pebble` 写入主要被每条消息一次同步提交主导”已经不是准确的现状描述。
 
-- 风险：digest 频率过低会延长分片修复的发现时间。
-- 控制：保留“恢复路径后立即发送一次”的特例。
-- 回滚：仅回退调度器，保留 dirty 标记代码。
+### 2.4 `Pebble` 范围已经明显扩大，不再只是事件日志 + 消息投影
 
-## 5. 工作点 3：Pebble group commit 与同步策略收敛
-
-### 目标
-
-- 降低 `Pebble` 模式下每次写入的 fsync 成本。
-- 让高频写入不再被“每条消息一次同步提交”主导。
-
-### 当前瓶颈
-
-- `pebbleEventLogRepository.appendStored()` 在多个 `Set` 和 `Commit` 上都使用 `pebble.Sync`，[pebble_projection.go](/root/dev/sys/turntf/turntf/internal/store/pebble_projection.go:86)。
-- `trimMessagesForUser()` 删除索引也使用 `pebble.Sync`，[pebble_projection.go](/root/dev/sys/turntf/turntf/internal/store/pebble_projection.go:539)。
-- 当前 `Pebble` 写路径吞吐明显落后于 SQLite 单点路径，基线已经体现了这一点。
-
-### 具体改动
-
-- 统一写入规则：
-  - 单个 `Batch` 内部的 `Set/Delete` 一律不带 `Sync`。
-  - 只在 `Batch.Commit()` 决定是否 `Sync`。
-- 引入写入协调器：
-  - 聚合多个事件日志写入与投影索引写入。
-  - 在小时间窗口内合并到一个 commit。
-- 第一版仍不暴露 public config，采用内部常量：
-  - `groupCommitMaxOps = 64`
-  - `groupCommitMaxDelay = 2ms`
-- 对需要强制刷盘的路径保留 `forceSync` 能力，但默认普通消息写入走 group commit。
-
-### 受影响模块
-
-- [internal/store/pebble_projection.go](/root/dev/sys/turntf/turntf/internal/store/pebble_projection.go)
-- `internal/store` 中 Pebble event log 实现
-
-### 验收标准
-
-- `BenchmarkStoreCreateMessage/*/pebble` 吞吐显著提升。
-- `BenchmarkStorePruneEventLogOnce/*/pebble` 不出现异常回退。
-- 崩溃恢复语义仍符合当前 durable event log 承诺。
-
-### 风险与回滚
-
-- 风险：极端崩溃时会增大“已返回但尚未真正 sync”的窗口。
-- 控制：第一版仅在明确接受的路径上启用 group commit。
-- 回滚：保留 `Commit(pebble.Sync)` 直写模式。
-
-## 6. 工作点 4：Pebble projection 分片锁与延迟裁剪
-
-### 目标
-
-- 让不同用户的消息写入不再互相阻塞。
-- 降低“每次写入就全量裁剪”的代价。
-
-### 当前瓶颈
-
-- `pebbleMessageProjectionRepository` 使用全局 `mu`，[pebble_projection.go](/root/dev/sys/turntf/turntf/internal/store/pebble_projection.go:30)。
-- `ApplyMessageCreated()` 在全局锁下执行 `messageExists`、`putMessage` 和 `trimMessagesForUser`，[pebble_projection.go](/root/dev/sys/turntf/turntf/internal/store/pebble_projection.go:271)。
-- `trimMessagesForUser()` 每次都会列出该用户全部消息并裁剪，[pebble_projection.go](/root/dev/sys/turntf/turntf/internal/store/pebble_projection.go:530)。
-
-### 具体改动
-
-- 把全局锁改成固定数量的分片锁，按 `recipient node_id/user_id` hash。
-- `messageExists` 与 `putMessage` 仍在同一分片锁里，保证幂等。
-- 把“写后立即 trim”改为：
-  - 先记录该用户为 dirty。
-  - 由后台 trim worker 批量处理。
-- 第一版建议：
-  - `projectionLockShards = 256`
-  - `trimWorkerPeriod = 50ms`
-  - `trimImmediateThreshold = windowSize + 32`
-
-### 验收标准
-
-- `BenchmarkStoreCreateMessage/*/pebble` 的 `ns/op` 和 `allocs/op` 下降。
-- 多用户并发写入压测时，不再被单个全局锁卡死。
-- `message_window_size` 语义保持不变。
-
-### 风险与回滚
-
-- 风险：延迟 trim 会让短时间窗口内的消息数大于 N。
-- 控制：只允许短暂超窗，读取时仍按最终排序截断。
-- 回滚：保留同步 trim 实现。
-
-## 7. 工作点 5：Pebble 模式热点元数据去 SQLite 化
-
-### 目标
-
-- 去掉 `Pebble` 模式下最主要的单点串行瓶颈。
-- 让“事件日志和消息投影在 Pebble，但热点元数据还在 SQLite”这一混合状态结束。
-
-### 当前瓶颈
-
-- `Store.Open()` 无论什么 engine 都创建 SQLite 连接，并把连接数固定为 `1`，[store.go](/root/dev/sys/turntf/turntf/internal/store/store.go:258)。
-- `CreateMessage()` 的用户检查、黑名单检查、`message_sequence_counters` 更新都仍在 SQLite 事务里，[messages.go](/root/dev/sys/turntf/turntf/internal/store/messages.go:21)。
-
-### 第一阶段迁移目标
+旧版方案里把 “`message_sequence_counters` / `origin_cursors` / `peer_ack_cursors` / `pending_projections` 去 SQLite 化”写成第一阶段迁移目标，但这批能力现在已经在 `Pebble` 基线中：
 
 - `message_sequence_counters`
-- `origin_cursors`
 - `peer_ack_cursors`
+- `origin_cursors`
 - `pending_projections`
 
-不在第一阶段迁移的内容：
+对应实现位于：
+
+- [store_backend.go](../internal/store/store_backend.go)
+- [pebble_message_sequence.go](../internal/store/pebble_message_sequence.go)
+- [pebble_metadata.go](../internal/store/pebble_metadata.go)
+
+当前仍保留在 SQLite 的主要是：
 
 - `users`
+- `login_names`
 - `subscriptions`
+- `attachments`
 - `blacklists`
-- `discovered_peers`
+- `user_metadata`
 
-### 具体改动
+所以，当前 `Pebble` 的真实瓶颈已经从“核心元数据全都还在 SQLite”收缩为“权限 / 用户 / 附件 / metadata 相关热点仍依赖 SQLite 读写”。
 
-- 为上述元数据增加 Pebble repository 实现。
-- 在 `EnginePebble` 下优先走 Pebble repository，SQLite 只保留尚未迁移的实体。
-- 保持外部接口不变，迁移只发生在 repository 选择层。
+### 2.5 消息投影已经有分片锁、后台 trim 和 inbox 快路径
 
-### 验收标准
+旧版方案里的“Pebble projection 分片锁与延迟裁剪”“收件箱预聚合读投影”也不再是空白：
 
-- `BenchmarkStoreCreateMessage/*/pebble` 继续下降。
-- `cluster` 复制 benchmark 不因 cursor/ack 路径重复跨 SQLite 而被卡住。
-- 现有 `store`、`cluster` 回归测试通过。
+- 消息投影锁已经从全局锁变成 `256` 个 shard lock：
+  - [pebble_message_state.go](../internal/store/pebble_message_state.go)
+- trim 已经走后台 worker，而不是每次都同步全量裁剪：
+  - `pebbleMessageTrimWorkerDelay = 25ms`
+  - `pebbleMessageTrimWorkerMaxUsers = 64`
+- 登录用户读消息时会优先走 inbox 投影，仅在候选不足时才回退到 legacy merge 路径：
+  - [pebble_projection.go](../internal/store/pebble_projection.go)
 
-### 风险与回滚
+这意味着当前读路径也不再是“完全依赖 direct / broadcast / subscription 临时拼装”的老状态。
 
-- 风险：元数据 repository 双栈期复杂度明显升高。
-- 控制：按实体分阶段迁移，不一次性替换所有 SQLite 元数据。
+### 2.6 `QueryLoggedInUsers` 已经是本地 mirror 读取，不是实时远程 RPC
 
-## 8. 工作点 6：本地消息投影异步化
+旧版方案把“在线用户查询短 TTL 缓存”列为未来工作，但当前远端查询已经不是“每次多跳实时 RPC”：
 
-### 目标
+- `QueryLoggedInUsers()` 对远端节点直接读取本地持有的 presence mirror snapshot：
+  - [manager_queries.go](../internal/cluster/manager_queries.go)
+- 测试已经明确验证第二次查询不会再次触发远端 provider：
+  - [mesh_data_plane_integration_test.go](../internal/cluster/mesh_data_plane_integration_test.go)
 
-- 把“用户请求线程同时负责 durable event log 和 read projection”拆开。
-- 进一步提高写吞吐。
+所以这一块后续更合适的方向不是“再叠一层 TTL cache”，而是优化 mirror 的刷新、传播、payload 体积和观测。
 
-### 当前瓶颈
+## 3. 当前真实瓶颈
 
-- `CreateMessage()` 在事务提交后同步调用 `projectMessageEvent()`，[messages.go](/root/dev/sys/turntf/turntf/internal/store/messages.go:76)。
-- 这意味着写请求会直接承担本地 projection 成本。
+结合当前实现和 benchmark 集合，现阶段更准确的瓶颈判断如下。
 
-### 语义影响
+### 3.1 `Pebble` 写路径仍被 SQLite 侧权限/实体读取牵制
 
-- 这是一个会影响“本地写后读立即可见性”的工作点。
-- 它不应与前几项低风险优化捆绑上线。
+尽管事件日志、消息投影、消息序号与 cursor 已经迁到 `Pebble`，但本地写入仍会经过这些 SQLite 相关热点：
 
-### 具体改动
+- `GetUser()` / 登录用户校验
+- 黑名单读取
+- 订阅 / broadcast 可见性依赖
+- 附件与 `user_metadata` 相关权限语义
 
-- 写请求只保证：
-  - durable event log 已提交
-  - 本地 message identity 已生成
-- projection 进入后台 worker 队列。
-- 读路径在 projection 尚未追平时，可选择：
-  - 继续读取已投影数据，接受短暂延迟。
-  - 或做“projection pending”补偿查询。
+对应入口主要在：
 
-### 验收标准
+- [store_backend.go](../internal/store/store_backend.go)
+- [projection.go](../internal/store/projection.go)
+- [blacklists.go](../internal/store/blacklists.go)
 
-- `BenchmarkStoreCreateMessage` 与 `BenchmarkHTTPCreateMessageAuthenticated` 有显著下降。
-- 文档明确声明本地读可见性的变化。
-- 不破坏复制语义和恢复语义。
+因此，当前最真实的写热点已经不是“没有批写”，而是“批写之前和读可见性之后，仍有一圈 SQLite 语义依赖”。
 
-### 风险与回滚
+### 3.2 本地批写已经存在，但热点用户和 `force_sync` 仍然昂贵
 
-- 风险：语义变化最大，业务可能依赖“写后立即可读”。
-- 建议：单独版本推进，且默认关闭。
+`Pebble` 本地消息写入已经按批处理，但当前仍有两个硬边界：
 
-## 9. 工作点 7：收件箱预聚合读投影
+- 批次按连续 `sync_mode` 分段，`force_sync` 会打断 relaxed 批次；
+- 同一热点用户仍会落在同一组 shard lock 与同一批次收敛点上。
 
-### 目标
+这类成本会直接体现在：
 
-- 提升 `ListMessagesByUser` 和对应 HTTP 接口的吞吐。
-- 避免每次读取都重新拼装 direct、broadcast 和 subscription 消息。
-
-### 当前瓶颈
-
-- `ListMessagesByUser()` 当前会读取 direct、broadcast、subscription 三类来源，再做去重和排序，[pebble_projection.go](/root/dev/sys/turntf/turntf/internal/store/pebble_projection.go:294)。
-
-### 具体改动
-
-- 新增“用户 inbox 投影”：
-  - 每条 direct message 直接写入 recipient inbox。
-  - channel / broadcast message 在 fanout 时写入订阅者 inbox。
-- `ListMessagesByUser()` 优先读 inbox。
-- 原始 message 投影继续保留，供恢复、诊断和重建 inbox 使用。
-
-### 验收标准
-
-- `BenchmarkStoreListMessagesByUser` 与 `BenchmarkHTTPListMessagesByUserAuthenticated` 显著下降。
-- 用户看到的排序、去重和黑名单边界不发生语义回退。
-
-### 风险与回滚
-
-- 风险：写放大会上升，尤其是高 fanout channel。
-- 建议：仅在读远大于写的场景启用。
-
-## 10. 工作点 8：在线用户查询短 TTL 缓存
-
-### 目标
-
-- 提升 `QueryLoggedInUsers` 多跳查询吞吐。
-- 降低热点节点被重复查询时的跨节点控制面压力。
-
-### 当前瓶颈
-
-- 当前 `QueryLoggedInUsers` 是实时多跳 RPC，没有缓存层，基线已显示它的吞吐低于单节点本地读。
-
-### 具体改动
-
-- 在源节点为远端 `node_id` 增加短 TTL 查询缓存。
-- 第一版建议：
-  - `ttl = 250ms`
-  - `maxEntries = 1024`
-- 对明确失败的响应也做极短 negative cache，防止热点节点被持续重试。
-
-### 验收标准
-
-- `BenchmarkMeshQueryLoggedInUsersPebbleLinear` 明显下降。
-- 250ms 内允许结果略旧，但不得越权或串节点。
-
-### 风险与回滚
-
-- 风险：在线用户列表会变成“短暂近实时”，不再是严格实时。
-- 控制：仅缓存远端查询，不缓存本地 provider。
-
-## 11. 工作点 9：sticky write / shard owner
-
-### 目标
-
-- 从架构层提升持久写入吞吐。
-- 降低“任意节点可写”带来的复制和冲突处理成本。
-
-### 当前瓶颈
-
-- 当前每个写节点都可能成为 origin，再通过复制、`Ack`、快照与修复收敛。
-- 这是当前架构最大的吞吐上限来源，不是单个函数级优化能完全解决的。
-
-### 具体改动
-
-- 对用户或 channel 引入 owner 规则。
-- 默认把持久写请求转发到 owner 节点执行。
-- 非 owner 节点保留：
-  - 读能力
-  - 瞬时包能力
-  - owner 不可达时的降级策略
-
-### 验收标准
-
-- 持久写 benchmark 与真实压测的节点容量上限明显提升。
-- 冲突与反熵压力显著下降。
-
-### 风险与回滚
-
-- 风险：会弱化“任意节点可写”的原始承诺。
-- 建议：作为单独架构版本推进，不与当前语义版本混发。
-
-## 12. 工作点 10：持久消息与瞬时消息通道拆分
-
-### 目标
-
-- 让不需要 durable event log 的流量不要占用持久复制路径。
-- 提升整体系统可承载吞吐。
-
-### 当前瓶颈
-
-- 当前持久消息和瞬时消息共享大量 manager / mesh / store 热路径设计思路，尽管语义已经区分，但优化层面还不够彻底。
-
-### 具体改动
-
-- 持久消息继续走 event log + projection + replication。
-- 瞬时消息尽量只走：
-  - route
-  - relay
-  - in-memory retry
-- 单独做 observability、排队和限流。
-
-### 验收标准
-
-- transient throughput 可以单独提升，不再被 durable path 拖累。
-- 持久消息的稳定性和瞬时消息的吞吐目标不再互相牵制。
-
-## 13. 推荐实施顺序与交付物
-
-### Phase A：两周内可交付
-
-- 工作点 1
-- 工作点 2
-- 工作点 3
-- 工作点 4
-
-交付物：
-
-- 吞吐优化第一批代码
-- 更新后的 benchmark 与基线文档
-- 新增 metrics：
-  - replication batch size
-  - group commit flush latency
-  - snapshot digest skipped / sent
-  - projection trim backlog
-
-### Phase B：一到两个版本内交付
-
-- 工作点 5
-- 工作点 7
-- 工作点 8
-
-交付物：
-
-- `Pebble` 模式下更纯粹的本地热路径
-- 更强的读吞吐基线
-
-### Phase C：单独立项
-
-- 工作点 6
-- 工作点 9
-- 工作点 10
-
-原因：
-
-- 这些工作点要么改变语义，要么改变架构边界，不适合与“低风险提吞吐”一并上线。
-
-## 14. 验证与度量
-
-每完成一个工作点，都至少执行以下验证：
-
-- 回归：
-  - `go test ./internal/cluster ./internal/store ./internal/api -count=1`
-- `cluster` benchmark：
-  - `go test ./internal/cluster -run '^$' -bench 'BenchmarkMesh(Replication|QueryLoggedInUsers|TransientRoute|SnapshotRepair|TruncatedCatchup)' -benchmem -count=1`
-- `store/api` benchmark：
-  - `go test ./internal/store ./internal/api -run '^$' -bench 'Benchmark(Store|HTTP)' -benchmem -count=1`
-
-每批优化至少要观察这些指标变化：
-
-- `BenchmarkMeshReplicationPebbleLinear3Nodes`
-- `BenchmarkMeshSnapshotRepairPebbleLinear3Nodes`
-- `BenchmarkMeshTruncatedCatchupRepairPebble`
 - `BenchmarkStoreCreateMessage`
-- `BenchmarkStoreListMessagesByUser`
-- `BenchmarkStorePruneEventLogOnce`
+- `BenchmarkStoreCreateMessageSteadyState`
+- `BenchmarkStoreCreateMessageParallel`
 - `BenchmarkHTTPCreateMessageAuthenticated`
-- `BenchmarkHTTPListMessagesByUserAuthenticated`
 
-## 15. 当前建议
+### 3.3 inbox 快路径已经存在，但高 fanout / broadcast 仍有 fallback 成本
 
-如果只选 3 个最值得先做的工作点，建议顺序是：
+当前登录用户读消息优先使用 inbox，但它不是“所有场景都完全命中”的终态：
 
-1. 工作点 1：复制批量化与 `Ack` 合并
-2. 工作点 3：Pebble group commit 与同步策略收敛
-3. 工作点 4：Pebble projection 分片锁与延迟裁剪
+- 候选不足时仍会回退 legacy merge；
+- broadcast 仍要单独并入；
+- 黑名单、订阅生效时间和 sender 角色过滤仍会参与可见性判断。
 
-原因：
+因此，`ListMessagesByUser` 的主要剩余空间已经从“完全没有读投影”变成“inbox 完整性、broadcast 合并和高 fanout 场景的额外放大”。
 
-- 这 3 项最直接打在当前写吞吐热点上。
-- 它们不要求修改对外 API。
-- 风险相对可控，且可以直接通过现有 benchmark 证明收益。
+### 3.4 当前 benchmark 还有覆盖盲区
+
+当前 benchmark 集合已经比旧版方案丰富很多，但仍有几个需要明确标出来的缺口：
+
+- 持久复制 / snapshot repair / truncated catchup 的主基线仍是纯 `WebSocket` 线性 mesh，暂时没有纯 `libp2p` 或纯 `ZeroMQ` 的同类 durable benchmark。
+- mixed transport benchmark 当前主要服务于 transient 数据面；bridge 不承载 `replication_stream` / `snapshot_bulk`，因此不能用 mixed transient 结果替代 durable 结论。
+- 客户端点对点吞吐当前没有 mixed bridge 子场景。
+- `performance-baseline.md` 里已有的历史样本表格仍以旧的 `tmp` 采集为主；新增的 steady-state、parallel、客户端点对点和 `zeromq` 子场景还缺更完整的历史对照表。
+
+## 4. 现阶段建议的优化阶段
+
+## Phase A：继续压缩当前真实热点
+
+### 工作点 A1：继续推进写热点去 SQLite 化
+
+优先级最高的不是重做 batcher，而是减少 `Pebble` 写路径前后的 SQLite 语义依赖。建议优先关注：
+
+- 登录用户 / `login_name` 读取热点
+- 黑名单判定
+- 订阅 / attachment 读取
+- `user_metadata` 与权限校验相关热点
+
+目标不是一次性把所有关系型实体彻底 KV 化，而是优先把 `CreateMessage`、消息可见性和高频权限检查里的热路径收缩掉。
+
+### 工作点 A2：补齐 durable benchmark 的非 WebSocket 基线
+
+当前文档已经不能再写“先不扩 mixed transport 对比”。更准确的说法是：
+
+- mixed transport transient benchmark 已经存在；
+- 但 durable benchmark 还没有纯 `libp2p` / 纯 `ZeroMQ` 的对照基线；
+- bridge 不承载 durable traffic，所以不应把 “mixed transport bridge benchmark” 当成 durable 替代。
+
+这一阶段建议补齐：
+
+- 纯 `libp2p` 多跳复制 benchmark
+- 纯 `ZeroMQ` 多跳复制 benchmark（`-tags zeromq`）
+- 纯 `libp2p` / `ZeroMQ` snapshot repair 与 truncated catchup benchmark
+
+### 工作点 A3：把现有批写/批复制的可观测性补全
+
+当前 batcher 和 group commit 已经存在，但文档旧版列出的观测项还没有形成稳定基线。建议补这些指标或 benchmark 对照：
+
+- replication batch size / bytes
+- snapshot digest dirty backlog / skip ratio
+- local message batch size / `force_sync` 比例
+- inbox fallback ratio
+
+这一步的目标不是改变语义，而是让后续优化有更稳定的回归面。
+
+## Phase B：继续优化读路径与 presence mirror
+
+### 工作点 B1：提高 inbox 命中率，收缩 broadcast / subscription fallback
+
+当前 inbox 已经是主快路径，后续优化重点应改成：
+
+- 减少“候选不足 -> 回退 legacy merge”的频率
+- 评估是否需要进一步预物化 broadcast / subscription 结果
+- 降低高 fanout 场景下的额外分配和排序成本
+
+### 工作点 B2：优化 logged-in users mirror，而不是再叠 TTL cache
+
+因为远端 `QueryLoggedInUsers` 已经读取本地 mirror，后续更值得做的是：
+
+- mirror 刷新粒度
+- payload 大小
+- fanout 频率
+- 更新传播与观测
+
+而不是在查询侧再加一层“短 TTL 缓存”。
+
+## Phase C：仅在接受语义/架构变化时再考虑
+
+### 工作点 C1：本地消息投影进一步异步化
+
+这会影响“本地写后立即可见”的现有语义。当前 `Pebble` 路径已经把 event log 和 projection 放在同一批写里；如果要继续把 projection 移出主请求路径，应单独作为语义变更推进，而不是继续伪装成低风险吞吐优化。
+
+### 工作点 C2：sticky write / shard owner
+
+这仍然是可能显著提升持久写入上限的架构方案，但它会改变“任意节点可写”的边界，应独立立项，不适合与当前基线优化混发。
+
+### 工作点 C3：进一步硬分 durable / transient 通道
+
+当前瞬时包和持久消息已经在语义与 benchmark 上分开，但如果要继续把排队、限流、观测甚至 worker 彻底拆分，也属于架构级改动，而不是“修一个热点函数”。
+
+## 5. benchmark 与优化点的对应关系
+
+为了避免把 benchmark 结果读错，当前建议按下面的映射理解：
+
+- 持久写 / 复制控制面：
+  - `BenchmarkMeshReplicationPebbleLinear3Nodes`
+  - `BenchmarkMeshSnapshotRepairPebbleLinear3Nodes`
+  - `BenchmarkMeshTruncatedCatchupRepairPebble`
+- 本地 `Pebble` 写路径：
+  - `BenchmarkStoreCreateMessage`
+  - `BenchmarkStoreCreateMessageSteadyState`
+  - `BenchmarkStoreCreateMessageParallel`
+  - `BenchmarkHTTPCreateMessageAuthenticated`
+- 登录用户消息读路径：
+  - `BenchmarkStoreListMessagesByUser`
+  - `BenchmarkHTTPListMessagesByUserAuthenticated`
+- 服务端 transient mesh 数据面：
+  - `BenchmarkMeshTransientRoutePebbleLinear`
+  - `BenchmarkMeshTransientPointToPointThroughput`
+- 客户端 transient 数据面：
+  - `BenchmarkClientWebSocketTransientSendMessageAuthenticated`
+  - `BenchmarkClientWebSocketTransientSendMessageAuthenticatedLinearMesh`
+  - `BenchmarkClientWebSocketTransientSendMessageAuthenticatedLinearMeshWithOnlineUsers`
+  - `BenchmarkClientWebSocketTransientSendMessageAuthenticatedPointToPointThroughput`
+  - `BenchmarkClientZeroMQTransientSendMessageAuthenticatedPointToPointThroughput`
+- 在线用户查询：
+  - `BenchmarkMeshQueryLoggedInUsersPebbleLinear`
+  - 它测的是“mesh presence mirror 收敛后的读取成本”，不是“每次远程 RPC 查询”的 TTL cache 成本。
+
+关于客户端 benchmark，还需要记住两个实现边界：
+
+- `BenchmarkClientWebSocketTransientSendMessageAuthenticatedLinearMesh` 当前发送端和接收端都走 `/ws/realtime`。
+- `BenchmarkClientWebSocketTransientSendMessageAuthenticatedLinearMeshWithOnlineUsers` 当前只跑 `SQLite`，背景在线会话通过 `/ws/realtime` 建立，被测发送/接收连接使用 `TransientOnly` 登录。
+
+## 6. 验证命令
+
+回归：
+
+```bash
+go test ./internal/cluster ./internal/store ./internal/api -count=1
+```
+
+持久复制 / 恢复基线：
+
+```bash
+go test ./internal/cluster -run '^$' -bench 'BenchmarkMesh(Replication|QueryLoggedInUsers|TransientRoute|SnapshotRepair|TruncatedCatchup)' -benchmem -count=1
+```
+
+服务端 transient 点对点吞吐：
+
+```bash
+go test ./internal/cluster -run '^$' -bench 'BenchmarkMeshTransientPointToPointThroughput' -benchmem -count=1
+go test -tags zeromq ./internal/cluster -run '^$' -bench 'BenchmarkMeshTransientPointToPointThroughput' -benchmem -count=1
+```
+
+`store` / `api` / 客户端 transient 基线：
+
+```bash
+go test ./internal/store ./internal/api -run '^$' -bench 'Benchmark(Store|HTTP|ClientWebSocket)' -benchmem -count=1
+go test ./internal/api -run '^$' -bench 'BenchmarkClientWebSocketTransientSendMessageAuthenticatedPointToPointThroughput' -benchmem -count=1
+go test -tags zeromq ./internal/api -run '^$' -bench 'BenchmarkClientWebSocketTransientSendMessageAuthenticatedPointToPointThroughput' -benchmem -count=1
+go test -tags zeromq ./internal/api -run '^$' -bench 'BenchmarkClientZeroMQTransientSendMessageAuthenticatedPointToPointThroughput' -benchmem -count=1
+```
+
+如果只想快速确认场景没有漂移，可以统一加 `-benchtime=1x` 做轻量探针。
+
+## 7. 当前建议
+
+如果只选 3 个最值得继续推进的方向，当前建议顺序是：
+
+1. 继续推进 `Pebble` 写热点去 SQLite 化，先打 `CreateMessage` 和消息可见性相关热点。
+2. 补齐 durable benchmark 的纯 `libp2p` / 纯 `ZeroMQ` 基线，并把 mixed transport 的适用边界写清楚。
+3. 以 inbox 命中率、mirror fanout 和批写可观测性为抓手，继续压缩读放大与控制面噪声。
+
+这样做的原因是：
+
+- 复制批量、digest 去抖、group commit、分片锁和 inbox 快路径都已经是当前基线，继续把它们写成“待做项”会误导后续判断。
+- 当前最真实的剩余瓶颈已经转移到 SQLite 依赖、可观测性缺口和 benchmark 覆盖盲区。
+- mixed transport 已经进入测试和吞吐基线，但 durable traffic 与 bridge 的边界必须继续分开看，不能混成一个结论。

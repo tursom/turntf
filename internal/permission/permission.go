@@ -241,6 +241,9 @@ func canAccessUserMetadata(ctx UserMetadataContext) error {
 	if ctx.Actor == nil {
 		return store.ErrForbidden
 	}
+	if ctx.Actor.Key() == ctx.Owner.Key() {
+		return nil
+	}
 	if ctx.Owner.SystemReserved {
 		return store.ErrForbidden
 	}
@@ -252,9 +255,6 @@ func canAccessUserMetadata(ctx UserMetadataContext) error {
 			return nil
 		}
 		return store.ErrForbidden
-	}
-	if ctx.Actor.Key() == ctx.Owner.Key() {
-		return nil
 	}
 	return store.ErrForbidden
 }

@@ -1,165 +1,192 @@
-# HTTP API 监听地址；同时承载内部集群 WebSocket 入口 `/internal/cluster/ws`。
+# HTTP API 监听地址，同时承载集群 WebSocket 入口 `/internal/cluster/ws`。
 [services.http]
 listen_addr = ":8080"
 
-# ZeroMQ 长连接入口，既可服务业务客户端，也可用于节点间同步。
-# 如只需要 HTTP/WebSocket，可以保持 disabled。
+# ZeroMQ 传输层，可服务业务客户端或用于节点间同步。
+# 不需要时保持 disabled。
 [services.zeromq]
 enabled = false
-# ROUTER socket 的本地监听地址，仅支持 tcp://host:port。
-# 留空时不启动 ZeroMQ listener，但启用 ZeroMQ 后仍可用于主动拨号。
+# ROUTER socket 监听地址，仅支持 tcp://host:port。
+# 留空时不启动 ZeroMQ listener，但仍可用于主动拨号。
 bind_url = "tcp://0.0.0.0:9090"
-# 是否允许 ZeroMQ 参与 mesh forwarding；留空时跟随 cluster.forwarding.enabled。
+# 是否允许 ZeroMQ 参与 mesh 转发。
+# 留空（不设置）时跟随 cluster.forwarding.enabled（默认 true）。
 forwarding_enabled = true
-# ZeroMQ 支持 "none" 或 "curve"。TLS 不由 libzmq 原生提供，如需 TLS 请在外层使用 TCP TLS 隧道。
+# 安全模式：none（明文）或 curve（Z85 CURVE 加密）。
+# libzmq 不原生提供 TLS，如需 TLS 请在外层使用 TCP TLS 隧道。
 security = "none"
 
-# CURVE 模式需要本节点的 server/client key，并维护允许接入的 client public key 白名单。
+# CURVE 模式需要本节点 server/client key 和允许接入的 client public key 白名单。
 [services.zeromq.curve]
-# 使用 `go test -tags zeromq` 中的 zmq4.NewCurveKeypair 示例或其他 ZeroMQ 工具生成 Z85 CURVE key。
+# 使用 `go test -tags zeromq -run Curve` 或其他 ZeroMQ 工具生成 Z85 CURVE key。
 server_public_key = ""
 server_secret_key = ""
 client_public_key = ""
 client_secret_key = ""
-# 当 bind_url 非空且 security = "curve" 时，白名单不能为空。
+# security = "curve" 且 bind_url 非空时，白名单不能为空。
 allowed_client_public_keys = []
 
-# libp2p 集群传输入口，默认关闭；开启后与 WebSocket/ZeroMQ 并行工作。
+# libp2p 集群传输，默认关闭；开启后与 WebSocket/ZeroMQ 并行工作。
 [services.libp2p]
 enabled = false
-# 首次启动会生成 Ed25519 私钥并以 0600 权限保存，后续重启复用以保持 PeerID 稳定。
+# 首次启动生成 Ed25519 私钥（0600 权限），后续重启复用保持 PeerID 稳定。
 private_key_path = "./data/libp2p.key"
-# 本机绑定地址；不要包含 /p2p/<peer_id>，也不会直接进入 membership 广告。
+# 本机绑定地址，不能包含 /p2p/<peer_id>，也不会直接进入 membership 广告。
 listen_addrs = ["/ip4/0.0.0.0/tcp/4001"]
-# 私有 DHT/relay 的种子入口；必须是包含 /p2p/<peer_id> 的远端 multiaddr。
+# 私有 DHT/relay 的 bootstrap 入口，必须是包含 /p2p/<peer_id> 的远端 multiaddr。
 bootstrap_peers = []
+# 启用时默认打开 DHT、hole punching 和 GossipSub；mDNS 仍需显式开启。
+# 若显式设置了任一附加能力，则只启用显式设置的那些。
 enable_dht = true
 enable_mdns = false
 relay_peers = []
+# hole punching 仅在 relay_peers 非空时生效。
 enable_hole_punching = true
 gossipsub_enabled = true
+# native_relay_* 当前已进入配置解析和能力宣告，但尚未完全接线到 libp2p host。
 native_relay_client_enabled = false
 native_relay_service_enabled = false
 
-# 事件日志和消息投影存储配置。
+# 事件日志和消息投影存储。
 [store]
 # 可选 sqlite 或 pebble；默认 sqlite。
 engine = "sqlite"
-# 每节点每用户本地保留的消息窗口大小；超出窗口的旧消息会在本地裁剪。
+# 每节点每用户保留的消息窗口大小；0 使用默认值 500。
 message_window_size = 500
 
 # 事件日志按 origin 定期裁剪；默认开启。
 [store.event_log]
-# 是否启用启动时 + 周期性 event_log 裁剪。
+# 启动时 + 周期性裁剪开关；不设置时默认 true。
 enabled = true
-# 每个 origin 至少保留最近多少条事件。
+# 每个 origin 至少保留的事件数；0 使用默认值 100000。
 max_events_per_origin = 100000
-# 后台裁剪周期，单位秒。
+# 后台裁剪周期（秒）；0 使用默认值 60。
 prune_interval_seconds = 60
 
-# SQLite 始终用于保存用户、订阅、游标、发现到的 peer 等元数据。
-# 当 engine = "sqlite" 时，也用于事件日志和消息投影。
+# SQLite 始终保存用户、订阅、游标、发现的 peer 等元数据。
+# engine = "sqlite" 时也用于事件日志和消息投影。
 [store.sqlite]
+# 留空时默认 ./data/turntf.db。
 db_path = "./data/turntf.db"
 
 # Pebble 仅在 engine = "pebble" 时用于事件日志和消息投影。
 [store.pebble]
+# 留空时默认 ./data/turntf.pebble。
 path = "./data/turntf.pebble"
-# 可选 balanced 或 throughput；throughput 会启用更激进的内存/LSM 参数和热读布局。
+# balanced（均衡）或 throughput（吞吐优先，更激进的内存/LSM 参数）。
+# 留空时默认 balanced。
 profile = "balanced"
-# 本地持久消息默认提交方式，可选 no_sync 或 force_sync。
+# 本地持久消息默认提交方式：no_sync 或 force_sync。
+# 留空时默认 no_sync。
 message_sync_mode = "no_sync"
 
-# 外部登录鉴权配置。
+# 登录鉴权配置。
 [auth]
-# 生产环境必须替换为高强度随机密钥；所有节点需保持一致。
-# 不能与 cluster.secret 使用相同值。
+# 生产环境必须替换为高强度随机密钥，所有节点需保持一致。
+# 必须与 cluster.secret 不同。
 token_secret = "replace-me"
-# 登录 token 有效期，单位分钟；0 使用默认值 1440。
+# 登录 token 有效期（分钟）；0 使用默认值 1440（24 小时）。
 token_ttl_minutes = 1440
 
-# 保底超级管理员。启动时会确保该用户名存在并拥有管理员权限。
+# 保底超级管理员。启动时确保该用户名存在且拥有 super_admin 权限。
+# 仅首次创建时使用此处配置，后续不会强制覆盖已有密码。
 [auth.bootstrap_admin]
 username = "root"
-# bcrypt 密码哈希；示例值对应明文密码 root。
-# 仅首次创建保底管理员时使用，后续不会强制覆盖已有密码。
+# bcrypt 密码哈希。示例值对应明文 "root"。
 password_hash = "$2a$10$1gGoT/pdOu8vX1W28skBPOB7ICjISmVgt9lMyZf9c6re6cMHU6mAa"
-# 可选。登录名，设置后可通过 login_name + 密码登录；不设置则不绑定登录名。
+# 可选登录名；设置后可通过 login_name + 密码登录。
 login_name = "root"
 
 # 日志配置。
 [logging]
-# 支持 debug、info、warn、error；留空时默认 info。
+# 可选 debug、info、warn、error；留空默认 info。
 level = "info"
-# JSON 行日志文件路径；留空时只输出到控制台。
+# JSON 行日志文件路径；留空仅输出到控制台。
 file_path = "./data/turntf.log"
 
-# 集群配置整段可省略；省略时按单节点模式运行。
+# 集群配置整段可省略，省略时按单节点运行。
 # 配置 cluster.peers 时必须同时提供 cluster.secret。
 [cluster]
-# 集群内部 Envelope HMAC 共享密钥；生产环境必须替换，且不能与 auth.token_secret 相同。
+# 集群 Envelope HMAC 共享密钥；生产环境必须替换。
+# 必须与 auth.token_secret 不同。
 secret = "secret"
-# 邻接全部断开后的疑似窗口；窗口内若目标节点发来 authoritative 在线快照，则不清理其临时状态。
+# 邻接全部断开后的怀疑期（毫秒）。窗口内若目标节点发来可信在线快照则不清理临时状态。
+# 不设置时默认 120000（2 分钟）。
 disconnect_suspicion_grace_ms = 120000
 
-# forwarding 是集群默认能力，适合广域网单集群拓扑。
+# forwarding 控制 mesh 路由的转发能力和费用策略。
 [cluster.forwarding]
+# 是否启用 mesh 转发；不设置时默认 true。
 enabled = true
+# 是否允许跨传输层桥接（如 WebSocket ↔ libp2p）。
+# 桥接仅对 control_critical、control_query、transient_interactive 生效，
+# replication_stream 和 snapshot_bulk 不跨桥转发。
+# 不设置时默认 true。
 bridge_enabled = true
+# 路由决策中节点费用的权重因子。0 或不设置时默认为 1。
+# node_fee_weight <= 1 时所有流量默认 ALLOW；
+# node_fee_weight > 1 时视为高费用节点，瞬态交互降级、批量复制拒绝。
 node_fee_weight = 1
 
-# 可按流量类别覆盖默认策略。允许的值：
-# - "ALLOW"
-# - "DISCOURAGE"
-# - "DENY"
-# 留空时：
-# - 普通节点默认全部 ALLOW
-# - 高费用节点默认 control=ALLOW、transient=DISCOURAGE、replication/snapshot=DENY
+# 按流量类别覆盖转发策略。可选值：ALLOW、DISCOURAGE、DENY。
+# 留空时由 node_fee_weight 决定默认策略：
+#   node_fee_weight <= 1：全部 ALLOW
+#   node_fee_weight > 1：control=ALLOW、transient=DISCOURAGE、replication/snapshot=DENY
+# 以下示例显式设置为全部 ALLOW（覆盖默认）。
 [cluster.forwarding.traffic]
-# 核心控制面消息，如 hello、keepalive、time sync、topology update。
+# 核心控制面（hello / keepalive / time sync / topology）。
 control_critical = "ALLOW"
 # 查询类小流量控制请求。
 control_query = "ALLOW"
-# 非持久化的即时交互流量。
+# 非持久化的即时交互。
 transient_interactive = "ALLOW"
-# 实时复制批次与补拉流量。
+# 实时复制批次与补拉。
 replication_stream = "ALLOW"
-# 快照清单与快照分片等大体积同步流量。
+# 快照清单与快照分片等大体积同步。
 snapshot_bulk = "ALLOW"
 
-# 集群时钟保护配置，单位为毫秒的字段均以 _ms 结尾。
+# 集群时钟保护配置。以 _ms 结尾的字段单位为毫秒。
 [cluster.clock]
-# 允许的最大时钟偏差；0 表示关闭超限拒绝，但首次可信校时前仍会阻止本地写入。
+# 允许的最大时钟偏差；0 关闭超限拒绝但不跳过首次可信校时。
+# 不设置时默认 1000。
 max_skew_ms = 1000
-# 单轮校时等待 peer 响应的超时时间。
+# 单轮校时等待 peer 响应的超时。
+# 不设置时默认 8000。
 sync_timeout_ms = 8000
 # 校时样本可被视为可信的最大 RTT。
+# 不设置时默认 4000。
 credible_rtt_ms = 4000
-# 聚合时钟状态保持 trusted 的新鲜窗口。
+# 聚合时钟保持 trusted 的新鲜窗口。
+# 不设置时默认 60000（1 分钟）。
 trusted_fresh_ms = 60000
-# trusted 过期后进入 observing 前的宽限窗口。
+# trusted 过期后进入 observing 前的宽限期。
+# 不设置时默认 180000（3 分钟）。
 observe_grace_ms = 180000
 # 可信校时过期后允许继续应用复制事件的最大窗口。
+# 不设置时默认 300000（5 分钟）。
 write_gate_grace_ms = 300000
-# 连续校时失败达到该次数后拒绝 peer。
+# 连续校时失败次数达到后拒绝 peer。
+# 不设置时默认 3。
 reject_after_failures = 3
-# 连续确认时钟偏差超限达到该次数后拒绝 peer。
+# 连续确认时钟偏差超限次数达到后拒绝 peer。
+# 不设置时默认 3。
 reject_after_skew_samples = 3
 # 从观察状态恢复到可信所需的连续健康样本数。
+# 不设置时默认 2。
 recover_after_healthy_samples = 2
 
-# 静态 WebSocket peer；URL path 按这里配置，通常使用 `/internal/cluster/ws`。
+# 静态 WebSocket peer，URL path 通常为 `/internal/cluster/ws`。
 [[cluster.peers]]
 url = "ws://127.0.0.1:9081/internal/cluster/ws"
 
-# 静态 ZeroMQ peer；需要先启用 services.zeromq.enabled。
-# zmq+tcp URL 必须是远端可拨号地址，不要使用 0.0.0.0。
+# 静态 ZeroMQ peer，需先启用 services.zeromq.enabled。
+# zmq+tcp URL 必须是远端可拨号地址，不能使用 0.0.0.0。
 [[cluster.peers]]
 url = "zmq+tcp://127.0.0.1:9091"
-# ZeroMQ CURVE 模式下，zmq+tcp peer 必须配置远端 server public key。
+# CURVE 模式下需配置远端 server public key。
 zeromq = { curve_server_public_key = "" }
 
-# 静态 libp2p peer；需要先启用 services.libp2p.enabled。
-# multiaddr 必须是远端可拨号地址，并包含 /p2p/<peer_id>。
+# 静态 libp2p peer，需先启用 services.libp2p.enabled。
+# multiaddr 必须是远端可拨号地址且包含 /p2p/<peer_id>。
 # [[cluster.peers]]
 # url = "/ip4/127.0.0.1/tcp/4001/p2p/12D3KooW..."

@@ -21,6 +21,13 @@ import (
 // 非消息数据（users, login_names, attachments, user_metadata）使用全量分区，
 // 消息数据按来源节点分片（messages/{originNodeID}）。
 const (
+	// 快照共分为 5 个分区（partition）：
+	//   users/full           - 全量用户数据
+	//   login_names/full     - 全量登录名数据
+	//   attachments/full     - 全量附件数据
+	//   user_metadata/full   - 全量用户元数据
+	//   messages/{nodeID}    - 按来源节点分片的消息数据
+	// 非消息数据使用全量分区（单个 chunk），消息数据按来源节点分片以支持并行传输。
 	SnapshotUsersPartition        = "users/full"
 	SnapshotLoginNamesPartition   = "login_names/full"
 	SnapshotAttachmentsPartition  = "attachments/full"
@@ -389,6 +396,8 @@ func MaxSnapshotChunkTimestamp(chunk *clusterproto.SnapshotChunk) (clock.Timesta
 	return maxTimestamp, nil
 }
 
+// buildUserSnapshotRows 构建用户数据快照：从 users 表读取所有用户记录，同时查询 tombstones
+// 表中已删除的用户墓碑。返回的 SnapshotRow 数组包含用户行和墓碑行两种类型。
 func (s *Store) buildUserSnapshotRows(ctx context.Context) ([]*clusterproto.SnapshotRow, error) {
 	rows, err := s.db.QueryContext(ctx, `
 SELECT node_id, user_id, username, password_hash, profile, role, system_reserved, created_at_hlc, updated_at_hlc,
@@ -450,6 +459,9 @@ ORDER BY entity_type ASC, entity_node_id ASC, entity_id ASC
 	return snapshotRows, nil
 }
 
+// buildMessageSnapshotRows 按来源节点（producer）构建消息数据快照。
+// 注意：这是一个私有辅助函数，与 storeBackend.MessageProjection().BuildMessageSnapshotRows() 不同，
+// 后者由具体后端（SQLite/Pebble）实现。此函数直接从 messages 表查询数据。
 func (s *Store) buildMessageSnapshotRows(ctx context.Context, producer int64) ([]*clusterproto.SnapshotRow, error) {
 	rows, err := s.db.QueryContext(ctx, `
 SELECT user_node_id, user_id, node_id, seq, sender_node_id, sender_user_id, body, created_at_hlc, session
@@ -476,6 +488,7 @@ ORDER BY user_node_id ASC, user_id ASC, created_at_hlc DESC, node_id ASC, seq DE
 	return snapshotRows, nil
 }
 
+// buildAttachmentSnapshotRows 构建附件数据快照：从 user_attachments 表读取所有记录。
 func (s *Store) buildAttachmentSnapshotRows(ctx context.Context) ([]*clusterproto.SnapshotRow, error) {
 	rows, err := s.db.QueryContext(ctx, `
 SELECT owner_node_id, owner_user_id, subject_node_id, subject_user_id, attachment_type, config_json, attached_at_hlc, deleted_at_hlc, origin_node_id
@@ -501,6 +514,7 @@ ORDER BY owner_node_id ASC, owner_user_id ASC, attachment_type ASC, subject_node
 	return snapshotRows, nil
 }
 
+// buildLoginNameSnapshotRows 构建登录名数据快照：从 user_login_names 表读取所有记录。
 func (s *Store) buildLoginNameSnapshotRows(ctx context.Context) ([]*clusterproto.SnapshotRow, error) {
 	rows, err := s.db.QueryContext(ctx, `
 SELECT login_name, user_node_id, user_id, bound_at_hlc, deleted_at_hlc, origin_node_id
@@ -526,6 +540,7 @@ ORDER BY login_name ASC
 	return snapshotRows, nil
 }
 
+// buildUserMetadataSnapshotRows 构建用户元数据快照：从 user_metadata 表读取所有记录。
 func (s *Store) buildUserMetadataSnapshotRows(ctx context.Context) ([]*clusterproto.SnapshotRow, error) {
 	rows, err := s.db.QueryContext(ctx, `
 SELECT owner_node_id, owner_user_id, key, value, updated_at_hlc, deleted_at_hlc, expires_at, origin_node_id
@@ -551,6 +566,10 @@ ORDER BY owner_node_id ASC, owner_user_id ASC, key ASC
 	return snapshotRows, nil
 }
 
+// applyUserSnapshotRowTx 在事务中应用一条用户快照行。
+// 如果是墓碑行则调用 applySnapshotTombstoneTx 执行删除。
+// 如果是用户行且标记为已删除（DeletedAt 或 VersionDeleted 不为空），则执行软删除。
+// 否则通过 applyReplicatedUserUpsert 以 CRDT 方式插入或合并用户数据。
 func (s *Store) applyUserSnapshotRowTx(ctx context.Context, tx *sql.Tx, row *clusterproto.SnapshotRow) error {
 	if row == nil {
 		return fmt.Errorf("%w: snapshot row cannot be nil", ErrInvalidInput)
@@ -578,6 +597,8 @@ func (s *Store) applyUserSnapshotRowTx(ctx context.Context, tx *sql.Tx, row *clu
 	return s.applyReplicatedUserUpsert(ctx, tx, userUpdatedProtoFromUser(user))
 }
 
+// applySnapshotTombstoneTx 在事务中应用墓碑行：构造 UserKey 并执行软删除。
+// 当前只支持 "user" 类型的墓碑。
 func (s *Store) applySnapshotTombstoneTx(ctx context.Context, tx *sql.Tx, row *clusterproto.SnapshotTombstoneRow) error {
 	if row == nil {
 		return fmt.Errorf("%w: snapshot tombstone cannot be nil", ErrInvalidInput)
@@ -596,6 +617,9 @@ func (s *Store) applySnapshotTombstoneTx(ctx context.Context, tx *sql.Tx, row *c
 	return s.applyUserDeleteTx(ctx, tx, key, deletedAt, row.OriginNodeId, false)
 }
 
+// applyMessageSnapshotRowTx 在事务中应用一条消息快照行。
+// 校验消息标识（recipient, node_id, seq, producer），校验收件人存在性后插入 messages 表。
+// 如果消息已存在（唯一约束冲突）则跳过，返回收件人的 UserKey。
 func (s *Store) applyMessageSnapshotRowTx(ctx context.Context, tx *sql.Tx, producer int64, row *clusterproto.SnapshotRow) (UserKey, error) {
 	if row == nil {
 		return UserKey{}, fmt.Errorf("%w: snapshot row cannot be nil", ErrInvalidInput)
@@ -641,6 +665,8 @@ VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
 	return key, nil
 }
 
+// applyAttachmentSnapshotRowTx 在事务中应用一条附件快照行。
+// 校验所有者和被关联用户存在性后委托 upsertAttachmentTx 执行 upsert。
 func (s *Store) applyAttachmentSnapshotRowTx(ctx context.Context, tx *sql.Tx, row *clusterproto.SnapshotRow) error {
 	if row == nil {
 		return fmt.Errorf("%w: snapshot row cannot be nil", ErrInvalidInput)
@@ -677,6 +703,8 @@ func (s *Store) applyAttachmentSnapshotRowTx(ctx context.Context, tx *sql.Tx, ro
 	return s.upsertAttachmentTx(ctx, tx, attachment)
 }
 
+// applyLoginNameSnapshotRowTx 在事务中应用一条登录名快照行。
+// 对于未删除的登录名：校验用户存在性、清除冲突登录名（CRDT 绑定时间戳比较），确保最终一致性。
 func (s *Store) applyLoginNameSnapshotRowTx(ctx context.Context, tx *sql.Tx, row *clusterproto.SnapshotRow) error {
 	if row == nil {
 		return fmt.Errorf("%w: snapshot row cannot be nil", ErrInvalidInput)
@@ -719,6 +747,8 @@ func (s *Store) applyLoginNameSnapshotRowTx(ctx context.Context, tx *sql.Tx, row
 	return s.upsertUserLoginNameTx(ctx, tx, item)
 }
 
+// applyUserMetadataSnapshotRowTx 在事务中应用一条用户元数据快照行。
+// 校验所有者存在性后委托 upsertUserMetadataTx 执行 upsert。
 func (s *Store) applyUserMetadataSnapshotRowTx(ctx context.Context, tx *sql.Tx, row *clusterproto.SnapshotRow) error {
 	if row == nil {
 		return fmt.Errorf("%w: snapshot row cannot be nil", ErrInvalidInput)
@@ -753,6 +783,7 @@ func (s *Store) applyUserMetadataSnapshotRowTx(ctx context.Context, tx *sql.Tx, 
 	return s.upsertUserMetadataTx(ctx, tx, metadata)
 }
 
+// snapshotRowFromUser 将内部 User 结构转换为 protobuf SnapshotRow（用户类型）。
 func snapshotRowFromUser(user User) *clusterproto.SnapshotRow {
 	return &clusterproto.SnapshotRow{
 		Body: &clusterproto.SnapshotRow_User{
@@ -778,6 +809,7 @@ func snapshotRowFromUser(user User) *clusterproto.SnapshotRow {
 	}
 }
 
+// snapshotRowFromMessage 将内部 Message 结构转换为 protobuf SnapshotRow（消息类型）。
 func snapshotRowFromMessage(message Message) *clusterproto.SnapshotRow {
 	return &clusterproto.SnapshotRow{
 		Body: &clusterproto.SnapshotRow_Message{
@@ -793,6 +825,7 @@ func snapshotRowFromMessage(message Message) *clusterproto.SnapshotRow {
 	}
 }
 
+// snapshotRowFromAttachment 将内部 Attachment 结构转换为 protobuf SnapshotRow（附件类型）。
 func snapshotRowFromAttachment(attachment Attachment) *clusterproto.SnapshotRow {
 	row := &clusterproto.SnapshotAttachmentRow{
 		Owner:          &clusterproto.ClusterUserRef{NodeId: attachment.Owner.NodeID, UserId: attachment.Owner.UserID},
@@ -812,6 +845,7 @@ func snapshotRowFromAttachment(attachment Attachment) *clusterproto.SnapshotRow 
 	}
 }
 
+// snapshotRowFromLoginName 将内部 UserLoginName 结构转换为 protobuf SnapshotRow（登录名类型）。
 func snapshotRowFromLoginName(item UserLoginName) *clusterproto.SnapshotRow {
 	row := &clusterproto.SnapshotLoginNameRow{
 		LoginName:    item.LoginName,
@@ -830,6 +864,7 @@ func snapshotRowFromLoginName(item UserLoginName) *clusterproto.SnapshotRow {
 	}
 }
 
+// snapshotRowFromUserMetadata 将内部 UserMetadata 结构转换为 protobuf SnapshotRow（用户元数据类型）。
 func snapshotRowFromUserMetadata(metadata UserMetadata) *clusterproto.SnapshotRow {
 	row := &clusterproto.SnapshotUserMetadataRow{
 		Owner:        &clusterproto.ClusterUserRef{NodeId: metadata.Owner.NodeID, UserId: metadata.Owner.UserID},
@@ -851,6 +886,8 @@ func snapshotRowFromUserMetadata(metadata UserMetadata) *clusterproto.SnapshotRo
 	}
 }
 
+// userFromSnapshotRow 从 protobuf SnapshotUserRow 反序列化为内部 User 结构。
+// 解析所有时间戳字段和版本戳，校验用户 Key 有效性。
 func userFromSnapshotRow(row *clusterproto.SnapshotUserRow) (User, error) {
 	key := UserKey{NodeID: row.NodeId, UserID: row.UserId}
 	if err := key.Validate(); err != nil {
@@ -919,6 +956,7 @@ func userFromSnapshotRow(row *clusterproto.SnapshotUserRow) (User, error) {
 	return user, nil
 }
 
+// attachmentFromSnapshotRow 从 protobuf SnapshotAttachmentRow 构造 Attachment。
 func attachmentFromSnapshotRow(row *clusterproto.SnapshotAttachmentRow) (Attachment, error) {
 	if row == nil {
 		return Attachment{}, fmt.Errorf("%w: snapshot attachment cannot be nil", ErrInvalidInput)
@@ -926,6 +964,7 @@ func attachmentFromSnapshotRow(row *clusterproto.SnapshotAttachmentRow) (Attachm
 	return attachmentFromData(row.Owner, row.Subject, row.AttachmentType, row.ConfigJson, row.AttachedAtHlc, row.DeletedAtHlc, row.OriginNodeId)
 }
 
+// userMetadataFromSnapshotRow 从 protobuf SnapshotUserMetadataRow 构造 UserMetadata。
 func userMetadataFromSnapshotRow(row *clusterproto.SnapshotUserMetadataRow) (UserMetadata, error) {
 	if row == nil {
 		return UserMetadata{}, fmt.Errorf("%w: snapshot metadata cannot be nil", ErrInvalidInput)
@@ -933,6 +972,7 @@ func userMetadataFromSnapshotRow(row *clusterproto.SnapshotUserMetadataRow) (Use
 	return userMetadataFromData(row.Owner, row.Key, row.Value, row.UpdatedAtHlc, row.DeletedAtHlc, row.ExpiresAt, row.OriginNodeId)
 }
 
+// userLoginNameFromSnapshotRow 从 protobuf SnapshotLoginNameRow 构造 UserLoginName。
 func userLoginNameFromSnapshotRow(row *clusterproto.SnapshotLoginNameRow) (UserLoginName, error) {
 	if row == nil {
 		return UserLoginName{}, fmt.Errorf("%w: snapshot login name cannot be nil", ErrInvalidInput)
@@ -940,6 +980,7 @@ func userLoginNameFromSnapshotRow(row *clusterproto.SnapshotLoginNameRow) (UserL
 	return userLoginNameFromData(row.LoginName, row.UserNodeId, row.UserId, row.BoundAtHlc, row.DeletedAtHlc, row.OriginNodeId)
 }
 
+// timestampSnapshotString 将可选时间戳转换为快照序列化用的字符串（空指针返回空字符串）。
 func timestampSnapshotString(ts *clock.Timestamp) string {
 	if ts == nil {
 		return ""
@@ -947,6 +988,8 @@ func timestampSnapshotString(ts *clock.Timestamp) string {
 	return ts.String()
 }
 
+// hashSnapshotRows 计算一组快照行的 SHA-256 摘要，使用确定性 protobuf 序列化保证跨节点一致。
+// 用于快照摘要比较：当两个节点的分区哈希一致时，无需传输该分区数据。
 func hashSnapshotRows(rows []*clusterproto.SnapshotRow) ([]byte, error) {
 	hasher := sha256.New()
 	var length [8]byte
@@ -967,6 +1010,7 @@ func hashSnapshotRows(rows []*clusterproto.SnapshotRow) ([]byte, error) {
 	return hasher.Sum(nil), nil
 }
 
+// parseSnapshotProducer 从消息分区键（格式 "messages/{nodeID}"）中解析来源节点 ID。
 func parseSnapshotProducer(partition string) (int64, error) {
 	raw := strings.TrimSpace(strings.TrimPrefix(partition, SnapshotMessagesPrefix))
 	if raw == "" {
@@ -979,6 +1023,8 @@ func parseSnapshotProducer(partition string) (int64, error) {
 	return producer, nil
 }
 
+// normalizeProducerNodeIDs 去重并排序来源节点 ID 列表。
+// 过滤掉非正数 ID，确保快照构建和处理顺序确定。
 func normalizeProducerNodeIDs(nodeIDs []int64) []int64 {
 	seen := make(map[int64]struct{}, len(nodeIDs))
 	for _, nodeID := range nodeIDs {

@@ -10,7 +10,14 @@ import (
 	internalproto "github.com/tursom/turntf/internal/proto"
 )
 
-// scanUser 从 SQL scanner 扫描 users 表一行到 User，解析所有 HLC 时间戳字段。
+// scanUser 从 SQL scanner 扫描 users 表一行到 User，将数据库中的原始 HLC 字符串
+// 解析为 clock.Timestamp 结构体。
+// 扫描字段包括 node_id、user_id、username、password_hash、profile、role、
+// system_reserved、created_at_hlc、updated_at_hlc、deleted_at_hlc、
+// 各字段版本号（version_username、version_password_hash 等）以及 origin_node_id。
+// 对 deleted_at 和 version_deleted 使用 sql.NullString 处理数据库 NULL，
+// 仅当 Valid 时解析为 *clock.Timestamp。
+// 非并发安全——scanner 由调用方同步。
 func scanUser(scanner interface {
 	Scan(dest ...any) error
 }) (User, error) {
@@ -90,6 +97,10 @@ func scanUser(scanner interface {
 }
 
 // scanMessage 从 SQL scanner 扫描 messages 投影表一行到 Message，解析 HLC 时间戳。
+// 扫描字段包括 recipient（node_id + user_id）、node_id、seq、sender（node_id + user_id）、
+// body、created_at_hlc 和 session。
+// 注意：Recipient 和 Sender 均为 UserKey 组合字段，分别扫描各自的两个子字段。
+// 非并发安全——scanner 由调用方同步。
 func scanMessage(scanner interface {
 	Scan(dest ...any) error
 }) (Message, error) {
@@ -118,7 +129,11 @@ func scanMessage(scanner interface {
 	return message, nil
 }
 
-// scanSubscription 从 SQL scanner 扫描订阅视图一行到 Subscription，解析 HLC 时间戳。
+// scanSubscription 从 SQL scanner 扫描 subscription_view 一行到 Subscription，解析 HLC 时间戳。
+// 扫描字段包括 subscriber（node_id + user_id）、channel（node_id + user_id）、
+// subscribed_at_hlc、deleted_at_hlc 和 origin_node_id。
+// deleted_at_hlc 为可空字段，仅当数据库非 NULL 时解析为 *clock.Timestamp。
+// 非并发安全——scanner 由调用方同步。
 func scanSubscription(scanner interface {
 	Scan(dest ...any) error
 }) (Subscription, error) {
@@ -153,7 +168,11 @@ func scanSubscription(scanner interface {
 	return subscription, nil
 }
 
-// scanBlacklistEntry 从 SQL scanner 扫描黑名单视图一行到 BlacklistEntry，解析 HLC 时间戳。
+// scanBlacklistEntry 从 SQL scanner 扫描 blacklist_view 一行到 BlacklistEntry，解析 HLC 时间戳。
+// 扫描字段包括 owner（node_id + user_id）、blocked（node_id + user_id）、
+// blocked_at_hlc、deleted_at_hlc 和 origin_node_id。
+// deleted_at_hlc 为可空字段，仅当数据库非 NULL 时解析为 *clock.Timestamp。
+// 非并发安全——scanner 由调用方同步。
 func scanBlacklistEntry(scanner interface {
 	Scan(dest ...any) error
 }) (BlacklistEntry, error) {
@@ -188,7 +207,11 @@ func scanBlacklistEntry(scanner interface {
 	return entry, nil
 }
 
-// scanEvent 从 SQL scanner 扫描 event_log 一行到 Event，反序列化 protobuf value 并解码。
+// scanEvent 从 SQL scanner 扫描 event_log 一行到 Event，反序列化 protobuf value 并解码事件载荷。
+// 扫描字段包括 sequence、event_id、origin_node_id 和 protobuf 二进制 value，
+// 使用 proto.Unmarshal 解析为 ReplicatedEvent，再通过 eventFromReplicatedEvent
+// 转换为 store.Event 结构体，最后覆盖设置 sequence、event_id 和 origin_node_id。
+// 非并发安全——scanner 由调用方同步。
 func scanEvent(scanner interface {
 	Scan(dest ...any) error
 }) (Event, error) {

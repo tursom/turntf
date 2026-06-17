@@ -10,7 +10,9 @@ import (
 	"github.com/tursom/turntf/internal/clock"
 )
 
-// activeUsernameExists 检查用户名是否已被其他活跃用户占用。
+// activeUsernameExists 在事务中检查指定用户名是否已被其他活跃（未软删除）用户占用。
+// excludeUserID 参数排除自身，用于更新用户时检查新用户名是否与其他人冲突。
+// 查询条件：username 匹配且 deleted_at_hlc IS NULL 且不是 excludeUserID 的用户。
 func activeUsernameExists(ctx context.Context, tx *sql.Tx, username string, excludeUserID int64) (bool, error) {
 	var count int
 	if err := tx.QueryRowContext(ctx, `
@@ -23,14 +25,27 @@ WHERE username = ? AND deleted_at_hlc IS NULL AND user_id != ?
 	return count > 0, nil
 }
 
+// tombstoneRecord 代表一个已软删除实体的墓碑记录，存储在 tombstones 表中。
+// 墓碑机制用于跨节点复制：当一个实体在一个节点上被删除时，其他节点通过
+// 复制协议收到 tombstone 后可以同步该删除操作，确保删除在整个 mesh 中一致。
+// 复合主键为 (entity_type, entity_node_id, entity_id)。
 type tombstoneRecord struct {
-	EntityType   string
+	// EntityType 实体类型标识（如 "user"），用于区分不同实体表。
+	EntityType string
+	// EntityNodeID 被删除实体所在的节点 ID。
 	EntityNodeID int64
-	EntityID     int64
-	DeletedAt    clock.Timestamp
+	// EntityID 被删除实体的本地 ID。
+	EntityID int64
+	// DeletedAt 删除操作的 HLC 时间戳，用于因果排序和冲突解决。
+	DeletedAt clock.Timestamp
+	// OriginNodeID 发起该删除操作的来源节点 ID，用于复制时的归属追踪。
 	OriginNodeID int64
 }
 
+// getTombstoneTx 在事务中根据实体类型和 UserKey 查询墓碑记录。
+// 第一个返回值为查询到的墓碑记录（不存在时为零值），
+// 第二个返回值为 bool 标记是否存在。当数据库返回 sql.ErrNoRows 时视为不存在。
+// 用于在复制事件处理时判断某个实体是否已被其他节点删除。
 func (s *Store) getTombstoneTx(ctx context.Context, tx *sql.Tx, entityType string, key UserKey) (tombstoneRecord, bool, error) {
 	if err := key.Validate(); err != nil {
 		return tombstoneRecord{}, false, err
@@ -58,6 +73,11 @@ WHERE entity_type = ? AND entity_node_id = ? AND entity_id = ?
 	return record, true, nil
 }
 
+// upsertTombstoneTx 在事务中插入或更新实体墓碑记录。
+// 使用 ON CONFLICT 策略确保仅当新 deleted_at_hlc 更大时才更新——这保证了
+// 删除操作的因果顺序（Happened-Before），防止旧删除覆盖新删除。
+// 当新 deleted_at_hlc 更大时，origin_node_id 也同步更新为新的来源节点。
+// expires_at_hlc 固定为 NULL（永不过期）。
 func (s *Store) upsertTombstoneTx(ctx context.Context, tx *sql.Tx, entityType string, key UserKey, deletedAt clock.Timestamp, originNodeID int64) error {
 	if err := key.Validate(); err != nil {
 		return err
@@ -80,7 +100,22 @@ ON CONFLICT(entity_type, entity_node_id, entity_id) DO UPDATE SET
 	return nil
 }
 
-// applyUserDeleteTx 在事务中执行用户软删除：更新 deleted_at 和 version_deleted，记录 tombstone。
+// applyUserDeleteTx 在事务中执行用户软删除操作。
+// 核心操作：
+//  1. 将用户 row 的 deleted_at_hlc 和 version_deleted 设置为删除时间戳
+//  2. 在 tombstones 表中记录墓碑，用于跨节点复制删除操作
+//  3. 刷新 bootstrap admin 缓存（reconcileBootstrapAdminsTx）
+//
+// 保护机制（不可删除的用户）：
+//   - bootstrap admin（系统管理员）
+//   - broadcast user（广播消息用户）
+//   - node-ingress user（节点入口用户）
+//
+// requireActive 参数含义：
+//   - true：已删除用户返回 ErrNotFound，受保护用户返回 ErrForbidden
+//   - false：允许对已删除或受保护用户调用（静默忽略，仅记录 tombstone）
+//
+// 只在 deleted_at 发生变化（nil→set 或 version_deleted 推进）时才实际执行 UPDATE。
 func (s *Store) applyUserDeleteTx(ctx context.Context, tx *sql.Tx, key UserKey, deletedAt clock.Timestamp, originNodeID int64, requireActive bool) error {
 	user, err := s.getUserByIDTx(ctx, tx, key, true)
 	switch {
@@ -139,7 +174,8 @@ WHERE node_id = ? AND user_id = ?
 	return nil
 }
 
-// nullIfEmpty 空字符串转为 SQL NULL。
+// nullIfEmpty 将空字符串（或全空格）转为 nil，用于传递给 SQL 时表示为 NULL。
+// 非空字符串原样返回。常用于可选字符串字段的写入前处理。
 func nullIfEmpty(value string) any {
 	if strings.TrimSpace(value) == "" {
 		return nil
@@ -147,7 +183,8 @@ func nullIfEmpty(value string) any {
 	return value
 }
 
-// boolToInt 布尔值转为 SQL 整数 (0/1)。
+// boolToInt 将 Go 布尔值转为 SQLite 兼容的整数表示（true→1, false→0）。
+// SQLite 没有原生布尔类型，使用 0/1 整数表示布尔字段。
 func boolToInt(value bool) int {
 	if value {
 		return 1
@@ -155,7 +192,15 @@ func boolToInt(value bool) int {
 	return 0
 }
 
-// trimMessagesForUserTx 在事务中裁剪用户消息，保留最近 messageWindowSize 条。
+// trimMessagesForUserTx 在事务中裁剪指定用户的消息，仅保留最近 messageWindowSize 条。
+//
+// 裁剪策略：
+//  1. 按 created_at_hlc DESC（最新优先）、node_id ASC、seq DESC 综合排序
+//  2. 保留前 windowSize 条，删除其余更旧的消息
+//  3. 删除的 LIMIT -1 OFFSET ? 语法在 SQLite 中表示：保留前 ? 条，删除剩余所有
+//
+// 使用场景：每次创建新消息后调用，确保用户消息数不超过配置窗口大小。
+// 裁剪的消息数会通过 recordMessageTrimTx 累加到全局消息裁剪统计。
 func (s *Store) trimMessagesForUserTx(ctx context.Context, tx *sql.Tx, key UserKey) error {
 	if err := key.Validate(); err != nil {
 		return err
@@ -187,6 +232,11 @@ WHERE user_node_id = ? AND user_id = ?
 	return nil
 }
 
+// recordMessageTrimTx 在事务中记录消息裁剪的全局累计统计数据到 message_trim_stats 表。
+// 使用 ON CONFLICT 合并策略：trimmed_total 累加新增裁剪数，
+// last_trimmed_at_hlc 更新为当前时间。scope='global' 为固定标识。
+// 当 trimmed <= 0 时直接返回 nil，不执行数据库写入。
+// 由 trimMessagesForUserTx 在每次实际裁剪后调用。
 func (s *Store) recordMessageTrimTx(ctx context.Context, tx *sql.Tx, trimmed int64) error {
 	if trimmed <= 0 {
 		return nil

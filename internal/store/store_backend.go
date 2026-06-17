@@ -16,18 +16,35 @@ import (
 
 // storeBackend 是双后端（SQLite/Pebble）的抽象接口，定义所有存储操作契约。
 // 由 sqliteStoreBackend 和 pebbleStoreBackend 实现。
+// 在双后端架构中 storeBackend 分为两层：
+//
+//	上层 Store 提供事务管理和业务校验，下层 storeBackend 提供引擎特定的持久化实现。
+//
+// 上层通过该接口调用下层，切換后端只需替换接口实现，不影响业务逻辑。
 type storeBackend interface {
 	Name() string
 	Bind(storeBackendBindings) error
+	// CreateMessage 创建一条消息：校验用户、黑名单、分配 seq、写入事件日志。
 	CreateMessage(context.Context, *Store, CreateMessageParams) (Message, Event, error)
+	// EventLog 返回事件日志仓库接口。
 	EventLog() EventLogRepository
+	// MessageProjection 返回消息投影仓库接口。
 	MessageProjection() MessageProjectionRepository
+	// NextMessageSeqTx 在事务中分配消息的下一个序列号（按 UserKey+NodeID 递增）。
 	NextMessageSeqTx(context.Context, *sql.Tx, UserKey, int64) (int64, error)
+	// InsertLocalEventTx 在事务中插入一条本地事件，生成 EventID 和 OriginNodeID。
 	InsertLocalEventTx(context.Context, *sql.Tx, Event) (Event, error)
+	// StoreReplicatedEventTx 在事务中存储来自 peer 的复制事件。
+	// 返回 (完整事件, 是否新插入, 错误)。如果事件已存在（唯一约束冲突），inserted 为 false。
 	StoreReplicatedEventTx(context.Context, *sql.Tx, *internalproto.ReplicatedEvent, Event) (Event, bool, error)
+	// ListPendingProjectionEvents 列出待重试的投影事件列表，按失败时间排序，最多返回 limit 条。
 	ListPendingProjectionEvents(context.Context, *sql.DB, int) ([]Event, error)
+	// ListLocalOriginEventStats 返回本地已知的所有来源节点的事件统计（最新事件 ID 和总数）。
 	ListLocalOriginEventStats(context.Context, *sql.DB) (map[int64]localOriginEventStats, error)
+	// CountUnconfirmedOriginEvents 统计某来源节点尚未被本节点确认的事件数。
+	// ackedEventID 是已确认的最新事件 ID，为 0 时使用 fallbackCount 返回。
 	CountUnconfirmedOriginEvents(context.Context, *sql.DB, int64, int64, int64) (int64, error)
+	// PruneEventLogOrigin 裁剪某来源节点的事件日志，只保留最近的 maxEvents 条记录。
 	PruneEventLogOrigin(context.Context, *sql.DB, *clock.Clock, int64, int) (int64, error)
 	Close() error
 }
@@ -39,14 +56,14 @@ type txMessageProjectionRepository interface {
 
 // storeBackendBindings 包含 Bind() 时注入给后端的依赖项。
 type storeBackendBindings struct {
-	NodeID            int64
-	Clock             *clock.Clock
-	IDs               *clock.IDGenerator
-	MessageWindowSize int
-	UserRepository    UserRepository
-	Subscriptions     SubscriptionRepository
-	Blacklists        BlacklistRepository
-	MessageTrim       MessageTrimRepository
+	NodeID            int64                  // 本节点 ID，用于标识事件的来源节点
+	Clock             *clock.Clock           // HLC 混合逻辑时钟，提供单调递增且因果一致的时间戳
+	IDs               *clock.IDGenerator     // 事件 ID 生成器，用于生成全局唯一的事件 ID
+	MessageWindowSize int                    // 消息滑动窗口大小，控制每个会话保留的最大消息数
+	UserRepository    UserRepository         // 用户存储仓库
+	Subscriptions     SubscriptionRepository // 订阅存储仓库
+	Blacklists        BlacklistRepository    // 黑名单存储仓库
+	MessageTrim       MessageTrimRepository  // 消息修剪存储仓库
 }
 
 // newStoreBackend 根据引擎名称创建对应的后端实现。
@@ -70,14 +87,15 @@ func newStoreBackend(engine string, db *sql.DB, pebbleDB *pebble.DB, pebbleProfi
 }
 
 // sqliteStoreBackend 是纯 SQLite 后端实现，所有数据存储在 SQLite 中。
+// 适合小规模部署或不需要高性能消息写入的场景。
 type sqliteStoreBackend struct {
-	db                *sql.DB
-	nodeID            int64
-	clock             *clock.Clock
-	ids               *clock.IDGenerator
-	messageWindowSize int
-	eventLog          *sqliteEventLogRepository
-	messageProjection MessageProjectionRepository
+	db                *sql.DB                     // SQLite 数据库连接
+	nodeID            int64                       // 本节点 ID
+	clock             *clock.Clock                // HLC 混合逻辑时钟
+	ids               *clock.IDGenerator          // 事件 ID 生成器
+	messageWindowSize int                         // 消息滑动窗口大小
+	eventLog          *sqliteEventLogRepository   // SQLite 事件日志仓库
+	messageProjection MessageProjectionRepository // 消息投影仓库
 }
 
 // Name 返回后端引擎名称。
@@ -108,14 +126,19 @@ func (b *sqliteStoreBackend) Bind(bindings storeBackendBindings) error {
 	return nil
 }
 
+// EventLog 返回 sqlite 实现的事件日志仓库。
 func (b *sqliteStoreBackend) EventLog() EventLogRepository {
 	return b.eventLog
 }
 
+// MessageProjection 返回 sqlite 实现的消息投影仓库。
 func (b *sqliteStoreBackend) MessageProjection() MessageProjectionRepository {
 	return b.messageProjection
 }
 
+// CreateMessage 创建一条消息：先校验用户和黑名单，再在事务中写入事件日志并投影消息。
+// 支持两种模式：若消息投影接口支持事务内投影（txMessageProjectionRepository）则走快速路径，
+// 否则使用传统路径（先提交事件再异步投影）。
 func (b *sqliteStoreBackend) CreateMessage(ctx context.Context, s *Store, params CreateMessageParams) (Message, Event, error) {
 	projection, ok := b.messageProjection.(txMessageProjectionRepository)
 	if !ok {
@@ -124,6 +147,8 @@ func (b *sqliteStoreBackend) CreateMessage(ctx context.Context, s *Store, params
 	return b.createMessageFast(ctx, s, params, projection)
 }
 
+// createMessageFast 是消息创建的快速路径：在 SQLite 保存点内尝试同步投影消息。
+// 若投影失败则回滚到保存点并记录待重试投影，不阻塞消息创建流程。
 func (b *sqliteStoreBackend) createMessageFast(ctx context.Context, s *Store, params CreateMessageParams, projection txMessageProjectionRepository) (Message, Event, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -165,6 +190,8 @@ func (b *sqliteStoreBackend) createMessageFast(ctx context.Context, s *Store, pa
 	return message, event, nil
 }
 
+// createMessageLegacy 是消息创建的传统路径：先提交事件，再在事务外同步投影。
+// 当消息投影仓库未实现 txMessageProjectionRepository 接口时使用此路径。
 func (b *sqliteStoreBackend) createMessageLegacy(ctx context.Context, s *Store, params CreateMessageParams) (Message, Event, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -188,6 +215,8 @@ func (b *sqliteStoreBackend) createMessageLegacy(ctx context.Context, s *Store, 
 	return message, event, nil
 }
 
+// createMessageEventTx 在事务中执行消息创建的核心逻辑：
+// 校验收件人和发件人是否存在、检查黑名单、分配消息序列号、构建 Message 并写入事件日志。
 func (b *sqliteStoreBackend) createMessageEventTx(ctx context.Context, s *Store, tx *sql.Tx, params CreateMessageParams) (Message, Event, error) {
 	recipient, err := s.getUserTx(ctx, tx, params.UserKey, false)
 	if err != nil {
@@ -248,10 +277,13 @@ func (b *sqliteStoreBackend) createMessageEventTx(ctx context.Context, s *Store,
 	return message, event, nil
 }
 
+// NextMessageSeqTx 在事务中为指定用户+节点分配下一个消息序列号（SQLite 实现）。
 func (b *sqliteStoreBackend) NextMessageSeqTx(ctx context.Context, tx *sql.Tx, key UserKey, nodeID int64) (int64, error) {
 	return nextSQLiteMessageSeq(ctx, tx, key, nodeID)
 }
 
+// InsertLocalEventTx 在事务中插入一条本地事件：生成 EventID 和 OriginNodeID，
+// 写入 event_log 表后获取自增 Sequence，同时更新来源节点游标（origin_cursors）。
 func (b *sqliteStoreBackend) InsertLocalEventTx(ctx context.Context, tx *sql.Tx, event Event) (Event, error) {
 	if b.ids == nil {
 		return Event{}, fmt.Errorf("append event before id generator initialization")
@@ -286,6 +318,9 @@ VALUES(?, ?, ?)
 	return event, nil
 }
 
+// StoreReplicatedEventTx 在事务中存储来自 peer 的复制事件。
+// 将原始 ReplicatedEvent 序列化后插入 event_log，利用唯一约束（origin_node_id, event_id）去重。
+// 返回（解码后的事件, 是否新插入, 错误）。
 func (b *sqliteStoreBackend) StoreReplicatedEventTx(ctx context.Context, tx *sql.Tx, rawEvent *internalproto.ReplicatedEvent, decoded Event) (Event, bool, error) {
 	if rawEvent == nil {
 		return Event{}, false, fmt.Errorf("%w: replicated event cannot be nil", ErrInvalidInput)
@@ -311,6 +346,8 @@ VALUES(?, ?, ?)
 	return decoded, true, nil
 }
 
+// ListPendingProjectionEvents 联表查询 pending_projections 和 event_log，
+// 按失败时间升序返回待重试投影的事件列表，用于后台重试失败的投影操作。
 func (b *sqliteStoreBackend) ListPendingProjectionEvents(ctx context.Context, db *sql.DB, limit int) ([]Event, error) {
 	rows, err := db.QueryContext(ctx, `
 SELECT e.sequence, e.event_id, e.origin_node_id, e.value
@@ -340,6 +377,7 @@ LIMIT ?
 	return events, nil
 }
 
+// ListLocalOriginEventStats 按来源节点分组统计事件日志，返回每个来源的最新事件 ID 和事件总数。
 func (b *sqliteStoreBackend) ListLocalOriginEventStats(ctx context.Context, db *sql.DB) (map[int64]localOriginEventStats, error) {
 	rows, err := db.QueryContext(ctx, `
 SELECT origin_node_id, COALESCE(MAX(event_id), 0), COUNT(*)
@@ -367,6 +405,8 @@ ORDER BY origin_node_id ASC
 	return stats, nil
 }
 
+// CountUnconfirmedOriginEvents 统计某来源节点尚未被本节点确认的事件数。
+// ackedEventID 是已确认的最新事件 ID，为 0 时使用 fallbackCount 作为估算值返回。
 func (b *sqliteStoreBackend) CountUnconfirmedOriginEvents(ctx context.Context, db *sql.DB, originNodeID, ackedEventID, fallbackCount int64) (int64, error) {
 	if originNodeID <= 0 {
 		return 0, nil
@@ -386,6 +426,8 @@ WHERE origin_node_id = ? AND event_id > ?
 	return count, nil
 }
 
+// PruneEventLogOrigin 裁剪某来源节点的事件日志：当事件数超过 maxEvents 时，
+// 删除最早的多余事件，记录截断边界到 event_log_truncation_meta 和统计到 event_log_trim_stats。
 func (b *sqliteStoreBackend) PruneEventLogOrigin(ctx context.Context, db *sql.DB, clk *clock.Clock, originNodeID int64, maxEvents int) (int64, error) {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
@@ -451,25 +493,25 @@ func (b *sqliteStoreBackend) Close() error {
 
 // pebbleStoreBackend 是 Pebble+SQLite 混合后端实现。
 // 高性能消息数据和事件日志存储在 Pebble KV 中，关系型数据（用户、附件、元数据）存储在 SQLite 中。
-// 使用异步 goroutine 处理消息写入以提高吞吐。
+// 使用异步 goroutine 批处理消息写入以提高吞吐，适用于高并发场景。
 type pebbleStoreBackend struct {
-	db                    *pebble.DB
-	sqlDB                 *sql.DB
-	profile               PebbleProfile
-	writes                *pebbleWriteCoordinator
-	eventLog              *pebbleEventLogRepository
-	messageProjection     MessageProjectionRepository
-	messageProjectionRepo *pebbleMessageProjectionRepository
-	messageSequences      *pebbleMessageSequenceRepository
-	peerAckCursors        *pebblePeerAckCursorRepository
-	originCursors         *pebbleOriginCursorRepository
-	pendingProjections    *pebblePendingProjectionRepository
-	localMessageRequests  chan pebbleLocalMessageWriteRequest
-	localMessageCloseCh   chan chan error
-	localMessageDone      chan struct{}
-	localMessageStats     pebbleLocalMessageBatchStats
-	localMessageMu        sync.Mutex
-	localMessageClosed    bool
+	db                    *pebble.DB                          // Pebble KV 数据库实例
+	sqlDB                 *sql.DB                             // SQLite 数据库实例（用于关系型数据）
+	profile               PebbleProfile                       // Pebble 引擎配置
+	writes                *pebbleWriteCoordinator             // Pebble 批量写入协调器，合并小写入以减少写放大
+	eventLog              *pebbleEventLogRepository           // Pebble 事件日志仓库
+	messageProjection     MessageProjectionRepository         // 消息投影接口
+	messageProjectionRepo *pebbleMessageProjectionRepository  // Pebble 消息投影仓库（内含后台修剪 worker）
+	messageSequences      *pebbleMessageSequenceRepository    // 消息序列号仓库
+	peerAckCursors        *pebblePeerAckCursorRepository      // 对等节点确认游标仓库
+	originCursors         *pebbleOriginCursorRepository       // 来源节点事件游标仓库
+	pendingProjections    *pebblePendingProjectionRepository  // 待重试投影事件仓库
+	localMessageRequests  chan pebbleLocalMessageWriteRequest // 本地消息异步写入请求通道
+	localMessageCloseCh   chan chan error                     // 关闭本地消息循环的控制通道
+	localMessageDone      chan struct{}                       // 本地消息循环 goroutine 退出信号
+	localMessageStats     pebbleLocalMessageBatchStats        // 本地消息批处理统计
+	localMessageMu        sync.Mutex                          // 保护 localMessageClosed 字段的互斥锁
+	localMessageClosed    bool                                // 本地消息循环关闭标志
 }
 
 // Name 返回后端引擎名称。
@@ -522,14 +564,18 @@ func (b *pebbleStoreBackend) Bind(bindings storeBackendBindings) error {
 	return nil
 }
 
+// EventLog 返回 pebble 实现的事件日志仓库。
 func (b *pebbleStoreBackend) EventLog() EventLogRepository {
 	return b.eventLog
 }
 
+// MessageProjection 返回 pebble 实现的消息投影仓库。
 func (b *pebbleStoreBackend) MessageProjection() MessageProjectionRepository {
 	return b.messageProjection
 }
 
+// CreateMessage 通过 Pebble 后端创建消息：校验用户和黑名单后通过异步通道提交消息写入请求。
+// PebbleMessageSyncMode 参数控制写入的同步/异步模式。
 func (b *pebbleStoreBackend) CreateMessage(ctx context.Context, s *Store, params CreateMessageParams) (Message, Event, error) {
 	recipient, err := s.getUser(ctx, params.UserKey, false)
 	if err != nil {
@@ -565,6 +611,7 @@ func (b *pebbleStoreBackend) CreateMessage(ctx context.Context, s *Store, params
 	return b.submitLocalMessage(ctx, params)
 }
 
+// NextMessageSeqTx 在事务中为指定用户+节点分配下一个消息序列号（Pebble 实现）。
 func (b *pebbleStoreBackend) NextMessageSeqTx(ctx context.Context, tx *sql.Tx, key UserKey, nodeID int64) (int64, error) {
 	if b.messageSequences == nil {
 		return 0, fmt.Errorf("pebble message sequence repository is not initialized")
@@ -572,14 +619,19 @@ func (b *pebbleStoreBackend) NextMessageSeqTx(ctx context.Context, tx *sql.Tx, k
 	return b.messageSequences.NextSequenceTx(ctx, tx, key, nodeID)
 }
 
+// InsertLocalEventTx 委托 pebbleEventLogRepository 在 Pebble 中追加一条本地事件。
 func (b *pebbleStoreBackend) InsertLocalEventTx(ctx context.Context, tx *sql.Tx, event Event) (Event, error) {
 	return b.eventLog.Append(ctx, event)
 }
 
+// StoreReplicatedEventTx 委托 pebbleEventLogRepository 在 Pebble 中追加来自 peer 的复制事件。
 func (b *pebbleStoreBackend) StoreReplicatedEventTx(ctx context.Context, tx *sql.Tx, rawEvent *internalproto.ReplicatedEvent, decoded Event) (Event, bool, error) {
 	return b.eventLog.AppendReplicated(ctx, decoded)
 }
 
+// ListPendingProjectionEvents 列出待重试的投影事件。
+// 优先从 Pebble 的 pendingProjections 仓库查询，回退到 SQLite 的 pending_projections 表。
+// 查询到的事件 key 后通过 eventLog 获取完整事件数据。
 func (b *pebbleStoreBackend) ListPendingProjectionEvents(ctx context.Context, db *sql.DB, limit int) ([]Event, error) {
 	var events []Event
 	var pending []pendingProjectionEnvelope
@@ -625,6 +677,7 @@ LIMIT ?
 	return events, nil
 }
 
+// ListLocalOriginEventStats 从 Pebble 事件日志仓库获取所有来源节点的事件进度和计数。
 func (b *pebbleStoreBackend) ListLocalOriginEventStats(ctx context.Context, db *sql.DB) (map[int64]localOriginEventStats, error) {
 	progress, err := b.eventLog.ListOriginProgress(ctx)
 	if err != nil {
@@ -644,6 +697,7 @@ func (b *pebbleStoreBackend) ListLocalOriginEventStats(ctx context.Context, db *
 	return stats, nil
 }
 
+// CountUnconfirmedOriginEvents 统计某来源节点尚未被本节点确认的事件数（Pebble 实现）。
 func (b *pebbleStoreBackend) CountUnconfirmedOriginEvents(ctx context.Context, db *sql.DB, originNodeID, ackedEventID, fallbackCount int64) (int64, error) {
 	if originNodeID <= 0 {
 		return 0, nil
@@ -654,6 +708,8 @@ func (b *pebbleStoreBackend) CountUnconfirmedOriginEvents(ctx context.Context, d
 	return b.eventLog.CountEventsByOrigin(ctx, originNodeID, ackedEventID)
 }
 
+// PruneEventLogOrigin 裁剪 Pebble 中某来源节点的事件日志：先 flush 等待写入完成，
+// 统计事件数，超过 maxEvents 时计算截断边界、记录截断元数据后批量删除最早的事件。
 func (b *pebbleStoreBackend) PruneEventLogOrigin(ctx context.Context, db *sql.DB, clk *clock.Clock, originNodeID int64, maxEvents int) (int64, error) {
 	if b.db == nil {
 		return 0, fmt.Errorf("pebble event log prune requires pebble db")
@@ -693,6 +749,7 @@ func (b *pebbleStoreBackend) PruneEventLogOrigin(ctx context.Context, db *sql.DB
 	return trimmed, nil
 }
 
+// Close 按顺序关闭 Pebble 后端：关闭本地消息循环、消息投影仓库、写入协调器和 Pebble 数据库。
 func (b *pebbleStoreBackend) Close() error {
 	var err error
 	if closeErr := b.closeLocalMessageLoop(); err == nil {

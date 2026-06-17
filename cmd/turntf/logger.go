@@ -12,13 +12,20 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
+// 默认日志级别
 const defaultLogLevel = "info"
 
+// runtimeLoggingConfig 是经过验证的运行时日志配置。
+// 由 loggingConfig.runtimeConfig() 从 TOML 配置转换而来。
 type runtimeLoggingConfig struct {
-	Level    string
+	// Level 日志级别（debug / info / warn / error）
+	Level string
+	// FilePath 日志文件路径，为空表示仅控制台输出
 	FilePath string
 }
 
+// runtimeConfig 将 TOML 日志配置转换为运行时类型。
+// 空级别使用默认值 "info"，空文件路径不写文件日志。
 func (c loggingConfig) runtimeConfig() (runtimeLoggingConfig, error) {
 	level := strings.ToLower(strings.TrimSpace(c.Level))
 	if level == "" {
@@ -38,6 +45,8 @@ func (c loggingConfig) runtimeConfig() (runtimeLoggingConfig, error) {
 	}, nil
 }
 
+// parseLogLevel 将日志级别字符串解析为 zerolog.Level 枚举值。
+// 支持的级别：debug、info（默认）、warn、error。
 func parseLogLevel(level string) (zerolog.Level, error) {
 	switch strings.ToLower(strings.TrimSpace(level)) {
 	case "debug":
@@ -53,6 +62,8 @@ func parseLogLevel(level string) (zerolog.Level, error) {
 	}
 }
 
+// configureDefaultLogger 在 main 函数早期调用，初始化使用默认级别的控制台日志记录器。
+// 此日志器仅在配置加载前使用，serveRuntime 会调用 configureLogger 重新配置。
 func configureDefaultLogger(console io.Writer) {
 	closeLogger, err := configureLogger(runtimeLoggingConfig{Level: defaultLogLevel}, console)
 	if err == nil {
@@ -60,6 +71,12 @@ func configureDefaultLogger(console io.Writer) {
 	}
 }
 
+// configureLogger 配置全局日志记录器（zerolog）。
+// 支持同时输出到控制台和文件：
+//   - console：控制台输出（无颜色，RFC3339 时间格式）
+//   - cfg.FilePath：可选的日志文件（追加写入）
+//
+// 返回的闭包用于关闭日志文件，应在服务退出时调用。
 func configureLogger(cfg runtimeLoggingConfig, console io.Writer) (func() error, error) {
 	levelName := cfg.Level
 	if strings.TrimSpace(levelName) == "" {

@@ -2,7 +2,7 @@ package store
 
 import "context"
 
-// SubscribeChannel 订阅一个 channel。底层委托给 UpsertAttachment（AttachmentTypeChannelSubscription）。
+// SubscribeChannel 订阅一个频道。底层委托给 UpsertAttachment（AttachmentTypeChannelSubscription）。
 func (s *Store) SubscribeChannel(ctx context.Context, params ChannelSubscriptionParams) (Subscription, Event, error) {
 	attachment, event, err := s.UpsertAttachment(ctx, UpsertAttachmentParams{
 		Owner:      params.Subscriber,
@@ -16,7 +16,7 @@ func (s *Store) SubscribeChannel(ctx context.Context, params ChannelSubscription
 	return subscriptionFromAttachment(attachment), event, nil
 }
 
-// UnsubscribeChannel 取消订阅一个 channel。底层委托给 DeleteAttachment（AttachmentTypeChannelSubscription）。
+// UnsubscribeChannel 取消订阅一个频道。底层委托给 DeleteAttachment（AttachmentTypeChannelSubscription）。
 func (s *Store) UnsubscribeChannel(ctx context.Context, params ChannelSubscriptionParams) (Subscription, Event, error) {
 	attachment, event, err := s.DeleteAttachment(ctx, DeleteAttachmentParams{
 		Owner:   params.Subscriber,

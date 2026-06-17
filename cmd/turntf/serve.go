@@ -16,6 +16,9 @@ import (
 	"github.com/tursom/turntf/internal/store"
 )
 
+// newServeCommand 创建 "serve" 子命令。
+// 通过 --config / -c 标志指定 TOML 配置文件路径，默认为 ./config.toml。
+// 命令执行时调用 serveRuntime 启动完整的服务生命周期。
 func newServeCommand(ioCfg commandIO) *cobra.Command {
 	var configPath string
 	cmd := &cobra.Command{
@@ -30,6 +33,20 @@ func newServeCommand(ioCfg commandIO) *cobra.Command {
 	return cmd
 }
 
+// serveRuntime 是系统总入口函数，初始化并连接所有子系统。
+// 启动流程：
+//
+//  1. 配置加载 —— 解析 TOML 文件，环境变量覆盖，填充默认值
+//  2. 日志初始化 —— 配置日志级别、控制台输出、文件输出
+//  3. 存储引擎 —— 打开 SQLite/Pebble 数据库，初始化 Schema
+//  4. 引导管理员 —— 确保初始管理员用户存在
+//  5. 事件日志裁剪 —— 可选的后台定时裁剪任务
+//  6. 认证签名器 —— 创建 JWT Token 签名器
+//  7. 集群网络 —— 组建 Mesh 网络（WebSocket 对等连接）
+//  8. API 服务 —— 创建 gRPC 风格的服务层和 HTTP 传输层
+//  9. ZeroMQ 监听 —— 可选的 ZeroMQ 协议监听器
+//  10. HTTP 服务器 —— 启动 HTTP API 和集群 WebSocket
+//  11. 信号等待 —— 阻塞等待服务错误或关闭信号
 func serveRuntime(ctx context.Context, configPath string, logOutput io.Writer) error {
 	cfg, err := loadServeRuntimeConfig(configPath)
 	if err != nil {
@@ -143,7 +160,7 @@ func serveRuntime(ctx context.Context, configPath string, logOutput io.Writer) e
 	go func() {
 		errCh <- apiServer.ListenAndServe()
 	}()
-
+	// 阻塞等待 HTTP 服务器返回错误（正常关闭时为 ErrServerClosed，视为成功）
 	err = <-errCh
 	_ = apiServer.Close()
 	if errors.Is(err, http.ErrServerClosed) {
@@ -152,6 +169,8 @@ func serveRuntime(ctx context.Context, configPath string, logOutput io.Writer) e
 	return err
 }
 
+// startEventLogPruneLoop 启动一个后台协程，按指定间隔定时裁剪事件日志。
+// 触发裁剪后若发生错误仅记录警告，不中断循环。
 func startEventLogPruneLoop(ctx context.Context, st *store.Store, interval time.Duration) {
 	if st == nil || interval <= 0 {
 		return
@@ -180,6 +199,8 @@ func startEventLogPruneLoop(ctx context.Context, st *store.Store, interval time.
 	}()
 }
 
+// logEventLogPruneResult 记录事件日志裁剪结果。
+// 当修剪了事件时使用 Info 级别，无事件修剪时使用 Debug 级别。
 func logEventLogPruneResult(result store.EventLogPruneResult) {
 	event := log.Debug()
 	message := "event log prune finished without changes"
@@ -196,6 +217,8 @@ func logEventLogPruneResult(result store.EventLogPruneResult) {
 		Msg(message)
 }
 
+// serveHandler 创建顶层 HTTP 路由处理器。
+// 将 API 处理器挂载到 "/"，如果启用了集群则额外挂载 WebSocket 路径。
 func serveHandler(apiHandler http.Handler, manager *cluster.Manager) http.Handler {
 	rootMux := http.NewServeMux()
 	rootMux.Handle("/", apiHandler)

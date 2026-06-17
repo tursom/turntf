@@ -79,6 +79,8 @@ func (r *cachedUserRepository) ListBroadcastUserKeys(ctx context.Context) ([]Use
 }
 
 // StoreUser 将用户写入缓存，同时失效旧的 includeDeleted 条目。
+// 写入时先清除旧条目，再根据 DeletedAt 是否为空决定是否缓存。
+// 同时失效广播用户键列表缓存。
 func (r *cachedUserRepository) StoreUser(user User) {
 	key := user.Key()
 
@@ -94,7 +96,8 @@ func (r *cachedUserRepository) StoreUser(user User) {
 	r.invalidateBroadcastUserKeysLocked()
 }
 
-// InvalidateUser 从缓存中移除指定用户的所有条目。
+// InvalidateUser 从缓存中移除指定用户的所有条目（包括 includeDeleted 两个版本）。
+// 同时失效广播用户键列表缓存。
 func (r *cachedUserRepository) InvalidateUser(key UserKey) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -104,7 +107,7 @@ func (r *cachedUserRepository) InvalidateUser(key UserKey) {
 	r.invalidateBroadcastUserKeysLocked()
 }
 
-// InvalidateAll 清空所有缓存条目。
+// InvalidateAll 清空所有缓存条目，创建新的空 map 并失效广播用户键列表缓存。
 func (r *cachedUserRepository) InvalidateAll() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -113,10 +116,12 @@ func (r *cachedUserRepository) InvalidateAll() {
 	r.invalidateBroadcastUserKeysLocked()
 }
 
+// invalidateBroadcastUserKeysLocked 将广播用户键列表缓存置空，调用方需持有写锁。
 func (r *cachedUserRepository) invalidateBroadcastUserKeysLocked() {
 	r.broadcastUserKeys = nil
 }
 
+// cloneUserKeys 深拷贝 UserKey 切片，防止外部修改影响缓存。
 func cloneUserKeys(keys []UserKey) []UserKey {
 	if len(keys) == 0 {
 		return []UserKey{}

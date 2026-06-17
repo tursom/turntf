@@ -10,42 +10,79 @@ import (
 )
 
 const (
-	groupCommitMaxOps   = 128
+	// groupCommitMaxOps 是触发强制刷盘的最大批处理操作数。
+	// 当累积的 relaxed 写入操作数达到此阈值时，立即提交所有挂起的批次。
+	groupCommitMaxOps = 128
+
+	// groupCommitMaxDelay 是 relaxed 写入的最大等待延迟。
+	// 在首次 relaxed 写入后启动计时器，到期后强制提交挂起批次，避免写入无限期延迟。
 	groupCommitMaxDelay = 5 * time.Millisecond
 )
 
+// pebbleWriteCoordinator 是 Pebble 写入协调器，实现组提交（group commit）策略。
+//
+// 设计意图：Pebble 的每次 Commit(pebble.Sync) 都会触发 fsync，在高吞吐场景下代价高昂。
+// 该协调器将非关键写入（relaxed，无需即时持久化）批量累积，达到 ops 或时间阈值后统一刷盘；
+// 关键写入（forceSync）则立即执行同步提交，确保数据安全。
+//
+// 在后端架构中的角色：
+// - 事件日志（非消息事件）需要同步刷盘以保证一致性
+// - 消息投影写入使用 relaxed 模式，由协调器合并为更大的批量提交以提升吞吐
 type pebbleWriteCoordinator struct {
+	// db 是底层的 Pebble 数据库实例
 	db *pebble.DB
 
+	// requests 是写入请求的通道，run goroutine 从中消费并处理
 	requests chan pebbleWriteRequest
-	closeCh  chan chan error
-	done     chan struct{}
+	// closeCh 是关闭请求通道，用于优雅终止 run goroutine
+	closeCh chan chan error
+	// done 在 run goroutine 退出时关闭，用于同步等待
+	done chan struct{}
 
-	stateMu  sync.Mutex
-	closed   bool
+	// stateMu 保护 closed、asyncErr、stats 的并发访问
+	stateMu sync.Mutex
+	// closed 标记协调器是否已关闭
+	closed bool
+	// asyncErr 记录异步处理过程中发生的错误，供后续调用检查
 	asyncErr error
-	stats    pebbleWriteCoordinatorStats
+	// stats 记录协调器的运行统计信息
+	stats pebbleWriteCoordinatorStats
 }
 
+// pebbleWriteRequest 是提交到协调器的单个写入请求。
 type pebbleWriteRequest struct {
-	batch     *pebble.Batch
-	forceSync bool
-	response  chan error
-}
-
-type pendingPebbleBatch struct {
+	// batch 是待提交的 Pebble 批次操作
 	batch *pebble.Batch
-	ops   int
+	// forceSync 为 true 时将绕过组提交逻辑直接执行同步刷盘
+	forceSync bool
+	// response 是用于返回处理结果的通道，发送 nil 表示成功
+	response chan error
 }
 
+// pendingPebbleBatch 是协调器中挂起的待提交批次。
+type pendingPebbleBatch struct {
+	// batch 是已通过 ApplyNoSyncWait 提交但尚未 SyncWait 的批次
+	batch *pebble.Batch
+	// ops 是批次中包含的操作数，用于累计判断是否达到组提交阈值
+	ops int
+}
+
+// pebbleWriteCoordinatorStats 记录协调器的运行统计信息。
 type pebbleWriteCoordinatorStats struct {
-	RelaxedBatches   uint64
+	// RelaxedBatches 是已处理的 non-forceSync 批次总数
+	RelaxedBatches uint64
+	// ForceSyncBatches 是已处理的 forceSync 批次总数
 	ForceSyncBatches uint64
-	FlushesBySize    uint64
-	FlushesByDelay   uint64
-	FlushesByForce   uint64
+	// FlushesBySize 是因操作数达到阈值而触发的刷盘次数
+	FlushesBySize uint64
+	// FlushesByDelay 是因超时而触发的刷盘次数
+	FlushesByDelay uint64
+	// FlushesByForce 是因 forceSync 请求而触发的刷盘次数
+	FlushesByForce uint64
 }
 
+// newPebbleWriteCoordinator 创建写入协调器并启动后台处理 goroutine。
+// 如果 db 为 nil，返回 nil（表示不使用协调器，直接写入）。
 func newPebbleWriteCoordinator(db *pebble.DB) *pebbleWriteCoordinator {
 	if db == nil {
 		return nil
@@ -60,6 +97,18 @@ func newPebbleWriteCoordinator(db *pebble.DB) *pebbleWriteCoordinator {
 	return c
 }
 
+// Apply 提交一个 Pebble 批次到写入协调器。
+//
+// 参数:
+//   - batch: 待提交的 Pebble 批次（不为 nil）
+//   - forceSync: 是否强制同步刷盘
+//
+// 行为:
+//   - forceSync=true: 立即同步提交，绕过组提交（先刷空挂起批次）
+//   - forceSync=false: 通过 ApplyNoSyncWait 非阻塞提交，等待组提交
+//
+// 并发安全: 是，支持多 goroutine 并发调用。
+// 性能特征: forceSync 延迟低但 fsync 开销高；relaxed 延迟稍高但总体吞吐更高。
 func (c *pebbleWriteCoordinator) Apply(batch *pebble.Batch, forceSync bool) error {
 	if batch == nil {
 		return fmt.Errorf("%w: pebble batch cannot be nil", ErrInvalidInput)
@@ -98,6 +147,8 @@ func (c *pebbleWriteCoordinator) Apply(batch *pebble.Batch, forceSync bool) erro
 	return c.stateError()
 }
 
+// Flush 将所有挂起的批次强制刷盘。
+// 实现方式：提交一个空的 forceSync 批次，利用其先刷空挂起批次再提交自身的特性。
 func (c *pebbleWriteCoordinator) Flush() error {
 	if c == nil {
 		return nil
@@ -106,6 +157,9 @@ func (c *pebbleWriteCoordinator) Flush() error {
 	return c.Apply(batch, true)
 }
 
+// Close 优雅关闭写入协调器。
+// 先刷空所有挂起批次，然后停止后台 goroutine。
+// 如果已经关闭，返回已有的 asyncErr（如果有）。
 func (c *pebbleWriteCoordinator) Close() error {
 	if c == nil {
 		return nil
@@ -130,6 +184,7 @@ func (c *pebbleWriteCoordinator) Close() error {
 	return c.stateError()
 }
 
+// statsSnapshot 返回协调器统计信息的当前快照。
 func (c *pebbleWriteCoordinator) statsSnapshot() pebbleWriteCoordinatorStats {
 	if c == nil {
 		return pebbleWriteCoordinatorStats{}
@@ -139,6 +194,18 @@ func (c *pebbleWriteCoordinator) statsSnapshot() pebbleWriteCoordinatorStats {
 	return c.stats
 }
 
+// run 是写入协调器的主循环，在独立的 goroutine 中运行。
+//
+// 处理逻辑:
+//  1. forceSync 请求: 先刷空挂起批次，再同步提交当前批次
+//  2. relaxed 请求: 通过 ApplyNoSyncWait 非阻塞写入，累积到 pending 列表
+//     - 当 pendingOps >= groupCommitMaxOps 时立即刷盘（"size"）
+//     - 否则启动延迟计时器，到期自动刷盘（"delay"）
+//  3. closeCh: 刷空挂起批次后退出
+//  4. timerC: 延迟到期后刷盘
+//
+// 错误处理: flushPending 或同步提交失败时调用 setAsyncErr 记录，
+// 之后所有后续请求立即返回该错误，不再处理新写入。
 func (c *pebbleWriteCoordinator) run() {
 	defer close(c.done)
 
@@ -149,6 +216,7 @@ func (c *pebbleWriteCoordinator) run() {
 		timerC     <-chan time.Time
 	)
 
+	// stopTimer 安全停止延迟计时器并清理其通道状态。
 	stopTimer := func() {
 		if timer == nil {
 			return
@@ -163,6 +231,8 @@ func (c *pebbleWriteCoordinator) run() {
 		timerC = nil
 	}
 
+	// setAsyncErr 记录异步错误，仅保留第一个错误。
+	// 一旦发生异步错误，后续所有请求将立即失败。
 	setAsyncErr := func(err error) {
 		if err == nil {
 			return
@@ -174,6 +244,9 @@ func (c *pebbleWriteCoordinator) run() {
 		c.stateMu.Unlock()
 	}
 
+	// flushPending 提交所有挂起的 relaxed 批次。
+	// 对每个批次依次调用 SyncWait（等待写入完成）和 Close（释放资源）。
+	// reason 参数用于统计计数（"size"/"delay"/"force"）。
 	flushPending := func(reason string) error {
 		if len(pending) == 0 {
 			stopTimer()
@@ -284,6 +357,7 @@ func (c *pebbleWriteCoordinator) run() {
 	}
 }
 
+// stateError 返回协调器的异步错误（如果有），用于快速失败后续请求。
 func (c *pebbleWriteCoordinator) stateError() error {
 	if c == nil {
 		return nil

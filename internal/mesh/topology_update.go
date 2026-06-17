@@ -9,9 +9,14 @@ import (
 
 var topologyMarshalOptions = proto.MarshalOptions{Deterministic: true}
 
-// NormalizeTopologyUpdate 对拓扑更新进行标准化：克隆并标准化转发策略，
-// 排序并去重传输能力，过滤链路至源节点，去重并排序。
-// 输入为 nil 或 OriginNodeId 无效时返回 nil。
+// NormalizeTopologyUpdate 对拓扑更新消息进行标准化处理，返回一个新的标准化副本。
+// 标准化过程：
+//  1. 检查输入有效性（nil 或 OriginNodeId <= 0 时返回 nil）。
+//  2. 深度克隆并标准化转发策略（补全缺失流量分类、去重）。
+//  3. 按传输类型去重传输能力、排序端点、按传输类型排序。
+//  4. 过滤链路至发出节点（OriginNodeId）、去重 (from, to, transport) 组合、排序。
+//
+// 标准化确保后续的指纹比较和版本比较具有一致性。
 func NormalizeTopologyUpdate(update *TopologyUpdate) *TopologyUpdate {
 	if update == nil || update.OriginNodeId <= 0 {
 		return nil
@@ -25,8 +30,13 @@ func NormalizeTopologyUpdate(update *TopologyUpdate) *TopologyUpdate {
 	}
 }
 
-// TopologyUpdatesEqual 通过确定性的 protobuf 指纹比较两个拓扑更新是否相等。
-// 输入会先被标准化以确保一致性。
+// TopologyUpdatesEqual 通过确定性的 protobuf 指纹比较两个拓扑更新是否语义相等。
+// 比较过程：
+//  1. 分别对两个更新调用 NormalizeTopologyUpdate 进行标准化。
+//  2. 对标准化后的结果进行确定性 Marshal，生成字节指纹。
+//  3. 比较两个指纹的字节是否相等。
+//
+// 这种方式避免了因字段顺序、端点列表排序等非语义差异导致的不相等判定。
 func TopologyUpdatesEqual(left, right *TopologyUpdate) bool {
 	leftFingerprint, ok := topologyUpdateFingerprint(left)
 	if !ok {
@@ -39,7 +49,10 @@ func TopologyUpdatesEqual(left, right *TopologyUpdate) bool {
 	return bytes.Equal(leftFingerprint, rightFingerprint)
 }
 
-// topologyUpdateFingerprint 对标准化后的拓扑更新进行确定性 protobuf 序列化，生成用于相等性比较的指纹。
+// topologyUpdateFingerprint 对拓扑更新进行标准化后，使用确定性 protobuf 序列化生成字节指纹。
+// 标准化保证了输入的一致性，确定性 Marshal 保证相同内容的序列化结果始终一致。
+// 返回的指纹可直接用于相等性比较或作为哈希键。
+// 标准化失败（如输入无效）时第二个返回值为 false。
 func topologyUpdateFingerprint(update *TopologyUpdate) ([]byte, bool) {
 	normalized := NormalizeTopologyUpdate(update)
 	if normalized == nil {
@@ -52,7 +65,8 @@ func topologyUpdateFingerprint(update *TopologyUpdate) ([]byte, bool) {
 	return fingerprint, true
 }
 
-// normalizeTopologyCapabilities 按传输去重能力、对端点排序，并按传输类型排序输出。
+// normalizeTopologyCapabilities 标准化传输能力列表：按 TransportKind 去重、对每个能力的端
+// 点列表排序、按 TransportKind 升序排序输出。跳过 nil 或 TransportUnspecified 的能力。
 func normalizeTopologyCapabilities(capabilities []*TransportCapability) []*TransportCapability {
 	byTransport := make(map[TransportKind]*TransportCapability, len(capabilities))
 	kinds := make([]TransportKind, 0, len(capabilities))
@@ -75,7 +89,9 @@ func normalizeTopologyCapabilities(capabilities []*TransportCapability) []*Trans
 	return normalized
 }
 
-// normalizeTopologyLinks 过滤链路至指定的 originNodeID，按 (from, to, transport) 去重，并排序输出。
+// normalizeTopologyLinks 标准化链路列表：仅保留 FromNodeID 等于 originNodeID 的链路（源节点
+// 只通告自己的出站链路），按 (FromNodeID, ToNodeID, Transport) 三元组去重，并按 (from, to, transport)
+// 升序排序输出。跳过 nil 或关键字段无效的链路。
 func normalizeTopologyLinks(originNodeID int64, links []*LinkAdvertisement) []*LinkAdvertisement {
 	type normalizedKey struct {
 		from      int64

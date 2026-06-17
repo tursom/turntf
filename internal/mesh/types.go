@@ -154,12 +154,12 @@ const (
 
 // TrafficClass 常量。
 const (
-	TrafficClassUnspecified     = internalproto.TrafficClass_TRAFFIC_CLASS_UNSPECIFIED       // 零值，表示未指定类别。
-	TrafficControlCritical      = internalproto.TrafficClass_TRAFFIC_CONTROL_CRITICAL        // 控制面关键消息（Hello、拓扑更新等）。
-	TrafficControlQuery         = internalproto.TrafficClass_TRAFFIC_CONTROL_QUERY           // 查询-响应 RPC 消息。
-	TrafficTransientInteractive = internalproto.TrafficClass_TRAFFIC_TRANSIENT_INTERACTIVE   // 瞬时交互流量（转发数据包）。
-	TrafficReplicationStream    = internalproto.TrafficClass_TRAFFIC_REPLICATION_STREAM      // 复制流数据。
-	TrafficSnapshotBulk         = internalproto.TrafficClass_TRAFFIC_SNAPSHOT_BULK           // 批量快照传输。
+	TrafficClassUnspecified     = internalproto.TrafficClass_TRAFFIC_CLASS_UNSPECIFIED     // 零值，表示未指定类别。
+	TrafficControlCritical      = internalproto.TrafficClass_TRAFFIC_CONTROL_CRITICAL      // 控制面关键消息（Hello、拓扑更新等）。
+	TrafficControlQuery         = internalproto.TrafficClass_TRAFFIC_CONTROL_QUERY         // 查询-响应 RPC 消息。
+	TrafficTransientInteractive = internalproto.TrafficClass_TRAFFIC_TRANSIENT_INTERACTIVE // 瞬时交互流量（转发数据包）。
+	TrafficReplicationStream    = internalproto.TrafficClass_TRAFFIC_REPLICATION_STREAM    // 复制流数据。
+	TrafficSnapshotBulk         = internalproto.TrafficClass_TRAFFIC_SNAPSHOT_BULK         // 批量快照传输。
 )
 
 // ForwardingDisposition 常量。
@@ -176,7 +176,7 @@ const (
 	PathClassDirect               = internalproto.PathClass_PATH_CLASS_DIRECT                 // 两个节点之间的直连链路。
 	PathClassSameTransportForward = internalproto.PathClass_PATH_CLASS_SAME_TRANSPORT_FORWARD // 同一传输上的多跳转发路径。
 	PathClassCrossTransportBridge = internalproto.PathClass_PATH_CLASS_CROSS_TRANSPORT_BRIDGE // 同一节点内跨传输桥接。
-	PathClassNativeRelay          = internalproto.PathClass_PATH_CLASS_NATIVE_RELAY            // 通过传输层本地中继的路径。
+	PathClassNativeRelay          = internalproto.PathClass_PATH_CLASS_NATIVE_RELAY           // 通过传输层本地中继的路径。
 )
 
 // ---------------- 核心接口 ----------------
@@ -184,19 +184,29 @@ const (
 // TransportAdapter 拥有一个传输监听器，可以拨出连接，并提供接收通道。
 // 每个运行时至少需要一个适配器才能运行。
 type TransportAdapter interface {
+	// Start 启动传输监听器，准备接受入站连接，错误时返回失败原因。
 	Start(ctx context.Context) error
+	// Dial 向指定端点拨出连接并返回一个 TransportConn，失败时返回错误。
 	Dial(ctx context.Context, endpoint string) (TransportConn, error)
+	// Accept 返回一个只读通道，用于接收新建立的入站连接。
 	Accept() <-chan TransportConn
+	// Kind 返回此适配器实现的传输类型（WebSocket、LibP2P、ZeroMQ）。
 	Kind() TransportKind
+	// LocalCapabilities 返回本地节点在此传输上的能力描述（出站、入站、中继及通告地址）。
 	LocalCapabilities() *TransportCapability
 }
 
 // TransportConn 表示一个单一的传输连接，能够发送和接收原始信封字节。
 type TransportConn interface {
+	// Send 将序列化的信封字节发送到对端，ctx 用于超时控制。
 	Send(ctx context.Context, envelope []byte) error
+	// Receive 从对端接收一个完整的序列化信封字节，ctx 用于超时控制。
 	Receive(ctx context.Context) ([]byte, error)
+	// Close 关闭连接并释放相关资源。
 	Close() error
+	// RemoteNodeHint 返回远程节点的提示信息（如节点 ID 或地址），用于日志和调试。
 	RemoteNodeHint() string
+	// Transport 返回此连接使用的传输类型。
 	Transport() TransportKind
 }
 
@@ -204,8 +214,11 @@ type TransportConn interface {
 // 并生成不可变的快照供路由规划器使用。
 // 默认实现是 MemoryTopologyStore。
 type TopologyStore interface {
+	// ApplyHello 处理节点握手消息，将节点身份和能力信息合并到拓扑中。
 	ApplyHello(nodeID int64, hello *NodeHello)
+	// ApplyTopologyUpdate 处理拓扑更新消息，合并节点的最新链路、传输能力和转发策略。
 	ApplyTopologyUpdate(update *TopologyUpdate)
+	// Snapshot 生成当前拓扑的不可变快照，供路由规划器和观察者使用。
 	Snapshot() TopologySnapshot
 }
 
@@ -213,28 +226,33 @@ type TopologyStore interface {
 // 考虑流量类别和入站传输。
 // 默认实现是 Planner。
 type RoutePlanner interface {
+	// Compute 在给定拓扑快照中，为指定流量类别和入站传输计算到目标节点的最佳路径。
+	// 返回路由决策和是否可达；若不可达则 ok 为 false。
 	Compute(snapshot TopologySnapshot, destinationNodeID int64, trafficClass TrafficClass, ingressTransport TransportKind) (RouteDecision, bool)
 }
 
 // ForwardingEngine 处理出站和入站的转发数据包，包括去重和 TTL 管理。
 // 默认实现是 Engine。
 type ForwardingEngine interface {
+	// Forward 注入出站数据包到转发管道：设置默认 TTL、路由计算、发送到下一跳。
 	Forward(ctx context.Context, packet *ForwardedPacket) error
+	// HandleInbound 处理来自邻接节点的入站数据包：立即标记去重、路由并转发或本地投递。
 	HandleInbound(ctx context.Context, packet *ForwardedPacket) error
 }
 
 // TrafficClassifier 将信封体类型映射到 TrafficClass 用于 QoS 决策。
 // 默认实现是 DefaultTrafficClassifier。
 type TrafficClassifier interface {
+	// Classify 检查信封体类型，返回对应的 TrafficClass。nil 或未知类型返回 Unspecified。
 	Classify(envelope *ClusterEnvelope) TrafficClass
 }
 
 // RouteDecision 描述路由计算的结果：下一跳、出站传输、路径类型及预估代价。
 type RouteDecision struct {
-	DestinationNodeID  int64           // 目标节点 ID。
-	NextHopNodeID      int64           // 直接下一跳节点 ID。
-	OutboundTransport  TransportKind   // 发往下一跳使用的传输类型。
-	PathClass          PathClass       // 此路径的分类。
-	EstimatedCost      int64           // 路径的总预估往返时间（毫秒）。
-	TopologyGeneration uint64          // 计算路径时使用的拓扑世代号。
+	DestinationNodeID  int64         // 目标节点 ID。
+	NextHopNodeID      int64         // 直接下一跳节点 ID。
+	OutboundTransport  TransportKind // 发往下一跳使用的传输类型。
+	PathClass          PathClass     // 此路径的分类。
+	EstimatedCost      int64         // 路径的总预估往返时间（毫秒）。
+	TopologyGeneration uint64        // 计算路径时使用的拓扑世代号。
 }

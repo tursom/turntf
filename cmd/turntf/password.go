@@ -11,11 +11,20 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+// isTerminalFile 和 readPasswordLineFile 是可模拟的函数变量，用于测试时替换。
 var (
-	isTerminalFile       = isTerminal
+	// isTerminalFile 判断文件描述符是否为终端，测试时可替换为模拟函数
+	isTerminalFile = isTerminal
+	// readPasswordLineFile 从终端读取密码（回显隐藏），测试时可替换为模拟函数
 	readPasswordLineFile = readPasswordLine
 )
 
+// resolvePasswordInput 从三种来源解析密码明文：
+//  1. explicit：--password 标志直接传入的密码字符串
+//  2. readStdin：通过 --stdin 标志从标准输入读取
+//  3. 交互式提示：在终端上提示用户输入并确认密码（支持回显隐藏）
+//
+// 返回的密码已去除尾部换行符。
 func resolvePasswordInput(stdout io.Writer, stdin io.Reader, explicit string, readStdin bool) (string, error) {
 	if explicit != "" {
 		return explicit, nil
@@ -62,6 +71,7 @@ func resolvePasswordInput(stdout io.Writer, stdin io.Reader, explicit string, re
 	return password, nil
 }
 
+// promptHiddenPassword 在终端上提示输入密码，关闭回显以避免密码明文显示在屏幕上。
 func promptHiddenPassword(stdout io.Writer, stdin *os.File, prompt string) (string, error) {
 	if _, err := fmt.Fprint(stdout, prompt); err != nil {
 		return "", err
@@ -76,6 +86,7 @@ func promptHiddenPassword(stdout io.Writer, stdin *os.File, prompt string) (stri
 	return strings.TrimRight(password, "\r\n"), nil
 }
 
+// isTerminal 通过 ioctl 判断给定的文件是否连接到终端。
 func isTerminal(file *os.File) bool {
 	if file == nil {
 		return false
@@ -84,6 +95,8 @@ func isTerminal(file *os.File) bool {
 	return err == nil
 }
 
+// readPasswordLine 从终端读取一行密码，读取期间禁用终端回显。
+// 函数返回后无论是否出错都会恢复终端原始状态。
 func readPasswordLine(file *os.File) (string, error) {
 	fd := int(file.Fd())
 	state, err := unix.IoctlGetTermios(fd, unix.TCGETS)

@@ -236,6 +236,13 @@ ON CONFLICT(key) DO UPDATE SET value = excluded.value
 	return nil
 }
 
+// ensureNodeIdentity 确保本节点在 schema_meta 中具有唯一节点 ID。
+// 流程：
+//  1. 从 schema_meta 读取已有 nodeID
+//  2. 若不存在则生成新 ID（优先使用 initialNodeID，否则由 clock.GenerateNodeID 生成）
+//  3. 若指定了 initialNodeID 且与已有 ID 不同则报错（防止误切换集群身份）
+//  4. 初始化 ids、clock、messageTrim 等运行时组件
+//  5. 调用 backend.Bind() 将依赖注入给后端实现
 func (s *Store) ensureNodeIdentity(ctx context.Context) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -294,6 +301,9 @@ VALUES(?, ?)
 	return nil
 }
 
+// validateSchemaVersion 校验数据库 schema 版本是否兼容。
+// 允许的版本：空（新数据库）、前一个版本（previousSchemaVersion）或当前版本（defaultSchemaVersion）。
+// 不匹配时返回错误，要求用户重建数据库。这是 schema 升级的安全门禁。
 func (s *Store) validateSchemaVersion(ctx context.Context) error {
 	var raw string
 	err := s.db.QueryRowContext(ctx, `
@@ -315,6 +325,7 @@ WHERE key = 'schema_version'
 	return fmt.Errorf("unsupported schema version %q: rebuild the database with schema version %s", version, defaultSchemaVersion)
 }
 
+// readNodeIDTx 从 schema_meta 表读取本节点 ID。若记录不存在返回 0（表示未初始化）。
 func readNodeIDTx(ctx context.Context, tx *sql.Tx) (int64, error) {
 	var raw string
 	err := tx.QueryRowContext(ctx, `

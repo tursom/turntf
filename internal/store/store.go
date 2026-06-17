@@ -241,11 +241,11 @@ func (m Message) UserKey() UserKey {
 type AttachmentType string
 
 const (
-	// AttachmentTypeChannelManager 表示用户是某个 channel 的管理员。
+	// AttachmentTypeChannelManager 表示用户是某个频道的管理员。
 	AttachmentTypeChannelManager AttachmentType = "channel_manager"
-	// AttachmentTypeChannelWriter 表示用户是某个 channel 的写入者。
+	// AttachmentTypeChannelWriter 表示用户是某个频道的写入者。
 	AttachmentTypeChannelWriter AttachmentType = "channel_writer"
-	// AttachmentTypeChannelSubscription 表示用户订阅了某个 channel。
+	// AttachmentTypeChannelSubscription 表示用户订阅了某个频道。
 	AttachmentTypeChannelSubscription AttachmentType = "channel_subscription"
 	// AttachmentTypeUserBlacklist 表示用户将另一用户加入黑名单。
 	AttachmentTypeUserBlacklist AttachmentType = "user_blacklist"
@@ -275,7 +275,7 @@ type UserMetadata struct {
 	OriginNodeID int64            `json:"origin_node_id"`
 }
 
-// Subscription 是 Attachment 的语义化视图，表示用户订阅了某个 channel。
+// Subscription 是 Attachment 的语义化视图，表示用户订阅了某个频道。
 // 由 AttachmentTypeChannelSubscription 类型的 Attachment 派生。
 type Subscription struct {
 	Subscriber   UserKey          `json:"subscriber"`
@@ -450,7 +450,7 @@ func NormalizePebbleProfile(raw string) (PebbleProfile, error) {
 	}
 }
 
-// ChannelSubscriptionParams 是订阅/取消订阅 channel 的参数集。
+// ChannelSubscriptionParams 是订阅/取消订阅频道的参数集。
 type ChannelSubscriptionParams struct {
 	Subscriber UserKey
 	Channel    UserKey

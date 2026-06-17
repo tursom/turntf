@@ -29,7 +29,7 @@ func ToReplicatedEvent(event Event) *internalproto.ReplicatedEvent {
 }
 
 // ApplyReplicatedEvent 应用来自 peer 的复制事件。去重后提交到事件日志，并投影副作用
-//（用户 upsert/delete、消息创建、附件 upsert/delete、元数据 upsert/delete、登录名变更）。
+// （用户 upsert/delete、消息创建、附件 upsert/delete、元数据 upsert/delete、登录名变更）。
 func (s *Store) ApplyReplicatedEvent(ctx context.Context, event *internalproto.ReplicatedEvent) error {
 	if event == nil {
 		return fmt.Errorf("%w: replicated event cannot be nil", ErrInvalidInput)
@@ -135,6 +135,8 @@ VALUES(?, ?, ?)
 	return nil
 }
 
+// eventFromReplicatedEvent 将 protobuf ReplicatedEvent 解析为内部 Event 结构。
+// 提取 HLC 时间戳、事件体（EventBody）和其他元数据字段。
 func eventFromReplicatedEvent(event *internalproto.ReplicatedEvent) (Event, error) {
 	hlc, err := parseRequiredTimestamp(event.Hlc, "event hlc")
 	if err != nil {
@@ -156,6 +158,8 @@ func eventFromReplicatedEvent(event *internalproto.ReplicatedEvent) (Event, erro
 	}, nil
 }
 
+// applyReplicatedUserDeleted 处理来自 peer 的用户删除事件。
+// 构造 UserKey 后委托 applyUserDeleteTx 执行软删除，设置 originNodeID 标明事件来源。
 func (s *Store) applyReplicatedUserDeleted(ctx context.Context, tx *sql.Tx, body *internalproto.UserDeletedEvent, originNodeID int64) error {
 	if body == nil {
 		return fmt.Errorf("%w: user deleted event cannot be nil", ErrInvalidInput)
@@ -172,6 +176,9 @@ func (s *Store) applyReplicatedUserDeleted(ctx context.Context, tx *sql.Tx, body
 	return s.applyUserDeleteTx(ctx, tx, key, deletedAt, originNodeID, false)
 }
 
+// applyReplicatedMessageCreated 处理来自 peer 的消息创建事件。
+// 校验消息标识、收件人和发件人信息后，直接插入 messages 表（无事件日志写入，事件日志由调用方负责）。
+// 插入后触发消息修剪（trimMessagesForUserTx），并利用唯一约束实现幂等。
 func (s *Store) applyReplicatedMessageCreated(ctx context.Context, tx *sql.Tx, body *internalproto.MessageCreatedEvent, originNodeID int64) error {
 	if body == nil {
 		return fmt.Errorf("%w: message created event cannot be nil", ErrInvalidInput)
@@ -211,6 +218,8 @@ VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
 	return nil
 }
 
+// applyReplicatedAttachment 处理来自 peer 的用户附件变更（新增或删除）。
+// 先解析事件体中的附件数据，校验所有者与被关联用户的有效性，然后委托 upsertAttachmentTx。
 func (s *Store) applyReplicatedAttachment(ctx context.Context, tx *sql.Tx, body internalproto.EventBody, originNodeID int64) error {
 	attachment, err := attachmentFromEventBody(body)
 	if err != nil {
@@ -240,6 +249,7 @@ func (s *Store) applyReplicatedAttachment(ctx context.Context, tx *sql.Tx, body 
 	return s.upsertAttachmentTx(ctx, tx, attachment)
 }
 
+// attachmentFromEventBody 从事件体中提取 Attachment 结构，支持 UserAttachmentUpsertedEvent 和 UserAttachmentDeletedEvent。
 func attachmentFromEventBody(body internalproto.EventBody) (Attachment, error) {
 	switch typed := body.(type) {
 	case *internalproto.UserAttachmentUpsertedEvent:
@@ -251,6 +261,8 @@ func attachmentFromEventBody(body internalproto.EventBody) (Attachment, error) {
 	}
 }
 
+// applyReplicatedUserMetadata 处理来自 peer 的用户元数据变更（写入或删除）。
+// 校验元数据所有者有效后委托 upsertUserMetadataTx 执行。
 func (s *Store) applyReplicatedUserMetadata(ctx context.Context, tx *sql.Tx, body internalproto.EventBody, originNodeID int64) error {
 	metadata, err := userMetadataFromEventBody(body)
 	if err != nil {
@@ -281,6 +293,7 @@ func (s *Store) applyReplicatedUserMetadata(ctx context.Context, tx *sql.Tx, bod
 	return s.upsertUserMetadataTx(ctx, tx, metadata)
 }
 
+// userMetadataFromEventBody 从事件体中提取 UserMetadata 结构，支持 Upserted 和 Deleted 两种事件体类型。
 func userMetadataFromEventBody(body internalproto.EventBody) (UserMetadata, error) {
 	switch typed := body.(type) {
 	case *internalproto.UserMetadataUpsertedEvent:
@@ -292,6 +305,8 @@ func userMetadataFromEventBody(body internalproto.EventBody) (UserMetadata, erro
 	}
 }
 
+// applyReplicatedUserLoginName 处理来自 peer 的用户登录名变更（绑定或解绑）。
+// 若为绑定操作则先清除该用户的其他活跃登录名，并通过 BoundAt 时间戳比较确保最新绑定生效（CRDT 风格）。
 func (s *Store) applyReplicatedUserLoginName(ctx context.Context, tx *sql.Tx, body internalproto.EventBody, originNodeID int64) error {
 	binding, err := userLoginNameFromEventBody(body)
 	if err != nil {
@@ -330,6 +345,7 @@ func (s *Store) applyReplicatedUserLoginName(ctx context.Context, tx *sql.Tx, bo
 	return s.upsertUserLoginNameTx(ctx, tx, binding)
 }
 
+// userLoginNameFromEventBody 从事件体中提取 UserLoginName 结构，支持 Upserted 和 Deleted 两种事件体类型。
 func userLoginNameFromEventBody(body internalproto.EventBody) (UserLoginName, error) {
 	switch typed := body.(type) {
 	case *internalproto.UserLoginNameUpsertedEvent:
@@ -341,6 +357,8 @@ func userLoginNameFromEventBody(body internalproto.EventBody) (UserLoginName, er
 	}
 }
 
+// attachmentFromData 从 protobuf 引用和时间戳原始字符串构造 Attachment 结构。
+// 校验所有者和被关联用户的有效性、归一化附件类型和配置 JSON。
 func attachmentFromData(ownerRef, subjectRef *internalproto.ClusterUserRef, rawType, rawConfig, attachedAtRaw, deletedAtRaw string, originNodeID int64) (Attachment, error) {
 	if ownerRef == nil {
 		return Attachment{}, fmt.Errorf("%w: owner cannot be empty", ErrInvalidInput)
@@ -387,6 +405,8 @@ func attachmentFromData(ownerRef, subjectRef *internalproto.ClusterUserRef, rawT
 	return attachment, nil
 }
 
+// userMetadataFromData 从 protobuf 引用和时间戳原始字符串构造 UserMetadata 结构。
+// 校验所有者有效性、归一化元数据键、解析到期时间。
 func userMetadataFromData(ownerRef *internalproto.ClusterUserRef, rawKey string, value []byte, updatedAtRaw, deletedAtRaw, expiresAtRaw string, originNodeID int64) (UserMetadata, error) {
 	if ownerRef == nil {
 		return UserMetadata{}, fmt.Errorf("%w: owner cannot be empty", ErrInvalidInput)
@@ -432,6 +452,8 @@ func userMetadataFromData(ownerRef *internalproto.ClusterUserRef, rawKey string,
 	return metadata, nil
 }
 
+// userLoginNameFromData 从原始字符串数据构造 UserLoginName 结构。
+// 归一化登录名、解析绑定时间戳、校验用户 Key 有效性。
 func userLoginNameFromData(rawLoginName string, userNodeID, userID int64, boundAtRaw, deletedAtRaw string, originNodeID int64) (UserLoginName, error) {
 	item := UserLoginName{
 		LoginName:    normalizeLoginName(rawLoginName),
@@ -462,6 +484,8 @@ func userLoginNameFromData(rawLoginName string, userNodeID, userID int64, boundA
 	return item, nil
 }
 
+// isEventAppliedTx 在事务中检查某来源节点的事件是否已被应用（查 applied_events 表）。
+// 用于复制事件的去重判断，确保幂等性。
 func (s *Store) isEventAppliedTx(ctx context.Context, tx *sql.Tx, sourceNodeID, eventID int64) (bool, error) {
 	var count int
 	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM applied_events WHERE source_node_id = ? AND event_id = ?`, sourceNodeID, eventID).Scan(&count); err != nil {
@@ -491,6 +515,8 @@ WHERE node_id = ? AND user_id = ?`
 	return user, err
 }
 
+// parseRequiredTimestamp 解析必需的 HLC 时间戳字符串，field 用于错误描述。
+// 时间戳为空或无效时返回错误。
 func parseRequiredTimestamp(raw, field string) (clock.Timestamp, error) {
 	ts, err := clock.ParseTimestamp(strings.TrimSpace(raw))
 	if err != nil {
@@ -499,6 +525,7 @@ func parseRequiredTimestamp(raw, field string) (clock.Timestamp, error) {
 	return ts, nil
 }
 
+// defaultJSON 为空字符串时返回 "{}" 作为默认 JSON 值。
 func defaultJSON(value string) string {
 	if strings.TrimSpace(value) == "" {
 		return "{}"
@@ -506,10 +533,13 @@ func defaultJSON(value string) string {
 	return value
 }
 
+// isUniqueConstraint 检查错误是否为 SQL UNIQUE 约束违反，用于幂等写入判断。
 func isUniqueConstraint(err error) bool {
 	return strings.Contains(strings.ToLower(err.Error()), "unique")
 }
 
+// userFromCreatedEvent 从 UserCreatedEvent protobuf 构造 User 结构。
+// 解析所有版本时间戳（username、password_hash、profile、role），归一化角色并校验用户 Key。
 func userFromCreatedEvent(data *internalproto.UserCreatedEvent, eventOriginNodeID int64) (User, error) {
 	if data == nil {
 		return User{}, fmt.Errorf("%w: user created event cannot be nil", ErrInvalidInput)
@@ -570,6 +600,8 @@ func userFromCreatedEvent(data *internalproto.UserCreatedEvent, eventOriginNodeI
 	return user, nil
 }
 
+// userFromUpdatedEvent 从 UserUpdatedEvent protobuf 构造 User 结构。
+// 在 userFromCreatedEvent 基础上额外解析 VersionDeleted 和 DeletedAt 字段。
 func userFromUpdatedEvent(data *internalproto.UserUpdatedEvent, eventOriginNodeID int64) (User, error) {
 	if data == nil {
 		return User{}, fmt.Errorf("%w: user updated event cannot be nil", ErrInvalidInput)
@@ -610,6 +642,12 @@ func userFromUpdatedEvent(data *internalproto.UserUpdatedEvent, eventOriginNodeI
 	return user, nil
 }
 
+// applyReplicatedUserUpsert 是用户数据的复制入口：处理来自 peer 的用户创建/更新事件。
+// CRDT 冲突解决采用"每个字段独立版本化"的策略（mergeReplicatedUser）：
+//   - 如果本地不存在该用户，直接插入
+//   - 如果本地已存在，对 username、password_hash、profile、role 四个字段分别按版本时间戳取最大值
+//
+// 此外还处理墓碑（tombstone）检查、系统保留用户不变性维护、bootstrap 管理员修复。
 func (s *Store) applyReplicatedUserUpsert(ctx context.Context, tx *sql.Tx, body internalproto.EventBody) error {
 	var (
 		incoming User
@@ -679,6 +717,14 @@ WHERE node_id = ? AND user_id = ?
 	return s.reconcileBootstrapAdminsTx(ctx, tx)
 }
 
+// mergeReplicatedUser 实现 CRDT 风格的每个字段冲突解决（Merge Strategy）。
+// 对 username、password_hash、profile、role 四个字段分别比较各自的版本时间戳：
+//   - 版本时间戳更新的字段胜出（Last Writer Wins, LWW）
+//   - 如果某字段的 incoming 版本比 current 更新，则替换该字段及其版本戳
+//   - systemReserved 取或运算（只要任一为 true 则保留 true）
+//   - UpdatedAt 取所有字段中最大的版本时间戳
+//
+// 这种设计保证了即使在不同节点上并发修改同一用户的不同字段也不会丢失更新。
 func mergeReplicatedUser(current, incoming User) User {
 	merged := current
 
@@ -706,6 +752,8 @@ func mergeReplicatedUser(current, incoming User) User {
 	return merged
 }
 
+// latestUserVersion 返回用户所有版本化字段中的最大时间戳。
+// 用于确定用户整体的最新更新时间（UpdatedAt）。
 func latestUserVersion(user User) clock.Timestamp {
 	latest := user.VersionUsername
 	if user.VersionPasswordHash.Compare(latest) > 0 {
@@ -723,6 +771,7 @@ func latestUserVersion(user User) clock.Timestamp {
 	return latest
 }
 
+// nullableTimestampString 将可选时间戳转换为 SQL 可接受的 nil 或字符串。
 func nullableTimestampString(ts *clock.Timestamp) any {
 	if ts == nil {
 		return nil

@@ -28,12 +28,14 @@ func (s *Store) ListEvents(ctx context.Context, afterSequence int64, limit int) 
 	return s.backend.EventLog().ListEvents(ctx, afterSequence, limit)
 }
 
-// insertEvent 通过后端在事务中插入一条本地事件。
+// insertEvent 通过后端在事务中插入一条本地事件，返回包含完整字段（含自增 Sequence）的 Event。
+// 参数 tx 必须在调用方的事务上下文中，由调用方负责提交或回滚。
 func (s *Store) insertEvent(ctx context.Context, tx *sql.Tx, event Event) (Event, error) {
 	return s.backend.InsertLocalEventTx(ctx, tx, event)
 }
 
-// eventLogValue 将 Event 序列化为 protobuf 二进制格式，用于事件日志存储。
+// eventLogValue 将 Event 先转为 ReplicatedEvent protobuf，再序列化为二进制格式。
+// 序列化结果存入 event_log 表的 value 列，供跨节点复制和重建使用。
 func eventLogValue(event Event) ([]byte, error) {
 	replicated := ToReplicatedEvent(event)
 	if replicated == nil {

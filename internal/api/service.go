@@ -578,12 +578,12 @@ func (s *Service) ScanUserMetadata(ctx context.Context, params store.ScanUserMet
 	return s.store.ScanUserMetadata(ctx, params)
 }
 
-// IsChannelManager 检查 subject 是否为 channel 的管理员。
+// IsChannelManager 检查 subject 是否为频道的管理员。
 func (s *Service) IsChannelManager(ctx context.Context, channel, subject store.UserKey) (bool, error) {
 	return s.store.IsChannelManager(ctx, channel, subject)
 }
 
-// IsChannelWriter 检查 subject 是否有权向 channel 写入消息。
+// IsChannelWriter 检查 subject 是否有权向频道写入消息。
 func (s *Service) IsChannelWriter(ctx context.Context, channel, subject store.UserKey) (bool, error) {
 	return s.store.IsChannelWriter(ctx, channel, subject)
 }

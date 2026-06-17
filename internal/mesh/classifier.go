@@ -1,16 +1,33 @@
 package mesh
 
-// DefaultTrafficClassifier 是 TrafficClassifier 的默认实现。
-// 它根据信封体类型选择流量分类。
+// DefaultTrafficClassifier 是 TrafficClassifier 接口的默认实现。
+// 它根据 ClusterEnvelope.Body 的具体类型（oneof）选择对应的流量分类，
+// 用于后续的 QoS 路径选择和代价计算。
+// 该实现是无状态的，所有实例等价，可直接使用 struct{} 零值。
 type DefaultTrafficClassifier struct{}
 
-// Classify 根据信封体类型返回流量分类：
-//   - 控制消息（Hello、时间同步、拓扑、复制确认、成员、在线状态、连通性谣言、路由诊断）→ TrafficControlCritical
-//   - 查询请求/响应 → TrafficControlQuery
-//   - 转发数据包 → TrafficTransientInteractive
-//   - 复制批处理、拉取请求 → TrafficReplicationStream
-//   - 快照清单、快照块 → TrafficSnapshotBulk
-//   - 未知类型 → TrafficClassUnspecified
+// Classify 根据 ClusterEnvelope.Body 的具体 oneof 类型返回对应的流量分类。
+// 分类映射表：
+//
+//	控制关键消息（TrafficControlCritical）：
+//	  NodeHello, TimeSyncRequest, TimeSyncResponse, TopologyUpdate,
+//	  ReplicationAck, MembershipUpdate, PresenceUpdate,
+//	  ConnectivityRumor, RouteDiagnostic
+//
+//	控制查询消息（TrafficControlQuery）：
+//	  QueryRequest, QueryResponse
+//
+//	瞬时交互消息（TrafficTransientInteractive）：
+//	  ForwardedPacket
+//
+//	复制流消息（TrafficReplicationStream）：
+//	  ReplicationBatch, PullRequest
+//
+//	批量快照消息（TrafficSnapshotBulk）：
+//	  SnapshotManifest, SnapshotChunk
+//
+//	未识别或 nil（TrafficClassUnspecified）：
+//	  其他所有类型
 func (DefaultTrafficClassifier) Classify(envelope *ClusterEnvelope) TrafficClass {
 	if envelope == nil {
 		return TrafficClassUnspecified

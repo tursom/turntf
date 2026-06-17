@@ -12,173 +12,308 @@ import (
 	"github.com/tursom/turntf/internal/store"
 )
 
+// 默认配置文件路径
 const defaultConfigPath = "./config.toml"
+
+// 默认 SQLite 数据库路径
 const defaultSQLitePath = "./data/turntf.db"
+
+// 默认 Pebble 数据库路径
 const defaultPebblePath = "./data/turntf.pebble"
+
+// 默认事件日志裁剪间隔（秒）
 const defaultEventLogPruneIntervalSeconds = 60
 
+// serveConfig 是 TOML 配置文件的顶级映射结构体。
+// 对应 config.toml 中的 [services]、[store]、[auth]、[logging]、[cluster] 各节。
 type serveConfig struct {
-	Services servicesConfig    `toml:"services"`
-	Store    storeConfig       `toml:"store"`
-	Auth     authConfig        `toml:"auth"`
-	Logging  loggingConfig     `toml:"logging"`
-	Cluster  clusterFileConfig `toml:"cluster"`
+	// Services HTTP、ZeroMQ、LibP2P 等服务配置
+	Services servicesConfig `toml:"services"`
+	// Store 存储引擎配置（SQLite / Pebble）
+	Store storeConfig `toml:"store"`
+	// Auth 认证相关配置（Token 密钥、管理员账号）
+	Auth authConfig `toml:"auth"`
+	// Logging 日志级别和文件输出配置
+	Logging loggingConfig `toml:"logging"`
+	// Cluster 集群 Mesh 网络配置
+	Cluster clusterFileConfig `toml:"cluster"`
 }
 
+// servicesConfig 包含所有传输层服务的配置。
 type servicesConfig struct {
-	HTTP   httpServiceConfig `toml:"http"`
-	ZeroMQ zeroMQFileConfig  `toml:"zeromq"`
-	LibP2P libP2PFileConfig  `toml:"libp2p"`
+	// HTTP HTTP API 服务配置
+	HTTP httpServiceConfig `toml:"http"`
+	// ZeroMQ ZeroMQ 协议监听器配置
+	ZeroMQ zeroMQFileConfig `toml:"zeromq"`
+	// LibP2P LibP2P 协议配置
+	LibP2P libP2PFileConfig `toml:"libp2p"`
 }
 
+// httpServiceConfig HTTP API 服务配置。
 type httpServiceConfig struct {
+	// ListenAddr HTTP 监听地址，如 "0.0.0.0:8080"
 	ListenAddr string `toml:"listen_addr"`
 }
 
+// storeConfig 存储引擎配置。
 type storeConfig struct {
-	MessageWindowSize int                 `toml:"message_window_size"`
-	Engine            string              `toml:"engine"`
-	EventLog          eventLogStoreConfig `toml:"event_log"`
-	SQLite            sqliteStoreConfig   `toml:"sqlite"`
-	Pebble            pebbleStoreConfig   `toml:"pebble"`
+	// MessageWindowSize 消息窗口大小，用于控制消息排序缓冲区容量，默认使用 store.DefaultMessageWindowSize
+	MessageWindowSize int `toml:"message_window_size"`
+	// Engine 存储引擎类型，可选 "sqlite"（默认）或 "pebble"
+	Engine string `toml:"engine"`
+	// EventLog 事件日志裁剪配置
+	EventLog eventLogStoreConfig `toml:"event_log"`
+	// SQLite SQLite 存储引擎路径配置
+	SQLite sqliteStoreConfig `toml:"sqlite"`
+	// Pebble Pebble 存储引擎路径和调优配置
+	Pebble pebbleStoreConfig `toml:"pebble"`
 }
 
+// eventLogStoreConfig 事件日志裁剪配置。
+// 事件日志用于记录消息投递状态和系统事件，定期裁剪防止无限增长。
 type eventLogStoreConfig struct {
-	Enabled              *bool `toml:"enabled"`
-	MaxEventsPerOrigin   int   `toml:"max_events_per_origin"`
-	PruneIntervalSeconds int   `toml:"prune_interval_seconds"`
+	// Enabled 是否启用自动裁剪，默认为 true
+	Enabled *bool `toml:"enabled"`
+	// MaxEventsPerOrigin 每个来源保留的最大事件数，默认为 store.DefaultEventLogMaxEventsPerOrigin
+	MaxEventsPerOrigin int `toml:"max_events_per_origin"`
+	// PruneIntervalSeconds 裁剪间隔（秒），默认为 60
+	PruneIntervalSeconds int `toml:"prune_interval_seconds"`
 }
 
+// sqliteStoreConfig SQLite 存储引擎路径配置。
 type sqliteStoreConfig struct {
+	// DBPath SQLite 数据库文件路径，默认为 "./data/turntf.db"
 	DBPath string `toml:"db_path"`
 }
 
+// pebbleStoreConfig Pebble 存储引擎路径与调优配置。
 type pebbleStoreConfig struct {
-	Path            string `toml:"path"`
-	Profile         string `toml:"profile"`
+	// Path Pebble 数据库目录路径，默认为 "./data/turntf.pebble"
+	Path string `toml:"path"`
+	// Profile Pebble 性能配置（test/dev/balanced/production），默认 balanced
+	Profile string `toml:"profile"`
+	// MessageSyncMode 消息同步模式，控制 fsync 行为
 	MessageSyncMode string `toml:"message_sync_mode"`
 }
 
+// authConfig 认证相关配置。
 type authConfig struct {
-	TokenSecret     string               `toml:"token_secret"`
-	TokenTTLMinutes int                  `toml:"token_ttl_minutes"`
-	BootstrapAdmin  bootstrapAdminConfig `toml:"bootstrap_admin"`
+	// TokenSecret JWT Token 签名密钥，不能为空，且必须与 cluster.secret 不同
+	TokenSecret string `toml:"token_secret"`
+	// TokenTTLMinutes Token 有效期（分钟），默认 1440（24 小时）
+	TokenTTLMinutes int `toml:"token_ttl_minutes"`
+	// BootstrapAdmin 初始管理员账号配置
+	BootstrapAdmin bootstrapAdminConfig `toml:"bootstrap_admin"`
 }
 
+// bootstrapAdminConfig 引导管理员账号配置。
+// 第一次启动时自动创建该管理员用户。
 type bootstrapAdminConfig struct {
-	Username     string `toml:"username"`
+	// Username 用户名
+	Username string `toml:"username"`
+	// PasswordHash 密码的 bcrypt 哈希值
 	PasswordHash string `toml:"password_hash"`
-	LoginName    string `toml:"login_name"`
+	// LoginName 登录名，可选，默认与 Username 相同
+	LoginName string `toml:"login_name"`
 }
 
+// loggingConfig 日志记录配置（TOML 文件映射）。
 type loggingConfig struct {
-	Level    string `toml:"level"`
+	// Level 日志级别，可选 debug / info / warn / error，默认 info
+	Level string `toml:"level"`
+	// FilePath 日志文件输出路径，为空时仅输出到控制台
 	FilePath string `toml:"file_path"`
 }
 
+// clusterFileConfig 集群 Mesh 网络配置（TOML 文件映射）。
 type clusterFileConfig struct {
-	Secret                     string                      `toml:"secret"`
-	DisconnectSuspicionGraceMs *int64                      `toml:"disconnect_suspicion_grace_ms"`
-	Forwarding                 clusterForwardingFileConfig `toml:"forwarding"`
-	Clock                      clockFileConfig             `toml:"clock"`
-	Peers                      []peerFileConfig            `toml:"peers"`
+	// Secret 集群共享密钥，用于节点间认证
+	Secret string `toml:"secret"`
+	// DisconnectSuspicionGraceMs 节点断开后的怀疑期（毫秒），超时后标记为离线
+	DisconnectSuspicionGraceMs *int64 `toml:"disconnect_suspicion_grace_ms"`
+	// Forwarding 消息转发策略配置
+	Forwarding clusterForwardingFileConfig `toml:"forwarding"`
+	// Clock 时钟同步参数，用于分布式时钟一致性
+	Clock clockFileConfig `toml:"clock"`
+	// Peers 对等节点列表
+	Peers []peerFileConfig `toml:"peers"`
 }
 
+// clusterForwardingFileConfig 消息转发策略配置。
 type clusterForwardingFileConfig struct {
-	Enabled       *bool                              `toml:"enabled"`
-	BridgeEnabled *bool                              `toml:"bridge_enabled"`
-	NodeFeeWeight *int64                             `toml:"node_fee_weight"`
-	Traffic       clusterForwardingTrafficFileConfig `toml:"traffic"`
+	// Enabled 是否启用消息转发，默认 false
+	Enabled *bool `toml:"enabled"`
+	// BridgeEnabled 是否启用网桥模式，允许跨集群转发
+	BridgeEnabled *bool `toml:"bridge_enabled"`
+	// NodeFeeWeight 节点转发费用权重，用于路由选择
+	NodeFeeWeight *int64 `toml:"node_fee_weight"`
+	// Traffic 各类流量的转发策略
+	Traffic clusterForwardingTrafficFileConfig `toml:"traffic"`
 }
 
+// clusterForwardingTrafficFileConfig 不同流量类型的转发策略配置。
+// 每种流量类型可配置为 "default"（默认）、"forward"（转发）、"local_only"（仅本地）等。
 type clusterForwardingTrafficFileConfig struct {
-	ControlCritical      string `toml:"control_critical"`
-	ControlQuery         string `toml:"control_query"`
+	// ControlCritical 关键控制消息流量
+	ControlCritical string `toml:"control_critical"`
+	// ControlQuery 查询类控制消息流量
+	ControlQuery string `toml:"control_query"`
+	// TransientInteractive 瞬时交互流量（如实时消息）
 	TransientInteractive string `toml:"transient_interactive"`
-	ReplicationStream    string `toml:"replication_stream"`
-	SnapshotBulk         string `toml:"snapshot_bulk"`
+	// ReplicationStream 数据复制流
+	ReplicationStream string `toml:"replication_stream"`
+	// SnapshotBulk 快照批量传输流量
+	SnapshotBulk string `toml:"snapshot_bulk"`
 }
 
+// clockFileConfig 集群时钟同步参数（TOML 文件映射）。
+// 所有字段均为可选的指针类型，未设置时使用 cluster 包中的默认值。
 type clockFileConfig struct {
-	MaxSkewMs                  *int64 `toml:"max_skew_ms"`
-	SyncTimeoutMs              *int64 `toml:"sync_timeout_ms"`
-	CredibleRttMs              *int64 `toml:"credible_rtt_ms"`
-	TrustedFreshMs             *int64 `toml:"trusted_fresh_ms"`
-	ObserveGraceMs             *int64 `toml:"observe_grace_ms"`
-	WriteGateGraceMs           *int64 `toml:"write_gate_grace_ms"`
-	RejectAfterFailures        *int   `toml:"reject_after_failures"`
-	RejectAfterSkewSamples     *int   `toml:"reject_after_skew_samples"`
-	RecoverAfterHealthySamples *int   `toml:"recover_after_healthy_samples"`
+	// MaxSkewMs 允许的最大时钟偏差（毫秒），超过此值认为时钟不同步
+	MaxSkewMs *int64 `toml:"max_skew_ms"`
+	// SyncTimeoutMs 时钟同步超时时间（毫秒）
+	SyncTimeoutMs *int64 `toml:"sync_timeout_ms"`
+	// CredibleRttMs 可信往返时间（毫秒），用于 NTP 风格的时间同步
+	CredibleRttMs *int64 `toml:"credible_rtt_ms"`
+	// TrustedFreshMs 可信新鲜度阈值（毫秒），在此时间内的时间戳被认为是可信的
+	TrustedFreshMs *int64 `toml:"trusted_fresh_ms"`
+	// ObserveGraceMs 观测宽限期（毫秒）
+	ObserveGraceMs *int64 `toml:"observe_grace_ms"`
+	// WriteGateGraceMs 写入门控宽限期（毫秒），时钟不同步时允许写入的缓冲时间
+	WriteGateGraceMs *int64 `toml:"write_gate_grace_ms"`
+	// RejectAfterFailures 连续失败多少次后拒绝时钟同步
+	RejectAfterFailures *int `toml:"reject_after_failures"`
+	// RejectAfterSkewSamples 连续偏斜采样多少次后拒绝
+	RejectAfterSkewSamples *int `toml:"reject_after_skew_samples"`
+	// RecoverAfterHealthySamples 连续健康采样多少次后恢复
+	RecoverAfterHealthySamples *int `toml:"recover_after_healthy_samples"`
 }
 
+// peerFileConfig 集群对等节点配置。
 type peerFileConfig struct {
-	URL    string               `toml:"url"`
+	// URL 对等节点的 WebSocket 连接地址
+	URL string `toml:"url"`
+	// ZeroMQ 对等节点的 ZeroMQ 连接配置
 	ZeroMQ peerZeroMQFileConfig `toml:"zeromq"`
 }
 
+// peerZeroMQFileConfig 对等节点的 ZeroMQ CURVE 认证配置。
 type peerZeroMQFileConfig struct {
+	// CurveServerPublicKey 对端 ZeroMQ CURVE 服务器公钥
 	CurveServerPublicKey string `toml:"curve_server_public_key"`
 }
 
+// zeroMQFileConfig ZeroMQ 协议监听器配置（TOML 文件映射）。
 type zeroMQFileConfig struct {
-	Enabled           bool                  `toml:"enabled"`
-	BindURL           string                `toml:"bind_url"`
-	Security          string                `toml:"security"`
-	ForwardingEnabled *bool                 `toml:"forwarding_enabled"`
-	Curve             zeroMQCurveFileConfig `toml:"curve"`
+	// Enabled 是否启用 ZeroMQ 监听器
+	Enabled bool `toml:"enabled"`
+	// BindURL ZeroMQ 绑定地址，如 "tcp://0.0.0.0:5555"
+	BindURL string `toml:"bind_url"`
+	// Security 安全模式，如 "curve"（启用 CURVE 加密）
+	Security string `toml:"security"`
+	// ForwardingEnabled 是否允许转发 ZeroMQ 连接
+	ForwardingEnabled *bool `toml:"forwarding_enabled"`
+	// Curve ZeroMQ CURVE 加密密钥对配置
+	Curve zeroMQCurveFileConfig `toml:"curve"`
 }
 
+// zeroMQCurveFileConfig ZeroMQ CURVE 加密密钥对配置。
 type zeroMQCurveFileConfig struct {
-	ServerPublicKey         string   `toml:"server_public_key"`
-	ServerSecretKey         string   `toml:"server_secret_key"`
-	ClientPublicKey         string   `toml:"client_public_key"`
-	ClientSecretKey         string   `toml:"client_secret_key"`
+	// ServerPublicKey 服务器公钥
+	ServerPublicKey string `toml:"server_public_key"`
+	// ServerSecretKey 服务器私钥（保密）
+	ServerSecretKey string `toml:"server_secret_key"`
+	// ClientPublicKey 客户端公钥
+	ClientPublicKey string `toml:"client_public_key"`
+	// ClientSecretKey 客户端私钥（保密）
+	ClientSecretKey string `toml:"client_secret_key"`
+	// AllowedClientPublicKeys 允许连接的客户端公钥白名单
 	AllowedClientPublicKeys []string `toml:"allowed_client_public_keys"`
 }
 
+// libP2PFileConfig LibP2P 协议配置（TOML 文件映射）。
 type libP2PFileConfig struct {
-	Enabled                   bool     `toml:"enabled"`
-	PrivateKeyPath            string   `toml:"private_key_path"`
-	ListenAddrs               []string `toml:"listen_addrs"`
-	BootstrapPeers            []string `toml:"bootstrap_peers"`
-	EnableDHT                 *bool    `toml:"enable_dht"`
-	EnableMDNS                bool     `toml:"enable_mdns"`
-	RelayPeers                []string `toml:"relay_peers"`
-	EnableHolePunching        *bool    `toml:"enable_hole_punching"`
-	GossipSubEnabled          *bool    `toml:"gossipsub_enabled"`
-	NativeRelayClientEnabled  bool     `toml:"native_relay_client_enabled"`
-	NativeRelayServiceEnabled bool     `toml:"native_relay_service_enabled"`
+	// Enabled 是否启用 LibP2P 传输层
+	Enabled bool `toml:"enabled"`
+	// PrivateKeyPath LibP2P 节点私钥文件路径
+	PrivateKeyPath string `toml:"private_key_path"`
+	// ListenAddrs LibP2P 监听地址列表
+	ListenAddrs []string `toml:"listen_addrs"`
+	// BootstrapPeers 引导节点列表，用于加入 P2P 网络
+	BootstrapPeers []string `toml:"bootstrap_peers"`
+	// EnableDHT 是否启用分布式哈希表（Kademlia DHT），默认 true
+	EnableDHT *bool `toml:"enable_dht"`
+	// EnableMDNS 是否启用 mDNS 局域网节点发现
+	EnableMDNS bool `toml:"enable_mdns"`
+	// RelayPeers 中继节点列表，用于 NAT 穿透
+	RelayPeers []string `toml:"relay_peers"`
+	// EnableHolePunching 是否启用 NAT 打洞，默认 true
+	EnableHolePunching *bool `toml:"enable_hole_punching"`
+	// GossipSubEnabled 是否启用 GossipSub 发布订阅，默认 true
+	GossipSubEnabled *bool `toml:"gossipsub_enabled"`
+	// NativeRelayClientEnabled 是否作为中继客户端（连接中继服务）
+	NativeRelayClientEnabled bool `toml:"native_relay_client_enabled"`
+	// NativeRelayServiceEnabled 是否作为中继服务节点（为其他节点提供中继）
+	NativeRelayServiceEnabled bool `toml:"native_relay_service_enabled"`
 }
 
+// runtimeServeConfig 是经过验证和填充默认值后的运行时服务配置。
+// 由 serveConfig.runtimeConfig() 从 TOML 文件配置转换而来。
 type runtimeServeConfig struct {
-	ConfigPath            string
-	Services              runtimeServicesConfig
-	SQLitePath            string
-	PebblePath            string
-	EventLogPruneEnabled  bool
+	// ConfigPath 实际使用的配置文件路径
+	ConfigPath string
+	// Services 运行时服务配置（HTTP、ZeroMQ、LibP2P）
+	Services runtimeServicesConfig
+	// SQLitePath SQLite 数据库文件路径（已通过 filepath.Clean 规范化）
+	SQLitePath string
+	// PebblePath Pebble 数据库目录路径（已通过 filepath.Clean 规范化）
+	PebblePath string
+	// EventLogPruneEnabled 是否启用事件日志自动裁剪
+	EventLogPruneEnabled bool
+	// EventLogPruneInterval 事件日志裁剪间隔
 	EventLogPruneInterval time.Duration
-	StoreOptions          store.Options
-	Auth                  runtimeAuthConfig
-	Logging               runtimeLoggingConfig
-	Cluster               cluster.Config
+	// StoreOptions 存储引擎完整配置选项
+	StoreOptions store.Options
+	// Auth 运行时认证配置
+	Auth runtimeAuthConfig
+	// Logging 运行时日志配置
+	Logging runtimeLoggingConfig
+	// Cluster 集群 Mesh 网络配置（含默认值和验证后结果）
+	Cluster cluster.Config
 }
 
+// runtimeServicesConfig 运行时服务配置聚合。
 type runtimeServicesConfig struct {
-	HTTP   runtimeHTTPServiceConfig
+	// HTTP HTTP API 监听配置
+	HTTP runtimeHTTPServiceConfig
+	// ZeroMQ 运行时 ZeroMQ 配置（已转换为 cluster 包类型）
 	ZeroMQ cluster.ZeroMQConfig
+	// LibP2P 运行时 LibP2P 配置（已转换为 cluster 包类型）
 	LibP2P cluster.LibP2PConfig
 }
 
+// runtimeHTTPServiceConfig HTTP 服务运行时配置。
 type runtimeHTTPServiceConfig struct {
+	// ListenAddr HTTP 监听地址
 	ListenAddr string
 }
 
+// runtimeAuthConfig 认证模块运行时配置。
 type runtimeAuthConfig struct {
-	TokenSecret     string
+	// TokenSecret JWT Token 签名密钥
+	TokenSecret string
+	// TokenTTLMinutes Token 有效期（分钟）
 	TokenTTLMinutes int
-	BootstrapAdmin  store.BootstrapAdminConfig
+	// BootstrapAdmin 引导管理员配置（已转换为 store 包类型）
+	BootstrapAdmin store.BootstrapAdminConfig
 }
 
+// loadServeRuntimeConfig 加载并解析 TOML 配置文件，返回运行时配置。
+// 步骤：
+//  1. 解析配置文件路径（空值使用默认路径）
+//  2. 使用 toml.DecodeFile 解析文件到 serveConfig
+//  3. 检测未识别的 TOML 字段并报错（防止拼写错误）
+//  4. 调用 runtimeConfig() 填充默认值、执行验证、转换为运行时类型
 func loadServeRuntimeConfig(path string) (runtimeServeConfig, error) {
 	configPath := resolveConfigPath(path)
 
@@ -199,6 +334,8 @@ func loadServeRuntimeConfig(path string) (runtimeServeConfig, error) {
 	return cfg.runtimeConfig(configPath)
 }
 
+// resolveConfigPath 规范化配置文件路径。
+// 空字符串或纯空白字符串使用默认值 "./config.toml"。
 func resolveConfigPath(path string) string {
 	trimmed := strings.TrimSpace(path)
 	if trimmed == "" {
@@ -207,6 +344,7 @@ func resolveConfigPath(path string) string {
 	return trimmed
 }
 
+// trimStringSlice 对字符串切片中每个元素做 TrimSpace，移除空字符串。
 func trimStringSlice(values []string) []string {
 	trimmed := make([]string, 0, len(values))
 	for _, value := range values {
@@ -218,6 +356,12 @@ func trimStringSlice(values []string) []string {
 	return trimmed
 }
 
+// runtimeConfig 将 TOML 文件配置结构体 serveConfig 转换为运行时配置 runtimeServeConfig。
+// 主要工作：
+//   - 验证必填字段（listen_addr、token_secret、bootstrap_admin）
+//   - 为未设置的可选字段填充默认值
+//   - 将 TOML 字符串值解析为内部包的类型（如 store.Options、cluster.Config）
+//   - 执行集群配置的交叉验证（token_secret 必须与 cluster.secret 不同）
 func (c serveConfig) runtimeConfig(configPath string) (runtimeServeConfig, error) {
 	httpListenAddr := strings.TrimSpace(c.Services.HTTP.ListenAddr)
 	if httpListenAddr == "" {
@@ -427,6 +571,8 @@ func (c serveConfig) runtimeConfig(configPath string) (runtimeServeConfig, error
 	}, nil
 }
 
+// runtimeConfig 将 libp2p 的 TOML 配置转换为 cluster.LibP2PConfig 运行时类型。
+// 为可选的布尔指针字段（EnableDHT、EnableHolePunching、GossipSubEnabled）设置默认值 true。
 func (c libP2PFileConfig) runtimeConfig() cluster.LibP2PConfig {
 	enableDHT := true
 	if c.EnableDHT != nil {
@@ -455,6 +601,7 @@ func (c libP2PFileConfig) runtimeConfig() cluster.LibP2PConfig {
 	}
 }
 
+// runtimeConfig 将消息转发策略的 TOML 配置转换为 cluster.ForwardingConfig 运行时类型。
 func (c clusterForwardingFileConfig) runtimeConfig() (cluster.ForwardingConfig, error) {
 	traffic, err := c.Traffic.runtimeConfig()
 	if err != nil {
@@ -472,6 +619,8 @@ func (c clusterForwardingFileConfig) runtimeConfig() (cluster.ForwardingConfig, 
 	}, nil
 }
 
+// runtimeConfig 将流量转发策略的 TOML 配置字符串转换为 cluster.ForwardingTrafficConfig 运行时类型。
+// 每种流量类型的字符串值通过 cluster.ParseForwardingDisposition 解析为枚举值。
 func (c clusterForwardingTrafficFileConfig) runtimeConfig() (cluster.ForwardingTrafficConfig, error) {
 	controlCritical, err := cluster.ParseForwardingDisposition(c.ControlCritical)
 	if err != nil {
@@ -502,6 +651,8 @@ func (c clusterForwardingTrafficFileConfig) runtimeConfig() (cluster.ForwardingT
 	}, nil
 }
 
+// validateClusterFileConfig 验证集群配置的合法性。
+// 设置默认 NodeID（为 0 时设为 1），然后调用 cluster.Config.Validate()。
 func validateClusterFileConfig(c *cluster.Config) error {
 	if c == nil {
 		return fmt.Errorf("cluster config cannot be nil")

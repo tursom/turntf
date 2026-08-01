@@ -66,7 +66,7 @@ ZeroMQMuxHello {
 - 业务客户端同样复用 `services.zeromq.bind_url` 对应的 ROUTER socket，首帧必须是 `ZeroMQMuxHello{role=ZERO_MQ_ROLE_CLIENT}`。
 - mux hello 之后，第二帧必须是 `ClientEnvelope.login`，后续直接复用与 WebSocket 标准流相同的 `ClientEnvelope / ServerEnvelope` 协议。
 - mux 分流完成后，客户端必须在 45 秒内完成登录；超时会关闭连接，且不会注册在线状态或 `session_ref`。
-- 当前客户端协议版本常量是 `client-v1alpha4`。
+- 当前客户端协议版本常量是 `client-v1alpha5`；mux hello 之后的 `LoginRequest` 必须显式声明该值，空值或不匹配版本会在认证和会话注册前被拒绝。
 - ZeroMQ 客户端连接进入的处理栈等价于 WebSocket `GET /ws/client` 标准流，而不是 `GET /ws/realtime`。
 - 如果客户端只想关闭历史补发和后续 `MessagePushed`，应在 `LoginRequest` 中设置 `transient_only = true`；这不会把 ZeroMQ 连接切换成 `/ws/realtime` 那种“受限 RPC 集”。
 - `/ws/client` 和 `/ws/realtime` 仍然保留为 WebSocket 路径；ZeroMQ 是并行入口，不替代现有 WebSocket 长连接路径。

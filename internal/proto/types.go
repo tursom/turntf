@@ -12,7 +12,7 @@ const SnapshotVersion = "snapshot-v1alpha11"
 
 // ClientProtocolVersion 定义客户端与服务端之间的通信协议版本。
 // 客户端需声明此版本，服务端据此判断兼容性。
-const ClientProtocolVersion = "client-v1alpha4"
+const ClientProtocolVersion = "client-v1alpha5"
 
 // ZeroMQMuxProtocolVersion 定义 ZeroMQ 多路复用子协议版本。
 // 用于 ZeroMQ 多路复用层的协议协商。

@@ -882,8 +882,9 @@ func TestClientWebSocketLoginAndPushesBytesMessages(t *testing.T) {
 	writeClientEnvelope(t, conn, &internalproto.ClientEnvelope{
 		Body: &internalproto.ClientEnvelope_Login{
 			Login: &internalproto.LoginRequest{
-				User:     &internalproto.UserRef{NodeId: aliceKey.NodeID, UserId: aliceKey.UserID},
-				Password: "alice-password",
+				User:            &internalproto.UserRef{NodeId: aliceKey.NodeID, UserId: aliceKey.UserID},
+				Password:        "alice-password",
+				ProtocolVersion: internalproto.ClientProtocolVersion,
 			},
 		},
 	})
@@ -1252,8 +1253,9 @@ func TestClientWebSocketSeenCursorAndSendMessage(t *testing.T) {
 	writeClientEnvelope(t, conn, &internalproto.ClientEnvelope{
 		Body: &internalproto.ClientEnvelope_Login{
 			Login: &internalproto.LoginRequest{
-				User:     &internalproto.UserRef{NodeId: aliceKey.NodeID, UserId: aliceKey.UserID},
-				Password: "alice-password",
+				User:            &internalproto.UserRef{NodeId: aliceKey.NodeID, UserId: aliceKey.UserID},
+				Password:        "alice-password",
+				ProtocolVersion: internalproto.ClientProtocolVersion,
 				SeenMessages: []*internalproto.MessageCursor{{
 					NodeId: created.NodeID,
 					Seq:    created.Seq,
@@ -1466,8 +1468,9 @@ func TestTransientHTTPAndWebSocketPacket(t *testing.T) {
 	writeClientEnvelope(t, conn, &internalproto.ClientEnvelope{
 		Body: &internalproto.ClientEnvelope_Login{
 			Login: &internalproto.LoginRequest{
-				User:     &internalproto.UserRef{NodeId: aliceKey.NodeID, UserId: aliceKey.UserID},
-				Password: "alice-password",
+				User:            &internalproto.UserRef{NodeId: aliceKey.NodeID, UserId: aliceKey.UserID},
+				Password:        "alice-password",
+				ProtocolVersion: internalproto.ClientProtocolVersion,
 			},
 		},
 	})
@@ -2648,9 +2651,10 @@ func loginClientWebSocketAndRead(t *testing.T, conn *websocket.Conn, key store.U
 	writeClientEnvelope(t, conn, &internalproto.ClientEnvelope{
 		Body: &internalproto.ClientEnvelope_Login{
 			Login: &internalproto.LoginRequest{
-				User:          &internalproto.UserRef{NodeId: key.NodeID, UserId: key.UserID},
-				Password:      password,
-				TransientOnly: transientOnly,
+				User:            &internalproto.UserRef{NodeId: key.NodeID, UserId: key.UserID},
+				Password:        password,
+				TransientOnly:   transientOnly,
+				ProtocolVersion: internalproto.ClientProtocolVersion,
 			},
 		},
 	})

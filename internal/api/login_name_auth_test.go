@@ -92,8 +92,9 @@ func TestClientWebSocketLoginByLoginName(t *testing.T) {
 	if err := conn.WriteMessage(websocket.BinaryMessage, mustMarshalProto(t, &internalproto.ClientEnvelope{
 		Body: &internalproto.ClientEnvelope_Login{
 			Login: &internalproto.LoginRequest{
-				LoginName: "alice.login",
-				Password:  "alice-password",
+				LoginName:       "alice.login",
+				Password:        "alice-password",
+				ProtocolVersion: internalproto.ClientProtocolVersion,
 			},
 		},
 	})); err != nil {
@@ -141,9 +142,10 @@ func TestClientWebSocketRejectsMixedLoginSelectors(t *testing.T) {
 	if err := conn.WriteMessage(websocket.BinaryMessage, mustMarshalProto(t, &internalproto.ClientEnvelope{
 		Body: &internalproto.ClientEnvelope_Login{
 			Login: &internalproto.LoginRequest{
-				User:      &internalproto.UserRef{NodeId: aliceKey.NodeID, UserId: aliceKey.UserID},
-				LoginName: "alice.login",
-				Password:  "alice-password",
+				User:            &internalproto.UserRef{NodeId: aliceKey.NodeID, UserId: aliceKey.UserID},
+				LoginName:       "alice.login",
+				Password:        "alice-password",
+				ProtocolVersion: internalproto.ClientProtocolVersion,
 			},
 		},
 	})); err != nil {

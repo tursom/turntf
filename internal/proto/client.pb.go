@@ -1092,14 +1092,15 @@ func (*ServerEnvelope_ScanUserMetadataResponse) isServerEnvelope_Body() {}
 func (*ServerEnvelope_ListUsersResponse) isServerEnvelope_Body() {}
 
 type LoginRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	User          *UserRef               `protobuf:"bytes,1,opt,name=user,proto3" json:"user,omitempty"`
-	LoginName     string                 `protobuf:"bytes,2,opt,name=login_name,json=loginName,proto3" json:"login_name,omitempty"`
-	Password      string                 `protobuf:"bytes,3,opt,name=password,proto3" json:"password,omitempty"`
-	SeenMessages  []*MessageCursor       `protobuf:"bytes,4,rep,name=seen_messages,json=seenMessages,proto3" json:"seen_messages,omitempty"`
-	TransientOnly bool                   `protobuf:"varint,5,opt,name=transient_only,json=transientOnly,proto3" json:"transient_only,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	User            *UserRef               `protobuf:"bytes,1,opt,name=user,proto3" json:"user,omitempty"`
+	LoginName       string                 `protobuf:"bytes,2,opt,name=login_name,json=loginName,proto3" json:"login_name,omitempty"`
+	Password        string                 `protobuf:"bytes,3,opt,name=password,proto3" json:"password,omitempty"`
+	SeenMessages    []*MessageCursor       `protobuf:"bytes,4,rep,name=seen_messages,json=seenMessages,proto3" json:"seen_messages,omitempty"`
+	TransientOnly   bool                   `protobuf:"varint,5,opt,name=transient_only,json=transientOnly,proto3" json:"transient_only,omitempty"`
+	ProtocolVersion string                 `protobuf:"bytes,6,opt,name=protocol_version,json=protocolVersion,proto3" json:"protocol_version,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *LoginRequest) Reset() {
@@ -1165,6 +1166,13 @@ func (x *LoginRequest) GetTransientOnly() bool {
 		return x.TransientOnly
 	}
 	return false
+}
+
+func (x *LoginRequest) GetProtocolVersion() string {
+	if x != nil {
+		return x.ProtocolVersion
+	}
+	return ""
 }
 
 type LoginResponse struct {
@@ -5714,7 +5722,7 @@ var File_client_proto protoreflect.FileDescriptor
 
 const file_client_proto_rawDesc = "" +
 	"\n" +
-	"\fclient.proto\x12\x12notifier.client.v1\"\x94\x0f\n" +
+	"\fclient.proto\x12\x12notifier.client.v1\"\xfe\x0f\n" +
 	"\x0eClientEnvelope\x128\n" +
 	"\x05login\x18\x01 \x01(\v2 .notifier.client.v1.LoginRequestH\x00R\x05login\x12K\n" +
 	"\fsend_message\x18\x02 \x01(\v2&.notifier.client.v1.SendMessageRequestH\x00R\vsendMessage\x12A\n" +
@@ -5746,7 +5754,8 @@ const file_client_proto_rawDesc = "" +
 	"\x12scan_user_metadata\x18\x16 \x01(\v2+.notifier.client.v1.ScanUserMetadataRequestH\x00R\x10scanUserMetadata\x12E\n" +
 	"\n" +
 	"list_users\x18\x17 \x01(\v2$.notifier.client.v1.ListUsersRequestH\x00R\tlistUsersB\x06\n" +
-	"\x04body\"\x93\x13\n" +
+	"\x04bodyR\x11subscribe_channelR\x13unsubscribe_channelR\x12list_subscriptionsR\n" +
+	"block_userR\funblock_userR\x12list_blocked_users\"\xb3\x14\n" +
 	"\x0eServerEnvelope\x12J\n" +
 	"\x0elogin_response\x18\x01 \x01(\v2!.notifier.client.v1.LoginResponseH\x00R\rloginResponse\x12J\n" +
 	"\x0emessage_pushed\x18\x02 \x01(\v2!.notifier.client.v1.MessagePushedH\x00R\rmessagePushed\x12]\n" +
@@ -5774,19 +5783,20 @@ const file_client_proto_rawDesc = "" +
 	"\x1ddelete_user_metadata_response\x18\x17 \x01(\v2..notifier.client.v1.DeleteUserMetadataResponseH\x00R\x1adeleteUserMetadataResponse\x12m\n" +
 	"\x1bscan_user_metadata_response\x18\x18 \x01(\v2,.notifier.client.v1.ScanUserMetadataResponseH\x00R\x18scanUserMetadataResponse\x12W\n" +
 	"\x13list_users_response\x18\x19 \x01(\v2%.notifier.client.v1.ListUsersResponseH\x00R\x11listUsersResponseB\x06\n" +
-	"\x04body\"\xe9\x01\n" +
+	"\x04bodyR\x1asubscribe_channel_responseR\x1cunsubscribe_channel_responseR\x1blist_subscriptions_responseR\x13block_user_responseR\x15unblock_user_responseR\x1blist_blocked_users_response\"\xa6\x02\n" +
 	"\fLoginRequest\x12/\n" +
 	"\x04user\x18\x01 \x01(\v2\x1b.notifier.client.v1.UserRefR\x04user\x12\x1d\n" +
 	"\n" +
 	"login_name\x18\x02 \x01(\tR\tloginName\x12\x1a\n" +
 	"\bpassword\x18\x03 \x01(\tR\bpassword\x12F\n" +
 	"\rseen_messages\x18\x04 \x03(\v2!.notifier.client.v1.MessageCursorR\fseenMessages\x12%\n" +
-	"\x0etransient_only\x18\x05 \x01(\bR\rtransientOnly\"\xa9\x01\n" +
+	"\x0etransient_only\x18\x05 \x01(\bR\rtransientOnly\x12)\n" +
+	"\x10protocol_version\x18\x06 \x01(\tR\x0fprotocolVersionR\anode_idR\auser_id\"\xa9\x01\n" +
 	"\rLoginResponse\x12,\n" +
 	"\x04user\x18\x01 \x01(\v2\x18.notifier.client.v1.UserR\x04user\x12)\n" +
 	"\x10protocol_version\x18\x02 \x01(\tR\x0fprotocolVersion\x12?\n" +
 	"\vsession_ref\x18\x03 \x01(\v2\x1e.notifier.client.v1.SessionRefR\n" +
-	"sessionRef\"\xa5\x03\n" +
+	"sessionRef\"\xbb\x03\n" +
 	"\x12SendMessageRequest\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\x04R\trequestId\x123\n" +
@@ -5795,13 +5805,13 @@ const file_client_proto_rawDesc = "" +
 	"\rdelivery_kind\x18\x04 \x01(\x0e2&.notifier.client.v1.ClientDeliveryKindR\fdeliveryKind\x12K\n" +
 	"\rdelivery_mode\x18\x05 \x01(\x0e2&.notifier.client.v1.ClientDeliveryModeR\fdeliveryMode\x12F\n" +
 	"\tsync_mode\x18\x06 \x01(\x0e2).notifier.client.v1.ClientMessageSyncModeR\bsyncMode\x12E\n" +
-	"\x0etarget_session\x18\a \x01(\v2\x1e.notifier.client.v1.SessionRefR\rtargetSession\"\xcd\x01\n" +
+	"\x0etarget_session\x18\a \x01(\v2\x1e.notifier.client.v1.SessionRefR\rtargetSessionR\x06senderR\frelay_target\"\xdd\x01\n" +
 	"\x13SendMessageResponse\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\x04R\trequestId\x127\n" +
 	"\amessage\x18\x02 \x01(\v2\x1b.notifier.client.v1.MessageH\x00R\amessage\x12V\n" +
 	"\x12transient_accepted\x18\x03 \x01(\v2%.notifier.client.v1.TransientAcceptedH\x00R\x11transientAcceptedB\x06\n" +
-	"\x04body\"F\n" +
+	"\x04bodyR\x0erelay_accepted\"F\n" +
 	"\rMessagePushed\x125\n" +
 	"\amessage\x18\x01 \x01(\v2\x1b.notifier.client.v1.MessageR\amessage\"B\n" +
 	"\fPacketPushed\x122\n" +
@@ -5905,12 +5915,12 @@ const file_client_proto_rawDesc = "" +
 	"\x12UpdateUserResponse\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\x04R\trequestId\x12,\n" +
-	"\x04user\x18\x02 \x01(\v2\x18.notifier.client.v1.UserR\x04user\"|\n" +
+	"\x04user\x18\x02 \x01(\v2\x18.notifier.client.v1.UserR\x04user\"\x94\x01\n" +
 	"\x12DeleteUserResponse\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\x04R\trequestId\x12\x16\n" +
 	"\x06status\x18\x02 \x01(\tR\x06status\x12/\n" +
-	"\x04user\x18\x03 \x01(\v2\x1b.notifier.client.v1.UserRefR\x04user\"x\n" +
+	"\x04user\x18\x03 \x01(\v2\x1b.notifier.client.v1.UserRefR\x04userJ\x04\b\x04\x10\x05R\anode_idR\auser_id\"x\n" +
 	"\x11ListUsersResponse\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\x04R\trequestId\x12.\n" +
@@ -6073,14 +6083,14 @@ const file_client_proto_rawDesc = "" +
 	"\x0eorigin_node_id\x18\t \x01(\x03R\foriginNodeId\x12\x1d\n" +
 	"\n" +
 	"login_name\x18\n" +
-	" \x01(\tR\tloginName\"\xde\x01\n" +
+	" \x01(\tR\tloginName\"\xfb\x01\n" +
 	"\aMessage\x129\n" +
 	"\trecipient\x18\x01 \x01(\v2\x1b.notifier.client.v1.UserRefR\trecipient\x12\x17\n" +
 	"\anode_id\x18\x03 \x01(\x03R\x06nodeId\x12\x10\n" +
 	"\x03seq\x18\x04 \x01(\x03R\x03seq\x123\n" +
 	"\x06sender\x18\x05 \x01(\v2\x1b.notifier.client.v1.UserRefR\x06sender\x12\x12\n" +
 	"\x04body\x18\x06 \x01(\fR\x04body\x12$\n" +
-	"\x0ecreated_at_hlc\x18\a \x01(\tR\fcreatedAtHlc\"\x89\x03\n" +
+	"\x0ecreated_at_hlc\x18\a \x01(\tR\fcreatedAtHlcJ\x04\b\x02\x10\x03R\fuser_node_idR\auser_id\"\x97\x03\n" +
 	"\x06Packet\x12\x1b\n" +
 	"\tpacket_id\x18\x01 \x01(\x04R\bpacketId\x12$\n" +
 	"\x0esource_node_id\x18\x02 \x01(\x03R\fsourceNodeId\x12$\n" +
@@ -6089,7 +6099,7 @@ const file_client_proto_rawDesc = "" +
 	"\x06sender\x18\x05 \x01(\v2\x1b.notifier.client.v1.UserRefR\x06sender\x12\x12\n" +
 	"\x04body\x18\x06 \x01(\fR\x04body\x12K\n" +
 	"\rdelivery_mode\x18\a \x01(\x0e2&.notifier.client.v1.ClientDeliveryModeR\fdeliveryMode\x12E\n" +
-	"\x0etarget_session\x18\b \x01(\v2\x1e.notifier.client.v1.SessionRefR\rtargetSession\"\xca\x02\n" +
+	"\x0etarget_session\x18\b \x01(\v2\x1e.notifier.client.v1.SessionRefR\rtargetSessionR\frelay_target\"\xca\x02\n" +
 	"\n" +
 	"Attachment\x121\n" +
 	"\x05owner\x18\x01 \x01(\v2\x1b.notifier.client.v1.UserRefR\x05owner\x125\n" +

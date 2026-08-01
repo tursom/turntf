@@ -22,27 +22,36 @@ type clientMessageCursor struct {
 	seq    int64
 }
 
+type unsupportedClientProtocolVersionError struct {
+	got  string
+	want string
+}
+
+func (e *unsupportedClientProtocolVersionError) Error() string {
+	return fmt.Sprintf("unsupported client protocol version: got=%q want=%q", e.got, e.want)
+}
+
 // clientWSSession 表示一个客户端 WebSocket/ZeroMQ 会话，管理认证、读写、消息推送等全生命周期。
 // 每个客户端连接对应一个 clientWSSession 实例。
 type clientWSSession struct {
-	http              *HTTP                                 // 关联的 HTTP 服务实例
-	conn              clientTransportConn                   // 底层传输连接
-	protocol          string                                // 传输协议标识："ws" 或 "zmq"
-	remoteAddr        string                                // 对端地址
-	sessionRef        store.SessionRef                      // 本会话的全局唯一引用
-	loginName         string                                // 登录名
-	principal         *requestPrincipal                     // 认证后的用户身份
-	realtimeOnly      bool                                  // 仅实时流（不持久化存储）
-	transientOnly     bool                                  // 仅即时消息（不接收持久化推送）
-	afterSequence     int64                                 // 登录时的最新事件序列号，用于跳过已处理的持久化事件
-	seen              map[clientMessageCursor]struct{}      // 已见消息集合（去重）
-	seenMu            sync.Mutex                            // 保护 seen
-	writeMu           sync.Mutex                            // 串行化写入
-	persistentMu      sync.Mutex                            // 保护持久化推送状态
-	persistentReady   bool                                  // 持久化推送是否已就绪
-	pendingPersistent []queuedPersistentMessage             // 推送就绪前暂存的持久化消息
-	blacklistCache    map[store.UserKey]clientBoolCacheEntry    // 黑名单查询缓存
-	subscriptionCache map[store.UserKey]clientBoolCacheEntry    // 频道订阅查询缓存
+	http              *HTTP                                  // 关联的 HTTP 服务实例
+	conn              clientTransportConn                    // 底层传输连接
+	protocol          string                                 // 传输协议标识："ws" 或 "zmq"
+	remoteAddr        string                                 // 对端地址
+	sessionRef        store.SessionRef                       // 本会话的全局唯一引用
+	loginName         string                                 // 登录名
+	principal         *requestPrincipal                      // 认证后的用户身份
+	realtimeOnly      bool                                   // 仅实时流（不持久化存储）
+	transientOnly     bool                                   // 仅即时消息（不接收持久化推送）
+	afterSequence     int64                                  // 登录时的最新事件序列号，用于跳过已处理的持久化事件
+	seen              map[clientMessageCursor]struct{}       // 已见消息集合（去重）
+	seenMu            sync.Mutex                             // 保护 seen
+	writeMu           sync.Mutex                             // 串行化写入
+	persistentMu      sync.Mutex                             // 保护持久化推送状态
+	persistentReady   bool                                   // 持久化推送是否已就绪
+	pendingPersistent []queuedPersistentMessage              // 推送就绪前暂存的持久化消息
+	blacklistCache    map[store.UserKey]clientBoolCacheEntry // 黑名单查询缓存
+	subscriptionCache map[store.UserKey]clientBoolCacheEntry // 频道订阅查询缓存
 }
 
 // AcceptZeroMQConn 接受 ZeroMQ 客户端连接，将其纳入与 WebSocket 相同的服务流程。
@@ -93,11 +102,19 @@ func (h *HTTP) serveClientConnWithLoginTimeout(conn clientTransportConn, baseCtx
 	err := sess.login(loginCtx)
 	loginCancel()
 	if err != nil {
-		sess.logWarn("client_login_failed", err).
-			Msg("client transport login failed")
-		_ = sess.writeEnvelope(&internalproto.ServerEnvelope{
+		code := "unauthorized"
+		logEvent := sess.logWarn("client_login_failed", err)
+		var versionErr *unsupportedClientProtocolVersionError
+		if errors.As(err, &versionErr) {
+			code = "unsupported_protocol_version"
+			logEvent = logEvent.
+				Str("client_protocol_version", versionErr.got).
+				Str("required_client_protocol_version", versionErr.want)
+		}
+		logEvent.Msg("client transport login failed")
+		_ = sess.writeTerminalEnvelope(&internalproto.ServerEnvelope{
 			Body: &internalproto.ServerEnvelope_Error{
-				Error: clientWSError("unauthorized", err.Error(), 0),
+				Error: clientWSError(code, err.Error(), 0),
 			},
 		})
 		return
@@ -119,6 +136,7 @@ func (h *HTTP) serveClientConnWithLoginTimeout(conn clientTransportConn, baseCtx
 
 // login 执行客户端认证握手：
 //   - 读取并解析 Login 请求（支持 user key 或 login_name 两种方式）
+//   - 在读取凭据、游标或会话状态前校验客户端协议版本
 //   - 验证密码
 //   - 记录已见消息光标（用于去重）
 //   - 处理实时流和即时消息模式
@@ -139,6 +157,12 @@ func (s *clientWSSession) login(ctx context.Context) error {
 	login := envelope.GetLogin()
 	if login == nil {
 		return fmt.Errorf("first message must be login")
+	}
+	if login.ProtocolVersion != internalproto.ClientProtocolVersion {
+		return &unsupportedClientProtocolVersionError{
+			got:  login.ProtocolVersion,
+			want: internalproto.ClientProtocolVersion,
+		}
 	}
 	hasUserSelector := login.User != nil
 	loginName := strings.TrimSpace(login.LoginName)
@@ -292,6 +316,23 @@ func (s *clientWSSession) writeEnvelope(envelope *internalproto.ServerEnvelope) 
 	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
+	return s.conn.Send(context.Background(), data)
+}
+
+// writeTerminalEnvelope 在紧接着关闭连接的场景中等待传输层接收消息。
+// WebSocket Send 本身是同步写入；ZeroMQ mux 则通过可选确认接口等待路由队列刷入 socket。
+func (s *clientWSSession) writeTerminalEnvelope(envelope *internalproto.ServerEnvelope) error {
+	data, err := gproto.Marshal(envelope)
+	if err != nil {
+		return err
+	}
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	if waiter, ok := s.conn.(clientTransportSendWaiter); ok {
+		ctx, cancel := context.WithTimeout(context.Background(), clientWSWriteWait)
+		defer cancel()
+		return waiter.SendAndWait(ctx, data)
+	}
 	return s.conn.Send(context.Background(), data)
 }
 

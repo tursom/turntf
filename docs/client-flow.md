@@ -28,6 +28,7 @@
 - WebSocket / ZeroMQ 不使用 query token，也不读取 HTTP `Authorization` header。
 - 登录时始终通过首个 protobuf `LoginRequest` 提交密码。
 - `LoginRequest` 也必须二选一提供 `user` 或 `login_name`；两者同时提供或同时缺失都会被拒绝。
+- 每次初连和重连都必须声明 `LoginRequest.protocol_version = "client-v1alpha5"`；服务端在凭据校验和会话注册前严格拒绝空值或其他版本。
 
 关于 ZeroMQ：
 
@@ -57,8 +58,8 @@
    - 实时流 WebSocket：`GET /ws/realtime`。
    - 仅关闭持久化补发但仍保留标准 RPC：在标准长连接登录时设置 `LoginRequest.transient_only = true`。
 7. 如果使用 ZeroMQ CURVE，先完成 CURVE socket 配置；随后发送 `ZeroMQMuxHello{role=CLIENT, protocol_version="zeromq-mux-v1"}`。
-8. 客户端发送 `ClientEnvelope.login`，携带 `user` 或 `login_name`、`password`、可选的 `seen_messages`，以及可选的 `transient_only`。
-9. 服务端返回 `LoginResponse`，其中包含 `user`、`protocol_version` 和当前连接的 `session_ref`。
+8. 客户端发送 `ClientEnvelope.login`，携带固定的 `protocol_version = "client-v1alpha5"`、`user` 或 `login_name`、`password`、可选的 `seen_messages`，以及可选的 `transient_only`。
+9. 服务端返回 `LoginResponse`，其中包含 `user`、固定的 `protocol_version = "client-v1alpha5"` 和当前连接的 `session_ref`；客户端先校验版本，再进入已登录状态。
 10. 如果当前连接不是 transient-only，服务端会先补发“当前用户可见且不在 `seen_messages` 中”的持久消息，然后继续推送实时消息。
 11. 客户端收到 `MessagePushed` 后，按 `(node_id, seq)` 做幂等检查，先落库，再保存游标，最后可选发送 `AckMessage`。
 12. 客户端收到 `PacketPushed` 时不要写消息游标；如需去重，可按 `packet_id` 做短期应用层去重。
@@ -212,6 +213,7 @@ ClientEnvelope {
   login: LoginRequest {
     user: { node_id: 4096, user_id: 1025 }
     password: "alice-password"
+    protocol_version: "client-v1alpha5"
     seen_messages: []
   }
 }
@@ -225,6 +227,7 @@ ClientEnvelope {
     login_name: "alice.login"
     password: "alice-password"
     transient_only: true
+    protocol_version: "client-v1alpha5"
   }
 }
 ```
@@ -232,6 +235,7 @@ ClientEnvelope {
 其中：
 
 - `user` 与 `login_name` 必须二选一。
+- `protocol_version` 必须精确等于 `client-v1alpha5`；这是一套 wire schema 的严格 epoch，不是多版本协商。
 - `seen_messages` 可以为空，也可以包含来自多个生产节点的游标。
 - `transient_only = true` 会关闭持久化补发和后续持久消息推送，但不会像 `/ws/realtime` 那样强制限制大多数 RPC。
 
@@ -247,7 +251,7 @@ ServerEnvelope {
       role: "user"
       login_name: "alice.login"
     }
-    protocol_version: "client-v1alpha1"
+    protocol_version: "client-v1alpha5"
     session_ref: {
       serving_node_id: 4096
       session_id: "..."
@@ -533,7 +537,7 @@ curl -sS -H "Authorization: Bearer ${ADMIN_TOKEN}" \
 1. 保留本地已持久化消息和游标。
 2. 使用指数退避重连 `GET /ws/client` 或 ZeroMQ。
 3. 第一帧重新发送 `LoginRequest`。
-4. 把本地游标表中的 `(node_id, seq)` 放入 `seen_messages`。
+4. 重新声明 `protocol_version = "client-v1alpha5"`，并把本地游标表中的 `(node_id, seq)` 放入 `seen_messages`。
 5. 对重连后收到的所有持久消息继续按 `(node_id, seq)` 幂等处理。
 
 示例：
@@ -543,6 +547,7 @@ ClientEnvelope {
   login: LoginRequest {
     user: { node_id: 4096, user_id: 1025 }
     password: "alice-password"
+    protocol_version: "client-v1alpha5"
     seen_messages: [
       { node_id: 4096, seq: 1 },
       { node_id: 4096, seq: 2 },
@@ -625,9 +630,10 @@ ServerEnvelope {
 Disconnected
   -> connect transport (ws client / ws realtime / zeromq)
 Connecting
-  -> send LoginRequest(user or login_name, seen_messages, transient_only?)
+  -> send LoginRequest(protocol_version=client-v1alpha5, user or login_name, seen_messages, transient_only?)
 Authenticating
-  -> receive LoginResponse(user, session_ref)
+  -> receive LoginResponse(client-v1alpha5, user, session_ref), validate version
+  -> receive unsupported_protocol_version or mismatched LoginResponse: terminal failure
 Online
   -> receive MessagePushed: persist + cursor + optional ack
   -> receive PacketPushed: optional packet_id dedupe, no cursor write
@@ -640,6 +646,7 @@ Online
 
 - 能创建普通用户，并记录 `(node_id, user_id)` 和可选 `login_name`。
 - 能用 `user` 或 `login_name` 至少一种方式完成首帧登录。
+- 能在初连和重连声明并验证 `client-v1alpha5`，版本不兼容时停止重连。
 - 能理解 `/ws/client`、`/ws/realtime` 和 `transient_only` 的差异。
 - 能接收历史补发消息。
 - 能接收实时消息和瞬时包。

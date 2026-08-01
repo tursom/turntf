@@ -37,11 +37,15 @@ var errNonBinaryClientFrame = errors.New("client transport received non-binary f
 // clientTransportConn 定义客户端传输连接的统一接口，同时支持 WebSocket 和 ZeroMQ 两种传输方式。
 // 这使得上层会话管理（clientWSSession）无需感知底层传输差异。
 type clientTransportConn interface {
-	Send(ctx context.Context, payload []byte) error    // 发送二进制消息
-	Receive(ctx context.Context) ([]byte, error)       // 接收二进制消息
-	Close() error                                       // 关闭连接
-	RemoteAddr() string                                 // 对端地址（用于日志和会话标识）
-	Transport() string                                  // 传输类型标识："ws" 或 "zmq"
+	Send(ctx context.Context, payload []byte) error // 发送二进制消息
+	Receive(ctx context.Context) ([]byte, error)    // 接收二进制消息
+	Close() error                                   // 关闭连接
+	RemoteAddr() string                             // 对端地址（用于日志和会话标识）
+	Transport() string                              // 传输类型标识："ws" 或 "zmq"
+}
+
+type clientTransportSendWaiter interface {
+	SendAndWait(ctx context.Context, payload []byte) error
 }
 
 // clientWSConn 是 clientTransportConn 的 WebSocket 实现，包装 gorilla/websocket.Conn。

@@ -19,8 +19,14 @@
 - WebSocket：连接升级成功后，客户端发送的第一帧必须是 `ClientEnvelope.login`
 - ZeroMQ：第一帧必须先发送 `notifier.transport.v1.ZeroMQMuxHello{role=ZERO_MQ_ROLE_CLIENT, protocol_version="zeromq-mux-v1"}`，第二帧必须是 `ClientEnvelope.login`
 - 客户端必须在进入业务会话处理后的 45 秒内完成登录；超时后服务端关闭连接，不产生在线状态或 `session_ref`
-- 当前客户端协议版本常量是 `client-v1alpha4`
+- 当前客户端协议版本常量是 `client-v1alpha5`
 - 当前 ZeroMQ mux 协议版本常量是 `zeromq-mux-v1`
+
+`client-v1alpha5` 是当前 `ClientEnvelope` / `ServerEnvelope` wire schema 的严格 epoch，不是可协商的版本列表。服务端只有这一套客户端协议实现；客户端必须在每次初连和重连的 `LoginRequest.protocol_version` 中精确声明该值，并在收到 `LoginResponse` 后再次确认服务端返回相同值。
+
+历史版本曾复用已经删除的 protobuf tag：例如 `ClientEnvelope` 的 10-12 从订阅 RPC 改作 attachment RPC，18-20 也被赋予新的 RPC；`ServerEnvelope` 同样存在历史名称与当前字段共享编号的情况。已被当前字段占用的旧编号无法再声明为 `reserved`，因此不能仅依靠 protobuf 的未知字段规则安全混跑旧客户端。`client-v1alpha5` 的严格门禁用于把这段不可逆的 wire 历史隔离在新的 epoch 之外。
+
+协议中仍可追溯的历史字段名和未复用编号已经声明为 `reserved`。今后删除任何 protobuf 字段或 enum value 时，必须同时保留其名称和编号；禁止把已删除编号重新赋给其他语义。
 
 如果服务端启用了 `services.zeromq.security = "curve"`，客户端在连接 ZeroMQ 前还必须配置服务端 `server_public_key` 以及自己的 CURVE `client_public_key` / `client_secret_key`。客户端 public key 必须出现在服务端 `services.zeromq.curve.allowed_client_public_keys` 中；CURVE 只完成链路加密和传输层公钥白名单，业务身份仍以 `ClientEnvelope.login` 为准。
 
@@ -96,6 +102,7 @@ ClientEnvelope {
   login: LoginRequest {
     user: { node_id: 4096, user_id: 1025 }
     password: "alice-password"
+    protocol_version: "client-v1alpha5"
     seen_messages: [
       { node_id: 4096, seq: 1 },
       { node_id: 4096, seq: 2 }
@@ -112,6 +119,7 @@ ClientEnvelope {
     login_name: "alice.login"
     password: "alice-password"
     transient_only: true
+    protocol_version: "client-v1alpha5"
   }
 }
 ```
@@ -120,6 +128,7 @@ ClientEnvelope {
 
 - `user` 与 `login_name` 二选一，而且必须恰好提供一个。两者同时提供、两者都不提供，都会按登录失败处理。
 - `password`：用户密码。只有可登录用户能通过长连接登录；`role=channel`、`role=broadcast`、`role=node` 仍不可登录。
+- `protocol_version`：必填语义字段，必须精确等于 `client-v1alpha5`。空值、旧版本和未知版本都会在认证前被拒绝。
 - `seen_messages`：客户端已经持久化的消息游标集合。每个游标是消息生产节点和该节点消息序号的二元组 `(node_id, seq)`。
 - `transient_only`：只关闭持久化历史补发与后续 `MessagePushed` 推送，不会把该连接变成 `/ws/realtime` 那种“受限消息集”。
 
@@ -137,7 +146,7 @@ ServerEnvelope {
       role: "user"
       login_name: "alice.login"
     }
-    protocol_version: "client-v1alpha4"
+    protocol_version: "client-v1alpha5"
     session_ref: {
       serving_node_id: 4096
       session_id: "..."
@@ -149,10 +158,14 @@ ServerEnvelope {
 字段说明：
 
 - `login_response.user` 是当前登录用户的可见信息；如果该用户设置了 `login_name`，这里会返回。
+- `protocol_version` 固定为 `client-v1alpha5`。客户端必须先验证该值，再发布已登录状态、保存 `session_ref` 或触发登录成功回调。
 - `session_ref` 是本次连接的全局会话引用，后续可作为瞬时包的 `target_session` 使用。
 - `session_ref` 是不透明标识，客户端应原样保存和回传，不要自行拼接或猜测语义。
 
-登录失败时，服务端返回 `ServerEnvelope.error{code="unauthorized"}`，然后关闭连接。
+服务端解析出登录首帧后，会先检查协议版本，再读取用户选择器、验证凭据、处理游标、生成 `session_ref` 或注册会话：
+
+- `protocol_version` 缺失或不等于 `client-v1alpha5` 时，返回 `ServerEnvelope.error{code="unsupported_protocol_version", request_id=0}`。`message` 包含收到值和服务端要求值，随后关闭连接；不会认证、注册会话或补发历史消息。
+- 版本正确但登录帧格式、用户选择器或凭据不合法时，仍返回 `ServerEnvelope.error{code="unauthorized", request_id=0}`，然后关闭连接。
 
 ## 持久化消息、游标与 ack
 
@@ -495,13 +508,15 @@ ServerEnvelope {
 
 登录阶段：
 
+- `protocol_version` 缺失或不等于 `client-v1alpha5`：映射为 `code="unsupported_protocol_version"`、`request_id=0`，然后关闭连接
+
 - 第一帧不是 `login`
 - 第一帧不是 binary protobuf
 - 登录帧无法解码
 - `user` 与 `login_name` 选择器非法
 - 用户名/密码错误
 
-这些情况都会被映射成 `code="unauthorized"`，然后关闭连接。
+除版本不兼容外，这些情况都会被映射成 `code="unauthorized"`，然后关闭连接。
 
 登录成功后的常见错误码：
 

@@ -1,0 +1,50 @@
+name: Protobuf
+
+on:
+  pull_request:
+  push:
+    branches:
+      - master
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  buf:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Buf
+        uses: bufbuild/buf-setup-action@v1
+        with:
+          version: "1.50.0"
+
+      - name: Build protobuf module
+        run: buf build
+
+      - name: Lint protobuf module
+        run: buf lint
+
+      - name: Check protobuf compatibility
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          if [[ "${EVENT_NAME}" == "pull_request" ]]; then
+            against_ref="${BASE_SHA}"
+          else
+            against_ref="${BEFORE_SHA}"
+          fi
+
+          if [[ -z "${against_ref}" || "${against_ref}" =~ ^0+$ ]]; then
+            against_ref="HEAD^"
+          fi
+
+          buf breaking --against ".git#ref=${against_ref},subdir=proto"

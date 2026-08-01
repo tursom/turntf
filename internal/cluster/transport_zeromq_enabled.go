@@ -95,6 +95,7 @@ type zeroMQRouterOutbound struct {
 	identityKey string
 	identity    []byte
 	payload     []byte
+	result      chan error
 }
 
 // zeroMQRouterPeer 表示ROUTER套接字上的一个已连接对等节点。
@@ -112,9 +113,10 @@ type zeroMQTransportConn struct {
 	localAddr  string
 	remoteAddr string
 
-	sendCh chan []byte
-	recvCh chan []byte
-	sendFn func(ctx context.Context, payload []byte) error
+	sendCh        chan []byte
+	recvCh        chan []byte
+	sendFn        func(ctx context.Context, payload []byte) error
+	sendAndWaitFn func(ctx context.Context, payload []byte) error
 
 	done    chan struct{}
 	onClose func()
@@ -720,6 +722,37 @@ func (l *ZeroMQMuxListener) newInboundConn(identityKey string, identity []byte, 
 			return nil
 		}
 	}
+	conn.sendAndWaitFn = func(ctx context.Context, payload []byte) error {
+		result := make(chan error, 1)
+		outbound := zeroMQRouterOutbound{
+			identityKey: identityKey,
+			identity:    identity,
+			payload:     payload,
+			result:      result,
+		}
+		select {
+		case <-ctxDone(ctx):
+			return ctx.Err()
+		case <-conn.done:
+			return conn.closedErr()
+		case <-l.done:
+			return conn.closedErr()
+		case l.sendCh <- outbound:
+			if len(l.sendCh) == 1 {
+				l.signalWake()
+			}
+		}
+		select {
+		case <-ctxDone(ctx):
+			return ctx.Err()
+		case <-conn.done:
+			return conn.closedErr()
+		case <-l.done:
+			return conn.closedErr()
+		case err := <-result:
+			return err
+		}
+	}
 	conn.onClose = func() {
 		select {
 		case l.connClosedCh <- identityKey:
@@ -742,6 +775,15 @@ func (c *zeroMQTransportConn) Send(ctx context.Context, payload []byte) error {
 // SendOwned 发送消息（获取负载数据的所有权，避免复制）。
 func (c *zeroMQTransportConn) SendOwned(ctx context.Context, payload []byte) error {
 	return c.sendQueuedPayload(ctx, payload)
+}
+
+// SendAndWait 发送消息，并在底层 socket 接受该消息后返回。
+// 普通 Send 保持异步排队语义；该方法用于发送完终止响应后必须立即关闭连接的路径。
+func (c *zeroMQTransportConn) SendAndWait(ctx context.Context, payload []byte) error {
+	if c.sendAndWaitFn != nil {
+		return c.sendAndWaitFn(ctx, cloneBytes(payload))
+	}
+	return c.Send(ctx, payload)
 }
 
 // sendQueuedPayload 将负载排入发送队列并信号通知唤醒。
@@ -1231,6 +1273,7 @@ func zeroMQFlushRouterMessages(socket *zmq4.Socket, peers map[string]*zeroMQRout
 	for len(*pending) > 0 {
 		outbound := (*pending)[0]
 		if _, ok := peers[outbound.identityKey]; !ok {
+			outbound.finish(errSessionClosed)
 			*pending = (*pending)[1:]
 			continue
 		}
@@ -1238,6 +1281,7 @@ func zeroMQFlushRouterMessages(socket *zmq4.Socket, peers map[string]*zeroMQRout
 			if zeroMQWouldBlock(err) {
 				return true
 			}
+			outbound.finish(err)
 			closePeer(outbound.identityKey)
 			*pending = (*pending)[1:]
 			continue
@@ -1246,13 +1290,22 @@ func zeroMQFlushRouterMessages(socket *zmq4.Socket, peers map[string]*zeroMQRout
 			if zeroMQWouldBlock(err) {
 				return true
 			}
+			outbound.finish(err)
 			closePeer(outbound.identityKey)
 			*pending = (*pending)[1:]
 			continue
 		}
+		outbound.finish(nil)
 		*pending = (*pending)[1:]
 	}
 	return true
+}
+
+func (o zeroMQRouterOutbound) finish(err error) {
+	if o.result == nil {
+		return
+	}
+	o.result <- err
 }
 
 // zeroMQReceiveLastFrame 接收多部分消息的最后一帧。

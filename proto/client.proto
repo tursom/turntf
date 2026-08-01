@@ -5,6 +5,9 @@ package notifier.client.v1;
 option go_package = "github.com/tursom/turntf/internal/proto;proto";
 
 message ClientEnvelope {
+  reserved "subscribe_channel", "unsubscribe_channel", "list_subscriptions";
+  reserved "block_user", "unblock_user", "list_blocked_users";
+
   oneof body {
     LoginRequest login = 1;
     SendMessageRequest send_message = 2;
@@ -33,6 +36,9 @@ message ClientEnvelope {
 }
 
 message ServerEnvelope {
+  reserved "subscribe_channel_response", "unsubscribe_channel_response", "list_subscriptions_response";
+  reserved "block_user_response", "unblock_user_response", "list_blocked_users_response";
+
   oneof body {
     LoginResponse login_response = 1;
     MessagePushed message_pushed = 2;
@@ -63,11 +69,14 @@ message ServerEnvelope {
 }
 
 message LoginRequest {
+  reserved "node_id", "user_id";
+
   UserRef user = 1;
   string login_name = 2;
   string password = 3;
   repeated MessageCursor seen_messages = 4;
   bool transient_only = 5;
+  string protocol_version = 6;
 }
 
 message LoginResponse {
@@ -77,6 +86,8 @@ message LoginResponse {
 }
 
 message SendMessageRequest {
+  reserved "sender", "relay_target";
+
   uint64 request_id = 1;
   UserRef target = 2;
   bytes body = 3;
@@ -87,6 +98,8 @@ message SendMessageRequest {
 }
 
 message SendMessageResponse {
+  reserved "relay_accepted";
+
   uint64 request_id = 1;
   oneof body {
     Message message = 2;
@@ -230,6 +243,9 @@ message UpdateUserResponse {
 }
 
 message DeleteUserResponse {
+  reserved 4;
+  reserved "node_id", "user_id";
+
   uint64 request_id = 1;
   string status = 2;
   UserRef user = 3;
@@ -449,6 +465,9 @@ message User {
 }
 
 message Message {
+  reserved 2;
+  reserved "user_node_id", "user_id";
+
   UserRef recipient = 1;
   int64 node_id = 3;
   int64 seq = 4;
@@ -458,6 +477,8 @@ message Message {
 }
 
 message Packet {
+  reserved "relay_target";
+
   uint64 packet_id = 1;
   int64 source_node_id = 2;
   int64 target_node_id = 3;

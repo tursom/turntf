@@ -51,8 +51,9 @@ func TestClientZeroMQLoginAndPushesBytesMessages(t *testing.T) {
 	writeClientEnvelopeZMQ(t, socket, &internalproto.ClientEnvelope{
 		Body: &internalproto.ClientEnvelope_Login{
 			Login: &internalproto.LoginRequest{
-				User:     &internalproto.UserRef{NodeId: aliceKey.NodeID, UserId: aliceKey.UserID},
-				Password: "alice-password",
+				User:            &internalproto.UserRef{NodeId: aliceKey.NodeID, UserId: aliceKey.UserID},
+				Password:        "alice-password",
+				ProtocolVersion: internalproto.ClientProtocolVersion,
 			},
 		},
 	})
@@ -73,6 +74,59 @@ func TestClientZeroMQLoginAndPushesBytesMessages(t *testing.T) {
 	pushed := readServerEnvelopeZMQ(t, socket).GetMessagePushed()
 	if pushed == nil || !senderMatchesRef(pushed.Message.GetSender(), adminKey) || !bytes.Equal(pushed.Message.GetBody(), body) {
 		t.Fatalf("unexpected pushed message: %+v", pushed)
+	}
+}
+
+func TestClientZeroMQRejectsUnsupportedProtocolVersion(t *testing.T) {
+	t.Parallel()
+
+	testAPI := newAuthenticatedTestAPI(t)
+	addr := nextAPIZeroMQTCPAddress(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	sessionDone := make(chan struct{})
+	listener := cluster.NewZeroMQMuxListener(addr)
+	listener.SetClientAccept(func(conn cluster.TransportConn) {
+		testAPI.http.AcceptZeroMQConn(conn)
+		close(sessionDone)
+	})
+	if err := listener.Start(ctx); err != nil {
+		t.Fatalf("start zeromq mux listener: %v", err)
+	}
+	defer listener.Close()
+
+	adminKey := store.UserKey{NodeID: testNodeID(1), UserID: store.BootstrapAdminUserID}
+	adminToken := loginToken(t, testAPI.handler, adminKey, "root-password")
+	aliceKey := createUserAs(t, testAPI.handler, adminToken, "alice", "alice-password", store.RoleUser)
+
+	socket := dialClientZeroMQ(t, addr)
+	defer socket.Close()
+	writeClientEnvelopeZMQ(t, socket, &internalproto.ClientEnvelope{
+		Body: &internalproto.ClientEnvelope_Login{
+			Login: &internalproto.LoginRequest{
+				User:            &internalproto.UserRef{NodeId: aliceKey.NodeID, UserId: aliceKey.UserID},
+				Password:        "alice-password",
+				ProtocolVersion: "client-v1alpha4",
+			},
+		},
+	})
+
+	rpcErr := readServerEnvelopeZMQ(t, socket).GetError()
+	if rpcErr == nil || rpcErr.Code != "unsupported_protocol_version" || rpcErr.RequestId != 0 {
+		t.Fatalf("expected unsupported protocol error, got %+v", rpcErr)
+	}
+	select {
+	case <-sessionDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("zeromq client session remained open after protocol rejection")
+	}
+	sessions, err := testAPI.http.ListLocalUserSessions(context.Background(), aliceKey)
+	if err != nil {
+		t.Fatalf("list local sessions: %v", err)
+	}
+	if len(sessions) != 0 {
+		t.Fatalf("protocol-rejected client must not register a session: %+v", sessions)
 	}
 }
 
@@ -168,9 +222,10 @@ func TestClientZeroMQDisconnectUnregistersSession(t *testing.T) {
 	writeClientEnvelopeZMQ(t, socket, &internalproto.ClientEnvelope{
 		Body: &internalproto.ClientEnvelope_Login{
 			Login: &internalproto.LoginRequest{
-				User:          &internalproto.UserRef{NodeId: aliceKey.NodeID, UserId: aliceKey.UserID},
-				Password:      "alice-password",
-				TransientOnly: true,
+				User:            &internalproto.UserRef{NodeId: aliceKey.NodeID, UserId: aliceKey.UserID},
+				Password:        "alice-password",
+				TransientOnly:   true,
+				ProtocolVersion: internalproto.ClientProtocolVersion,
 			},
 		},
 	})
@@ -403,8 +458,9 @@ func loginClientZeroMQ(t *testing.T, socket *zmq4.Socket, key store.UserKey, pas
 	writeClientEnvelopeZMQ(t, socket, &internalproto.ClientEnvelope{
 		Body: &internalproto.ClientEnvelope_Login{
 			Login: &internalproto.LoginRequest{
-				User:     &internalproto.UserRef{NodeId: key.NodeID, UserId: key.UserID},
-				Password: password,
+				User:            &internalproto.UserRef{NodeId: key.NodeID, UserId: key.UserID},
+				Password:        password,
+				ProtocolVersion: internalproto.ClientProtocolVersion,
 			},
 		},
 	})

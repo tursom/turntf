@@ -639,9 +639,10 @@ func benchmarkLoginClientWebSocketWithOptions(tb testing.TB, client *benchmarkCl
 	benchmarkWriteClientEnvelope(tb, client.conn, &internalproto.ClientEnvelope{
 		Body: &internalproto.ClientEnvelope_Login{
 			Login: &internalproto.LoginRequest{
-				User:          &internalproto.UserRef{NodeId: key.NodeID, UserId: key.UserID},
-				Password:      password,
-				TransientOnly: transientOnly,
+				User:            &internalproto.UserRef{NodeId: key.NodeID, UserId: key.UserID},
+				Password:        password,
+				TransientOnly:   transientOnly,
+				ProtocolVersion: internalproto.ClientProtocolVersion,
 			},
 		},
 	})
@@ -786,9 +787,10 @@ func dialAndLoginBenchmarkIdleClientWebSocketConnWithOptions(serverURL string, k
 	loginEnvelope := &internalproto.ClientEnvelope{
 		Body: &internalproto.ClientEnvelope_Login{
 			Login: &internalproto.LoginRequest{
-				User:          &internalproto.UserRef{NodeId: key.NodeID, UserId: key.UserID},
-				Password:      password,
-				TransientOnly: transientOnly,
+				User:            &internalproto.UserRef{NodeId: key.NodeID, UserId: key.UserID},
+				Password:        password,
+				TransientOnly:   transientOnly,
+				ProtocolVersion: internalproto.ClientProtocolVersion,
 			},
 		},
 	}

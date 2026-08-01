@@ -366,8 +366,9 @@ func benchmarkLoginClientZeroMQ(tb testing.TB, client *benchmarkClientZeroMQ, ke
 	benchmarkWriteClientEnvelopeZMQ(tb, client.socket, &internalproto.ClientEnvelope{
 		Body: &internalproto.ClientEnvelope_Login{
 			Login: &internalproto.LoginRequest{
-				User:     &internalproto.UserRef{NodeId: key.NodeID, UserId: key.UserID},
-				Password: password,
+				User:            &internalproto.UserRef{NodeId: key.NodeID, UserId: key.UserID},
+				Password:        password,
+				ProtocolVersion: internalproto.ClientProtocolVersion,
 			},
 		},
 	})

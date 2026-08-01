@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pebbe/zmq4"
+	zmq4 "github.com/pebbe/zmq4/draft"
 	gproto "google.golang.org/protobuf/proto"
 
 	"github.com/tursom/turntf/internal/cluster"

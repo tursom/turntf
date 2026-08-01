@@ -14,7 +14,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/pebbe/zmq4"
+	zmq4 "github.com/pebbe/zmq4/draft"
 	gproto "google.golang.org/protobuf/proto"
 
 	internalproto "github.com/tursom/turntf/internal/proto"
@@ -28,6 +28,9 @@ const (
 	// ZeroMQ套接字缓冲区大小（1MB）和连接积压。
 	zeroMQSocketBufferBytes = 1 << 20
 	zeroMQSocketBacklog     = 1024
+	// ZMTP心跳用于检测没有正常TCP关闭握手的半开连接。
+	zeroMQHeartbeatInterval = 15 * time.Second
+	zeroMQHeartbeatTimeout  = 45 * time.Second
 )
 
 // zeroMQCurveAuthState 管理全局ZeroMQ Curve认证器的引用计数。
@@ -58,6 +61,11 @@ type zeroMQWakePair struct {
 	mu      sync.Mutex
 	pending bool
 	closed  bool
+}
+
+// zeroMQSocketMonitor 将单个DEALER socket的断线事件接入其事件循环。
+type zeroMQSocketMonitor struct {
+	socket *zmq4.Socket
 }
 
 // ZeroMQMuxListener 是一个多路复用ZeroMQ ROUTER套接字，
@@ -196,17 +204,25 @@ func (d *zeroMQDialer) Dial(ctx context.Context, peerURL string) (TransportConn,
 		_ = socket.Close()
 		return nil, err
 	}
-	address, err := zeroMQDialAddress(peerURL)
+	monitor, err := newZeroMQDisconnectMonitor(socket)
 	if err != nil {
 		_ = socket.Close()
 		return nil, err
 	}
+	address, err := zeroMQDialAddress(peerURL)
+	if err != nil {
+		monitor.Close()
+		_ = socket.Close()
+		return nil, err
+	}
 	if err := socket.Connect(address); err != nil {
+		monitor.Close()
 		_ = socket.Close()
 		return nil, fmt.Errorf("connect zeromq dealer %s: %w", peerURL, err)
 	}
 	wake, err := newZeroMQWakePair()
 	if err != nil {
+		monitor.Close()
 		_ = socket.Close()
 		return nil, err
 	}
@@ -220,7 +236,7 @@ func (d *zeroMQDialer) Dial(ctx context.Context, peerURL string) (TransportConn,
 		done:       make(chan struct{}),
 		wake:       wake,
 	}
-	go runZeroMQDealer(socket, wake, conn)
+	go runZeroMQDealer(socket, wake, monitor, conn)
 	if err := writeZeroMQMuxHello(ctx, conn, internalproto.ZeroMQMuxHello_ZERO_MQ_ROLE_CLUSTER); err != nil {
 		conn.finish(err)
 		return nil, err
@@ -252,6 +268,14 @@ func (l *ZeroMQMuxListener) Start(ctx context.Context) error {
 	if err := configureZeroMQSocket(socket); err != nil {
 		_ = socket.Close()
 		return err
+	}
+	if err := socket.SetRouterMandatory(1); err != nil {
+		_ = socket.Close()
+		return fmt.Errorf("set zeromq router mandatory: %w", err)
+	}
+	if err := socket.SetRouterNotify(zmq4.NotifyDisconnect); err != nil {
+		_ = socket.Close()
+		return fmt.Errorf("set zeromq router disconnect notifications: %w", err)
 	}
 	if err := l.configureServerSecurity(socket); err != nil {
 		_ = socket.Close()
@@ -414,7 +438,7 @@ func zeroMQConfigSecurity(cfg ZeroMQConfig) string {
 }
 
 // configureZeroMQSocket 应用通用的ZeroMQ套接字配置。
-// 包括：linger=0、immediate=true、backlog、缓冲区大小、高水位线、TCP keepalive、最大消息大小。
+// 包括：linger=0、immediate=true、backlog、缓冲区大小、高水位线、TCP keepalive、ZMTP心跳、最大消息大小。
 func configureZeroMQSocket(socket *zmq4.Socket) error {
 	if err := socket.SetLinger(0); err != nil {
 		return fmt.Errorf("set zeromq linger: %w", err)
@@ -440,6 +464,15 @@ func configureZeroMQSocket(socket *zmq4.Socket) error {
 	if err := socket.SetTcpKeepalive(1); err != nil {
 		return fmt.Errorf("set zeromq tcp keepalive: %w", err)
 	}
+	if err := socket.SetHeartbeatIvl(zeroMQHeartbeatInterval); err != nil {
+		return fmt.Errorf("set zeromq heartbeat interval: %w", err)
+	}
+	if err := socket.SetHeartbeatTimeout(zeroMQHeartbeatTimeout); err != nil {
+		return fmt.Errorf("set zeromq heartbeat timeout: %w", err)
+	}
+	if err := socket.SetHeartbeatTtl(zeroMQHeartbeatTimeout); err != nil {
+		return fmt.Errorf("set zeromq heartbeat ttl: %w", err)
+	}
 	if err := socket.SetMaxmsgsize(websocketReadLimit); err != nil {
 		return fmt.Errorf("set zeromq max message size: %w", err)
 	}
@@ -448,8 +481,15 @@ func configureZeroMQSocket(socket *zmq4.Socket) error {
 
 // runZeroMQDealer 运行DEALER套接字的事件循环。
 // 使用零拷贝的zmq4.Poller，通过唤醒对避免忙轮询。
-func runZeroMQDealer(socket *zmq4.Socket, wake *zeroMQWakePair, conn *zeroMQTransportConn) {
+func runZeroMQDealer(socket *zmq4.Socket, wake *zeroMQWakePair, monitor *zeroMQSocketMonitor, conn *zeroMQTransportConn) {
 	defer conn.finish(errSessionClosed)
+	defer func() {
+		_ = socket.Monitor("", 0)
+		if monitor != nil {
+			monitor.Close()
+		}
+		_ = socket.Close()
+	}()
 	if wake != nil {
 		defer wake.Close()
 	}
@@ -457,6 +497,9 @@ func runZeroMQDealer(socket *zmq4.Socket, wake *zeroMQWakePair, conn *zeroMQTran
 	socketPollID := poller.Add(socket, zmq4.POLLIN)
 	if wake != nil && wake.recv != nil {
 		poller.Add(wake.recv, zmq4.POLLIN)
+	}
+	if monitor != nil && monitor.socket != nil {
+		poller.Add(monitor.socket, zmq4.POLLIN)
 	}
 
 	pending := make([][]byte, 0, outboundQueueSize)
@@ -502,6 +545,18 @@ func runZeroMQDealer(socket *zmq4.Socket, wake *zeroMQWakePair, conn *zeroMQTran
 			return
 		}
 		for _, item := range polled {
+			if monitor != nil && item.Socket == monitor.socket {
+				disconnected, err := zeroMQReceiveDisconnectEvents(monitor.socket)
+				if err != nil {
+					conn.finish(fmt.Errorf("receive zeromq dealer monitor event: %w", err))
+					return
+				}
+				if disconnected {
+					conn.finish(fmt.Errorf("zeromq dealer disconnected"))
+					return
+				}
+				continue
+			}
 			if wake != nil && item.Socket == wake.recv {
 				wake.Drain()
 				zeroMQDrainBytesQueue(conn.sendCh, &pending)
@@ -1080,11 +1135,17 @@ func zeroMQReceiveRouterMessages(socket *zmq4.Socket, listener *ZeroMQMuxListene
 			}
 			return false
 		}
-		if len(identity) == 0 || len(payload) == 0 {
+		if len(identity) == 0 {
 			continue
 		}
 		identityKey := string(identity)
 		peer, ok := peers[identityKey]
+		if len(payload) == 0 {
+			if ok {
+				closePeer(identityKey)
+			}
+			continue
+		}
 		if !ok {
 			role, err := parseZeroMQMuxHello(payload)
 			if err != nil {
@@ -1106,6 +1167,61 @@ func zeroMQReceiveRouterMessages(socket *zmq4.Socket, listener *ZeroMQMuxListene
 		}
 		if !peer.conn.deliver(payload) {
 			closePeer(identityKey)
+		}
+	}
+}
+
+// newZeroMQDisconnectMonitor 为一个DEALER socket创建只监听断线事件的PAIR socket。
+func newZeroMQDisconnectMonitor(socket *zmq4.Socket) (*zeroMQSocketMonitor, error) {
+	if socket == nil {
+		return nil, fmt.Errorf("zeromq monitor socket is nil")
+	}
+	endpointID, err := newZeroMQIdentity()
+	if err != nil {
+		return nil, err
+	}
+	endpoint := "inproc://turntf-zeromq-monitor-" + endpointID
+	if err := socket.Monitor(endpoint, zmq4.EVENT_DISCONNECTED); err != nil {
+		return nil, fmt.Errorf("enable zeromq dealer disconnect monitor: %w", err)
+	}
+	monitorSocket, err := zmq4.NewSocket(zmq4.PAIR)
+	if err != nil {
+		_ = socket.Monitor("", 0)
+		return nil, fmt.Errorf("create zeromq dealer monitor socket: %w", err)
+	}
+	if err := monitorSocket.SetLinger(0); err != nil {
+		_ = monitorSocket.Close()
+		_ = socket.Monitor("", 0)
+		return nil, fmt.Errorf("set zeromq dealer monitor linger: %w", err)
+	}
+	if err := monitorSocket.Connect(endpoint); err != nil {
+		_ = monitorSocket.Close()
+		_ = socket.Monitor("", 0)
+		return nil, fmt.Errorf("connect zeromq dealer monitor: %w", err)
+	}
+	return &zeroMQSocketMonitor{socket: monitorSocket}, nil
+}
+
+// Close 关闭DEALER monitor接收socket。
+func (m *zeroMQSocketMonitor) Close() {
+	if m == nil || m.socket == nil {
+		return
+	}
+	_ = m.socket.Close()
+}
+
+// zeroMQReceiveDisconnectEvents 排空monitor事件并报告是否观察到物理断线。
+func zeroMQReceiveDisconnectEvents(socket *zmq4.Socket) (bool, error) {
+	for {
+		event, _, _, err := socket.RecvEvent(zmq4.DONTWAIT)
+		if err != nil {
+			if zeroMQWouldBlock(err) {
+				return false, nil
+			}
+			return false, err
+		}
+		if event&zmq4.EVENT_DISCONNECTED != 0 {
+			return true, nil
 		}
 	}
 }

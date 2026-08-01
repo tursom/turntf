@@ -18,6 +18,7 @@
 
 - WebSocket：连接升级成功后，客户端发送的第一帧必须是 `ClientEnvelope.login`
 - ZeroMQ：第一帧必须先发送 `notifier.transport.v1.ZeroMQMuxHello{role=ZERO_MQ_ROLE_CLIENT, protocol_version="zeromq-mux-v1"}`，第二帧必须是 `ClientEnvelope.login`
+- 客户端必须在进入业务会话处理后的 45 秒内完成登录；超时后服务端关闭连接，不产生在线状态或 `session_ref`
 - 当前客户端协议版本常量是 `client-v1alpha4`
 - 当前 ZeroMQ mux 协议版本常量是 `zeromq-mux-v1`
 
@@ -475,6 +476,8 @@ ServerEnvelope {
   pong: Pong { request_id: 7 }
 }
 ```
+
+应用层 Ping/Pong 用于客户端自行观测请求链路，不是 ZeroMQ 物理断线检测的唯一来源。ZeroMQ TCP 连接同时使用 15 秒间隔、45 秒超时的 ZMTP heartbeat；服务端允许已登录连接长期没有业务消息，不设置应用层空闲超时。物理断线或 heartbeat 超时后，服务端会注销在线状态和该连接的 `session_ref`。
 
 ## 错误语义
 

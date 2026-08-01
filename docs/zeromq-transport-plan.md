@@ -65,12 +65,20 @@ ZeroMQMuxHello {
 
 - 业务客户端同样复用 `services.zeromq.bind_url` 对应的 ROUTER socket，首帧必须是 `ZeroMQMuxHello{role=ZERO_MQ_ROLE_CLIENT}`。
 - mux hello 之后，第二帧必须是 `ClientEnvelope.login`，后续直接复用与 WebSocket 标准流相同的 `ClientEnvelope / ServerEnvelope` 协议。
+- mux 分流完成后，客户端必须在 45 秒内完成登录；超时会关闭连接，且不会注册在线状态或 `session_ref`。
 - 当前客户端协议版本常量是 `client-v1alpha4`。
 - ZeroMQ 客户端连接进入的处理栈等价于 WebSocket `GET /ws/client` 标准流，而不是 `GET /ws/realtime`。
 - 如果客户端只想关闭历史补发和后续 `MessagePushed`，应在 `LoginRequest` 中设置 `transient_only = true`；这不会把 ZeroMQ 连接切换成 `/ws/realtime` 那种“受限 RPC 集”。
 - `/ws/client` 和 `/ws/realtime` 仍然保留为 WebSocket 路径；ZeroMQ 是并行入口，不替代现有 WebSocket 长连接路径。
 
 如果服务端启用了 `services.zeromq.security = "curve"`，无论是 cluster 还是 client 角色，底层连接在发送 mux hello 之前都必须先完成 CURVE socket 配置。CURVE 只提供链路加密和传输层公钥白名单，不替代 cluster HMAC，也不替代业务客户端的 `LoginRequest` 身份验证。
+
+## 连接存活与清理
+
+- ZeroMQ ROUTER 和 DEALER 数据 socket 每 15 秒发送一次 ZMTP heartbeat，链路在 45 秒内没有响应时由 libzmq 判定断开；TCP keepalive 仍作为更底层的补充。
+- ROUTER 使用 `ROUTER_NOTIFY(DISCONNECT)` 将 TCP 断开映射到具体 routing identity，并立即关闭对应的 `TransportConn`；`ROUTER_MANDATORY` 使向已不可达 identity 的发送显式失败。
+- 出站 DEALER 使用一对一 socket monitor 监听 `EVENT_DISCONNECTED`。断线后旧逻辑连接会结束，由 mesh runtime 清除邻接并按既有 seed 重拨流程重新发送 mux hello 和 `MeshNodeHello`。
+- 已登录业务连接关闭时，会话层会注销本地在线用户、集群 presence、`session_ref` 和持久化推送注册。正常存活但没有应用层消息的客户端不会因业务空闲被关闭，ZMTP heartbeat 不改变应用层 Ping/Pong 语义。
 
 ## mesh 与 mixed transport 边界
 
@@ -109,6 +117,7 @@ ZeroMQ 地址传播遵循“传播已知可拨号地址，而不是广播本机�
 - 手工构建需要显式带 tag，例如 `go build -tags zeromq ./cmd/turntf`。
 - ZeroMQ 相关测试也需要显式带 tag，例如 `go test -tags zeromq ./internal/cluster ./internal/api ./cmd/turntf -count=1`。
 - 如果二进制没有带 `zeromq` tag，但配置里实际需要 ZeroMQ listener 或 ZeroMQ 拨号，启动时会因为 transport 不可用而失败。
+- 启用 ZeroMQ 的构建和运行环境必须提供 libzmq 4.3+，并支持 draft `ROUTER_NOTIFY` socket option；能力不可用时 listener 会明确启动失败，不会降级成无法感知 identity 断线的模式。
 
 仓库自带 Dockerfile 已经接线了这套约束：
 

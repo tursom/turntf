@@ -6,10 +6,11 @@ import (
 	"bytes"
 	"context"
 	"net"
+	"sync"
 	"testing"
 	"time"
 
-	"github.com/pebbe/zmq4"
+	zmq4 "github.com/pebbe/zmq4/draft"
 	gproto "google.golang.org/protobuf/proto"
 
 	"github.com/tursom/turntf/internal/cluster"
@@ -113,6 +114,123 @@ func TestClientZeroMQSendMessageRPC(t *testing.T) {
 	resp := readServerEnvelopeZMQ(t, socket).GetSendMessageResponse()
 	if resp == nil || resp.RequestId != 42 || resp.GetMessage() == nil || string(resp.GetMessage().GetBody()) != "hello over zeromq" {
 		t.Fatalf("unexpected send response: %+v", resp)
+	}
+}
+
+func TestClientZeroMQHelloWithoutLoginTimesOut(t *testing.T) {
+	testAPI := newAuthenticatedTestAPI(t)
+	addr := nextAPIZeroMQTCPAddress(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan struct{})
+	listener := cluster.NewZeroMQMuxListener(addr)
+	listener.SetClientAccept(func(conn cluster.TransportConn) {
+		testAPI.http.serveClientConnWithLoginTimeout(conn, context.Background(), "", 50*time.Millisecond)
+		close(done)
+	})
+	if err := listener.Start(ctx); err != nil {
+		t.Fatalf("start zeromq mux listener: %v", err)
+	}
+	defer listener.Close()
+
+	socket := dialClientZeroMQ(t, addr)
+	defer socket.Close()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("zeromq client session did not stop after login timeout")
+	}
+}
+
+func TestClientZeroMQDisconnectUnregistersSession(t *testing.T) {
+	registry := newZeroMQTestSessionRegistry()
+	testAPI := newAuthenticatedTestAPIWithSink(t, registry)
+	addr := nextAPIZeroMQTCPAddress(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	listener := cluster.NewZeroMQMuxListener(addr)
+	listener.SetClientAccept(func(conn cluster.TransportConn) {
+		testAPI.http.AcceptZeroMQConn(conn)
+	})
+	if err := listener.Start(ctx); err != nil {
+		t.Fatalf("start zeromq mux listener: %v", err)
+	}
+	defer listener.Close()
+
+	adminKey := store.UserKey{NodeID: testNodeID(1), UserID: store.BootstrapAdminUserID}
+	adminToken := loginToken(t, testAPI.handler, adminKey, "root-password")
+	aliceKey := createUserAs(t, testAPI.handler, adminToken, "alice", "alice-password", store.RoleUser)
+
+	socket := dialClientZeroMQ(t, addr)
+	writeClientEnvelopeZMQ(t, socket, &internalproto.ClientEnvelope{
+		Body: &internalproto.ClientEnvelope_Login{
+			Login: &internalproto.LoginRequest{
+				User:          &internalproto.UserRef{NodeId: aliceKey.NodeID, UserId: aliceKey.UserID},
+				Password:      "alice-password",
+				TransientOnly: true,
+			},
+		},
+	})
+	loginResp := readServerEnvelopeZMQ(t, socket).GetLoginResponse()
+	if loginResp == nil || loginResp.GetSessionRef() == nil {
+		_ = socket.Close()
+		t.Fatalf("unexpected zeromq login response: %+v", loginResp)
+	}
+	sessionRef, err := sessionRefFromProto(loginResp.GetSessionRef())
+	if err != nil {
+		_ = socket.Close()
+		t.Fatalf("parse zeromq login session ref: %v", err)
+	}
+	if !registry.hasSession(sessionRef.SessionID) {
+		_ = socket.Close()
+		t.Fatal("expected zeromq session to be registered")
+	}
+	presence, err := testAPI.http.service.QueryOnlineUserPresence(context.Background(), aliceKey)
+	if err != nil || len(presence) != 1 || presence[0].SessionCount != 1 {
+		_ = socket.Close()
+		t.Fatalf("unexpected zeromq online presence: presence=%+v err=%v", presence, err)
+	}
+
+	if err := socket.Close(); err != nil {
+		t.Fatalf("close zeromq client: %v", err)
+	}
+	waitForClientZeroMQCondition(t, 2*time.Second, func() bool {
+		return !clientZeroMQSessionExists(testAPI.http, aliceKey, sessionRef.SessionID) && !registry.hasSession(sessionRef.SessionID)
+	})
+
+	users, err := testAPI.http.ListLoggedInUsers(context.Background())
+	if err != nil {
+		t.Fatalf("list logged in users after zeromq disconnect: %v", err)
+	}
+	if len(users) != 0 {
+		t.Fatalf("expected no logged in users after zeromq disconnect, got %+v", users)
+	}
+	presence, err = testAPI.http.service.QueryOnlineUserPresence(context.Background(), aliceKey)
+	if err != nil || len(presence) != 0 {
+		t.Fatalf("expected no presence after zeromq disconnect: presence=%+v err=%v", presence, err)
+	}
+	sessions, err := testAPI.http.service.ResolveUserSessions(context.Background(), aliceKey)
+	if err != nil || len(sessions) != 0 {
+		t.Fatalf("expected no sessions after zeromq disconnect: sessions=%+v err=%v", sessions, err)
+	}
+	if got := registry.unregisterCalls(); got != 1 {
+		t.Fatalf("expected one zeromq session unregister, got %d", got)
+	}
+	if testAPI.http.ReceiveTransientPacket(store.TransientPacket{
+		PacketID:      1,
+		SourceNodeID:  adminKey.NodeID,
+		TargetNodeID:  aliceKey.NodeID,
+		Recipient:     aliceKey,
+		Sender:        adminKey,
+		Body:          []byte("must not be delivered"),
+		DeliveryMode:  store.DeliveryModeBestEffort,
+		TTLHops:       1,
+		TargetSession: sessionRef,
+	}) {
+		t.Fatal("targeted transient packet was delivered to disconnected zeromq session")
 	}
 }
 
@@ -332,4 +450,96 @@ func readServerEnvelopeZMQ(t *testing.T, socket *zmq4.Socket) *internalproto.Ser
 		t.Fatalf("unmarshal server envelope: %v", err)
 	}
 	return &envelope
+}
+
+type zeroMQTestSessionRegistry struct {
+	mu              sync.Mutex
+	sessions        map[string]store.OnlineSession
+	unregisterCount int
+}
+
+func newZeroMQTestSessionRegistry() *zeroMQTestSessionRegistry {
+	return &zeroMQTestSessionRegistry{sessions: make(map[string]store.OnlineSession)}
+}
+
+func (r *zeroMQTestSessionRegistry) Publish(store.Event) {}
+
+func (r *zeroMQTestSessionRegistry) RegisterLocalSession(session store.OnlineSession) {
+	r.mu.Lock()
+	r.sessions[session.SessionRef.SessionID] = session
+	r.mu.Unlock()
+}
+
+func (r *zeroMQTestSessionRegistry) UnregisterLocalSession(_ store.UserKey, sessionRef store.SessionRef) {
+	r.mu.Lock()
+	if _, ok := r.sessions[sessionRef.SessionID]; ok {
+		delete(r.sessions, sessionRef.SessionID)
+		r.unregisterCount++
+	}
+	r.mu.Unlock()
+}
+
+func (r *zeroMQTestSessionRegistry) QueryOnlineUserPresence(_ context.Context, user store.UserKey) ([]store.OnlineNodePresence, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	countByNode := make(map[int64]int)
+	for _, session := range r.sessions {
+		if session.User == user {
+			countByNode[session.SessionRef.ServingNodeID]++
+		}
+	}
+	items := make([]store.OnlineNodePresence, 0, len(countByNode))
+	for nodeID, count := range countByNode {
+		items = append(items, store.OnlineNodePresence{ServingNodeID: nodeID, SessionCount: int32(count)})
+	}
+	return items, nil
+}
+
+func (r *zeroMQTestSessionRegistry) ResolveUserSessions(_ context.Context, user store.UserKey) ([]store.OnlineSession, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	items := make([]store.OnlineSession, 0)
+	for _, session := range r.sessions {
+		if session.User == user {
+			items = append(items, session)
+		}
+	}
+	return items, nil
+}
+
+func (r *zeroMQTestSessionRegistry) hasSession(sessionID string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	_, ok := r.sessions[sessionID]
+	return ok
+}
+
+func (r *zeroMQTestSessionRegistry) unregisterCalls() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.unregisterCount
+}
+
+func clientZeroMQSessionExists(httpAPI *HTTP, key store.UserKey, sessionID string) bool {
+	shard := httpAPI.sessionShard(key)
+	shard.mu.RLock()
+	defer shard.mu.RUnlock()
+	bucket := shard.sessions[key]
+	if bucket == nil {
+		return false
+	}
+	_, ok := bucket.bySessionID[sessionID]
+	return ok
+}
+
+func waitForClientZeroMQCondition(t *testing.T, timeout time.Duration, condition func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if condition() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("timed out waiting for zeromq client condition")
 }

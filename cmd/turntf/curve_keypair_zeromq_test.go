@@ -5,7 +5,7 @@ package main
 import (
 	"testing"
 
-	"github.com/pebbe/zmq4"
+	zmq4 "github.com/pebbe/zmq4/draft"
 )
 
 func TestGenerateCurveKeypairUsesZeroMQCompatibleFormat(t *testing.T) {

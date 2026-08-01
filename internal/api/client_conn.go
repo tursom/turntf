@@ -24,8 +24,10 @@ import (
 const (
 	// clientWSWriteWait WebSocket 写入超时时间
 	clientWSWriteWait = 10 * time.Second
+	// clientLoginTimeout 是所有客户端传输完成登录握手的最长时间。
+	clientLoginTimeout = 45 * time.Second
 	// clientWSReadTimeout WebSocket 读取超时时间，同时用于 pong 消息的心跳重置
-	clientWSReadTimeout = 45 * time.Second
+	clientWSReadTimeout = clientLoginTimeout
 )
 
 // errNonBinaryClientFrame 客户端发送了非二进制帧时返回的错误。

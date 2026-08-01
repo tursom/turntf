@@ -2,7 +2,7 @@
 
 package main
 
-import "github.com/pebbe/zmq4"
+import zmq4 "github.com/pebbe/zmq4/draft"
 
 // generateCurveKeypair 生成一个 CurveZMQ 密钥对（zmq4 原生实现）。
 //

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
@@ -55,6 +56,11 @@ func (h *HTTP) AcceptZeroMQConn(conn clientTransportConn) {
 // serveClientConn 处理一个客户端连接的完整生命周期：认证 → 注册 → 读写循环 → 清理。
 // path 用于区分实时流（/ws/realtime）和普通客户端连接（/ws/client）。
 func (h *HTTP) serveClientConn(conn clientTransportConn, baseCtx context.Context, path string) {
+	h.serveClientConnWithLoginTimeout(conn, baseCtx, path, clientLoginTimeout)
+}
+
+// serveClientConnWithLoginTimeout 执行客户端连接生命周期，并允许测试缩短登录期限。
+func (h *HTTP) serveClientConnWithLoginTimeout(conn clientTransportConn, baseCtx context.Context, path string, loginTimeout time.Duration) {
 	if conn == nil {
 		return
 	}
@@ -80,7 +86,13 @@ func (h *HTTP) serveClientConn(conn clientTransportConn, baseCtx context.Context
 	if baseCtx == nil {
 		baseCtx = context.Background()
 	}
-	if err := sess.login(baseCtx); err != nil {
+	if loginTimeout <= 0 {
+		loginTimeout = clientLoginTimeout
+	}
+	loginCtx, loginCancel := context.WithTimeout(baseCtx, loginTimeout)
+	err := sess.login(loginCtx)
+	loginCancel()
+	if err != nil {
 		sess.logWarn("client_login_failed", err).
 			Msg("client transport login failed")
 		_ = sess.writeEnvelope(&internalproto.ServerEnvelope{
@@ -95,7 +107,7 @@ func (h *HTTP) serveClientConn(conn clientTransportConn, baseCtx context.Context
 	ctx, cancel := context.WithCancel(baseCtx)
 	defer cancel()
 
-	err := sess.readLoop(ctx)
+	err = sess.readLoop(ctx)
 	if err != nil && !errors.Is(err, context.Canceled) {
 		sess.logWarn("client_closed_with_error", err).
 			Msg("client transport closed with error")

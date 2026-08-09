@@ -19,6 +19,7 @@ import (
 	"github.com/rs/zerolog/log"
 	gproto "google.golang.org/protobuf/proto"
 
+	"github.com/tursom/turntf/internal/app"
 	"github.com/tursom/turntf/internal/auth"
 	"github.com/tursom/turntf/internal/cluster"
 	"github.com/tursom/turntf/internal/mesh"
@@ -859,6 +860,18 @@ func (s benchmarkClusterSink) RouteTransientPacket(ctx context.Context, packet s
 		return nil
 	}
 	return s.manager.RouteTransientPacket(ctx, packet)
+}
+
+func (s benchmarkClusterSink) RegisterLocalSession(session store.OnlineSession, user app.LoggedInUserSummary) {
+	if s.manager != nil {
+		s.manager.RegisterLocalSession(session, user)
+	}
+}
+
+func (s benchmarkClusterSink) UnregisterLocalSession(user store.UserKey, sessionRef store.SessionRef) {
+	if s.manager != nil {
+		s.manager.UnregisterLocalSession(user, sessionRef)
+	}
 }
 
 func openBenchmarkAuthenticatedLinearMeshAPICluster(tb testing.TB, mode benchroot.Mode, scenario apiBenchmarkEngineScenario, nodeCount int) *benchmarkLinearMeshAPICluster {

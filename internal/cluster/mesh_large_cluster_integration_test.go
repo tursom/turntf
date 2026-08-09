@@ -25,6 +25,7 @@ func TestManagerLargeWebSocketClusterRoutesAcrossLinearTopology(t *testing.T) {
 			Username: "large-cluster-user",
 		}}, nil
 	})
+	registerTestLoggedInUser(target, store.UserKey{NodeID: testNodeID(nodeCount), UserID: 12288}, "large-cluster-user")
 
 	waitForMeshRouteDecision(t, source, testNodeID(nodeCount), mesh.TrafficControlQuery, testNodeID(2), mesh.TransportWebSocket)
 	waitForMeshRouteDecision(t, target, testNodeID(1), mesh.TrafficControlQuery, testNodeID(nodeCount-1), mesh.TransportWebSocket)
@@ -92,6 +93,7 @@ func TestManagerLargeMixedTransportClusterRoutesAcrossAlternatingBridges(t *test
 			Username: "large-mixed-user",
 		}}, nil
 	})
+	registerTestLoggedInUser(target, store.UserKey{NodeID: targetNodeID, UserID: 16384}, "large-mixed-user")
 
 	waitForMeshRouteDecision(t, source, targetNodeID, mesh.TrafficControlQuery, testNodeID(2), mesh.TransportWebSocket)
 	waitForMeshRouteDecision(t, target, testNodeID(1), mesh.TrafficControlQuery, testNodeID(4), mesh.TransportLibP2P)

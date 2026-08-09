@@ -1529,7 +1529,12 @@ func (h *HTTP) registerClientSession(key store.UserKey, sess *clientWSSession) {
 	h.onlineUsersMu.Unlock()
 
 	if h.service != nil {
-		h.service.RegisterLocalSession(sess.onlineSession())
+		h.service.RegisterLocalSession(sess.onlineSession(), app.LoggedInUserSummary{
+			NodeID:    key.NodeID,
+			UserID:    key.UserID,
+			Username:  state.Username,
+			LoginName: state.LoginName,
+		})
 	}
 	if sess.requiresPersistentPush() {
 		h.registerPersistentSession(sess)

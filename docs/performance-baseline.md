@@ -13,6 +13,7 @@
   - [internal/cluster/mesh_point_to_point_throughput_benchmark_test.go](/root/dev/sys/turntf/turntf/internal/cluster/mesh_point_to_point_throughput_benchmark_test.go)
   - [internal/cluster/mesh_point_to_point_throughput_benchmark_zeromq_test.go](/root/dev/sys/turntf/turntf/internal/cluster/mesh_point_to_point_throughput_benchmark_zeromq_test.go)
   - [internal/cluster/mesh_recovery_benchmark_test.go](/root/dev/sys/turntf/turntf/internal/cluster/mesh_recovery_benchmark_test.go)
+  - [internal/cluster/online_presence_benchmark_test.go](/root/dev/sys/turntf/turntf/internal/cluster/online_presence_benchmark_test.go)
   - [internal/store/store_benchmark_test.go](/root/dev/sys/turntf/turntf/internal/store/store_benchmark_test.go)
   - [internal/store/store_degradation_benchmark_test.go](/root/dev/sys/turntf/turntf/internal/store/store_degradation_benchmark_test.go)
   - [internal/api/http_benchmark_test.go](/root/dev/sys/turntf/turntf/internal/api/http_benchmark_test.go)
@@ -30,6 +31,7 @@
 - `BenchmarkMeshTransientPointToPointThroughput`：服务端 transient 数据面点对点吞吐；固定使用 `SQLite`。默认构建覆盖单节点、2 节点纯协议直连、7 节点纯协议线性 `WebSocket/libp2p`，以及 `3/5` 节点 mixed bridge（`ws -> libp2p`）；带 `-tags zeromq` 时再追加 `ZeroMQ` 直连 / 线性与 `ws -> zeromq` mixed bridge。
 - `BenchmarkMeshSnapshotRepairPebbleLinear3Nodes`：3 节点线性拓扑下的 snapshot repair，校验目标节点通过快照修复收敛。
 - `BenchmarkMeshTruncatedCatchupRepairPebble`：retention 截断后的 truncated pull + snapshot repair 恢复路径。
+- `BenchmarkOnlinePresenceSync10K`：固定 10k 用户，分别测旧式全量、单用户增量和单个权威分片的发送端构建与接收端应用成本，用于直接比较 `B/op` 和 `allocs/op`。
 - `BenchmarkStoreCreateMessage`：`SQLite` / `Pebble` 下直接消息写入；`Pebble` 子场景会继续细分 `balanced/throughput` 与 `no_sync/force_sync`。
 - `BenchmarkStoreCreateMessageSteadyState`：先把单用户历史写到 `2 * message_window_size`，再继续写入，观察消息窗口进入稳态后的持续写入成本。
 - `BenchmarkStoreCreateMessageParallel`：固定 `256B` payload 的并行写入，对比 `hotspot` 与 `uniform-1000` 两种用户分布。
@@ -56,7 +58,7 @@
 - 如果默认临时目录所在文件系统是内存文件系统，例如当前机器的 `/tmp` 是 `tmpfs`，同一条 `go test` 命令会自动补跑 `disk` 子场景。
 - `disk` 子场景固定写入仓库根目录下的 `./.benchdata`。
 - 常规 benchmark 会在正式计时前做一轮不计时 warmup；恢复类 benchmark 也会先做一轮缩小版 dry-run，避免 `-benchtime=1x` 时把首轮控制路径冷启动完全混进结果。
-- full-client 容量 benchmark 会真实建立最多 `10000` 个连接并等待高 fanout 完成，完整矩阵应显式使用 `-benchtime=1x` 手动采集，不并入常规 benchmark 命令。
+- full-client 容量 benchmark 会真实建立最多 `10000` 个连接并等待高 fanout 完成，完整矩阵可使用 `-benchtime=1x` 手动验证；需要观察周期工作时，应精确选择 direct 子场景并使用 `-benchtime=10s -count=3`。
 - 读取结论时，优先看本次采集中第一个非内存文件系统结果：
   - 出现 `disk` 时，以 `disk` 为主。
   - 未出现 `disk` 时，说明 `tmp` 本身已经跑在非内存文件系统上。
@@ -68,6 +70,14 @@
 ```bash
 go test ./internal/cluster -run '^$' -bench 'BenchmarkMesh(Replication|QueryLoggedInUsers|TransientRoute|SnapshotRepair|TruncatedCatchup)' -benchmem -count=1
 ```
+
+10k 在线状态同步 benchmark：
+
+```bash
+go test ./internal/cluster -run '^$' -bench '^BenchmarkOnlinePresenceSync10K$' -benchmem -benchtime=3s -count=3
+```
+
+验收时分别以 `sender/legacy-full` 和 `receiver/legacy-full` 为同侧基线；`delta-one-user` 与 `authoritative-shard` 的 `B/op`、`allocs/op` 都应至少下降 90%。
 
 点对点吞吐 benchmark：
 
@@ -102,9 +112,10 @@ full-client 登录与稳态容量 benchmark：
 go test ./internal/api -run '^$' -bench '^BenchmarkClientWebSocketPersistentLoginAuthenticated$' -benchmem -count=1
 go test ./internal/api -run '^$' -bench '^BenchmarkClientWebSocketPersistentReconnectTokenAuthenticated$' -benchmem -count=1
 go test ./internal/api -run '^$' -bench '^BenchmarkClientWebSocketPersistentSendMessageAuthenticatedLinearMeshWithOnlineUsers$' -benchmem -benchtime=1x -count=1
+go test ./internal/api -run '^$' -bench '^BenchmarkClientWebSocketPersistentSendMessageAuthenticatedLinearMeshWithOnlineUsers/tmp/sqlite/3-nodes/10000-online/direct/256B$' -benchmem -benchtime=10s -count=3
 ```
 
-登录基线可在同一机器上使用更高 `-count` 做前后统计对比。容量矩阵的 setup 和 fanout 成本较高，优化前后应保留完全相同的 `-benchtime=1x -count=1` 命令和原始输出；需要缩短开发期反馈时，用完整子场景名称的正则只选择 `3-nodes/1000-online`。
+登录基线可在同一机器上使用更高 `-count` 做前后统计对比。容量矩阵的 setup 和 fanout 成本较高，功能验证应保留完全相同的 `-benchtime=1x -count=1` 命令和原始输出。旧式 `-benchtime=10x` 可能因测量窗口短于 5 秒而错过周期 ticker；周期尾延迟对比必须使用上面的持续 10 秒 direct 命令。
 
 退化曲线 benchmark：
 
@@ -151,6 +162,8 @@ go test -tags zeromq ./internal/api -run '^$' -bench 'BenchmarkClientZeroMQTrans
 - `history_messages/op`：full-client 登录场景每次连接校验的历史消息条数。
 - `write_ms/op`：持久消息场景从发送请求到收到包含已落库消息的 `SendMessageResponse` 的平均耗时。
 - `first_push_ms/op` / `last_push_ms/op`：持久消息场景从发送请求到首个 / 最后一个预期目标收到 `MessagePushed` 的平均耗时。
+- `write_p95_ms/op` / `write_p99_ms/op` / `write_max_ms/op`：同一次采集中持久写响应的 p95、p99 和最大延迟。
+- `last_push_p95_ms/op` / `last_push_p99_ms/op` / `last_push_max_ms/op`：同一次采集中最后目标到达的 p95、p99 和最大延迟。
 - `delivered/op`：持久消息场景每次操作必须收到并校验的目标会话数；该场景的 `MB/s` 按 `payload * delivered` 计算。
 - `query_ms/op`：查询场景单次多跳 `QueryLoggedInUsers` 的平均耗时。
 - `delivery_ms/op`：瞬时包场景从源节点发起路由到目标节点本地 handler 收到包的平均耗时。
@@ -161,6 +174,33 @@ go test -tags zeromq ./internal/api -run '^$' -bench 'BenchmarkClientZeroMQTrans
 - `*_delta_ns_per_1k`：相对首层规模，每额外 `1000` 条消息 / event 带来的平均增量耗时。
 
 ## 基线环境
+
+### 2026-08-09 在线状态同步定向样本
+
+同机使用 `-benchtime=3s -count=3` 采样，表中取三轮稳定值：
+
+| 路径 | 场景 | B/op | allocs/op | 相对同侧旧全量 |
+| --- | --- | ---: | ---: | ---: |
+| sender | legacy-full | 3,530,739 | 30,010 | 基线 |
+| sender | delta-one-user | 416 | 6 | B/op -99.99%，allocs/op -99.98% |
+| sender | authoritative-shard（625 users） | 171,240 | 1,882 | B/op -95.15%，allocs/op -93.73% |
+| receiver | legacy-full | 6,250,132 | 20,005 | 基线 |
+| receiver | delta-one-user | 624 | 2 | B/op -99.99%，allocs/op -99.99% |
+| receiver | authoritative-shard（625 users） | 485,355 | 1,274 | B/op -92.23%，allocs/op -93.63% |
+
+sender 的权威分片场景包含生产路径中的分片索引遍历、用户切片分配、排序和消息构建。这组结果验证了同步算法的分配门槛，不代表网络广播、完整 10k client setup 或生产延迟 SLA。
+
+### 2026-08-09 10k full-client direct 周期样本
+
+使用文档推荐的 `-benchtime=10s -count=3` 精确 direct 子场景命令。fixture 会先验证三节点所有 origin 在线镜像完整，等待 8.5 秒覆盖一整轮权威分片，再执行 setup 后 GC；随后的正式 10 秒测量窗口仍包含完整的周期分片校验。
+
+| 轮次 | write avg | write p95 | write p99 | write max | last_push avg | last_push p95 | last_push p99 | last_push max | B/op | allocs/op |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 0.6916ms | 1.481ms | 1.604ms | 5.600ms | 4.162ms | 5.380ms | 5.740ms | 20.69ms | 115,995 | 1,719 |
+| 2 | 0.7125ms | 1.491ms | 1.628ms | 18.71ms | 4.236ms | 5.415ms | 5.831ms | 77.92ms | 205,521 | 3,676 |
+| 3 | 0.7003ms | 1.496ms | 1.615ms | 18.74ms | 4.190ms | 5.376ms | 5.766ms | 71.35ms | 156,914 | 2,665 |
+
+三轮均未出现 `last_push >= 1s`。旧样本只有约 `1.4s` 的单次 `last_push` 观测值、没有 p95/p99/max，因此不能据此证明同口径的“尾延迟下降 80%”；后续应在同机、同命令、同采集窗口下保留修改前后两组分位数再计算降幅。本次结果只确认新路径在三轮 10 秒窗口内满足“不出现 `last_push >= 1s`”。
 
 以下结果来自 **2026-04-25** 的一次本地基线采集。
 这批数据发生在“自适应 `tmp` / `disk` 基线”引入之前，应按当前语义视为一组 **`tmp` 历史样本**，不能直接代表今天文档里所说的“官方非内存文件系统结果”。

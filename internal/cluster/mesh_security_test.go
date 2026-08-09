@@ -164,9 +164,12 @@ func TestMeshEnvelopeAuthenticatorVerifyAcceptsLegacyAndAppendedHMACFrames(t *te
 			bodyTag: 16,
 			envelope: &mesh.ClusterEnvelope{Body: &mesh.ClusterEnvelope_PresenceUpdate{
 				PresenceUpdate: &mesh.MeshPresenceUpdate{
-					PresenceUpdate: &internalproto.OnlinePresenceSnapshot{
+					PresenceUpdate: &internalproto.OnlinePresenceUpdate{
 						OriginNodeId: 51,
-						Generation: 52,
+						Generation:   52,
+						RuntimeEpoch: 53,
+						Mode:         internalproto.OnlinePresenceUpdateMode_ONLINE_PRESENCE_UPDATE_MODE_DELTA,
+						ShardCount:   onlinePresenceShardCount,
 					},
 				},
 			}},
@@ -270,11 +273,11 @@ func TestMeshEnvelopeAuthenticatorVerifyRejectsMalformedHMACFrames(t *testing.T)
 		},
 		{
 			name: "empty_hmac",
-			raw: protowire.AppendBytes(protowire.AppendTag(append([]byte(nil), encoded...), meshEnvelopeHMACFieldNumber, protowire.BytesType), nil),
+			raw:  protowire.AppendBytes(protowire.AppendTag(append([]byte(nil), encoded...), meshEnvelopeHMACFieldNumber, protowire.BytesType), nil),
 		},
 		{
 			name: "wrong_wire_type",
-			raw: protowire.AppendVarint(protowire.AppendTag(append([]byte(nil), encoded...), meshEnvelopeHMACFieldNumber, protowire.VarintType), 1),
+			raw:  protowire.AppendVarint(protowire.AppendTag(append([]byte(nil), encoded...), meshEnvelopeHMACFieldNumber, protowire.VarintType), 1),
 		},
 	}
 

@@ -13,6 +13,7 @@ import (
 	zmq4 "github.com/pebbe/zmq4/draft"
 	gproto "google.golang.org/protobuf/proto"
 
+	"github.com/tursom/turntf/internal/app"
 	"github.com/tursom/turntf/internal/cluster"
 	internalproto "github.com/tursom/turntf/internal/proto"
 	"github.com/tursom/turntf/internal/store"
@@ -520,7 +521,7 @@ func newZeroMQTestSessionRegistry() *zeroMQTestSessionRegistry {
 
 func (r *zeroMQTestSessionRegistry) Publish(store.Event) {}
 
-func (r *zeroMQTestSessionRegistry) RegisterLocalSession(session store.OnlineSession) {
+func (r *zeroMQTestSessionRegistry) RegisterLocalSession(session store.OnlineSession, _ app.LoggedInUserSummary) {
 	r.mu.Lock()
 	r.sessions[session.SessionRef.SessionID] = session
 	r.mu.Unlock()

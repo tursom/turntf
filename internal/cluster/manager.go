@@ -130,7 +130,7 @@ type Manager struct {
 	// meshRuntime 是网格运行时绑定，提供覆盖网络路由。
 	meshRuntime *MeshRuntimeBinding
 
-	mu              sync.Mutex
+	mu sync.Mutex
 	// peers 按节点ID索引的已连接对等节点状态。
 	peers map[int64]*peerState
 	// configuredPeers 是配置文件中静态指定的对等节点列表。
@@ -167,7 +167,7 @@ type Manager struct {
 	// membershipUpdatesRecv 是已接收的成员资格更新数量。
 	membershipUpdatesRecv uint64
 	// discoveryRejects 是发现结果被拒绝的次数。
-	discoveryRejects  uint64
+	discoveryRejects         uint64
 	discoveryPersistFailures uint64
 
 	// retryQueue 是等待重试的瞬态数据包队列。
@@ -178,22 +178,32 @@ type Manager struct {
 	nextResolveSessionsQueryID uint64
 	// pendingResolveSessions 是等待响应的解析会话查询。
 	pendingResolveSessions map[uint64]chan resolveUserSessionsQueryResult
-	// loggedInUsersByNode 按节点ID缓存各节点的已登录用户。
-	loggedInUsersByNode map[int64][]app.LoggedInUserSummary
+	// loggedInUsersByNode 按节点ID和用户键缓存各节点的已登录用户。
+	loggedInUsersByNode map[int64]map[store.UserKey]app.LoggedInUserSummary
+	// localLoggedInUsers 缓存本节点会话注册时携带的用户摘要。
+	localLoggedInUsers map[store.UserKey]app.LoggedInUserSummary
 	// localOnlineSessions 是本节点的在线会话记录。
 	localOnlineSessions map[store.UserKey]map[string]store.OnlineSession
+	// localPresenceUsersByShard 按固定分片索引本地在线用户。
+	localPresenceUsersByShard [onlinePresenceShardCount]map[store.UserKey]struct{}
+	// dirtyPresenceUsersByShard 合并等待广播的本地用户变化。
+	dirtyPresenceUsersByShard [onlinePresenceShardCount]map[store.UserKey]struct{}
+	// presenceWake 唤醒增量在线状态刷新循环。
+	presenceWake chan struct{}
 	// onlinePresenceByUser 按用户键聚合的在线节点存在信息。
 	onlinePresenceByUser map[store.UserKey]map[int64]store.OnlineNodePresence
+	// onlinePresenceUsersByShard 索引远端节点各分片中已应用的用户。
+	onlinePresenceUsersByShard map[onlinePresenceShardKey]map[store.UserKey]struct{}
 	// localRuntimeEpoch 是本节点的运行时纪元。
 	localRuntimeEpoch uint64
 	// remoteRuntimeEpochs 记录远程节点的运行时纪元。
 	remoteRuntimeEpochs map[int64]uint64
 	// directAdjacencyCounts 记录到各对等节点的直接邻接计数。
 	directAdjacencyCounts map[int64]int
-	// onlinePresenceGeneration 是在线存在信息的代数。
-	onlinePresenceGeneration uint64
-	// onlinePresenceOrigins 记录在线存在信息的来源节点。
-	onlinePresenceOrigins map[int64]uint64
+	// localPresenceGenerations 是本节点各在线状态分片的代数。
+	localPresenceGenerations [onlinePresenceShardCount]uint64
+	// onlinePresenceGenerations 记录远端节点各分片已应用的代数。
+	onlinePresenceGenerations map[onlinePresenceShardKey]uint64
 	// onlinePresenceEpochs 记录在线存在信息的纪元。
 	onlinePresenceEpochs map[int64]uint64
 	// disconnectSuspicions 是待处理的断开连接怀疑。
@@ -429,38 +439,43 @@ func NewManager(cfg Config, st *store.Store) (*Manager, error) {
 	}
 
 	mgr := &Manager{
-		cfg:                     cfg,
-		store:                   st,
-		clock:                   clockRef,
-		websocket:               newWebSocketTransport(),
-		dialers:                 make(map[string]Dialer, 2),
-		mux:                     http.NewServeMux(),
-		publishCh:               make(chan store.Event, managerPublishQueue),
-		replicationBatches:      newReplicationBatcher(),
-		peers:                   make(map[int64]*peerState, len(cfg.Peers)),
-		configuredPeers:         configuredPeers,
-		discoveredPeers:         make(map[string]*discoveredPeerState),
-		dynamicPeers:            make(map[string]*configuredPeer),
-		selfKnownURLs:           make(map[string]uint64),
-		supportsMembership:      !cfg.DiscoveryDisabled,
-		retryQueue:              make(map[string]queuedPacket),
-		pendingResolveSessions:  make(map[uint64]chan resolveUserSessionsQueryResult),
-		loggedInUsersByNode:     make(map[int64][]app.LoggedInUserSummary),
-		localOnlineSessions:     make(map[store.UserKey]map[string]store.OnlineSession),
-		onlinePresenceByUser:    make(map[store.UserKey]map[int64]store.OnlineNodePresence),
-		localRuntimeEpoch:       nextManagerRuntimeEpoch(time.Now().UTC()),
-		remoteRuntimeEpochs:     make(map[int64]uint64),
-		directAdjacencyCounts:   make(map[int64]int),
-		onlinePresenceOrigins:   make(map[int64]uint64),
-		onlinePresenceEpochs:    make(map[int64]uint64),
-		disconnectSuspicions:    make(map[disconnectSuspicionKey]disconnectSuspicionState),
-		seenConnectivityRumors:  make(map[connectivityRumorKey]time.Time),
-		clockStateTransitions:   make(map[clockStateTransitionKey]uint64),
-		meshForwardedPackets:    make(map[string]uint64),
-		meshForwardedBytes:      make(map[string]uint64),
-		meshRoutingNoPath:       make(map[string]uint64),
-		meshRoutingDecisionCost: make(map[string]int64),
-		meshBridgeForwards:      make(map[string]uint64),
+		cfg:                        cfg,
+		store:                      st,
+		clock:                      clockRef,
+		websocket:                  newWebSocketTransport(),
+		dialers:                    make(map[string]Dialer, 2),
+		mux:                        http.NewServeMux(),
+		publishCh:                  make(chan store.Event, managerPublishQueue),
+		replicationBatches:         newReplicationBatcher(),
+		peers:                      make(map[int64]*peerState, len(cfg.Peers)),
+		configuredPeers:            configuredPeers,
+		discoveredPeers:            make(map[string]*discoveredPeerState),
+		dynamicPeers:               make(map[string]*configuredPeer),
+		selfKnownURLs:              make(map[string]uint64),
+		supportsMembership:         !cfg.DiscoveryDisabled,
+		retryQueue:                 make(map[string]queuedPacket),
+		pendingResolveSessions:     make(map[uint64]chan resolveUserSessionsQueryResult),
+		loggedInUsersByNode:        make(map[int64]map[store.UserKey]app.LoggedInUserSummary),
+		localLoggedInUsers:         make(map[store.UserKey]app.LoggedInUserSummary),
+		localOnlineSessions:        make(map[store.UserKey]map[string]store.OnlineSession),
+		localPresenceUsersByShard:  newOnlinePresenceShardUserSets(),
+		dirtyPresenceUsersByShard:  newOnlinePresenceShardUserSets(),
+		presenceWake:               make(chan struct{}, 1),
+		onlinePresenceByUser:       make(map[store.UserKey]map[int64]store.OnlineNodePresence),
+		onlinePresenceUsersByShard: make(map[onlinePresenceShardKey]map[store.UserKey]struct{}),
+		localRuntimeEpoch:          nextManagerRuntimeEpoch(time.Now().UTC()),
+		remoteRuntimeEpochs:        make(map[int64]uint64),
+		directAdjacencyCounts:      make(map[int64]int),
+		onlinePresenceGenerations:  make(map[onlinePresenceShardKey]uint64),
+		onlinePresenceEpochs:       make(map[int64]uint64),
+		disconnectSuspicions:       make(map[disconnectSuspicionKey]disconnectSuspicionState),
+		seenConnectivityRumors:     make(map[connectivityRumorKey]time.Time),
+		clockStateTransitions:      make(map[clockStateTransitionKey]uint64),
+		meshForwardedPackets:       make(map[string]uint64),
+		meshForwardedBytes:         make(map[string]uint64),
+		meshRoutingNoPath:          make(map[string]uint64),
+		meshRoutingDecisionCost:    make(map[string]int64),
+		meshBridgeForwards:         make(map[string]uint64),
 	}
 	mgr.dialers[transportWebSocket] = mgr.websocket
 	mgr.dialers[transportZeroMQ] = newZeroMQDialerWithConfig(cfg.ZeroMQ, mgr.zeroMQCurveServerKeyForPeer)
@@ -497,19 +512,14 @@ func (m *Manager) SetTransientHandler(handler func(store.TransientPacket) bool) 
 	m.transientHandler = handler
 }
 
-// SetLoggedInUsersProvider 设置已登录用户的数据提供者。
-// 设置后立即广播在线状态。
+// SetLoggedInUsersProvider 设置本节点查询已登录用户时使用的数据提供者。
 func (m *Manager) SetLoggedInUsersProvider(provider func(context.Context) ([]app.LoggedInUserSummary, error)) {
 	if m == nil {
 		return
 	}
 	m.mu.Lock()
 	m.loggedInUsersProvider = provider
-	ctx := m.ctx
 	m.mu.Unlock()
-	if ctx != nil && ctx.Err() == nil {
-		m.broadcastOnlinePresence()
-	}
 }
 
 // membershipSupported 返回本节点是否支持成员资格发现协议。

@@ -12,7 +12,7 @@ import (
 	"github.com/tursom/turntf/internal/store"
 )
 
-func TestManagerApplyOnlinePresenceSnapshotAdvancesRuntimeEpochAndClearsOldEphemeralState(t *testing.T) {
+func TestManagerApplyOnlinePresenceUpdateAdvancesRuntimeEpochAndClearsOldEphemeralState(t *testing.T) {
 	t.Parallel()
 
 	mgr, err := NewManager(Config{
@@ -41,18 +41,26 @@ func TestManagerApplyOnlinePresenceSnapshotAdvancesRuntimeEpochAndClearsOldEphem
 		},
 	}
 	mgr.onlinePresenceEpochs[testNodeID(2)] = 100
-	mgr.onlinePresenceOrigins[testNodeID(2)] = 3
+	oldShardKey := onlinePresenceShardKey{originNodeID: testNodeID(2), shardIndex: uint32(onlinePresenceShardIndex(oldUser))}
+	mgr.onlinePresenceGenerations[oldShardKey] = 3
+	mgr.onlinePresenceUsersByShard[oldShardKey] = map[store.UserKey]struct{}{oldUser: {}}
 	mgr.remoteRuntimeEpochs[testNodeID(2)] = 100
-	mgr.loggedInUsersByNode[testNodeID(2)] = []app.LoggedInUserSummary{{NodeID: testNodeID(2), UserID: 10, Username: "old"}}
+	mgr.loggedInUsersByNode[testNodeID(2)] = map[store.UserKey]app.LoggedInUserSummary{
+		oldUser: {NodeID: testNodeID(2), UserID: 10, Username: "old"},
+	}
 	mgr.disconnectSuspicions[disconnectSuspicionKey{targetNodeID: testNodeID(2), runtimeEpoch: 100}] = disconnectSuspicionState{
 		deadline: time.Now().Add(time.Minute),
 	}
 	mgr.mu.Unlock()
 
-	applied := mgr.applyOnlinePresenceSnapshot(&internalproto.OnlinePresenceSnapshot{
+	newShard := onlinePresenceShardIndex(newUser)
+	applied, err := mgr.applyOnlinePresenceUpdate(&internalproto.OnlinePresenceUpdate{
 		OriginNodeId: testNodeID(2),
 		Generation:   1,
 		RuntimeEpoch: 200,
+		Mode:         internalproto.OnlinePresenceUpdateMode_ONLINE_PRESENCE_UPDATE_MODE_AUTHORITATIVE_SHARD,
+		ShardIndex:   uint32(newShard),
+		ShardCount:   onlinePresenceShardCount,
 		Items: []*internalproto.ClusterOnlineNodePresence{{
 			User:          &internalproto.ClusterUserRef{NodeId: newUser.NodeID, UserId: newUser.UserID},
 			ServingNodeId: testNodeID(2),
@@ -65,8 +73,8 @@ func TestManagerApplyOnlinePresenceSnapshotAdvancesRuntimeEpochAndClearsOldEphem
 			Username: "new-user",
 		}},
 	})
-	if !applied {
-		t.Fatalf("expected snapshot to apply")
+	if err != nil || !applied {
+		t.Fatalf("expected update to apply: applied=%v err=%v", applied, err)
 	}
 
 	mgr.mu.Lock()
@@ -79,7 +87,7 @@ func TestManagerApplyOnlinePresenceSnapshotAdvancesRuntimeEpochAndClearsOldEphem
 		t.Fatalf("unexpected new presence session count: got %d want 2", got)
 	}
 	users, ok := mgr.loggedInUsersByNode[testNodeID(2)]
-	if !ok || len(users) != 1 || users[0].UserID != newUser.UserID || users[0].Username != "new-user" {
+	if user, exists := users[newUser]; !ok || !exists || len(users) != 1 || user.Username != "new-user" {
 		t.Fatalf("expected logged-in users mirror to be replaced after runtime epoch advance, got %+v", users)
 	}
 	if got := mgr.onlinePresenceEpochs[testNodeID(2)]; got != 200 {
@@ -182,7 +190,9 @@ func TestManagerDisconnectSuspicionExpiryClearsEphemeralState(t *testing.T) {
 			TransportHint: "ws",
 		},
 	}
-	mgr.loggedInUsersByNode[testNodeID(2)] = []app.LoggedInUserSummary{{NodeID: testNodeID(2), UserID: 10, Username: "stale"}}
+	mgr.loggedInUsersByNode[testNodeID(2)] = map[store.UserKey]app.LoggedInUserSummary{
+		user: {NodeID: testNodeID(2), UserID: 10, Username: "stale"},
+	}
 	mgr.disconnectSuspicions[disconnectSuspicionKey{targetNodeID: testNodeID(2), runtimeEpoch: 77}] = disconnectSuspicionState{
 		deadline: time.Now().Add(-time.Millisecond),
 		reason:   "all_direct_adjacencies_lost",

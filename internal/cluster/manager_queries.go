@@ -42,41 +42,22 @@ func (m *Manager) listLocalLoggedInUsers(ctx context.Context) ([]app.LoggedInUse
 	return provider(ctx)
 }
 
-// snapshotLocalLoggedInUsers 获取本地已登录用户的快照。
-// 返回经过规范化（排序和去空格）的用户列表。
-func (m *Manager) snapshotLocalLoggedInUsers() ([]app.LoggedInUserSummary, error) {
-	if m == nil {
-		return nil, nil
-	}
-	m.mu.Lock()
-	provider := m.loggedInUsersProvider
-	ctx := m.ctx
-	m.mu.Unlock()
-	if provider == nil {
-		return nil, nil
-	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	users, err := provider(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return normalizeLoggedInUsers(users), nil
-}
-
 // remoteLoggedInUsersSnapshot 返回指定远程节点已登录用户的最新快照副本。
 func (m *Manager) remoteLoggedInUsersSnapshot(nodeID int64) ([]app.LoggedInUserSummary, bool) {
 	if m == nil || nodeID <= 0 || nodeID == m.cfg.NodeID {
 		return nil, false
 	}
 	m.mu.Lock()
-	users, ok := m.loggedInUsersByNode[nodeID]
+	usersByKey, ok := m.loggedInUsersByNode[nodeID]
+	users := make([]app.LoggedInUserSummary, 0, len(usersByKey))
+	for _, user := range usersByKey {
+		users = append(users, user)
+	}
 	m.mu.Unlock()
 	if !ok {
 		return nil, false
 	}
-	return cloneLoggedInUsers(users), true
+	return normalizeLoggedInUsers(users), true
 }
 
 // clusterLoggedInUsers 将应用层用户摘要转换为protobuf格式的集群登录用户。

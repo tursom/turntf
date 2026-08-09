@@ -12,17 +12,50 @@ import (
 	"github.com/tursom/turntf/internal/mesh"
 	internalproto "github.com/tursom/turntf/internal/proto"
 	"github.com/tursom/turntf/internal/store"
+	"google.golang.org/protobuf/proto"
 )
 
-// RegisterLocalSession 注册一个本地在线会话，并广播在线状态更新。
-func (m *Manager) RegisterLocalSession(session store.OnlineSession) {
+const (
+	onlinePresenceShardCount         = 16
+	onlinePresenceDeltaFlushInterval = 50 * time.Millisecond
+	onlinePresenceRepairInterval     = 500 * time.Millisecond
+	onlinePresenceDeltaBatchSize     = 256
+)
+
+type onlinePresenceShardKey struct {
+	originNodeID int64
+	shardIndex   uint32
+}
+
+func newOnlinePresenceShardUserSets() [onlinePresenceShardCount]map[store.UserKey]struct{} {
+	var shards [onlinePresenceShardCount]map[store.UserKey]struct{}
+	for index := range shards {
+		shards[index] = make(map[store.UserKey]struct{})
+	}
+	return shards
+}
+
+func onlinePresenceShardIndex(user store.UserKey) int {
+	hash := uint64(user.NodeID)*11400714819323198485 ^ (uint64(user.UserID) + 0x9e3779b97f4a7c15)
+	return int(hash % onlinePresenceShardCount)
+}
+
+// RegisterLocalSession 注册一个本地在线会话，并排队广播在线状态增量。
+func (m *Manager) RegisterLocalSession(session store.OnlineSession, loggedInUser app.LoggedInUserSummary) {
 	if m == nil || !session.SessionRef.Valid() {
 		return
 	}
 	if session.SessionRef.ServingNodeID == 0 {
 		session.SessionRef.ServingNodeID = m.cfg.NodeID
 	}
-	if session.SessionRef.ServingNodeID != m.cfg.NodeID || session.User.Validate() != nil {
+	if session.SessionRef.ServingNodeID != m.cfg.NodeID || session.User.Validate() != nil ||
+		loggedInUser.NodeID != session.User.NodeID || loggedInUser.UserID != session.User.UserID {
+		return
+	}
+	loggedInUser.Username = strings.TrimSpace(loggedInUser.Username)
+	loggedInUser.LoginName = strings.TrimSpace(loggedInUser.LoginName)
+	session.Transport = strings.TrimSpace(session.Transport)
+	if loggedInUser.Username == "" || session.Transport == "" {
 		return
 	}
 
@@ -33,18 +66,22 @@ func (m *Manager) RegisterLocalSession(session store.OnlineSession) {
 		m.localOnlineSessions[session.User] = bucket
 	}
 	current, exists := bucket[session.SessionRef.SessionID]
-	if exists && current == session {
+	if exists && current == session && m.localLoggedInUsers[session.User] == loggedInUser {
 		m.mu.Unlock()
 		return
 	}
 	bucket[session.SessionRef.SessionID] = session
+	m.localLoggedInUsers[session.User] = loggedInUser
+	shardIndex := onlinePresenceShardIndex(session.User)
+	m.localPresenceUsersByShard[shardIndex][session.User] = struct{}{}
+	m.dirtyPresenceUsersByShard[shardIndex][session.User] = struct{}{}
 	m.refreshLocalPresenceLocked(session.User)
 	m.mu.Unlock()
 
-	m.broadcastOnlinePresence()
+	m.wakePresenceLoop()
 }
 
-// UnregisterLocalSession 注销一个本地在线会话，并广播在线状态更新。
+// UnregisterLocalSession 注销一个本地在线会话，并排队广播在线状态增量。
 func (m *Manager) UnregisterLocalSession(user store.UserKey, sessionRef store.SessionRef) {
 	if m == nil || !sessionRef.Valid() || user.Validate() != nil {
 		return
@@ -61,13 +98,17 @@ func (m *Manager) UnregisterLocalSession(user store.UserKey, sessionRef store.Se
 		return
 	}
 	delete(bucket, sessionRef.SessionID)
+	shardIndex := onlinePresenceShardIndex(user)
 	if len(bucket) == 0 {
 		delete(m.localOnlineSessions, user)
+		delete(m.localLoggedInUsers, user)
+		delete(m.localPresenceUsersByShard[shardIndex], user)
 	}
+	m.dirtyPresenceUsersByShard[shardIndex][user] = struct{}{}
 	m.refreshLocalPresenceLocked(user)
 	m.mu.Unlock()
 
-	m.broadcastOnlinePresence()
+	m.wakePresenceLoop()
 }
 
 // QueryOnlineUserPresence 查询指定用户在集群中的在线状态。
@@ -317,75 +358,217 @@ func (m *Manager) localPresenceSessions() []*session {
 	return out
 }
 
-// broadcastOnlinePresence 构建并广播当前的在线状态快照。
-func (m *Manager) broadcastOnlinePresence() {
-	if m == nil || m.ctx == nil {
+// wakePresenceLoop 通知后台循环刷新合并后的在线状态变化。
+func (m *Manager) wakePresenceLoop() {
+	if m == nil || m.presenceWake == nil {
 		return
 	}
-	snapshot := m.buildOnlinePresenceSnapshot()
-	if snapshot == nil {
-		return
+	select {
+	case m.presenceWake <- struct{}{}:
+	default:
 	}
-	m.forwardOnlinePresence(snapshot, 0)
 }
 
-// presenceLoop 是在线状态广播和断开连接怀疑清理的后台循环。
+// broadcastOnlinePresence 立即广播一个权威分片，用于邻接建立和连接怀疑自证。
+// 其余分片仍由 500ms 轮转任务在 8 秒内补齐。
+func (m *Manager) broadcastOnlinePresence() {
+	m.broadcastAuthoritativePresenceShard(0)
+}
+
+// presenceLoop 是在线状态增量、权威分片校验和断开连接怀疑清理的后台循环。
 func (m *Manager) presenceLoop() {
 	defer m.wg.Done()
 
-	antiEntropyTicker := time.NewTicker(membershipUpdateInterval)
-	defer antiEntropyTicker.Stop()
+	repairTicker := time.NewTicker(onlinePresenceRepairInterval)
+	defer repairTicker.Stop()
 	suspicionTicker := time.NewTicker(disconnectSuspicionSweepInterval)
 	defer suspicionTicker.Stop()
+	var flushTimer *time.Timer
+	var flushTimerC <-chan time.Time
+	nextRepairShard := 0
 
-	m.broadcastOnlinePresence()
 	for {
 		select {
 		case <-m.ctx.Done():
+			if flushTimer != nil {
+				flushTimer.Stop()
+			}
 			return
-		case <-antiEntropyTicker.C:
-			m.broadcastOnlinePresence()
+		case <-m.presenceWake:
+			if flushTimer == nil {
+				flushTimer = time.NewTimer(onlinePresenceDeltaFlushInterval)
+				flushTimerC = flushTimer.C
+			}
+		case <-flushTimerC:
+			flushTimer = nil
+			flushTimerC = nil
+			m.flushOnlinePresenceDeltas()
+		case <-repairTicker.C:
+			m.broadcastAuthoritativePresenceShard(nextRepairShard)
+			nextRepairShard = (nextRepairShard + 1) % onlinePresenceShardCount
 		case <-suspicionTicker.C:
 			m.expireDisconnectSuspicions(time.Now().UTC())
 		}
 	}
 }
 
-// forwardOnlinePresence 将在线状态快照转发给所有本地活跃会话。
-func (m *Manager) forwardOnlinePresence(snapshot *internalproto.OnlinePresenceSnapshot, excludePeerNodeID int64) {
-	if m == nil || snapshot == nil {
-		return
-	}
-	for _, sess := range m.localPresenceSessions() {
-		if sess == nil || sess.peerID == excludePeerNodeID {
-			continue
+// flushOnlinePresenceDeltas 构建并广播所有待处理的用户增量。
+func (m *Manager) flushOnlinePresenceDeltas() {
+	for shardIndex := 0; shardIndex < onlinePresenceShardCount; shardIndex++ {
+		for {
+			update := m.takeOnlinePresenceDelta(shardIndex)
+			if update == nil {
+				break
+			}
+			m.forwardOnlinePresence(update)
 		}
-		m.sendOnlinePresence(sess, snapshot)
 	}
 }
 
-// sendOnlinePresence 向单个会话发送在线状态快照。
-func (m *Manager) sendOnlinePresence(sess *session, snapshot *internalproto.OnlinePresenceSnapshot) {
-	if m == nil || sess == nil || snapshot == nil || sess.isClosed() {
+// takeOnlinePresenceDelta 从指定分片取出一批合并后的用户变化。
+func (m *Manager) takeOnlinePresenceDelta(shardIndex int) *internalproto.OnlinePresenceUpdate {
+	if m == nil || shardIndex < 0 || shardIndex >= onlinePresenceShardCount {
+		return nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	dirty := m.dirtyPresenceUsersByShard[shardIndex]
+	if len(dirty) == 0 {
+		return nil
+	}
+	capacity := len(dirty)
+	if capacity > onlinePresenceDeltaBatchSize {
+		capacity = onlinePresenceDeltaBatchSize
+	}
+	users := make([]store.UserKey, 0, capacity)
+	for user := range dirty {
+		users = append(users, user)
+		delete(dirty, user)
+		if len(users) == onlinePresenceDeltaBatchSize {
+			break
+		}
+	}
+	sortUserKeys(users)
+	return m.buildOnlinePresenceUpdateLocked(
+		internalproto.OnlinePresenceUpdateMode_ONLINE_PRESENCE_UPDATE_MODE_DELTA,
+		shardIndex,
+		users,
+	)
+}
+
+// broadcastAuthoritativePresenceShard 广播一个本地权威在线状态分片。
+func (m *Manager) broadcastAuthoritativePresenceShard(shardIndex int) {
+	if m == nil || m.ctx == nil || shardIndex < 0 || shardIndex >= onlinePresenceShardCount {
+		return
+	}
+	update := m.takeAuthoritativePresenceShard(shardIndex)
+	m.forwardOnlinePresence(update)
+}
+
+// takeAuthoritativePresenceShard 从本地索引构建一个权威在线状态分片。
+func (m *Manager) takeAuthoritativePresenceShard(shardIndex int) *internalproto.OnlinePresenceUpdate {
+	if m == nil || shardIndex < 0 || shardIndex >= onlinePresenceShardCount {
+		return nil
+	}
+	m.mu.Lock()
+	users := make([]store.UserKey, 0, len(m.localPresenceUsersByShard[shardIndex]))
+	for user := range m.localPresenceUsersByShard[shardIndex] {
+		users = append(users, user)
+	}
+	sortUserKeys(users)
+	for user := range m.dirtyPresenceUsersByShard[shardIndex] {
+		delete(m.dirtyPresenceUsersByShard[shardIndex], user)
+	}
+	update := m.buildOnlinePresenceUpdateLocked(
+		internalproto.OnlinePresenceUpdateMode_ONLINE_PRESENCE_UPDATE_MODE_AUTHORITATIVE_SHARD,
+		shardIndex,
+		users,
+	)
+	m.mu.Unlock()
+	return update
+}
+
+// buildOnlinePresenceUpdateLocked 从当前本地状态构建指定用户集合的更新。
+func (m *Manager) buildOnlinePresenceUpdateLocked(mode internalproto.OnlinePresenceUpdateMode, shardIndex int, users []store.UserKey) *internalproto.OnlinePresenceUpdate {
+	m.localPresenceGenerations[shardIndex]++
+	update := &internalproto.OnlinePresenceUpdate{
+		OriginNodeId:  m.cfg.NodeID,
+		RuntimeEpoch:  m.localRuntimeEpoch,
+		Mode:          mode,
+		ShardIndex:    uint32(shardIndex),
+		ShardCount:    onlinePresenceShardCount,
+		Generation:    m.localPresenceGenerations[shardIndex],
+		Items:         make([]*internalproto.ClusterOnlineNodePresence, 0, len(users)),
+		LoggedInUsers: make([]*internalproto.ClusterLoggedInUser, 0, len(users)),
+	}
+	for _, user := range users {
+		bucket := m.localOnlineSessions[user]
+		loggedInUser, online := m.localLoggedInUsers[user]
+		if len(bucket) == 0 || !online {
+			if mode == internalproto.OnlinePresenceUpdateMode_ONLINE_PRESENCE_UPDATE_MODE_DELTA {
+				update.RemovedUsers = append(update.RemovedUsers, clusterUserRef(user))
+			}
+			continue
+		}
+		update.Items = append(update.Items, &internalproto.ClusterOnlineNodePresence{
+			User:          clusterUserRef(user),
+			ServingNodeId: m.cfg.NodeID,
+			SessionCount:  int32(len(bucket)),
+			TransportHint: localTransportHint(bucket),
+		})
+		update.LoggedInUsers = append(update.LoggedInUsers, &internalproto.ClusterLoggedInUser{
+			NodeId:    loggedInUser.NodeID,
+			UserId:    loggedInUser.UserID,
+			Username:  loggedInUser.Username,
+			LoginName: loggedInUser.LoginName,
+		})
+	}
+	return update
+}
+
+// forwardOnlinePresence 将在线状态更新分别路由到所有已知节点。
+// 每个目标由 mesh 自身完成多跳转发，保证包来源始终是更新的 origin。
+func (m *Manager) forwardOnlinePresence(update *internalproto.OnlinePresenceUpdate) {
+	if m == nil || update == nil {
+		return
+	}
+	binding := m.MeshRuntime()
+	if binding == nil {
+		return
+	}
+	for nodeID := range binding.TopologyStore().Snapshot().Nodes {
+		if nodeID <= 0 || nodeID == m.cfg.NodeID {
+			continue
+		}
+		m.sendOnlinePresence(nodeID, update)
+	}
+}
+
+// sendOnlinePresence 向单个目标节点发送在线状态更新。
+func (m *Manager) sendOnlinePresence(targetNodeID int64, update *internalproto.OnlinePresenceUpdate) {
+	if m == nil || targetNodeID <= 0 || update == nil {
 		return
 	}
 	if m.MeshRuntime() == nil {
 		return
 	}
-	if err := m.routeMeshPresenceUpdate(context.Background(), sess.peerID, snapshot); err != nil {
-		m.logMeshForwardFailure("mesh_online_presence_forward_failed", sess, err, "failed to forward online presence snapshot over mesh")
+	if err := m.routeMeshPresenceUpdate(context.Background(), targetNodeID, update); err != nil {
+		m.logDebug("mesh_online_presence_forward_failed").
+			Int64("target_node_id", targetNodeID).
+			Err(err).
+			Msg("failed to forward online presence update over mesh")
 		if errors.Is(err, mesh.ErrNoRoute) {
-			m.retryOnlinePresenceForward(sess.peerID, snapshot)
+			m.retryOnlinePresenceForward(targetNodeID, update)
 		}
 	}
 }
 
-// retryOnlinePresenceForward 延迟重试在线状态快照的转发。
-func (m *Manager) retryOnlinePresenceForward(targetNodeID int64, snapshot *internalproto.OnlinePresenceSnapshot) {
-	if m == nil || targetNodeID <= 0 || snapshot == nil || m.ctx == nil {
+// retryOnlinePresenceForward 延迟重试在线状态更新的转发。
+func (m *Manager) retryOnlinePresenceForward(targetNodeID int64, update *internalproto.OnlinePresenceUpdate) {
+	if m == nil || targetNodeID <= 0 || update == nil || m.ctx == nil {
 		return
 	}
-	cloned := cloneOnlinePresenceSnapshot(snapshot)
+	cloned := cloneOnlinePresenceUpdate(update)
 	if cloned == nil {
 		return
 	}
@@ -402,77 +585,30 @@ func (m *Manager) retryOnlinePresenceForward(targetNodeID int64, snapshot *inter
 	})
 }
 
-// buildOnlinePresenceSnapshot 构建包含本地在线状态和已登录用户的快照。
-func (m *Manager) buildOnlinePresenceSnapshot() *internalproto.OnlinePresenceSnapshot {
+// applyOnlinePresenceUpdate 校验并原子应用从远程节点接收的在线状态更新。
+func (m *Manager) applyOnlinePresenceUpdate(update *internalproto.OnlinePresenceUpdate) (bool, error) {
 	if m == nil {
-		return nil
+		return false, nil
 	}
-	loggedInUsers, err := m.snapshotLocalLoggedInUsers()
+	loggedInUsers, err := validateOnlinePresenceUpdate(update)
 	if err != nil {
-		m.logWarn("online_presence_snapshot_logged_in_users_unavailable", err).
-			Msg("skipping authoritative online presence snapshot because logged-in users snapshot could not be built")
-		return nil
+		return false, err
 	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	m.onlinePresenceGeneration++
-	items := make([]*internalproto.ClusterOnlineNodePresence, 0, len(m.localOnlineSessions))
-	for user, bucket := range m.localOnlineSessions {
-		if len(bucket) == 0 {
-			continue
-		}
-		items = append(items, &internalproto.ClusterOnlineNodePresence{
-			User:          &internalproto.ClusterUserRef{NodeId: user.NodeID, UserId: user.UserID},
-			ServingNodeId: m.cfg.NodeID,
-			SessionCount:  int32(len(bucket)),
-			TransportHint: localTransportHint(bucket),
-		})
-	}
-	sort.Slice(items, func(i, j int) bool {
-		if items[i].GetUser().GetNodeId() != items[j].GetUser().GetNodeId() {
-			return items[i].GetUser().GetNodeId() < items[j].GetUser().GetNodeId()
-		}
-		return items[i].GetUser().GetUserId() < items[j].GetUser().GetUserId()
-	})
-	return &internalproto.OnlinePresenceSnapshot{
-		OriginNodeId:  m.cfg.NodeID,
-		Generation:    m.onlinePresenceGeneration,
-		RuntimeEpoch:  m.localRuntimeEpoch,
-		Items:         items,
-		LoggedInUsers: clusterLoggedInUsers(loggedInUsers),
-	}
-}
-
-// applyOnlinePresenceSnapshot 应用从远程节点接收的在线状态快照。
-//
-// 纪元（epoch）检查确保不会用过期或陈旧的数据覆盖当前状态：
-//   - 如果纪元小于当前已知纪元，拒绝更新
-//   - 如果纪元变化，清除该节点的临时状态
-//   - 如果generation不更新，跳过重复快照
-func (m *Manager) applyOnlinePresenceSnapshot(snapshot *internalproto.OnlinePresenceSnapshot) bool {
-	if m == nil || snapshot == nil || snapshot.GetOriginNodeId() <= 0 || snapshot.GetRuntimeEpoch() == 0 {
-		return false
-	}
-	if snapshot.GetOriginNodeId() == m.cfg.NodeID {
-		return false
+	if update.GetOriginNodeId() == m.cfg.NodeID {
+		return false, nil
 	}
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
-
-	originNodeID := snapshot.GetOriginNodeId()
-	runtimeEpoch := snapshot.GetRuntimeEpoch()
+	originNodeID := update.GetOriginNodeId()
+	runtimeEpoch := update.GetRuntimeEpoch()
 	currentEpoch := m.currentRuntimeEpochForNodeLocked(originNodeID)
 	if currentEpoch > 0 && runtimeEpoch < currentEpoch {
-		return false
+		return false, nil
 	}
 	appliedEpoch := m.onlinePresenceEpochs[originNodeID]
 	if appliedEpoch > 0 && runtimeEpoch < appliedEpoch {
-		return false
-	}
-	if runtimeEpoch == appliedEpoch && m.onlinePresenceOrigins[originNodeID] >= snapshot.GetGeneration() {
-		return false
+		return false, nil
 	}
 	if runtimeEpoch > currentEpoch {
 		m.remoteRuntimeEpochs[originNodeID] = runtimeEpoch
@@ -480,40 +616,161 @@ func (m *Manager) applyOnlinePresenceSnapshot(snapshot *internalproto.OnlinePres
 	if appliedEpoch > 0 && runtimeEpoch != appliedEpoch {
 		m.clearEphemeralStateForNodeLocked(originNodeID, 0)
 	}
-	clearPresenceForNodeLocked(m.onlinePresenceByUser, originNodeID)
-	delete(m.loggedInUsersByNode, originNodeID)
-	for _, item := range snapshot.GetItems() {
-		if item == nil || item.GetUser() == nil {
-			continue
+	shardKey := onlinePresenceShardKey{originNodeID: originNodeID, shardIndex: update.GetShardIndex()}
+	if runtimeEpoch == appliedEpoch && m.onlinePresenceGenerations[shardKey] >= update.GetGeneration() {
+		return false, nil
+	}
+	if update.GetMode() == internalproto.OnlinePresenceUpdateMode_ONLINE_PRESENCE_UPDATE_MODE_AUTHORITATIVE_SHARD {
+		m.clearOnlinePresenceShardLocked(shardKey)
+		if m.loggedInUsersByNode[originNodeID] == nil {
+			m.loggedInUsersByNode[originNodeID] = make(map[store.UserKey]app.LoggedInUserSummary)
 		}
+	}
+	for _, removed := range update.GetRemovedUsers() {
+		m.removeRemotePresenceUserLocked(shardKey, store.UserKey{NodeID: removed.GetNodeId(), UserID: removed.GetUserId()})
+	}
+	for _, item := range update.GetItems() {
 		user := store.UserKey{NodeID: item.GetUser().GetNodeId(), UserID: item.GetUser().GetUserId()}
-		if user.Validate() != nil {
-			continue
-		}
-		servingNodeID := item.GetServingNodeId()
-		if servingNodeID <= 0 {
-			servingNodeID = snapshot.GetOriginNodeId()
-		}
-		if servingNodeID != snapshot.GetOriginNodeId() || item.GetSessionCount() <= 0 {
-			continue
-		}
 		bucket := m.onlinePresenceByUser[user]
 		if bucket == nil {
 			bucket = make(map[int64]store.OnlineNodePresence)
 			m.onlinePresenceByUser[user] = bucket
 		}
-		bucket[servingNodeID] = store.OnlineNodePresence{
+		bucket[originNodeID] = store.OnlineNodePresence{
 			User:          user,
-			ServingNodeID: servingNodeID,
+			ServingNodeID: originNodeID,
 			SessionCount:  item.GetSessionCount(),
 			TransportHint: strings.TrimSpace(item.GetTransportHint()),
 		}
+		remoteUsers := m.loggedInUsersByNode[originNodeID]
+		if remoteUsers == nil {
+			remoteUsers = make(map[store.UserKey]app.LoggedInUserSummary)
+			m.loggedInUsersByNode[originNodeID] = remoteUsers
+		}
+		remoteUsers[user] = loggedInUsers[user]
+		usersInShard := m.onlinePresenceUsersByShard[shardKey]
+		if usersInShard == nil {
+			usersInShard = make(map[store.UserKey]struct{})
+			m.onlinePresenceUsersByShard[shardKey] = usersInShard
+		}
+		usersInShard[user] = struct{}{}
 	}
-	m.loggedInUsersByNode[originNodeID] = loggedInUsersFromCluster(snapshot.GetLoggedInUsers())
 	m.onlinePresenceEpochs[originNodeID] = runtimeEpoch
-	m.onlinePresenceOrigins[originNodeID] = snapshot.GetGeneration()
+	m.onlinePresenceGenerations[shardKey] = update.GetGeneration()
 	m.clearDisconnectSuspicionsForNodeLocked(originNodeID, runtimeEpoch)
-	return true
+	return true, nil
+}
+
+func validateOnlinePresenceUpdate(update *internalproto.OnlinePresenceUpdate) (map[store.UserKey]app.LoggedInUserSummary, error) {
+	if update == nil || update.GetOriginNodeId() <= 0 || update.GetRuntimeEpoch() == 0 || update.GetGeneration() == 0 {
+		return nil, errors.New("online presence update identity is invalid")
+	}
+	if update.GetShardCount() != onlinePresenceShardCount || update.GetShardIndex() >= onlinePresenceShardCount {
+		return nil, errors.New("online presence update shard is invalid")
+	}
+	mode := update.GetMode()
+	if mode != internalproto.OnlinePresenceUpdateMode_ONLINE_PRESENCE_UPDATE_MODE_DELTA &&
+		mode != internalproto.OnlinePresenceUpdateMode_ONLINE_PRESENCE_UPDATE_MODE_AUTHORITATIVE_SHARD {
+		return nil, errors.New("online presence update mode is invalid")
+	}
+	if mode == internalproto.OnlinePresenceUpdateMode_ONLINE_PRESENCE_UPDATE_MODE_AUTHORITATIVE_SHARD && len(update.GetRemovedUsers()) != 0 {
+		return nil, errors.New("authoritative online presence shard cannot contain removals")
+	}
+	items := make(map[store.UserKey]struct{}, len(update.GetItems()))
+	for _, item := range update.GetItems() {
+		if item == nil || item.GetUser() == nil || item.GetServingNodeId() != update.GetOriginNodeId() ||
+			item.GetSessionCount() <= 0 || strings.TrimSpace(item.GetTransportHint()) == "" {
+			return nil, errors.New("online presence item is invalid")
+		}
+		user := store.UserKey{NodeID: item.GetUser().GetNodeId(), UserID: item.GetUser().GetUserId()}
+		if user.Validate() != nil || onlinePresenceShardIndex(user) != int(update.GetShardIndex()) {
+			return nil, errors.New("online presence item belongs to an invalid shard")
+		}
+		if _, exists := items[user]; exists {
+			return nil, errors.New("online presence update contains duplicate items")
+		}
+		items[user] = struct{}{}
+	}
+	loggedInUsers := make(map[store.UserKey]app.LoggedInUserSummary, len(update.GetLoggedInUsers()))
+	for _, item := range update.GetLoggedInUsers() {
+		if item == nil || strings.TrimSpace(item.GetUsername()) == "" {
+			return nil, errors.New("logged-in user summary is invalid")
+		}
+		user := store.UserKey{NodeID: item.GetNodeId(), UserID: item.GetUserId()}
+		if user.Validate() != nil || onlinePresenceShardIndex(user) != int(update.GetShardIndex()) {
+			return nil, errors.New("logged-in user summary belongs to an invalid shard")
+		}
+		if _, exists := loggedInUsers[user]; exists {
+			return nil, errors.New("online presence update contains duplicate logged-in users")
+		}
+		loggedInUsers[user] = app.LoggedInUserSummary{
+			NodeID:    user.NodeID,
+			UserID:    user.UserID,
+			Username:  strings.TrimSpace(item.GetUsername()),
+			LoginName: strings.TrimSpace(item.GetLoginName()),
+		}
+	}
+	if len(items) != len(loggedInUsers) {
+		return nil, errors.New("online presence items and logged-in users do not match")
+	}
+	for user := range items {
+		if _, exists := loggedInUsers[user]; !exists {
+			return nil, errors.New("online presence item is missing its logged-in user summary")
+		}
+	}
+	removedUsers := make(map[store.UserKey]struct{}, len(update.GetRemovedUsers()))
+	for _, item := range update.GetRemovedUsers() {
+		if item == nil {
+			return nil, errors.New("removed online presence user is invalid")
+		}
+		user := store.UserKey{NodeID: item.GetNodeId(), UserID: item.GetUserId()}
+		if user.Validate() != nil || onlinePresenceShardIndex(user) != int(update.GetShardIndex()) {
+			return nil, errors.New("removed online presence user belongs to an invalid shard")
+		}
+		if _, exists := removedUsers[user]; exists {
+			return nil, errors.New("online presence update contains duplicate removals")
+		}
+		if _, exists := items[user]; exists {
+			return nil, errors.New("online presence update both upserts and removes a user")
+		}
+		removedUsers[user] = struct{}{}
+	}
+	return loggedInUsers, nil
+}
+
+func (m *Manager) clearOnlinePresenceShardLocked(shardKey onlinePresenceShardKey) {
+	for user := range m.onlinePresenceUsersByShard[shardKey] {
+		m.removeRemotePresenceUserLocked(shardKey, user)
+	}
+	delete(m.onlinePresenceUsersByShard, shardKey)
+}
+
+func (m *Manager) removeRemotePresenceUserLocked(shardKey onlinePresenceShardKey, user store.UserKey) {
+	if bucket := m.onlinePresenceByUser[user]; bucket != nil {
+		delete(bucket, shardKey.originNodeID)
+		if len(bucket) == 0 {
+			delete(m.onlinePresenceByUser, user)
+		}
+	}
+	if users := m.loggedInUsersByNode[shardKey.originNodeID]; users != nil {
+		delete(users, user)
+	}
+	if users := m.onlinePresenceUsersByShard[shardKey]; users != nil {
+		delete(users, user)
+	}
+}
+
+func sortUserKeys(users []store.UserKey) {
+	sort.Slice(users, func(i, j int) bool {
+		if users[i].NodeID != users[j].NodeID {
+			return users[i].NodeID < users[j].NodeID
+		}
+		return users[i].UserID < users[j].UserID
+	})
+}
+
+func clusterUserRef(user store.UserKey) *internalproto.ClusterUserRef {
+	return &internalproto.ClusterUserRef{NodeId: user.NodeID, UserId: user.UserID}
 }
 
 // refreshLocalPresenceLocked 根据本地会话状态更新在线存在信息。
@@ -598,33 +855,13 @@ func clearPresenceForNodeLocked(presenceByUser map[store.UserKey]map[int64]store
 	}
 }
 
-// cloneOnlinePresenceSnapshot 创建在线状态快照的深拷贝。
-func cloneOnlinePresenceSnapshot(snapshot *internalproto.OnlinePresenceSnapshot) *internalproto.OnlinePresenceSnapshot {
-	if snapshot == nil {
+// cloneOnlinePresenceUpdate 创建在线状态更新的深拷贝。
+func cloneOnlinePresenceUpdate(update *internalproto.OnlinePresenceUpdate) *internalproto.OnlinePresenceUpdate {
+	if update == nil {
 		return nil
 	}
-	items := make([]*internalproto.ClusterOnlineNodePresence, 0, len(snapshot.GetItems()))
-	for _, item := range snapshot.GetItems() {
-		if item == nil || item.GetUser() == nil {
-			continue
-		}
-		items = append(items, &internalproto.ClusterOnlineNodePresence{
-			User: &internalproto.ClusterUserRef{
-				NodeId: item.GetUser().GetNodeId(),
-				UserId: item.GetUser().GetUserId(),
-			},
-			ServingNodeId: item.GetServingNodeId(),
-			SessionCount:  item.GetSessionCount(),
-			TransportHint: item.GetTransportHint(),
-		})
-	}
-	return &internalproto.OnlinePresenceSnapshot{
-		OriginNodeId:  snapshot.GetOriginNodeId(),
-		Generation:    snapshot.GetGeneration(),
-		RuntimeEpoch:  snapshot.GetRuntimeEpoch(),
-		Items:         items,
-		LoggedInUsers: clusterLoggedInUsers(loggedInUsersFromCluster(snapshot.GetLoggedInUsers())),
-	}
+	cloned, _ := proto.Clone(update).(*internalproto.OnlinePresenceUpdate)
+	return cloned
 }
 
 // clusterQueryErrorCode 将protobuf错误码转换为Go error。

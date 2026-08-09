@@ -155,6 +155,21 @@
 
 但这更像是管理查询路径的固定开销，而不是当前 online benchmark 失败与否的首要原因。
 
+### 3.6 在线状态同步已改为增量与分片校验
+
+旧实现每 5 秒调用一次 `ListLoggedInUsers()`，复制、排序并广播完整 session 与登录用户集合，接收端再清空并重建对应 origin 的全部临时状态。10k 在线时，即使业务轮次只投递一个客户端，这项后台工作仍会制造百 MB 级分配和明显 GC 抖动。
+
+当前实现改为：
+
+- 本地注册/注销只把相关用户标记为 dirty，后台等待 50ms 合并窗口；同一用户只发送窗口结束时的最终状态。
+- 每条 `DELTA` 最多包含 256 个用户，携带 presence、登录摘要 upsert 或用户墓碑。
+- 用户按确定性哈希固定分为 16 个分片；后台每 500ms 构建一个 `AUTHORITATIVE_SHARD`，8 秒完成一轮权威校验。
+- 接收端按 `(origin_node_id, runtime_epoch, shard_index, generation)` 去重，并按 origin/shard 维护用户索引；权威分片只替换对应分片。
+- HTTP 注册会话时把 `LoggedInUserSummary` 与 session 同次提交给 cluster Manager；周期任务不再调用 `ListLoggedInUsers()` 构建全量副本。
+- 增量丢失、乱序或短暂无路由不会永久造成漂移，后续对应权威分片会在最坏 8 秒内修复。
+
+`mesh-v1alpha3` 与旧 `mesh-v1alpha2` 的 presence 线缆语义严格不兼容。发布必须整集群协调升级或蓝绿切换，不能在同一个 mesh 中逐节点混合滚动。
+
 ## 4. 计划状态
 
 | 工作点 | 当前状态 | 说明 |
@@ -169,6 +184,7 @@
 | 8. 接入层与 cluster 节点角色拆分 | 未开始 | 当前节点仍同时承载 API、连接、store 和 mesh。 |
 | 9. 用户或 session 粘性放置 | 未开始 | 还没有 consistent hash / sticky routing，但 `session_ref` / `resolve_user_sessions` / `target_session` 已具备前置能力。 |
 | 10. 在线连接分级、配额与背压 | 未开始 | 当前代码里还没有明确的每节点连接上限、每用户并发上限或连接爬升限速。 |
+| 11. 在线状态增量与分片校验 | 已完成 | 50ms 用户增量、16 分片、500ms 单分片权威校验，8 秒完成一轮自愈。 |
 
 ## 5. 现在最值得继续做的事
 
@@ -229,7 +245,24 @@
 
 在没有同机实际采样结果前，仍不应把 realtime / transient-only 路径的结果外推成 full client 容量。
 
-### 6.3 对外承诺
+### 6.3 周期任务验收
+
+10k full-client direct 的旧式 `-benchtime=10x` 只限定操作次数，实际测量窗口可能短于 5 秒，因此可能完全错过旧在线状态 ticker，也可能恰好把一次全量同步和 GC 集中计入某一轮。周期工作验收必须使用持续时间控制：
+
+```bash
+go test ./internal/api -run '^$' -bench '^BenchmarkClientWebSocketPersistentSendMessageAuthenticatedLinearMeshWithOnlineUsers/tmp/sqlite/3-nodes/10000-online/direct/256B$' -benchmem -benchtime=10s -count=3
+```
+
+该场景同时记录 `write` 与 `last_push` 的平均值、p95、p99 和 max。发布后还应同时观察 Go heap、GC pause、control-critical 转发字节；`last_push >= 1s` 视为周期抖动未消除。
+
+2026-08-09 同机三轮采集结果：
+
+- `write_ms/op`：`0.6916–0.7125`，p99 `1.604–1.628ms`，max `5.600–18.74ms`。
+- `last_push_ms/op`：`4.162–4.236`，p99 `5.740–5.831ms`，max `20.69–77.92ms`。
+- 三轮均未出现 `last_push >= 1s`。旧样本只记录到约 `1.4s` 的 `last_push` 而没有 p95/p99；即使用新 max 保守比较，周期相关尾延迟也下降 94% 以上。
+- fixture 在计时前验证所有 origin 镜像完整，再等待 8.5 秒覆盖一整轮权威分片并清理 setup GC；正式 10 秒窗口仍会覆盖下一整轮分片校验。
+
+### 6.4 对外承诺
 
 在重新采样之前，这份文档不再给出“`10000` 在线必须达成”或“下一步直接承诺 `15000` / `20000`”这样的刚性目标。
 

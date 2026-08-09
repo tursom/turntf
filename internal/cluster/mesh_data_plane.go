@@ -75,15 +75,15 @@ func (m *Manager) routeMeshMembershipUpdate(ctx context.Context, targetNodeID in
 	})
 }
 
-// routeMeshPresenceUpdate 通过网格路由在线状态快照更新。
-func (m *Manager) routeMeshPresenceUpdate(ctx context.Context, targetNodeID int64, snapshot *internalproto.OnlinePresenceSnapshot) error {
-	if snapshot == nil {
-		return errors.New("online presence snapshot cannot be empty")
+// routeMeshPresenceUpdate 通过网格路由在线状态更新。
+func (m *Manager) routeMeshPresenceUpdate(ctx context.Context, targetNodeID int64, update *internalproto.OnlinePresenceUpdate) error {
+	if update == nil {
+		return errors.New("online presence update cannot be empty")
 	}
 	return m.routeMeshEnvelope(ctx, targetNodeID, mesh.TrafficControlCritical, &mesh.ClusterEnvelope{
 		Body: &mesh.ClusterEnvelope_PresenceUpdate{
 			PresenceUpdate: &mesh.MeshPresenceUpdate{
-				PresenceUpdate: snapshot,
+				PresenceUpdate: update,
 			},
 		},
 	})
@@ -500,7 +500,7 @@ func (m *Manager) handleMeshResolveUserSessionsResponse(ctx context.Context, que
 }
 
 // handleMeshPresenceUpdateEnvelope 处理网格在线状态更新。
-// 应用快照并转发给其他对等节点（排除源节点）。
+// origin 会分别路由到每个已知节点，因此接收端只需校验并应用。
 func (m *Manager) handleMeshPresenceUpdateEnvelope(packet *mesh.ForwardedPacket, update *mesh.MeshPresenceUpdate) error {
 	if update == nil || update.GetPresenceUpdate() == nil {
 		return errors.New("mesh online presence update body cannot be empty")
@@ -513,11 +513,8 @@ func (m *Manager) handleMeshPresenceUpdateEnvelope(packet *mesh.ForwardedPacket,
 	if body.GetOriginNodeId() != sourceNodeID {
 		return fmt.Errorf("mesh online presence update origin mismatch: got %d want %d", body.GetOriginNodeId(), sourceNodeID)
 	}
-	if !m.applyOnlinePresenceSnapshot(body) {
-		return nil
-	}
-	m.forwardOnlinePresence(body, sourceNodeID)
-	return nil
+	_, err := m.applyOnlinePresenceUpdate(body)
+	return err
 }
 
 // handleMeshConnectivityRumorEnvelope 处理网格连接性传闻。

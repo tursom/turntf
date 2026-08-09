@@ -24,6 +24,7 @@ func TestManagerQueryLoggedInUsersUsesWebSocketZeroMQBridge(t *testing.T) {
 			Username: "mixed-zeromq-user",
 		}}, nil
 	})
+	registerTestLoggedInUser(mgrC, store.UserKey{NodeID: testNodeID(3), UserID: 8192}, "mixed-zeromq-user")
 
 	waitForMeshRouteDecision(t, mgrA, testNodeID(3), mesh.TrafficControlQuery, testNodeID(2), mesh.TransportWebSocket)
 	waitForMeshRouteDecision(t, mgrC, testNodeID(1), mesh.TrafficControlQuery, testNodeID(2), mesh.TransportZeroMQ)

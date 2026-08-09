@@ -221,6 +221,26 @@ func newTestRuntime(t *testing.T, localID int64, adapter TransportAdapter, opts 
 	return runtime
 }
 
+func TestRuntimeRejectsPreviousMeshProtocolEpoch(t *testing.T) {
+	t.Parallel()
+
+	if ProtocolVersion != "mesh-v1alpha3" {
+		t.Fatalf("unexpected mesh protocol epoch: got %q want mesh-v1alpha3", ProtocolVersion)
+	}
+	runtime := newTestRuntime(t, 1, newFakeAdapter(TransportWebSocket))
+	hello := &NodeHello{
+		NodeId:          2,
+		ProtocolVersion: "mesh-v1alpha2",
+		Transports: []*TransportCapability{{
+			Transport: TransportWebSocket, InboundEnabled: true, OutboundEnabled: true,
+		}},
+		ForwardingPolicy: DefaultForwardingPolicy(2),
+	}
+	if err := runtime.validateRemoteHello(hello, TransportWebSocket); !errors.Is(err, ErrHelloRejected) {
+		t.Fatalf("expected previous mesh protocol epoch to be rejected, got %v", err)
+	}
+}
+
 func TestRuntimeRejectsStaleTopologyUpdateWithInjectedStore(t *testing.T) {
 	t.Parallel()
 

@@ -174,7 +174,8 @@ message MeshMembershipUpdate {
 }
 
 message MeshPresenceUpdate {
-  notifier.cluster.v1.OnlinePresenceSnapshot presence_update = 1;
+  // presence_update 自 mesh-v1alpha3 起承载用户增量和权威分片，不兼容 v1alpha2 全量快照。
+  notifier.cluster.v1.OnlinePresenceUpdate presence_update = 1;
 }
 
 message MeshConnectivityRumor {

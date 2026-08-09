@@ -442,15 +442,32 @@ message ClusterOnlineNodePresence {
   string transport_hint = 4;
 }
 
-// OnlinePresenceSnapshot 是节点的在线状态快照。
-message OnlinePresenceSnapshot {
+// OnlinePresenceUpdateMode 表示在线状态更新的应用方式。
+enum OnlinePresenceUpdateMode {
+  ONLINE_PRESENCE_UPDATE_MODE_UNSPECIFIED = 0;
+  // DELTA 只修改本消息列出的用户；removed_users 是用户墓碑。
+  ONLINE_PRESENCE_UPDATE_MODE_DELTA = 1;
+  // AUTHORITATIVE_SHARD 完整替换 origin 对应分片，且不允许携带 removed_users。
+  ONLINE_PRESENCE_UPDATE_MODE_AUTHORITATIVE_SHARD = 2;
+}
+
+// OnlinePresenceUpdate 是节点的增量在线状态或权威分片快照。
+message OnlinePresenceUpdate {
+  // origin_node_id 是产生状态的节点，必须与 mesh 包来源一致。
   int64 origin_node_id = 1;
-  // generation 是此快照的代数，用于冲突解决。
+  // generation 在同一个 (origin_node_id, runtime_epoch, shard_index) 内单调递增。
   uint64 generation = 2;
+  // items 与 logged_in_users 按用户一一对应，表示 presence 和登录摘要 upsert。
   repeated ClusterOnlineNodePresence items = 3;
   // runtime_epoch 是发送节点的运行时纪元。
   uint64 runtime_epoch = 4;
   repeated ClusterLoggedInUser logged_in_users = 5;
+  OnlinePresenceUpdateMode mode = 6;
+  // shard_index 是确定性用户分片索引，当前 shard_count 固定为 16。
+  uint32 shard_index = 7;
+  uint32 shard_count = 8;
+  // removed_users 仅用于 DELTA，删除该 origin 下对应用户的临时在线状态。
+  repeated ClusterUserRef removed_users = 9;
 }
 
 // NodeConnectivityRumor 传播节点可能已断开连接的传闻。

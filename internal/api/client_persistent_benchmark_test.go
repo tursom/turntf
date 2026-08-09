@@ -5,6 +5,8 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"runtime"
+	"sort"
 	"sync"
 	"testing"
 	"time"
@@ -12,6 +14,7 @@ import (
 	"github.com/gorilla/websocket"
 	gproto "google.golang.org/protobuf/proto"
 
+	"github.com/tursom/turntf/internal/app"
 	"github.com/tursom/turntf/internal/mesh"
 	internalproto "github.com/tursom/turntf/internal/proto"
 	"github.com/tursom/turntf/internal/store"
@@ -23,6 +26,7 @@ const (
 	persistentDirectSequenceBase         = int64(1 << 20)
 	persistentBroadcastSequenceBase      = int64(2 << 20)
 	persistentChannelSequenceBase        = int64(3 << 20)
+	persistentPresenceStabilization      = 8500 * time.Millisecond
 )
 
 type benchmarkPersistentLoginFixture struct {
@@ -537,6 +541,17 @@ func openBenchmarkPersistentDispatchFixture(tb testing.TB, mode benchroot.Mode, 
 		expectedOnlineUsersByNode[idx] = len(keysByNode[idx])
 	}
 	waitForAPIBenchmarkOnlineUsers(tb, timeout, meshCluster.nodes, expectedOnlineUsersByNode)
+	for idx, keys := range keysByNode {
+		if len(keys) == 0 {
+			continue
+		}
+		presence, err := meshCluster.nodes[idx].manager.QueryOnlineUserPresence(ctx, keys[0])
+		if err != nil || len(presence) != 1 || presence[0].ServingNodeID != meshCluster.nodes[idx].nodeID {
+			cleanupClients()
+			meshCluster.Close()
+			tb.Fatalf("local presence registration missing on node %d for %+v: presence=%+v err=%v", meshCluster.nodes[idx].nodeID, keys[0], presence, err)
+		}
+	}
 
 	senderKey := store.UserKey{NodeID: sourceNode.nodeID, UserID: store.BootstrapAdminUserID}
 	sender, err := dialAndLoginBenchmarkPersistentSender(sourceNode.serverURL, senderKey, "root-password")
@@ -545,7 +560,12 @@ func openBenchmarkPersistentDispatchFixture(tb testing.TB, mode benchroot.Mode, 
 		meshCluster.Close()
 		tb.Fatalf("dial persistent benchmark sender: %v", err)
 	}
-	time.Sleep(clientWSPollInterval + 200*time.Millisecond)
+	expectedOnlineUsersByNode[0]++
+	waitForAPIBenchmarkPresenceMirrors(tb, timeout, meshCluster.nodes, expectedOnlineUsersByNode)
+	// 数量收敛后再经过一整轮 16 分片权威校验，避免登录期间的 delta/retry 残留进入计时窗口。
+	time.Sleep(persistentPresenceStabilization)
+	runtime.GC()
+	time.Sleep(500 * time.Millisecond)
 	return &benchmarkPersistentDispatchFixture{
 		cluster:          meshCluster,
 		broadcastKey:     broadcastKey,
@@ -558,6 +578,34 @@ func openBenchmarkPersistentDispatchFixture(tb testing.TB, mode benchroot.Mode, 
 		nodeCount:        nodeCount,
 		timeout:          timeout,
 		nextRequestID:    1,
+	}
+}
+
+func waitForAPIBenchmarkPresenceMirrors(tb testing.TB, timeout time.Duration, nodes []benchmarkLinearMeshAPINode, expectedCounts []int) {
+	tb.Helper()
+	if len(nodes) != len(expectedCounts) {
+		tb.Fatalf("presence mirror counts mismatch: nodes=%d counts=%d", len(nodes), len(expectedCounts))
+	}
+	if timeout > 15*time.Second {
+		timeout = 15 * time.Second
+	}
+	for _, observer := range nodes {
+		for originIndex, origin := range nodes {
+			want := expectedCounts[originIndex]
+			deadline := time.Now().Add(timeout)
+			var users []app.LoggedInUserSummary
+			var err error
+			for time.Now().Before(deadline) {
+				users, err = observer.manager.QueryLoggedInUsers(context.Background(), origin.nodeID)
+				if err == nil && len(users) == want {
+					break
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			if err != nil || len(users) != want {
+				tb.Fatalf("presence mirror did not converge: observer=%d origin=%d got=%d want=%d err=%v", observer.nodeID, origin.nodeID, len(users), want, err)
+			}
+		}
 	}
 }
 
@@ -643,18 +691,38 @@ func (f *benchmarkPersistentDispatchFixture) RunScenario(b *testing.B, scenario 
 	var totalWrite time.Duration
 	var totalFirstPush time.Duration
 	var totalLastPush time.Duration
+	writeLatencies := make([]time.Duration, 0, b.N)
+	lastPushLatencies := make([]time.Duration, 0, b.N)
 	for i := 0; i < b.N; i++ {
 		requestID = f.takeRequestID()
 		writeLatency, firstPushLatency, lastPushLatency := f.sendOnce(b, f.sender, scenario, payload, requestID)
 		totalWrite += writeLatency
 		totalFirstPush += firstPushLatency
 		totalLastPush += lastPushLatency
+		writeLatencies = append(writeLatencies, writeLatency)
+		lastPushLatencies = append(lastPushLatencies, lastPushLatency)
 	}
 
 	b.StopTimer()
 	reportAPIBenchmarkAverageLatencyMetric(b, totalWrite, "write_ms/op")
 	reportAPIBenchmarkAverageLatencyMetric(b, totalFirstPush, "first_push_ms/op")
 	reportAPIBenchmarkAverageLatencyMetric(b, totalLastPush, "last_push_ms/op")
+	reportAPIBenchmarkTailLatencyMetrics(b, writeLatencies, "write")
+	reportAPIBenchmarkTailLatencyMetrics(b, lastPushLatencies, "last_push")
+}
+
+func reportAPIBenchmarkTailLatencyMetrics(b *testing.B, samples []time.Duration, prefix string) {
+	if len(samples) == 0 {
+		return
+	}
+	sort.Slice(samples, func(i, j int) bool { return samples[i] < samples[j] })
+	report := func(percentile int, suffix string) {
+		index := (len(samples)*percentile+99)/100 - 1
+		b.ReportMetric(float64(samples[index])/float64(time.Millisecond), prefix+"_"+suffix+"_ms/op")
+	}
+	report(95, "p95")
+	report(99, "p99")
+	b.ReportMetric(float64(samples[len(samples)-1])/float64(time.Millisecond), prefix+"_max_ms/op")
 }
 
 func (f *benchmarkPersistentDispatchFixture) takeRequestID() uint64 {

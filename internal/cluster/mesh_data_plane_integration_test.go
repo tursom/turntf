@@ -23,6 +23,7 @@ func TestManagerQueryLoggedInUsersUsesMeshMultiHop(t *testing.T) {
 			Username: "mesh-user",
 		}}, nil
 	})
+	registerTestLoggedInUser(mgrC, store.UserKey{NodeID: testNodeID(3), UserID: 2048}, "mesh-user")
 
 	waitForMeshRoute(t, mgrA, testNodeID(3), mesh.TrafficControlCritical)
 
@@ -52,7 +53,9 @@ func TestManagerPresencePropagationAndResolveUserSessionsUsesMeshMultiHop(t *tes
 	waitForMeshRoute(t, mgrA, testNodeID(3), mesh.TrafficControlCritical)
 	waitForMeshRoute(t, mgrC, testNodeID(1), mesh.TrafficControlCritical)
 
-	mgrC.RegisterLocalSession(session)
+	mgrC.RegisterLocalSession(session, app.LoggedInUserSummary{
+		NodeID: user.NodeID, UserID: user.UserID, Username: "mesh-user",
+	})
 
 	waitFor(t, 5*time.Second, func() bool {
 		presence, err := mgrA.QueryOnlineUserPresence(context.Background(), user)
@@ -66,6 +69,55 @@ func TestManagerPresencePropagationAndResolveUserSessionsUsesMeshMultiHop(t *tes
 	if len(sessions) != 1 || sessions[0].SessionRef != session.SessionRef || sessions[0].Transport != "ws" {
 		t.Fatalf("unexpected resolved user sessions: %+v", sessions)
 	}
+}
+
+func TestManagerAuthoritativeShardRepairsMissedPresenceDeltaWithinOneRotation(t *testing.T) {
+	mgrA, _, mgrC := startLinearMeshManagers(t)
+	user := store.UserKey{NodeID: testNodeID(3), UserID: 4098}
+	registerTestLoggedInUser(mgrC, user, "repair-user")
+
+	waitForMeshRoute(t, mgrA, testNodeID(3), mesh.TrafficControlCritical)
+	waitFor(t, 5*time.Second, func() bool {
+		presence, err := mgrA.QueryOnlineUserPresence(context.Background(), user)
+		return err == nil && len(presence) == 1
+	})
+
+	shardKey := onlinePresenceShardKey{originNodeID: mgrC.cfg.NodeID, shardIndex: uint32(onlinePresenceShardIndex(user))}
+	mgrA.mu.Lock()
+	mgrA.removeRemotePresenceUserLocked(shardKey, user)
+	mgrA.mu.Unlock()
+
+	presence, err := mgrA.QueryOnlineUserPresence(context.Background(), user)
+	if err != nil {
+		t.Fatalf("query cleared presence: %v", err)
+	}
+	if len(presence) != 0 {
+		t.Fatalf("expected simulated missed delta to leave no presence, got %+v", presence)
+	}
+
+	waitFor(t, time.Duration(onlinePresenceShardCount)*onlinePresenceRepairInterval+time.Second, func() bool {
+		presence, queryErr := mgrA.QueryOnlineUserPresence(context.Background(), user)
+		return queryErr == nil && len(presence) == 1 && presence[0].ServingNodeID == mgrC.cfg.NodeID
+	})
+}
+
+func TestManagerPresencePropagationIncludesTransitNodeOrigin(t *testing.T) {
+	t.Parallel()
+
+	mgrA, mgrB, mgrC := startLinearMeshManagers(t)
+	waitForMeshRoute(t, mgrA, testNodeID(3), mesh.TrafficControlCritical)
+	waitForMeshRoute(t, mgrC, testNodeID(1), mesh.TrafficControlCritical)
+
+	middleUser := store.UserKey{NodeID: testNodeID(2), UserID: 4101}
+	registerTestLoggedInUser(mgrB, middleUser, "middle-user")
+	endUser := store.UserKey{NodeID: testNodeID(3), UserID: 4102}
+	registerTestLoggedInUser(mgrC, endUser, "end-user")
+
+	waitFor(t, 5*time.Second, func() bool {
+		middle, middleErr := mgrA.QueryLoggedInUsers(context.Background(), testNodeID(2))
+		end, endErr := mgrA.QueryLoggedInUsers(context.Background(), testNodeID(3))
+		return middleErr == nil && endErr == nil && len(middle) == 1 && len(end) == 1
+	})
 }
 
 func TestManagerRoutesTransientPacketViaMeshMultiHop(t *testing.T) {
@@ -221,7 +273,7 @@ func TestManagerRetryQueueClearsAfterSuccessfulMeshForward(t *testing.T) {
 		t.Fatalf("timed out waiting for retry delivery")
 	}
 
-	waitFor(t, time.Second, func() bool {
+	waitFor(t, 5*time.Second, func() bool {
 		mgrA.mu.Lock()
 		defer mgrA.mu.Unlock()
 		_, ok := mgrA.retryQueue[key]
@@ -260,6 +312,7 @@ func TestManagerQueryLoggedInUsersUsesSnapshotMirrorWithoutRemoteRPC(t *testing.
 	})
 
 	waitForMeshRoute(t, mgrA, testNodeID(3), mesh.TrafficControlCritical)
+	registerTestLoggedInUser(mgrC, store.UserKey{NodeID: testNodeID(3), UserID: 3001}, "cached-user")
 
 	var first []app.LoggedInUserSummary
 	waitFor(t, 5*time.Second, func() bool {
@@ -281,7 +334,7 @@ func TestManagerQueryLoggedInUsersUsesSnapshotMirrorWithoutRemoteRPC(t *testing.
 	}
 }
 
-func TestManagerQueryLoggedInUsersProviderFailureSkipsSnapshotBroadcast(t *testing.T) {
+func TestManagerQueryLoggedInUsersProviderFailureDoesNotBlockSessionDelta(t *testing.T) {
 	t.Parallel()
 
 	mgrA, _, mgrC := startLinearMeshManagers(t)
@@ -292,7 +345,7 @@ func TestManagerQueryLoggedInUsersProviderFailureSkipsSnapshotBroadcast(t *testi
 	waitForMeshRoute(t, mgrA, testNodeID(3), mesh.TrafficControlCritical)
 
 	mgrA.clearEphemeralStateForNode(testNodeID(3), 0, "test_reset")
-	waitFor(t, time.Second, func() bool {
+	waitFor(t, 5*time.Second, func() bool {
 		_, err := mgrA.QueryLoggedInUsers(context.Background(), testNodeID(3))
 		return err != nil
 	})
@@ -303,20 +356,25 @@ func TestManagerQueryLoggedInUsersProviderFailureSkipsSnapshotBroadcast(t *testi
 		SessionRef:       store.SessionRef{ServingNodeID: testNodeID(3), SessionID: "sess-provider-fail"},
 		Transport:        "ws",
 		TransientCapable: true,
+	}, app.LoggedInUserSummary{NodeID: user.NodeID, UserID: user.UserID, Username: "provider-fail-user"})
+
+	waitFor(t, time.Second, func() bool {
+		users, err := mgrA.QueryLoggedInUsers(context.Background(), testNodeID(3))
+		if err != nil || len(users) != 1 || users[0].UserID != user.UserID {
+			return false
+		}
+		presence, err := mgrA.QueryOnlineUserPresence(context.Background(), user)
+		return err == nil && len(presence) == 1
 	})
+}
 
-	time.Sleep(100 * time.Millisecond)
-	if _, err := mgrA.QueryLoggedInUsers(context.Background(), testNodeID(3)); err == nil {
-		t.Fatalf("expected query to remain unavailable when provider failure skips snapshot broadcast")
-	}
-
-	presence, err := mgrA.QueryOnlineUserPresence(context.Background(), user)
-	if err != nil {
-		t.Fatalf("query presence: %v", err)
-	}
-	if len(presence) != 0 {
-		t.Fatalf("expected no partial presence update when authoritative snapshot broadcast was skipped, got %+v", presence)
-	}
+func registerTestLoggedInUser(mgr *Manager, user store.UserKey, username string) {
+	mgr.RegisterLocalSession(store.OnlineSession{
+		User:             user,
+		SessionRef:       store.SessionRef{ServingNodeID: mgr.cfg.NodeID, SessionID: "logged-in-user-session"},
+		Transport:        "ws",
+		TransientCapable: true,
+	}, app.LoggedInUserSummary{NodeID: user.NodeID, UserID: user.UserID, Username: username})
 }
 
 func TestManagerTransitNodeRecordsForwardingMetrics(t *testing.T) {
@@ -329,7 +387,7 @@ func TestManagerTransitNodeRecordsForwardingMetrics(t *testing.T) {
 		SessionRef:       store.SessionRef{ServingNodeID: testNodeID(3), SessionID: "sess-metrics"},
 		Transport:        "ws",
 		TransientCapable: true,
-	})
+	}, app.LoggedInUserSummary{NodeID: user.NodeID, UserID: user.UserID, Username: "metrics-user"})
 
 	waitForMeshRoute(t, mgrA, testNodeID(3), mesh.TrafficControlQuery)
 	waitFor(t, 5*time.Second, func() bool {

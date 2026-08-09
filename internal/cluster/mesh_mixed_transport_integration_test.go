@@ -25,6 +25,7 @@ func TestManagerQueryLoggedInUsersUsesWebSocketLibP2PBridge(t *testing.T) {
 			Username: "mixed-transport-user",
 		}}, nil
 	})
+	registerTestLoggedInUser(mgrC, store.UserKey{NodeID: testNodeID(3), UserID: 4096}, "mixed-transport-user")
 
 	waitForMeshRouteDecision(t, mgrA, testNodeID(3), mesh.TrafficControlQuery, testNodeID(2), mesh.TransportWebSocket)
 	waitForMeshRouteDecision(t, mgrC, testNodeID(1), mesh.TrafficControlQuery, testNodeID(2), mesh.TransportLibP2P)

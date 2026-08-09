@@ -8,13 +8,60 @@ import (
 
 	gproto "google.golang.org/protobuf/proto"
 
+	"github.com/tursom/turntf/internal/app"
 	internalproto "github.com/tursom/turntf/internal/proto"
 	"github.com/tursom/turntf/internal/store"
 )
 
+type onlineSessionRegistrationCapture struct {
+	session store.OnlineSession
+	user    app.LoggedInUserSummary
+	calls   int
+}
+
+func (c *onlineSessionRegistrationCapture) Publish(store.Event) {}
+
+func (c *onlineSessionRegistrationCapture) RegisterLocalSession(session store.OnlineSession, user app.LoggedInUserSummary) {
+	c.session = session
+	c.user = user
+	c.calls++
+}
+
+func (c *onlineSessionRegistrationCapture) UnregisterLocalSession(store.UserKey, store.SessionRef) {}
+
 type transientPacketCaptureConn struct {
 	mu      sync.Mutex
 	packets []*internalproto.Packet
+}
+
+func TestHTTPRegisterClientSessionSubmitsLoggedInUserSummary(t *testing.T) {
+	t.Parallel()
+
+	capture := &onlineSessionRegistrationCapture{}
+	h := NewHTTP(New(nil, capture), HTTPOptions{NodeID: testNodeID(1)})
+	user := store.User{NodeID: testNodeID(1), ID: 42, Username: "alice"}
+	sess := &clientWSSession{
+		http:          h,
+		protocol:      "ws",
+		sessionRef:    store.SessionRef{ServingNodeID: testNodeID(1), SessionID: "session-42"},
+		loginName:     "alice@example.com",
+		principal:     &requestPrincipal{User: user},
+		transientOnly: true,
+	}
+
+	h.registerClientSession(user.Key(), sess)
+	if capture.calls != 1 {
+		t.Fatalf("unexpected cluster registration count: got %d want 1", capture.calls)
+	}
+	if capture.session != sess.onlineSession() {
+		t.Fatalf("unexpected registered session: got %+v want %+v", capture.session, sess.onlineSession())
+	}
+	wantUser := app.LoggedInUserSummary{
+		NodeID: user.NodeID, UserID: user.ID, Username: user.Username, LoginName: sess.loginName,
+	}
+	if capture.user != wantUser {
+		t.Fatalf("unexpected registered logged-in user: got %+v want %+v", capture.user, wantUser)
+	}
 }
 
 func (c *transientPacketCaptureConn) Send(_ context.Context, payload []byte) error {

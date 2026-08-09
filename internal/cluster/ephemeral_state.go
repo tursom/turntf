@@ -167,6 +167,16 @@ func (m *Manager) clearEphemeralStateForNodeLocked(nodeID int64, runtimeEpoch ui
 	}
 	clearPresenceForNodeLocked(m.onlinePresenceByUser, nodeID)
 	delete(m.loggedInUsersByNode, nodeID)
+	for key := range m.onlinePresenceUsersByShard {
+		if key.originNodeID == nodeID {
+			delete(m.onlinePresenceUsersByShard, key)
+		}
+	}
+	for key := range m.onlinePresenceGenerations {
+		if key.originNodeID == nodeID {
+			delete(m.onlinePresenceGenerations, key)
+		}
+	}
 }
 
 // expireDisconnectSuspicions 检查过期的断开连接怀疑并清理相关状态。

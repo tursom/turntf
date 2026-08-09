@@ -84,6 +84,58 @@ func (SnapshotPartitionKind) EnumDescriptor() ([]byte, []int) {
 	return file_cluster_proto_rawDescGZIP(), []int{0}
 }
 
+// OnlinePresenceUpdateMode 表示在线状态更新的应用方式。
+type OnlinePresenceUpdateMode int32
+
+const (
+	OnlinePresenceUpdateMode_ONLINE_PRESENCE_UPDATE_MODE_UNSPECIFIED OnlinePresenceUpdateMode = 0
+	// DELTA 只修改本消息列出的用户；removed_users 是用户墓碑。
+	OnlinePresenceUpdateMode_ONLINE_PRESENCE_UPDATE_MODE_DELTA OnlinePresenceUpdateMode = 1
+	// AUTHORITATIVE_SHARD 完整替换 origin 对应分片，且不允许携带 removed_users。
+	OnlinePresenceUpdateMode_ONLINE_PRESENCE_UPDATE_MODE_AUTHORITATIVE_SHARD OnlinePresenceUpdateMode = 2
+)
+
+// Enum value maps for OnlinePresenceUpdateMode.
+var (
+	OnlinePresenceUpdateMode_name = map[int32]string{
+		0: "ONLINE_PRESENCE_UPDATE_MODE_UNSPECIFIED",
+		1: "ONLINE_PRESENCE_UPDATE_MODE_DELTA",
+		2: "ONLINE_PRESENCE_UPDATE_MODE_AUTHORITATIVE_SHARD",
+	}
+	OnlinePresenceUpdateMode_value = map[string]int32{
+		"ONLINE_PRESENCE_UPDATE_MODE_UNSPECIFIED":         0,
+		"ONLINE_PRESENCE_UPDATE_MODE_DELTA":               1,
+		"ONLINE_PRESENCE_UPDATE_MODE_AUTHORITATIVE_SHARD": 2,
+	}
+)
+
+func (x OnlinePresenceUpdateMode) Enum() *OnlinePresenceUpdateMode {
+	p := new(OnlinePresenceUpdateMode)
+	*p = x
+	return p
+}
+
+func (x OnlinePresenceUpdateMode) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (OnlinePresenceUpdateMode) Descriptor() protoreflect.EnumDescriptor {
+	return file_cluster_proto_enumTypes[1].Descriptor()
+}
+
+func (OnlinePresenceUpdateMode) Type() protoreflect.EnumType {
+	return &file_cluster_proto_enumTypes[1]
+}
+
+func (x OnlinePresenceUpdateMode) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use OnlinePresenceUpdateMode.Descriptor instead.
+func (OnlinePresenceUpdateMode) EnumDescriptor() ([]byte, []int) {
+	return file_cluster_proto_rawDescGZIP(), []int{1}
+}
+
 // ClusterDeliveryMode 是瞬时消息的投递模式。
 type ClusterDeliveryMode int32
 
@@ -120,11 +172,11 @@ func (x ClusterDeliveryMode) String() string {
 }
 
 func (ClusterDeliveryMode) Descriptor() protoreflect.EnumDescriptor {
-	return file_cluster_proto_enumTypes[1].Descriptor()
+	return file_cluster_proto_enumTypes[2].Descriptor()
 }
 
 func (ClusterDeliveryMode) Type() protoreflect.EnumType {
-	return &file_cluster_proto_enumTypes[1]
+	return &file_cluster_proto_enumTypes[2]
 }
 
 func (x ClusterDeliveryMode) Number() protoreflect.EnumNumber {
@@ -133,7 +185,7 @@ func (x ClusterDeliveryMode) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use ClusterDeliveryMode.Descriptor instead.
 func (ClusterDeliveryMode) EnumDescriptor() ([]byte, []int) {
-	return file_cluster_proto_rawDescGZIP(), []int{1}
+	return file_cluster_proto_rawDescGZIP(), []int{2}
 }
 
 // Envelope 是所有集群节点间通信的通用信封。
@@ -3657,34 +3709,42 @@ func (x *ClusterOnlineNodePresence) GetTransportHint() string {
 	return ""
 }
 
-// OnlinePresenceSnapshot 是节点的在线状态快照。
-type OnlinePresenceSnapshot struct {
-	state        protoimpl.MessageState `protogen:"open.v1"`
-	OriginNodeId int64                  `protobuf:"varint,1,opt,name=origin_node_id,json=originNodeId,proto3" json:"origin_node_id,omitempty"`
-	// generation 是此快照的代数，用于冲突解决。
-	Generation uint64                       `protobuf:"varint,2,opt,name=generation,proto3" json:"generation,omitempty"`
-	Items      []*ClusterOnlineNodePresence `protobuf:"bytes,3,rep,name=items,proto3" json:"items,omitempty"`
+// OnlinePresenceUpdate 是节点的增量在线状态或权威分片快照。
+type OnlinePresenceUpdate struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// origin_node_id 是产生状态的节点，必须与 mesh 包来源一致。
+	OriginNodeId int64 `protobuf:"varint,1,opt,name=origin_node_id,json=originNodeId,proto3" json:"origin_node_id,omitempty"`
+	// generation 在同一个 (origin_node_id, runtime_epoch, shard_index) 内单调递增。
+	Generation uint64 `protobuf:"varint,2,opt,name=generation,proto3" json:"generation,omitempty"`
+	// items 与 logged_in_users 按用户一一对应，表示 presence 和登录摘要 upsert。
+	Items []*ClusterOnlineNodePresence `protobuf:"bytes,3,rep,name=items,proto3" json:"items,omitempty"`
 	// runtime_epoch 是发送节点的运行时纪元。
-	RuntimeEpoch  uint64                 `protobuf:"varint,4,opt,name=runtime_epoch,json=runtimeEpoch,proto3" json:"runtime_epoch,omitempty"`
-	LoggedInUsers []*ClusterLoggedInUser `protobuf:"bytes,5,rep,name=logged_in_users,json=loggedInUsers,proto3" json:"logged_in_users,omitempty"`
+	RuntimeEpoch  uint64                   `protobuf:"varint,4,opt,name=runtime_epoch,json=runtimeEpoch,proto3" json:"runtime_epoch,omitempty"`
+	LoggedInUsers []*ClusterLoggedInUser   `protobuf:"bytes,5,rep,name=logged_in_users,json=loggedInUsers,proto3" json:"logged_in_users,omitempty"`
+	Mode          OnlinePresenceUpdateMode `protobuf:"varint,6,opt,name=mode,proto3,enum=notifier.cluster.v1.OnlinePresenceUpdateMode" json:"mode,omitempty"`
+	// shard_index 是确定性用户分片索引，当前 shard_count 固定为 16。
+	ShardIndex uint32 `protobuf:"varint,7,opt,name=shard_index,json=shardIndex,proto3" json:"shard_index,omitempty"`
+	ShardCount uint32 `protobuf:"varint,8,opt,name=shard_count,json=shardCount,proto3" json:"shard_count,omitempty"`
+	// removed_users 仅用于 DELTA，删除该 origin 下对应用户的临时在线状态。
+	RemovedUsers  []*ClusterUserRef `protobuf:"bytes,9,rep,name=removed_users,json=removedUsers,proto3" json:"removed_users,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *OnlinePresenceSnapshot) Reset() {
-	*x = OnlinePresenceSnapshot{}
+func (x *OnlinePresenceUpdate) Reset() {
+	*x = OnlinePresenceUpdate{}
 	mi := &file_cluster_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *OnlinePresenceSnapshot) String() string {
+func (x *OnlinePresenceUpdate) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*OnlinePresenceSnapshot) ProtoMessage() {}
+func (*OnlinePresenceUpdate) ProtoMessage() {}
 
-func (x *OnlinePresenceSnapshot) ProtoReflect() protoreflect.Message {
+func (x *OnlinePresenceUpdate) ProtoReflect() protoreflect.Message {
 	mi := &file_cluster_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -3696,42 +3756,70 @@ func (x *OnlinePresenceSnapshot) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use OnlinePresenceSnapshot.ProtoReflect.Descriptor instead.
-func (*OnlinePresenceSnapshot) Descriptor() ([]byte, []int) {
+// Deprecated: Use OnlinePresenceUpdate.ProtoReflect.Descriptor instead.
+func (*OnlinePresenceUpdate) Descriptor() ([]byte, []int) {
 	return file_cluster_proto_rawDescGZIP(), []int{37}
 }
 
-func (x *OnlinePresenceSnapshot) GetOriginNodeId() int64 {
+func (x *OnlinePresenceUpdate) GetOriginNodeId() int64 {
 	if x != nil {
 		return x.OriginNodeId
 	}
 	return 0
 }
 
-func (x *OnlinePresenceSnapshot) GetGeneration() uint64 {
+func (x *OnlinePresenceUpdate) GetGeneration() uint64 {
 	if x != nil {
 		return x.Generation
 	}
 	return 0
 }
 
-func (x *OnlinePresenceSnapshot) GetItems() []*ClusterOnlineNodePresence {
+func (x *OnlinePresenceUpdate) GetItems() []*ClusterOnlineNodePresence {
 	if x != nil {
 		return x.Items
 	}
 	return nil
 }
 
-func (x *OnlinePresenceSnapshot) GetRuntimeEpoch() uint64 {
+func (x *OnlinePresenceUpdate) GetRuntimeEpoch() uint64 {
 	if x != nil {
 		return x.RuntimeEpoch
 	}
 	return 0
 }
 
-func (x *OnlinePresenceSnapshot) GetLoggedInUsers() []*ClusterLoggedInUser {
+func (x *OnlinePresenceUpdate) GetLoggedInUsers() []*ClusterLoggedInUser {
 	if x != nil {
 		return x.LoggedInUsers
+	}
+	return nil
+}
+
+func (x *OnlinePresenceUpdate) GetMode() OnlinePresenceUpdateMode {
+	if x != nil {
+		return x.Mode
+	}
+	return OnlinePresenceUpdateMode_ONLINE_PRESENCE_UPDATE_MODE_UNSPECIFIED
+}
+
+func (x *OnlinePresenceUpdate) GetShardIndex() uint32 {
+	if x != nil {
+		return x.ShardIndex
+	}
+	return 0
+}
+
+func (x *OnlinePresenceUpdate) GetShardCount() uint32 {
+	if x != nil {
+		return x.ShardCount
+	}
+	return 0
+}
+
+func (x *OnlinePresenceUpdate) GetRemovedUsers() []*ClusterUserRef {
+	if x != nil {
+		return x.RemovedUsers
 	}
 	return nil
 }
@@ -4388,15 +4476,21 @@ const file_cluster_proto_rawDesc = "" +
 	"\x04user\x18\x01 \x01(\v2#.notifier.cluster.v1.ClusterUserRefR\x04user\x12&\n" +
 	"\x0fserving_node_id\x18\x02 \x01(\x03R\rservingNodeId\x12#\n" +
 	"\rsession_count\x18\x03 \x01(\x05R\fsessionCount\x12%\n" +
-	"\x0etransport_hint\x18\x04 \x01(\tR\rtransportHint\"\x9b\x02\n" +
-	"\x16OnlinePresenceSnapshot\x12$\n" +
+	"\x0etransport_hint\x18\x04 \x01(\tR\rtransportHint\"\xe8\x03\n" +
+	"\x14OnlinePresenceUpdate\x12$\n" +
 	"\x0eorigin_node_id\x18\x01 \x01(\x03R\foriginNodeId\x12\x1e\n" +
 	"\n" +
 	"generation\x18\x02 \x01(\x04R\n" +
 	"generation\x12D\n" +
 	"\x05items\x18\x03 \x03(\v2..notifier.cluster.v1.ClusterOnlineNodePresenceR\x05items\x12#\n" +
 	"\rruntime_epoch\x18\x04 \x01(\x04R\fruntimeEpoch\x12P\n" +
-	"\x0flogged_in_users\x18\x05 \x03(\v2(.notifier.cluster.v1.ClusterLoggedInUserR\rloggedInUsers\"\x8d\x02\n" +
+	"\x0flogged_in_users\x18\x05 \x03(\v2(.notifier.cluster.v1.ClusterLoggedInUserR\rloggedInUsers\x12A\n" +
+	"\x04mode\x18\x06 \x01(\x0e2-.notifier.cluster.v1.OnlinePresenceUpdateModeR\x04mode\x12\x1f\n" +
+	"\vshard_index\x18\a \x01(\rR\n" +
+	"shardIndex\x12\x1f\n" +
+	"\vshard_count\x18\b \x01(\rR\n" +
+	"shardCount\x12H\n" +
+	"\rremoved_users\x18\t \x03(\v2#.notifier.cluster.v1.ClusterUserRefR\fremovedUsers\"\x8d\x02\n" +
 	"\x15NodeConnectivityRumor\x12$\n" +
 	"\x0etarget_node_id\x18\x01 \x01(\x03R\ftargetNodeId\x120\n" +
 	"\x14target_runtime_epoch\x18\x02 \x01(\x04R\x12targetRuntimeEpoch\x12(\n" +
@@ -4435,7 +4529,11 @@ const file_cluster_proto_rawDesc = "" +
 	" SNAPSHOT_PARTITION_KIND_MESSAGES\x10\x02\x12'\n" +
 	"#SNAPSHOT_PARTITION_KIND_ATTACHMENTS\x10\x03\x12)\n" +
 	"%SNAPSHOT_PARTITION_KIND_USER_METADATA\x10\x04\x12'\n" +
-	"#SNAPSHOT_PARTITION_KIND_LOGIN_NAMES\x10\x05*\x8a\x01\n" +
+	"#SNAPSHOT_PARTITION_KIND_LOGIN_NAMES\x10\x05*\xa3\x01\n" +
+	"\x18OnlinePresenceUpdateMode\x12+\n" +
+	"'ONLINE_PRESENCE_UPDATE_MODE_UNSPECIFIED\x10\x00\x12%\n" +
+	"!ONLINE_PRESENCE_UPDATE_MODE_DELTA\x10\x01\x123\n" +
+	"/ONLINE_PRESENCE_UPDATE_MODE_AUTHORITATIVE_SHARD\x10\x02*\x8a\x01\n" +
 	"\x13ClusterDeliveryMode\x12%\n" +
 	"!CLUSTER_DELIVERY_MODE_UNSPECIFIED\x10\x00\x12%\n" +
 	"!CLUSTER_DELIVERY_MODE_BEST_EFFORT\x10\x01\x12%\n" +
@@ -4453,116 +4551,119 @@ func file_cluster_proto_rawDescGZIP() []byte {
 	return file_cluster_proto_rawDescData
 }
 
-var file_cluster_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
+var file_cluster_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
 var file_cluster_proto_msgTypes = make([]protoimpl.MessageInfo, 42)
 var file_cluster_proto_goTypes = []any{
 	(SnapshotPartitionKind)(0),               // 0: notifier.cluster.v1.SnapshotPartitionKind
-	(ClusterDeliveryMode)(0),                 // 1: notifier.cluster.v1.ClusterDeliveryMode
-	(*Envelope)(nil),                         // 2: notifier.cluster.v1.Envelope
-	(*Hello)(nil),                            // 3: notifier.cluster.v1.Hello
-	(*OriginProgress)(nil),                   // 4: notifier.cluster.v1.OriginProgress
-	(*Ack)(nil),                              // 5: notifier.cluster.v1.Ack
-	(*EventBatch)(nil),                       // 6: notifier.cluster.v1.EventBatch
-	(*ReplicatedEvent)(nil),                  // 7: notifier.cluster.v1.ReplicatedEvent
-	(*UserCreatedEvent)(nil),                 // 8: notifier.cluster.v1.UserCreatedEvent
-	(*UserUpdatedEvent)(nil),                 // 9: notifier.cluster.v1.UserUpdatedEvent
-	(*UserDeletedEvent)(nil),                 // 10: notifier.cluster.v1.UserDeletedEvent
-	(*ClusterUserRef)(nil),                   // 11: notifier.cluster.v1.ClusterUserRef
-	(*MessageCreatedEvent)(nil),              // 12: notifier.cluster.v1.MessageCreatedEvent
-	(*UserAttachmentUpsertedEvent)(nil),      // 13: notifier.cluster.v1.UserAttachmentUpsertedEvent
-	(*UserAttachmentDeletedEvent)(nil),       // 14: notifier.cluster.v1.UserAttachmentDeletedEvent
-	(*UserMetadataUpsertedEvent)(nil),        // 15: notifier.cluster.v1.UserMetadataUpsertedEvent
-	(*UserMetadataDeletedEvent)(nil),         // 16: notifier.cluster.v1.UserMetadataDeletedEvent
-	(*UserLoginNameUpsertedEvent)(nil),       // 17: notifier.cluster.v1.UserLoginNameUpsertedEvent
-	(*UserLoginNameDeletedEvent)(nil),        // 18: notifier.cluster.v1.UserLoginNameDeletedEvent
-	(*PullEvents)(nil),                       // 19: notifier.cluster.v1.PullEvents
-	(*SnapshotDigest)(nil),                   // 20: notifier.cluster.v1.SnapshotDigest
-	(*SnapshotChunk)(nil),                    // 21: notifier.cluster.v1.SnapshotChunk
-	(*SnapshotPartitionDigest)(nil),          // 22: notifier.cluster.v1.SnapshotPartitionDigest
-	(*SnapshotRow)(nil),                      // 23: notifier.cluster.v1.SnapshotRow
-	(*SnapshotUserRow)(nil),                  // 24: notifier.cluster.v1.SnapshotUserRow
-	(*SnapshotTombstoneRow)(nil),             // 25: notifier.cluster.v1.SnapshotTombstoneRow
-	(*SnapshotMessageRow)(nil),               // 26: notifier.cluster.v1.SnapshotMessageRow
-	(*SnapshotAttachmentRow)(nil),            // 27: notifier.cluster.v1.SnapshotAttachmentRow
-	(*SnapshotUserMetadataRow)(nil),          // 28: notifier.cluster.v1.SnapshotUserMetadataRow
-	(*SnapshotLoginNameRow)(nil),             // 29: notifier.cluster.v1.SnapshotLoginNameRow
-	(*TimeSyncRequest)(nil),                  // 30: notifier.cluster.v1.TimeSyncRequest
-	(*TimeSyncResponse)(nil),                 // 31: notifier.cluster.v1.TimeSyncResponse
-	(*QueryLoggedInUsersRequest)(nil),        // 32: notifier.cluster.v1.QueryLoggedInUsersRequest
-	(*QueryLoggedInUsersResponse)(nil),       // 33: notifier.cluster.v1.QueryLoggedInUsersResponse
-	(*QueryResolveUserSessionsRequest)(nil),  // 34: notifier.cluster.v1.QueryResolveUserSessionsRequest
-	(*QueryResolveUserSessionsResponse)(nil), // 35: notifier.cluster.v1.QueryResolveUserSessionsResponse
-	(*ClusterLoggedInUser)(nil),              // 36: notifier.cluster.v1.ClusterLoggedInUser
-	(*ClusterSessionRef)(nil),                // 37: notifier.cluster.v1.ClusterSessionRef
-	(*ClusterOnlineNodePresence)(nil),        // 38: notifier.cluster.v1.ClusterOnlineNodePresence
-	(*OnlinePresenceSnapshot)(nil),           // 39: notifier.cluster.v1.OnlinePresenceSnapshot
-	(*NodeConnectivityRumor)(nil),            // 40: notifier.cluster.v1.NodeConnectivityRumor
-	(*MembershipUpdate)(nil),                 // 41: notifier.cluster.v1.MembershipUpdate
-	(*PeerAdvertisement)(nil),                // 42: notifier.cluster.v1.PeerAdvertisement
-	(*TransientPacket)(nil),                  // 43: notifier.cluster.v1.TransientPacket
+	(OnlinePresenceUpdateMode)(0),            // 1: notifier.cluster.v1.OnlinePresenceUpdateMode
+	(ClusterDeliveryMode)(0),                 // 2: notifier.cluster.v1.ClusterDeliveryMode
+	(*Envelope)(nil),                         // 3: notifier.cluster.v1.Envelope
+	(*Hello)(nil),                            // 4: notifier.cluster.v1.Hello
+	(*OriginProgress)(nil),                   // 5: notifier.cluster.v1.OriginProgress
+	(*Ack)(nil),                              // 6: notifier.cluster.v1.Ack
+	(*EventBatch)(nil),                       // 7: notifier.cluster.v1.EventBatch
+	(*ReplicatedEvent)(nil),                  // 8: notifier.cluster.v1.ReplicatedEvent
+	(*UserCreatedEvent)(nil),                 // 9: notifier.cluster.v1.UserCreatedEvent
+	(*UserUpdatedEvent)(nil),                 // 10: notifier.cluster.v1.UserUpdatedEvent
+	(*UserDeletedEvent)(nil),                 // 11: notifier.cluster.v1.UserDeletedEvent
+	(*ClusterUserRef)(nil),                   // 12: notifier.cluster.v1.ClusterUserRef
+	(*MessageCreatedEvent)(nil),              // 13: notifier.cluster.v1.MessageCreatedEvent
+	(*UserAttachmentUpsertedEvent)(nil),      // 14: notifier.cluster.v1.UserAttachmentUpsertedEvent
+	(*UserAttachmentDeletedEvent)(nil),       // 15: notifier.cluster.v1.UserAttachmentDeletedEvent
+	(*UserMetadataUpsertedEvent)(nil),        // 16: notifier.cluster.v1.UserMetadataUpsertedEvent
+	(*UserMetadataDeletedEvent)(nil),         // 17: notifier.cluster.v1.UserMetadataDeletedEvent
+	(*UserLoginNameUpsertedEvent)(nil),       // 18: notifier.cluster.v1.UserLoginNameUpsertedEvent
+	(*UserLoginNameDeletedEvent)(nil),        // 19: notifier.cluster.v1.UserLoginNameDeletedEvent
+	(*PullEvents)(nil),                       // 20: notifier.cluster.v1.PullEvents
+	(*SnapshotDigest)(nil),                   // 21: notifier.cluster.v1.SnapshotDigest
+	(*SnapshotChunk)(nil),                    // 22: notifier.cluster.v1.SnapshotChunk
+	(*SnapshotPartitionDigest)(nil),          // 23: notifier.cluster.v1.SnapshotPartitionDigest
+	(*SnapshotRow)(nil),                      // 24: notifier.cluster.v1.SnapshotRow
+	(*SnapshotUserRow)(nil),                  // 25: notifier.cluster.v1.SnapshotUserRow
+	(*SnapshotTombstoneRow)(nil),             // 26: notifier.cluster.v1.SnapshotTombstoneRow
+	(*SnapshotMessageRow)(nil),               // 27: notifier.cluster.v1.SnapshotMessageRow
+	(*SnapshotAttachmentRow)(nil),            // 28: notifier.cluster.v1.SnapshotAttachmentRow
+	(*SnapshotUserMetadataRow)(nil),          // 29: notifier.cluster.v1.SnapshotUserMetadataRow
+	(*SnapshotLoginNameRow)(nil),             // 30: notifier.cluster.v1.SnapshotLoginNameRow
+	(*TimeSyncRequest)(nil),                  // 31: notifier.cluster.v1.TimeSyncRequest
+	(*TimeSyncResponse)(nil),                 // 32: notifier.cluster.v1.TimeSyncResponse
+	(*QueryLoggedInUsersRequest)(nil),        // 33: notifier.cluster.v1.QueryLoggedInUsersRequest
+	(*QueryLoggedInUsersResponse)(nil),       // 34: notifier.cluster.v1.QueryLoggedInUsersResponse
+	(*QueryResolveUserSessionsRequest)(nil),  // 35: notifier.cluster.v1.QueryResolveUserSessionsRequest
+	(*QueryResolveUserSessionsResponse)(nil), // 36: notifier.cluster.v1.QueryResolveUserSessionsResponse
+	(*ClusterLoggedInUser)(nil),              // 37: notifier.cluster.v1.ClusterLoggedInUser
+	(*ClusterSessionRef)(nil),                // 38: notifier.cluster.v1.ClusterSessionRef
+	(*ClusterOnlineNodePresence)(nil),        // 39: notifier.cluster.v1.ClusterOnlineNodePresence
+	(*OnlinePresenceUpdate)(nil),             // 40: notifier.cluster.v1.OnlinePresenceUpdate
+	(*NodeConnectivityRumor)(nil),            // 41: notifier.cluster.v1.NodeConnectivityRumor
+	(*MembershipUpdate)(nil),                 // 42: notifier.cluster.v1.MembershipUpdate
+	(*PeerAdvertisement)(nil),                // 43: notifier.cluster.v1.PeerAdvertisement
+	(*TransientPacket)(nil),                  // 44: notifier.cluster.v1.TransientPacket
 }
 var file_cluster_proto_depIdxs = []int32{
-	3,  // 0: notifier.cluster.v1.Envelope.hello:type_name -> notifier.cluster.v1.Hello
-	5,  // 1: notifier.cluster.v1.Envelope.ack:type_name -> notifier.cluster.v1.Ack
-	6,  // 2: notifier.cluster.v1.Envelope.event_batch:type_name -> notifier.cluster.v1.EventBatch
-	19, // 3: notifier.cluster.v1.Envelope.pull_events:type_name -> notifier.cluster.v1.PullEvents
-	20, // 4: notifier.cluster.v1.Envelope.snapshot_digest:type_name -> notifier.cluster.v1.SnapshotDigest
-	21, // 5: notifier.cluster.v1.Envelope.snapshot_chunk:type_name -> notifier.cluster.v1.SnapshotChunk
-	30, // 6: notifier.cluster.v1.Envelope.time_sync_request:type_name -> notifier.cluster.v1.TimeSyncRequest
-	31, // 7: notifier.cluster.v1.Envelope.time_sync_response:type_name -> notifier.cluster.v1.TimeSyncResponse
-	41, // 8: notifier.cluster.v1.Envelope.membership_update:type_name -> notifier.cluster.v1.MembershipUpdate
-	4,  // 9: notifier.cluster.v1.Hello.origin_progress:type_name -> notifier.cluster.v1.OriginProgress
-	7,  // 10: notifier.cluster.v1.EventBatch.events:type_name -> notifier.cluster.v1.ReplicatedEvent
-	8,  // 11: notifier.cluster.v1.ReplicatedEvent.user_created:type_name -> notifier.cluster.v1.UserCreatedEvent
-	9,  // 12: notifier.cluster.v1.ReplicatedEvent.user_updated:type_name -> notifier.cluster.v1.UserUpdatedEvent
-	10, // 13: notifier.cluster.v1.ReplicatedEvent.user_deleted:type_name -> notifier.cluster.v1.UserDeletedEvent
-	12, // 14: notifier.cluster.v1.ReplicatedEvent.message_created:type_name -> notifier.cluster.v1.MessageCreatedEvent
-	13, // 15: notifier.cluster.v1.ReplicatedEvent.user_attachment_upserted:type_name -> notifier.cluster.v1.UserAttachmentUpsertedEvent
-	14, // 16: notifier.cluster.v1.ReplicatedEvent.user_attachment_deleted:type_name -> notifier.cluster.v1.UserAttachmentDeletedEvent
-	15, // 17: notifier.cluster.v1.ReplicatedEvent.user_metadata_upserted:type_name -> notifier.cluster.v1.UserMetadataUpsertedEvent
-	16, // 18: notifier.cluster.v1.ReplicatedEvent.user_metadata_deleted:type_name -> notifier.cluster.v1.UserMetadataDeletedEvent
-	17, // 19: notifier.cluster.v1.ReplicatedEvent.user_login_name_upserted:type_name -> notifier.cluster.v1.UserLoginNameUpsertedEvent
-	18, // 20: notifier.cluster.v1.ReplicatedEvent.user_login_name_deleted:type_name -> notifier.cluster.v1.UserLoginNameDeletedEvent
-	11, // 21: notifier.cluster.v1.MessageCreatedEvent.recipient:type_name -> notifier.cluster.v1.ClusterUserRef
-	11, // 22: notifier.cluster.v1.MessageCreatedEvent.sender:type_name -> notifier.cluster.v1.ClusterUserRef
-	11, // 23: notifier.cluster.v1.UserAttachmentUpsertedEvent.owner:type_name -> notifier.cluster.v1.ClusterUserRef
-	11, // 24: notifier.cluster.v1.UserAttachmentUpsertedEvent.subject:type_name -> notifier.cluster.v1.ClusterUserRef
-	11, // 25: notifier.cluster.v1.UserAttachmentDeletedEvent.owner:type_name -> notifier.cluster.v1.ClusterUserRef
-	11, // 26: notifier.cluster.v1.UserAttachmentDeletedEvent.subject:type_name -> notifier.cluster.v1.ClusterUserRef
-	11, // 27: notifier.cluster.v1.UserMetadataUpsertedEvent.owner:type_name -> notifier.cluster.v1.ClusterUserRef
-	11, // 28: notifier.cluster.v1.UserMetadataDeletedEvent.owner:type_name -> notifier.cluster.v1.ClusterUserRef
-	22, // 29: notifier.cluster.v1.SnapshotDigest.partitions:type_name -> notifier.cluster.v1.SnapshotPartitionDigest
-	23, // 30: notifier.cluster.v1.SnapshotChunk.rows:type_name -> notifier.cluster.v1.SnapshotRow
+	4,  // 0: notifier.cluster.v1.Envelope.hello:type_name -> notifier.cluster.v1.Hello
+	6,  // 1: notifier.cluster.v1.Envelope.ack:type_name -> notifier.cluster.v1.Ack
+	7,  // 2: notifier.cluster.v1.Envelope.event_batch:type_name -> notifier.cluster.v1.EventBatch
+	20, // 3: notifier.cluster.v1.Envelope.pull_events:type_name -> notifier.cluster.v1.PullEvents
+	21, // 4: notifier.cluster.v1.Envelope.snapshot_digest:type_name -> notifier.cluster.v1.SnapshotDigest
+	22, // 5: notifier.cluster.v1.Envelope.snapshot_chunk:type_name -> notifier.cluster.v1.SnapshotChunk
+	31, // 6: notifier.cluster.v1.Envelope.time_sync_request:type_name -> notifier.cluster.v1.TimeSyncRequest
+	32, // 7: notifier.cluster.v1.Envelope.time_sync_response:type_name -> notifier.cluster.v1.TimeSyncResponse
+	42, // 8: notifier.cluster.v1.Envelope.membership_update:type_name -> notifier.cluster.v1.MembershipUpdate
+	5,  // 9: notifier.cluster.v1.Hello.origin_progress:type_name -> notifier.cluster.v1.OriginProgress
+	8,  // 10: notifier.cluster.v1.EventBatch.events:type_name -> notifier.cluster.v1.ReplicatedEvent
+	9,  // 11: notifier.cluster.v1.ReplicatedEvent.user_created:type_name -> notifier.cluster.v1.UserCreatedEvent
+	10, // 12: notifier.cluster.v1.ReplicatedEvent.user_updated:type_name -> notifier.cluster.v1.UserUpdatedEvent
+	11, // 13: notifier.cluster.v1.ReplicatedEvent.user_deleted:type_name -> notifier.cluster.v1.UserDeletedEvent
+	13, // 14: notifier.cluster.v1.ReplicatedEvent.message_created:type_name -> notifier.cluster.v1.MessageCreatedEvent
+	14, // 15: notifier.cluster.v1.ReplicatedEvent.user_attachment_upserted:type_name -> notifier.cluster.v1.UserAttachmentUpsertedEvent
+	15, // 16: notifier.cluster.v1.ReplicatedEvent.user_attachment_deleted:type_name -> notifier.cluster.v1.UserAttachmentDeletedEvent
+	16, // 17: notifier.cluster.v1.ReplicatedEvent.user_metadata_upserted:type_name -> notifier.cluster.v1.UserMetadataUpsertedEvent
+	17, // 18: notifier.cluster.v1.ReplicatedEvent.user_metadata_deleted:type_name -> notifier.cluster.v1.UserMetadataDeletedEvent
+	18, // 19: notifier.cluster.v1.ReplicatedEvent.user_login_name_upserted:type_name -> notifier.cluster.v1.UserLoginNameUpsertedEvent
+	19, // 20: notifier.cluster.v1.ReplicatedEvent.user_login_name_deleted:type_name -> notifier.cluster.v1.UserLoginNameDeletedEvent
+	12, // 21: notifier.cluster.v1.MessageCreatedEvent.recipient:type_name -> notifier.cluster.v1.ClusterUserRef
+	12, // 22: notifier.cluster.v1.MessageCreatedEvent.sender:type_name -> notifier.cluster.v1.ClusterUserRef
+	12, // 23: notifier.cluster.v1.UserAttachmentUpsertedEvent.owner:type_name -> notifier.cluster.v1.ClusterUserRef
+	12, // 24: notifier.cluster.v1.UserAttachmentUpsertedEvent.subject:type_name -> notifier.cluster.v1.ClusterUserRef
+	12, // 25: notifier.cluster.v1.UserAttachmentDeletedEvent.owner:type_name -> notifier.cluster.v1.ClusterUserRef
+	12, // 26: notifier.cluster.v1.UserAttachmentDeletedEvent.subject:type_name -> notifier.cluster.v1.ClusterUserRef
+	12, // 27: notifier.cluster.v1.UserMetadataUpsertedEvent.owner:type_name -> notifier.cluster.v1.ClusterUserRef
+	12, // 28: notifier.cluster.v1.UserMetadataDeletedEvent.owner:type_name -> notifier.cluster.v1.ClusterUserRef
+	23, // 29: notifier.cluster.v1.SnapshotDigest.partitions:type_name -> notifier.cluster.v1.SnapshotPartitionDigest
+	24, // 30: notifier.cluster.v1.SnapshotChunk.rows:type_name -> notifier.cluster.v1.SnapshotRow
 	0,  // 31: notifier.cluster.v1.SnapshotChunk.kind:type_name -> notifier.cluster.v1.SnapshotPartitionKind
 	0,  // 32: notifier.cluster.v1.SnapshotPartitionDigest.kind:type_name -> notifier.cluster.v1.SnapshotPartitionKind
-	24, // 33: notifier.cluster.v1.SnapshotRow.user:type_name -> notifier.cluster.v1.SnapshotUserRow
-	25, // 34: notifier.cluster.v1.SnapshotRow.tombstone:type_name -> notifier.cluster.v1.SnapshotTombstoneRow
-	26, // 35: notifier.cluster.v1.SnapshotRow.message:type_name -> notifier.cluster.v1.SnapshotMessageRow
-	27, // 36: notifier.cluster.v1.SnapshotRow.attachment:type_name -> notifier.cluster.v1.SnapshotAttachmentRow
-	28, // 37: notifier.cluster.v1.SnapshotRow.user_metadata:type_name -> notifier.cluster.v1.SnapshotUserMetadataRow
-	29, // 38: notifier.cluster.v1.SnapshotRow.login_name:type_name -> notifier.cluster.v1.SnapshotLoginNameRow
-	11, // 39: notifier.cluster.v1.SnapshotMessageRow.recipient:type_name -> notifier.cluster.v1.ClusterUserRef
-	11, // 40: notifier.cluster.v1.SnapshotMessageRow.sender:type_name -> notifier.cluster.v1.ClusterUserRef
-	11, // 41: notifier.cluster.v1.SnapshotAttachmentRow.owner:type_name -> notifier.cluster.v1.ClusterUserRef
-	11, // 42: notifier.cluster.v1.SnapshotAttachmentRow.subject:type_name -> notifier.cluster.v1.ClusterUserRef
-	11, // 43: notifier.cluster.v1.SnapshotUserMetadataRow.owner:type_name -> notifier.cluster.v1.ClusterUserRef
-	36, // 44: notifier.cluster.v1.QueryLoggedInUsersResponse.items:type_name -> notifier.cluster.v1.ClusterLoggedInUser
-	11, // 45: notifier.cluster.v1.QueryResolveUserSessionsRequest.user:type_name -> notifier.cluster.v1.ClusterUserRef
-	37, // 46: notifier.cluster.v1.QueryResolveUserSessionsResponse.items:type_name -> notifier.cluster.v1.ClusterSessionRef
-	11, // 47: notifier.cluster.v1.QueryResolveUserSessionsResponse.user:type_name -> notifier.cluster.v1.ClusterUserRef
-	11, // 48: notifier.cluster.v1.ClusterOnlineNodePresence.user:type_name -> notifier.cluster.v1.ClusterUserRef
-	38, // 49: notifier.cluster.v1.OnlinePresenceSnapshot.items:type_name -> notifier.cluster.v1.ClusterOnlineNodePresence
-	36, // 50: notifier.cluster.v1.OnlinePresenceSnapshot.logged_in_users:type_name -> notifier.cluster.v1.ClusterLoggedInUser
-	42, // 51: notifier.cluster.v1.MembershipUpdate.peers:type_name -> notifier.cluster.v1.PeerAdvertisement
-	11, // 52: notifier.cluster.v1.TransientPacket.recipient:type_name -> notifier.cluster.v1.ClusterUserRef
-	11, // 53: notifier.cluster.v1.TransientPacket.sender:type_name -> notifier.cluster.v1.ClusterUserRef
-	1,  // 54: notifier.cluster.v1.TransientPacket.delivery_mode:type_name -> notifier.cluster.v1.ClusterDeliveryMode
-	37, // 55: notifier.cluster.v1.TransientPacket.target_session:type_name -> notifier.cluster.v1.ClusterSessionRef
-	56, // [56:56] is the sub-list for method output_type
-	56, // [56:56] is the sub-list for method input_type
-	56, // [56:56] is the sub-list for extension type_name
-	56, // [56:56] is the sub-list for extension extendee
-	0,  // [0:56] is the sub-list for field type_name
+	25, // 33: notifier.cluster.v1.SnapshotRow.user:type_name -> notifier.cluster.v1.SnapshotUserRow
+	26, // 34: notifier.cluster.v1.SnapshotRow.tombstone:type_name -> notifier.cluster.v1.SnapshotTombstoneRow
+	27, // 35: notifier.cluster.v1.SnapshotRow.message:type_name -> notifier.cluster.v1.SnapshotMessageRow
+	28, // 36: notifier.cluster.v1.SnapshotRow.attachment:type_name -> notifier.cluster.v1.SnapshotAttachmentRow
+	29, // 37: notifier.cluster.v1.SnapshotRow.user_metadata:type_name -> notifier.cluster.v1.SnapshotUserMetadataRow
+	30, // 38: notifier.cluster.v1.SnapshotRow.login_name:type_name -> notifier.cluster.v1.SnapshotLoginNameRow
+	12, // 39: notifier.cluster.v1.SnapshotMessageRow.recipient:type_name -> notifier.cluster.v1.ClusterUserRef
+	12, // 40: notifier.cluster.v1.SnapshotMessageRow.sender:type_name -> notifier.cluster.v1.ClusterUserRef
+	12, // 41: notifier.cluster.v1.SnapshotAttachmentRow.owner:type_name -> notifier.cluster.v1.ClusterUserRef
+	12, // 42: notifier.cluster.v1.SnapshotAttachmentRow.subject:type_name -> notifier.cluster.v1.ClusterUserRef
+	12, // 43: notifier.cluster.v1.SnapshotUserMetadataRow.owner:type_name -> notifier.cluster.v1.ClusterUserRef
+	37, // 44: notifier.cluster.v1.QueryLoggedInUsersResponse.items:type_name -> notifier.cluster.v1.ClusterLoggedInUser
+	12, // 45: notifier.cluster.v1.QueryResolveUserSessionsRequest.user:type_name -> notifier.cluster.v1.ClusterUserRef
+	38, // 46: notifier.cluster.v1.QueryResolveUserSessionsResponse.items:type_name -> notifier.cluster.v1.ClusterSessionRef
+	12, // 47: notifier.cluster.v1.QueryResolveUserSessionsResponse.user:type_name -> notifier.cluster.v1.ClusterUserRef
+	12, // 48: notifier.cluster.v1.ClusterOnlineNodePresence.user:type_name -> notifier.cluster.v1.ClusterUserRef
+	39, // 49: notifier.cluster.v1.OnlinePresenceUpdate.items:type_name -> notifier.cluster.v1.ClusterOnlineNodePresence
+	37, // 50: notifier.cluster.v1.OnlinePresenceUpdate.logged_in_users:type_name -> notifier.cluster.v1.ClusterLoggedInUser
+	1,  // 51: notifier.cluster.v1.OnlinePresenceUpdate.mode:type_name -> notifier.cluster.v1.OnlinePresenceUpdateMode
+	12, // 52: notifier.cluster.v1.OnlinePresenceUpdate.removed_users:type_name -> notifier.cluster.v1.ClusterUserRef
+	43, // 53: notifier.cluster.v1.MembershipUpdate.peers:type_name -> notifier.cluster.v1.PeerAdvertisement
+	12, // 54: notifier.cluster.v1.TransientPacket.recipient:type_name -> notifier.cluster.v1.ClusterUserRef
+	12, // 55: notifier.cluster.v1.TransientPacket.sender:type_name -> notifier.cluster.v1.ClusterUserRef
+	2,  // 56: notifier.cluster.v1.TransientPacket.delivery_mode:type_name -> notifier.cluster.v1.ClusterDeliveryMode
+	38, // 57: notifier.cluster.v1.TransientPacket.target_session:type_name -> notifier.cluster.v1.ClusterSessionRef
+	58, // [58:58] is the sub-list for method output_type
+	58, // [58:58] is the sub-list for method input_type
+	58, // [58:58] is the sub-list for extension type_name
+	58, // [58:58] is the sub-list for extension extendee
+	0,  // [0:58] is the sub-list for field type_name
 }
 
 func init() { file_cluster_proto_init() }
@@ -4606,7 +4707,7 @@ func file_cluster_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_cluster_proto_rawDesc), len(file_cluster_proto_rawDesc)),
-			NumEnums:      2,
+			NumEnums:      3,
 			NumMessages:   42,
 			NumExtensions: 0,
 			NumServices:   0,

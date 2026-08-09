@@ -8,7 +8,7 @@ import (
 
 // ProtocolVersion 是节点建立连接时握手的线缆协议版本。
 // 不匹配的版本会被拒绝。
-const ProtocolVersion = "mesh-v1alpha2"
+const ProtocolVersion = "mesh-v1alpha3"
 
 // ---------------- 线缆消息类型别名 ----------------
 // 以下类型别名重新导出 protobuf 生成的类型，使用更短的包内名称。

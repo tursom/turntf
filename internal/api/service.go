@@ -40,7 +40,7 @@ type LoggedInUserQuerier interface {
 
 // OnlineSessionRegistry 会话注册接口，用于在集群 mesh 层注册/注销本地客户端会话，以便其他节点发现。
 type OnlineSessionRegistry interface {
-	RegisterLocalSession(store.OnlineSession)
+	RegisterLocalSession(store.OnlineSession, app.LoggedInUserSummary)
 	UnregisterLocalSession(store.UserKey, store.SessionRef)
 }
 
@@ -282,12 +282,12 @@ func (s *Service) SetLoggedInUserProvider(provider LoggedInUserProvider) {
 	s.localUsers = provider
 }
 
-// RegisterLocalSession 向集群注册本地客户端会话，使其他节点可以感知该用户的在线状态。
-func (s *Service) RegisterLocalSession(session store.OnlineSession) {
+// RegisterLocalSession 向集群注册本地客户端会话及其登录摘要，使其他节点可以感知该用户的在线状态。
+func (s *Service) RegisterLocalSession(session store.OnlineSession, loggedInUser app.LoggedInUserSummary) {
 	if s == nil || !session.SessionRef.Valid() || s.sessionRegistry == nil {
 		return
 	}
-	s.sessionRegistry.RegisterLocalSession(session)
+	s.sessionRegistry.RegisterLocalSession(session, loggedInUser)
 }
 
 // UnregisterLocalSession 从集群注销本地客户端会话。

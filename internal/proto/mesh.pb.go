@@ -1669,8 +1669,9 @@ func (x *MeshMembershipUpdate) GetMembershipUpdate() *MembershipUpdate {
 }
 
 type MeshPresenceUpdate struct {
-	state          protoimpl.MessageState  `protogen:"open.v1"`
-	PresenceUpdate *OnlinePresenceSnapshot `protobuf:"bytes,1,opt,name=presence_update,json=presenceUpdate,proto3" json:"presence_update,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// presence_update 自 mesh-v1alpha3 起承载用户增量和权威分片，不兼容 v1alpha2 全量快照。
+	PresenceUpdate *OnlinePresenceUpdate `protobuf:"bytes,1,opt,name=presence_update,json=presenceUpdate,proto3" json:"presence_update,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -1705,7 +1706,7 @@ func (*MeshPresenceUpdate) Descriptor() ([]byte, []int) {
 	return file_mesh_proto_rawDescGZIP(), []int{18}
 }
 
-func (x *MeshPresenceUpdate) GetPresenceUpdate() *OnlinePresenceSnapshot {
+func (x *MeshPresenceUpdate) GetPresenceUpdate() *OnlinePresenceUpdate {
 	if x != nil {
 		return x.PresenceUpdate
 	}
@@ -1948,9 +1949,9 @@ const file_mesh_proto_rawDesc = "" +
 	"\apayload\x18\x04 \x01(\fR\apayload\x12\x12\n" +
 	"\x04kind\x18\x05 \x01(\tR\x04kind\"j\n" +
 	"\x14MeshMembershipUpdate\x12R\n" +
-	"\x11membership_update\x18\x01 \x01(\v2%.notifier.cluster.v1.MembershipUpdateR\x10membershipUpdate\"j\n" +
-	"\x12MeshPresenceUpdate\x12T\n" +
-	"\x0fpresence_update\x18\x01 \x01(\v2+.notifier.cluster.v1.OnlinePresenceSnapshotR\x0epresenceUpdate\"r\n" +
+	"\x11membership_update\x18\x01 \x01(\v2%.notifier.cluster.v1.MembershipUpdateR\x10membershipUpdate\"h\n" +
+	"\x12MeshPresenceUpdate\x12R\n" +
+	"\x0fpresence_update\x18\x01 \x01(\v2).notifier.cluster.v1.OnlinePresenceUpdateR\x0epresenceUpdate\"r\n" +
 	"\x15MeshConnectivityRumor\x12Y\n" +
 	"\x12connectivity_rumor\x18\x01 \x01(\v2*.notifier.cluster.v1.NodeConnectivityRumorR\x11connectivityRumor\"\xf2\x01\n" +
 	"\x13MeshRouteDiagnostic\x12.\n" +
@@ -2029,7 +2030,7 @@ var file_mesh_proto_goTypes = []any{
 	(*SnapshotDigest)(nil),          // 29: notifier.cluster.v1.SnapshotDigest
 	(*SnapshotChunk)(nil),           // 30: notifier.cluster.v1.SnapshotChunk
 	(*MembershipUpdate)(nil),        // 31: notifier.cluster.v1.MembershipUpdate
-	(*OnlinePresenceSnapshot)(nil),  // 32: notifier.cluster.v1.OnlinePresenceSnapshot
+	(*OnlinePresenceUpdate)(nil),    // 32: notifier.cluster.v1.OnlinePresenceUpdate
 	(*NodeConnectivityRumor)(nil),   // 33: notifier.cluster.v1.NodeConnectivityRumor
 }
 var file_mesh_proto_depIdxs = []int32{
@@ -2069,7 +2070,7 @@ var file_mesh_proto_depIdxs = []int32{
 	29, // 33: notifier.mesh.v1.MeshSnapshotManifest.snapshot_digest:type_name -> notifier.cluster.v1.SnapshotDigest
 	30, // 34: notifier.mesh.v1.MeshSnapshotChunk.snapshot_chunk:type_name -> notifier.cluster.v1.SnapshotChunk
 	31, // 35: notifier.mesh.v1.MeshMembershipUpdate.membership_update:type_name -> notifier.cluster.v1.MembershipUpdate
-	32, // 36: notifier.mesh.v1.MeshPresenceUpdate.presence_update:type_name -> notifier.cluster.v1.OnlinePresenceSnapshot
+	32, // 36: notifier.mesh.v1.MeshPresenceUpdate.presence_update:type_name -> notifier.cluster.v1.OnlinePresenceUpdate
 	33, // 37: notifier.mesh.v1.MeshConnectivityRumor.connectivity_rumor:type_name -> notifier.cluster.v1.NodeConnectivityRumor
 	1,  // 38: notifier.mesh.v1.MeshRouteDiagnostic.traffic_class:type_name -> notifier.mesh.v1.TrafficClass
 	0,  // 39: notifier.mesh.v1.MeshRouteDiagnostic.ingress_transport:type_name -> notifier.mesh.v1.TransportKind

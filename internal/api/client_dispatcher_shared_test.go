@@ -2,17 +2,206 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/gorilla/websocket"
+	gproto "google.golang.org/protobuf/proto"
 
 	internalproto "github.com/tursom/turntf/internal/proto"
 	"github.com/tursom/turntf/internal/store"
 )
+
+type persistentPayloadCaptureConn struct {
+	mu       sync.Mutex
+	payloads [][]byte
+	sendErr  error
+	closed   bool
+}
+
+func (c *persistentPayloadCaptureConn) Send(_ context.Context, payload []byte) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.sendErr != nil {
+		return c.sendErr
+	}
+	c.payloads = append(c.payloads, payload)
+	return nil
+}
+
+func (c *persistentPayloadCaptureConn) Receive(context.Context) ([]byte, error) {
+	return nil, errors.New("receive is not implemented for persistent payload capture")
+}
+
+func (c *persistentPayloadCaptureConn) Close() error {
+	c.mu.Lock()
+	c.closed = true
+	c.mu.Unlock()
+	return nil
+}
+
+func (c *persistentPayloadCaptureConn) RemoteAddr() string { return "capture" }
+
+func (c *persistentPayloadCaptureConn) Transport() string { return "capture" }
+
+func (c *persistentPayloadCaptureConn) singlePayload(t *testing.T) []byte {
+	t.Helper()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.payloads) != 1 {
+		t.Fatalf("expected one persistent payload, got %d", len(c.payloads))
+	}
+	return c.payloads[0]
+}
+
+func TestPersistentDispatcherSharesEncodedBroadcastAcrossReadyAndQueuedSessions(t *testing.T) {
+	testAPI := newAuthenticatedTestAPI(t)
+	ctx := context.Background()
+	userA := mustCreatePersistentDispatchUser(t, testAPI.http, "dispatcher-broadcast-a")
+	userB := mustCreatePersistentDispatchUser(t, testAPI.http, "dispatcher-broadcast-b")
+	userC := mustCreatePersistentDispatchUser(t, testAPI.http, "dispatcher-broadcast-c")
+
+	connA := &persistentPayloadCaptureConn{}
+	connB := &persistentPayloadCaptureConn{}
+	connC := &persistentPayloadCaptureConn{}
+	sessA := newPersistentPayloadCaptureSession(testAPI.http, userA, connA)
+	sessB := newPersistentPayloadCaptureSession(testAPI.http, userB, connB)
+	sessC := newPersistentPayloadCaptureSession(testAPI.http, userC, connC)
+	sessC.persistentReady = false
+	testAPI.http.persistentMu.Lock()
+	testAPI.http.persistent[sessA] = struct{}{}
+	testAPI.http.persistent[sessB] = struct{}{}
+	testAPI.http.persistent[sessC] = struct{}{}
+	testAPI.http.persistentMu.Unlock()
+
+	message := store.Message{
+		Recipient: store.UserKey{NodeID: testNodeID(1), UserID: store.BroadcastUserID},
+		NodeID:    testNodeID(1),
+		Seq:       42,
+		Sender:    store.UserKey{NodeID: testNodeID(1), UserID: store.BootstrapAdminUserID},
+		Body:      []byte("shared-broadcast-payload"),
+		CreatedAt: testAPI.http.service.store.Clock().Now(),
+	}
+	testAPI.http.dispatchPersistentMessage(ctx, 100, message)
+
+	payloadA := connA.singlePayload(t)
+	payloadB := connB.singlePayload(t)
+	if len(payloadA) == 0 || len(payloadB) == 0 {
+		t.Fatal("expected non-empty persistent payloads")
+	}
+	if &payloadA[0] != &payloadB[0] {
+		t.Fatal("expected broadcast sessions to share one encoded payload")
+	}
+	if connC.payloadCount() != 0 {
+		t.Fatal("expected queued session to wait until persistent dispatch is enabled")
+	}
+	if err := sessC.enablePersistentDispatch(); err != nil {
+		t.Fatalf("enable queued persistent dispatch: %v", err)
+	}
+	payloadC := connC.singlePayload(t)
+	if len(payloadC) == 0 || &payloadA[0] != &payloadC[0] {
+		t.Fatal("expected queued session to retain the shared encoded payload")
+	}
+
+	var envelope internalproto.ServerEnvelope
+	if err := gproto.Unmarshal(payloadA, &envelope); err != nil {
+		t.Fatalf("unmarshal shared persistent payload: %v", err)
+	}
+	pushed := envelope.GetMessagePushed()
+	if pushed == nil || pushed.Message == nil || string(pushed.Message.GetBody()) != "shared-broadcast-payload" {
+		t.Fatalf("unexpected shared persistent payload: %+v", pushed)
+	}
+
+	testAPI.http.dispatchPersistentMessage(ctx, 100, message)
+	if connA.payloadCount() != 1 || connB.payloadCount() != 1 || connC.payloadCount() != 1 {
+		t.Fatal("expected duplicate event sequence to be skipped")
+	}
+	testAPI.http.dispatchPersistentMessage(ctx, 101, message)
+	if connA.payloadCount() != 1 || connB.payloadCount() != 1 || connC.payloadCount() != 1 {
+		t.Fatal("expected duplicate message cursor to be skipped")
+	}
+}
+
+func (c *persistentPayloadCaptureConn) payloadCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.payloads)
+}
+
+func (c *persistentPayloadCaptureConn) isClosed() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.closed
+}
+
+func TestPersistentDispatcherContinuesSharedBroadcastAfterSessionWriteFailure(t *testing.T) {
+	testAPI := newAuthenticatedTestAPI(t)
+	ctx := context.Background()
+	failingUser := mustCreatePersistentDispatchUser(t, testAPI.http, "dispatcher-failing-broadcast")
+	healthyUser := mustCreatePersistentDispatchUser(t, testAPI.http, "dispatcher-healthy-broadcast")
+
+	failingConn := &persistentPayloadCaptureConn{sendErr: errors.New("write failed")}
+	healthyConn := &persistentPayloadCaptureConn{}
+	failingSession := newPersistentPayloadCaptureSession(testAPI.http, failingUser, failingConn)
+	healthySession := newPersistentPayloadCaptureSession(testAPI.http, healthyUser, healthyConn)
+	testAPI.http.persistentMu.Lock()
+	testAPI.http.persistent[failingSession] = struct{}{}
+	testAPI.http.persistent[healthySession] = struct{}{}
+	testAPI.http.persistentMu.Unlock()
+
+	testAPI.http.dispatchPersistentMessage(ctx, 101, store.Message{
+		Recipient: store.UserKey{NodeID: testNodeID(1), UserID: store.BroadcastUserID},
+		NodeID:    testNodeID(1),
+		Seq:       43,
+		Sender:    store.UserKey{NodeID: testNodeID(1), UserID: store.BootstrapAdminUserID},
+		Body:      []byte("broadcast-after-write-failure"),
+		CreatedAt: testAPI.http.service.store.Clock().Now(),
+	})
+
+	if !failingConn.isClosed() {
+		t.Fatal("expected failed persistent session to be closed")
+	}
+	payload := healthyConn.singlePayload(t)
+	var envelope internalproto.ServerEnvelope
+	if err := gproto.Unmarshal(payload, &envelope); err != nil {
+		t.Fatalf("unmarshal healthy persistent payload: %v", err)
+	}
+	if pushed := envelope.GetMessagePushed(); pushed == nil || pushed.Message == nil || string(pushed.Message.GetBody()) != "broadcast-after-write-failure" {
+		t.Fatalf("unexpected healthy persistent payload: %+v", envelope.GetMessagePushed())
+	}
+}
+
+func mustCreatePersistentDispatchUser(t *testing.T, httpAPI *HTTP, username string) store.User {
+	t.Helper()
+	user, _, err := httpAPI.service.CreateUser(context.Background(), store.CreateUserParams{
+		Username:     username,
+		PasswordHash: "!",
+		Role:         store.RoleUser,
+	})
+	if err != nil {
+		t.Fatalf("create persistent dispatch user %q: %v", username, err)
+	}
+	return user
+}
+
+func newPersistentPayloadCaptureSession(httpAPI *HTTP, user store.User, conn *persistentPayloadCaptureConn) *clientWSSession {
+	return &clientWSSession{
+		http:              httpAPI,
+		conn:              conn,
+		protocol:          "capture",
+		remoteAddr:        "capture",
+		principal:         &requestPrincipal{User: user},
+		seen:              make(map[clientMessageCursor]struct{}),
+		persistentReady:   true,
+		blacklistCache:    make(map[store.UserKey]clientBoolCacheEntry),
+		subscriptionCache: make(map[store.UserKey]clientBoolCacheEntry),
+	}
+}
 
 func TestPersistentDispatcherMessageCommitWakeDrainsAllBatches(t *testing.T) {
 	testAPI, _, conn, adminToken, aliceKey := openControlledPersistentDispatcherTest(t)

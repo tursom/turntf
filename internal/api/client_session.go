@@ -336,6 +336,11 @@ func (s *clientWSSession) writeEnvelope(envelope *internalproto.ServerEnvelope) 
 	if err != nil {
 		return err
 	}
+	return s.writeEncodedEnvelope(data)
+}
+
+// writeEncodedEnvelope 将只读的 protobuf 编码通过底层连接串行发送。
+func (s *clientWSSession) writeEncodedEnvelope(data []byte) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	return s.conn.Send(context.Background(), data)

@@ -29,7 +29,7 @@ type clientRoleCacheEntry struct {
 // queuedPersistentMessage 暂存的持久化消息（在会话推送就绪前排队的消息）。
 type queuedPersistentMessage struct {
 	eventSequence int64
-	message       store.Message
+	message       *encodedPersistentMessage
 }
 
 // startPersistentDispatcher 启动持久化事件分发器的后台 goroutine（仅启动一次）。
@@ -159,6 +159,7 @@ func (h *HTTP) dispatchPersistentMessage(ctx context.Context, eventSequence int6
 			Msg("client persistent dispatcher failed to resolve message target")
 		return
 	}
+	encoded, encodeErr := encodePersistentMessage(message)
 
 	for _, sess := range candidates {
 		if sess == nil || sess.shouldSkipPersistentEvent(eventSequence) {
@@ -174,7 +175,12 @@ func (h *HTTP) dispatchPersistentMessage(ctx context.Context, eventSequence int6
 			continue
 		}
 		if visible {
-			if err := sess.handlePersistentEvent(eventSequence, &message); err != nil {
+			if encodeErr != nil {
+				_ = sess.handlePersistentEvent(eventSequence, nil)
+				sess.handlePersistentDispatchFailure(encodeErr)
+				continue
+			}
+			if err := sess.handlePersistentEvent(eventSequence, encoded); err != nil {
 				sess.handlePersistentDispatchFailure(err)
 			}
 			continue

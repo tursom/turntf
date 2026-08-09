@@ -5,11 +5,18 @@ import (
 	"errors"
 	"time"
 
+	gproto "google.golang.org/protobuf/proto"
+
 	"github.com/tursom/turntf/internal/clock"
 	"github.com/tursom/turntf/internal/permission"
 	internalproto "github.com/tursom/turntf/internal/proto"
 	"github.com/tursom/turntf/internal/store"
 )
+
+type encodedPersistentMessage struct {
+	cursor  clientMessageCursor
+	payload []byte
+}
 
 const (
 	// clientWSPollInterval 持久化事件分发器在提交通知缺失时的兜底轮询间隔。
@@ -47,7 +54,7 @@ func (s *clientWSSession) enablePersistentDispatch() error {
 		s.persistentMu.Unlock()
 
 		for _, queued := range pending {
-			if err := s.pushMessage(queued.message); err != nil {
+			if err := s.pushEncodedPersistentMessage(queued.message); err != nil {
 				return err
 			}
 		}
@@ -65,7 +72,7 @@ func (s *clientWSSession) shouldSkipPersistentEvent(eventSequence int64) bool {
 }
 
 // handlePersistentEvent 处理一个持久化事件。如果会话尚未就绪，将消息暂存；就绪后直接推送。
-func (s *clientWSSession) handlePersistentEvent(eventSequence int64, message *store.Message) error {
+func (s *clientWSSession) handlePersistentEvent(eventSequence int64, message *encodedPersistentMessage) error {
 	if s == nil || !s.requiresPersistentPush() {
 		return nil
 	}
@@ -83,13 +90,13 @@ func (s *clientWSSession) handlePersistentEvent(eventSequence int64, message *st
 	if !s.persistentReady {
 		s.pendingPersistent = append(s.pendingPersistent, queuedPersistentMessage{
 			eventSequence: eventSequence,
-			message:       *message,
+			message:       message,
 		})
 		s.persistentMu.Unlock()
 		return nil
 	}
 	s.persistentMu.Unlock()
-	return s.pushMessage(*message)
+	return s.pushEncodedPersistentMessage(message)
 }
 
 // handlePersistentDispatchFailure 处理持久化推送失败：记录日志、注销会话、关闭连接。
@@ -206,19 +213,40 @@ func (s *clientWSSession) invalidateChannelSubscriptionCache(channel store.UserK
 
 // pushMessage 向客户端推送一条持久化消息（去重后通过 MessagePushed 信封发送）。
 func (s *clientWSSession) pushMessage(message store.Message) error {
-	cursor := clientMessageCursor{nodeID: message.NodeID, seq: message.Seq}
-	s.seenMu.Lock()
-	if _, ok := s.seen[cursor]; ok {
-		s.seenMu.Unlock()
-		return nil
+	encoded, err := encodePersistentMessage(message)
+	if err != nil {
+		return err
 	}
-	s.seen[cursor] = struct{}{}
-	s.seenMu.Unlock()
-	return s.writeEnvelope(&internalproto.ServerEnvelope{
+	return s.pushEncodedPersistentMessage(encoded)
+}
+
+func encodePersistentMessage(message store.Message) (*encodedPersistentMessage, error) {
+	payload, err := gproto.Marshal(&internalproto.ServerEnvelope{
 		Body: &internalproto.ServerEnvelope_MessagePushed{
 			MessagePushed: &internalproto.MessagePushed{Message: clientProtoMessage(message)},
 		},
 	})
+	if err != nil {
+		return nil, err
+	}
+	return &encodedPersistentMessage{
+		cursor:  clientMessageCursor{nodeID: message.NodeID, seq: message.Seq},
+		payload: payload,
+	}, nil
+}
+
+func (s *clientWSSession) pushEncodedPersistentMessage(message *encodedPersistentMessage) error {
+	if message == nil {
+		return nil
+	}
+	s.seenMu.Lock()
+	if _, ok := s.seen[message.cursor]; ok {
+		s.seenMu.Unlock()
+		return nil
+	}
+	s.seen[message.cursor] = struct{}{}
+	s.seenMu.Unlock()
+	return s.writeEncodedEnvelope(message.payload)
 }
 
 // pushPacket 向客户端推送一条即时消息（通过 PacketPushed 信封发送）。

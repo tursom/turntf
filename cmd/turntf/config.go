@@ -102,6 +102,8 @@ type authConfig struct {
 	TokenSecret string `toml:"token_secret"`
 	// TokenTTLMinutes Token 有效期（分钟），默认 1440（24 小时）
 	TokenTTLMinutes int `toml:"token_ttl_minutes"`
+	// ReconnectTokenTTLMinutes 客户端重连凭据有效期（分钟），默认 5
+	ReconnectTokenTTLMinutes int `toml:"reconnect_token_ttl_minutes"`
 	// BootstrapAdmin 初始管理员账号配置
 	BootstrapAdmin bootstrapAdminConfig `toml:"bootstrap_admin"`
 }
@@ -304,6 +306,8 @@ type runtimeAuthConfig struct {
 	TokenSecret string
 	// TokenTTLMinutes Token 有效期（分钟）
 	TokenTTLMinutes int
+	// ReconnectTokenTTLMinutes 客户端重连凭据有效期（分钟）
+	ReconnectTokenTTLMinutes int
 	// BootstrapAdmin 引导管理员配置（已转换为 store 包类型）
 	BootstrapAdmin store.BootstrapAdminConfig
 }
@@ -395,6 +399,9 @@ func (c serveConfig) runtimeConfig(configPath string) (runtimeServeConfig, error
 	if c.Auth.TokenTTLMinutes < 0 {
 		return runtimeServeConfig{}, fmt.Errorf("auth.token_ttl_minutes must be non-negative")
 	}
+	if c.Auth.ReconnectTokenTTLMinutes < 0 {
+		return runtimeServeConfig{}, fmt.Errorf("auth.reconnect_token_ttl_minutes must be non-negative")
+	}
 	loggingCfg, err := c.Logging.runtimeConfig()
 	if err != nil {
 		return runtimeServeConfig{}, err
@@ -441,6 +448,10 @@ func (c serveConfig) runtimeConfig(configPath string) (runtimeServeConfig, error
 	tokenTTLMinutes := c.Auth.TokenTTLMinutes
 	if tokenTTLMinutes == 0 {
 		tokenTTLMinutes = 1440
+	}
+	reconnectTokenTTLMinutes := c.Auth.ReconnectTokenTTLMinutes
+	if reconnectTokenTTLMinutes == 0 {
+		reconnectTokenTTLMinutes = 5
 	}
 	forwardingCfg, err := c.Cluster.Forwarding.runtimeConfig()
 	if err != nil {
@@ -558,8 +569,9 @@ func (c serveConfig) runtimeConfig(configPath string) (runtimeServeConfig, error
 			EventLogMaxEventsPerOrigin: eventLogMaxEventsPerOrigin,
 		},
 		Auth: runtimeAuthConfig{
-			TokenSecret:     strings.TrimSpace(c.Auth.TokenSecret),
-			TokenTTLMinutes: tokenTTLMinutes,
+			TokenSecret:              strings.TrimSpace(c.Auth.TokenSecret),
+			TokenTTLMinutes:          tokenTTLMinutes,
+			ReconnectTokenTTLMinutes: reconnectTokenTTLMinutes,
 			BootstrapAdmin: store.BootstrapAdminConfig{
 				Username:     strings.TrimSpace(c.Auth.BootstrapAdmin.Username),
 				PasswordHash: strings.TrimSpace(c.Auth.BootstrapAdmin.PasswordHash),

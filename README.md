@@ -124,7 +124,7 @@ printf 'secret' | go run ./cmd/turntf hash --stdin
 
 ## 认证与授权
 
-- 登录支持 `node_id + user_id + password` 或 `login_name + password`，HTTP/长连接都要求二选一；签发的 token 在所有共享 `auth.token_secret` 的节点间通用
+- 登录支持 `node_id + user_id + password` 或 `login_name + password`；长连接首次认证后会签发短期 `reconnect_token`，后续重连可跳过 bcrypt。两类签名 token 都可在共享 `auth.token_secret` 的节点间验证，但重连 token 不能用于 HTTP Bearer 鉴权
 - `user_id = 1`：保底超级管理员 (`role=super_admin`)，管理面高风险动作只能由 `super_admin` 执行；系统保留用户仍不可通过管理接口修改或删除
 - `user_id = 2`：系统广播地址 (`role=broadcast`)，不可登录、不可删除
 - `user_id = 3`：系统节点入口地址 (`role=node`)，不可登录、不可删除

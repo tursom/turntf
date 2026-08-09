@@ -1099,8 +1099,10 @@ type LoginRequest struct {
 	SeenMessages    []*MessageCursor       `protobuf:"bytes,4,rep,name=seen_messages,json=seenMessages,proto3" json:"seen_messages,omitempty"`
 	TransientOnly   bool                   `protobuf:"varint,5,opt,name=transient_only,json=transientOnly,proto3" json:"transient_only,omitempty"`
 	ProtocolVersion string                 `protobuf:"bytes,6,opt,name=protocol_version,json=protocolVersion,proto3" json:"protocol_version,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// 短期重连凭据；提供时优先于 password 校验。
+	ReconnectToken string `protobuf:"bytes,7,opt,name=reconnect_token,json=reconnectToken,proto3" json:"reconnect_token,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *LoginRequest) Reset() {
@@ -1175,13 +1177,23 @@ func (x *LoginRequest) GetProtocolVersion() string {
 	return ""
 }
 
+func (x *LoginRequest) GetReconnectToken() string {
+	if x != nil {
+		return x.ReconnectToken
+	}
+	return ""
+}
+
 type LoginResponse struct {
 	state           protoimpl.MessageState `protogen:"open.v1"`
 	User            *User                  `protobuf:"bytes,1,opt,name=user,proto3" json:"user,omitempty"`
 	ProtocolVersion string                 `protobuf:"bytes,2,opt,name=protocol_version,json=protocolVersion,proto3" json:"protocol_version,omitempty"`
 	SessionRef      *SessionRef            `protobuf:"bytes,3,opt,name=session_ref,json=sessionRef,proto3" json:"session_ref,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// 每次成功登录都会签发或刷新；仅用于后续长连接登录。
+	ReconnectToken              string `protobuf:"bytes,4,opt,name=reconnect_token,json=reconnectToken,proto3" json:"reconnect_token,omitempty"`
+	ReconnectTokenExpiresAtUnix int64  `protobuf:"varint,5,opt,name=reconnect_token_expires_at_unix,json=reconnectTokenExpiresAtUnix,proto3" json:"reconnect_token_expires_at_unix,omitempty"`
+	unknownFields               protoimpl.UnknownFields
+	sizeCache                   protoimpl.SizeCache
 }
 
 func (x *LoginResponse) Reset() {
@@ -1233,6 +1245,20 @@ func (x *LoginResponse) GetSessionRef() *SessionRef {
 		return x.SessionRef
 	}
 	return nil
+}
+
+func (x *LoginResponse) GetReconnectToken() string {
+	if x != nil {
+		return x.ReconnectToken
+	}
+	return ""
+}
+
+func (x *LoginResponse) GetReconnectTokenExpiresAtUnix() int64 {
+	if x != nil {
+		return x.ReconnectTokenExpiresAtUnix
+	}
+	return 0
 }
 
 type SendMessageRequest struct {
@@ -5783,7 +5809,7 @@ const file_client_proto_rawDesc = "" +
 	"\x1ddelete_user_metadata_response\x18\x17 \x01(\v2..notifier.client.v1.DeleteUserMetadataResponseH\x00R\x1adeleteUserMetadataResponse\x12m\n" +
 	"\x1bscan_user_metadata_response\x18\x18 \x01(\v2,.notifier.client.v1.ScanUserMetadataResponseH\x00R\x18scanUserMetadataResponse\x12W\n" +
 	"\x13list_users_response\x18\x19 \x01(\v2%.notifier.client.v1.ListUsersResponseH\x00R\x11listUsersResponseB\x06\n" +
-	"\x04bodyR\x1asubscribe_channel_responseR\x1cunsubscribe_channel_responseR\x1blist_subscriptions_responseR\x13block_user_responseR\x15unblock_user_responseR\x1blist_blocked_users_response\"\xa6\x02\n" +
+	"\x04bodyR\x1asubscribe_channel_responseR\x1cunsubscribe_channel_responseR\x1blist_subscriptions_responseR\x13block_user_responseR\x15unblock_user_responseR\x1blist_blocked_users_response\"\xcf\x02\n" +
 	"\fLoginRequest\x12/\n" +
 	"\x04user\x18\x01 \x01(\v2\x1b.notifier.client.v1.UserRefR\x04user\x12\x1d\n" +
 	"\n" +
@@ -5791,12 +5817,15 @@ const file_client_proto_rawDesc = "" +
 	"\bpassword\x18\x03 \x01(\tR\bpassword\x12F\n" +
 	"\rseen_messages\x18\x04 \x03(\v2!.notifier.client.v1.MessageCursorR\fseenMessages\x12%\n" +
 	"\x0etransient_only\x18\x05 \x01(\bR\rtransientOnly\x12)\n" +
-	"\x10protocol_version\x18\x06 \x01(\tR\x0fprotocolVersionR\anode_idR\auser_id\"\xa9\x01\n" +
+	"\x10protocol_version\x18\x06 \x01(\tR\x0fprotocolVersion\x12'\n" +
+	"\x0freconnect_token\x18\a \x01(\tR\x0ereconnectTokenR\anode_idR\auser_id\"\x98\x02\n" +
 	"\rLoginResponse\x12,\n" +
 	"\x04user\x18\x01 \x01(\v2\x18.notifier.client.v1.UserR\x04user\x12)\n" +
 	"\x10protocol_version\x18\x02 \x01(\tR\x0fprotocolVersion\x12?\n" +
 	"\vsession_ref\x18\x03 \x01(\v2\x1e.notifier.client.v1.SessionRefR\n" +
-	"sessionRef\"\xbb\x03\n" +
+	"sessionRef\x12'\n" +
+	"\x0freconnect_token\x18\x04 \x01(\tR\x0ereconnectToken\x12D\n" +
+	"\x1freconnect_token_expires_at_unix\x18\x05 \x01(\x03R\x1breconnectTokenExpiresAtUnix\"\xbb\x03\n" +
 	"\x12SendMessageRequest\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\x04R\trequestId\x123\n" +

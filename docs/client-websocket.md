@@ -124,10 +124,26 @@ ClientEnvelope {
 }
 ```
 
+首次密码登录成功后，后续重连可以保留相同的用户选择器并用短期凭据替代密码：
+
+```protobuf
+ClientEnvelope {
+  login: LoginRequest {
+    user: { node_id: 4096, user_id: 1025 }
+    reconnect_token: "..."
+    protocol_version: "client-v1alpha5"
+    seen_messages: [
+      { node_id: 4096, seq: 2 }
+    ]
+  }
+}
+```
+
 字段说明：
 
 - `user` 与 `login_name` 二选一，而且必须恰好提供一个。两者同时提供、两者都不提供，都会按登录失败处理。
-- `password`：用户密码。只有可登录用户能通过长连接登录；`role=channel`、`role=broadcast`、`role=node` 仍不可登录。
+- `password` / `reconnect_token`：首次登录提交密码；成功后优先保存并使用短期 `reconnect_token`。只有可登录用户能通过长连接登录；`role=channel`、`role=broadcast`、`role=node` 仍不可登录。
+- 同时提供 `reconnect_token` 和 `password` 时，服务端只校验 token，不在 token 失效时回退到 bcrypt。客户端收到 `unauthorized` 后应清除 token，再显式发起一次密码登录。
 - `protocol_version`：必填语义字段，必须精确等于 `client-v1alpha5`。空值、旧版本和未知版本都会在认证前被拒绝。
 - `seen_messages`：客户端已经持久化的消息游标集合。每个游标是消息生产节点和该节点消息序号的二元组 `(node_id, seq)`。
 - `transient_only`：只关闭持久化历史补发与后续 `MessagePushed` 推送，不会把该连接变成 `/ws/realtime` 那种“受限消息集”。
@@ -151,6 +167,8 @@ ServerEnvelope {
       serving_node_id: 4096
       session_id: "..."
     }
+    reconnect_token: "..."
+    reconnect_token_expires_at_unix: 1786252742
   }
 }
 ```
@@ -161,11 +179,14 @@ ServerEnvelope {
 - `protocol_version` 固定为 `client-v1alpha5`。客户端必须先验证该值，再发布已登录状态、保存 `session_ref` 或触发登录成功回调。
 - `session_ref` 是本次连接的全局会话引用，后续可作为瞬时包的 `target_session` 使用。
 - `session_ref` 是不透明标识，客户端应原样保存和回传，不要自行拼接或猜测语义。
+- `reconnect_token` 是专用于 WebSocket / ZeroMQ 后续登录的短期签名凭据，不能作为 HTTP Bearer token 使用。每次成功登录都会刷新 token 和 `reconnect_token_expires_at_unix`。
+- token 同时绑定用户和密码版本；密码变更、用户删除或角色变为不可登录后立即失效。默认有效期为 5 分钟，可通过 `auth.reconnect_token_ttl_minutes` 调整。
 
 服务端解析出登录首帧后，会先检查协议版本，再读取用户选择器、验证凭据、处理游标、生成 `session_ref` 或注册会话：
 
 - `protocol_version` 缺失或不等于 `client-v1alpha5` 时，返回 `ServerEnvelope.error{code="unsupported_protocol_version", request_id=0}`。`message` 包含收到值和服务端要求值，随后关闭连接；不会认证、注册会话或补发历史消息。
 - 版本正确但登录帧格式、用户选择器或凭据不合法时，仍返回 `ServerEnvelope.error{code="unauthorized", request_id=0}`，然后关闭连接。
+- 首次密码验证仍使用原 bcrypt 成本；重连 token 使用 HMAC 验签，不降低密码哈希强度。冷启动或 token 已过期的大规模首次登录仍需要在客户端侧限制并发。
 
 ## 持久化消息、游标与 ack
 
@@ -545,6 +566,7 @@ ServerEnvelope {
 
 - 持久化消息时至少保存完整 `Message` 和游标 `(node_id, seq)`。
 - 重连时把本地已持久化游标放入 `LoginRequest.seen_messages`；不要依赖单独的 `AckMessage`。
+- 成功登录后安全保存最新 `reconnect_token` 及其过期时间；重连优先使用它，认证失败时清除后再进行一次密码登录。
 - 收到重复 `(node_id, seq)` 时应幂等忽略。
 - 如果业务会缓存瞬时包，应自行按 `packet_id` 做去重；不要把它混进持久化消息游标表。
 - `session_ref` 与 `target_session` 都应按不透明标识保存和回传。

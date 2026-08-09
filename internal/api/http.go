@@ -49,33 +49,35 @@ type onlineUserState struct {
 // 持久化事件分发和在线用户统计。它同时实现了 TransientPacketReceiver 和
 // LoggedInUserProvider 接口，桥接 Service 层与集群 mesh 层。
 type HTTP struct {
-	service          *Service
-	authorizer       *permission.Authorizer
-	mux              *http.ServeMux
-	nodeID           int64
-	signer           *auth.Signer                                // JWT 签名器，nil 表示禁用认证
-	tokenTTL         time.Duration                               // JWT 有效期
-	sessionShards    [clientSessionShardCount]clientSessionShard // 分片会话存储
-	persistentMu     sync.RWMutex
-	persistent       map[*clientWSSession]struct{} // 需要持久化推送的会话集合
-	persistentAdmin  map[*clientWSSession]struct{} // 管理员会话（接收所有消息）
-	onlineUsersMu    sync.RWMutex
-	onlineUsers      map[store.UserKey]onlineUserState // 在线用户聚合状态
-	onlineUserCount  atomic.Int64
-	sessionRegistry  OnlineSessionRegistry // 集群会话注册器
-	sessionSequence  atomic.Uint64         // 会话 ID 自增序列
-	targetRoleMu     sync.Mutex
-	targetRoleCache  map[store.UserKey]clientRoleCacheEntry // 用户角色缓存
-	dispatcherMu     sync.Mutex
-	dispatcherCancel context.CancelFunc // 持久化分发器取消函数
-	closeOnce        sync.Once          // 确保 Close 只执行一次
+	service           *Service
+	authorizer        *permission.Authorizer
+	mux               *http.ServeMux
+	nodeID            int64
+	signer            *auth.Signer                                // JWT 签名器，nil 表示禁用认证
+	tokenTTL          time.Duration                               // JWT 有效期
+	reconnectTokenTTL time.Duration                               // 客户端重连凭据有效期
+	sessionShards     [clientSessionShardCount]clientSessionShard // 分片会话存储
+	persistentMu      sync.RWMutex
+	persistent        map[*clientWSSession]struct{} // 需要持久化推送的会话集合
+	persistentAdmin   map[*clientWSSession]struct{} // 管理员会话（接收所有消息）
+	onlineUsersMu     sync.RWMutex
+	onlineUsers       map[store.UserKey]onlineUserState // 在线用户聚合状态
+	onlineUserCount   atomic.Int64
+	sessionRegistry   OnlineSessionRegistry // 集群会话注册器
+	sessionSequence   atomic.Uint64         // 会话 ID 自增序列
+	targetRoleMu      sync.Mutex
+	targetRoleCache   map[store.UserKey]clientRoleCacheEntry // 用户角色缓存
+	dispatcherMu      sync.Mutex
+	dispatcherCancel  context.CancelFunc // 持久化分发器取消函数
+	closeOnce         sync.Once          // 确保 Close 只执行一次
 }
 
 // HTTPOptions 配置 HTTP 服务的可选参数。
 type HTTPOptions struct {
-	NodeID   int64
-	Signer   *auth.Signer
-	TokenTTL time.Duration
+	NodeID            int64
+	Signer            *auth.Signer
+	TokenTTL          time.Duration
+	ReconnectTokenTTL time.Duration
 }
 
 // -- HTTP JSON 请求类型 --
@@ -130,6 +132,12 @@ type loginRequest struct {
 	Password  string `json:"password"`
 }
 
+const (
+	tokenMetadataPurpose         = "purpose"
+	tokenMetadataPasswordVersion = "password_version"
+	tokenPurposeClientReconnect  = "client_reconnect"
+)
+
 // requestPrincipal 表示通过认证的请求主体，包含用户信息和 JWT Claims。
 type requestPrincipal struct {
 	User   store.User
@@ -174,17 +182,22 @@ func NewHTTP(service *Service, opts ...HTTPOptions) *HTTP {
 	if tokenTTL <= 0 {
 		tokenTTL = 24 * time.Hour
 	}
+	reconnectTokenTTL := resolved.ReconnectTokenTTL
+	if reconnectTokenTTL <= 0 {
+		reconnectTokenTTL = 5 * time.Minute
+	}
 	h := &HTTP{
-		service:         service,
-		authorizer:      permission.NewAuthorizer(service, resolved.Signer != nil),
-		mux:             http.NewServeMux(),
-		nodeID:          resolved.NodeID,
-		signer:          resolved.Signer,
-		tokenTTL:        tokenTTL,
-		persistent:      make(map[*clientWSSession]struct{}),
-		persistentAdmin: make(map[*clientWSSession]struct{}),
-		onlineUsers:     make(map[store.UserKey]onlineUserState),
-		targetRoleCache: make(map[store.UserKey]clientRoleCacheEntry),
+		service:           service,
+		authorizer:        permission.NewAuthorizer(service, resolved.Signer != nil),
+		mux:               http.NewServeMux(),
+		nodeID:            resolved.NodeID,
+		signer:            resolved.Signer,
+		tokenTTL:          tokenTTL,
+		reconnectTokenTTL: reconnectTokenTTL,
+		persistent:        make(map[*clientWSSession]struct{}),
+		persistentAdmin:   make(map[*clientWSSession]struct{}),
+		onlineUsers:       make(map[store.UserKey]onlineUserState),
+		targetRoleCache:   make(map[store.UserKey]clientRoleCacheEntry),
 	}
 	if service != nil && service.sessionRegistry != nil {
 		h.sessionRegistry = service.sessionRegistry
@@ -318,6 +331,56 @@ func (h *HTTP) handleLogin(w http.ResponseWriter, r *http.Request) {
 		"expires_at": expiresAt.Format(time.RFC3339),
 		"user":       userResponseFromStore(user, loginName),
 	})
+}
+
+func (h *HTTP) issueClientReconnectToken(user store.User) (string, int64, error) {
+	if h.signer == nil {
+		return "", 0, nil
+	}
+	now := time.Now().UTC()
+	expiresAt := now.Add(h.reconnectTokenTTL)
+	token, err := h.signer.Sign(auth.Claims{
+		Subject:   formatUserSubject(user.Key()),
+		Issuer:    strconv.FormatInt(h.nodeID, 10),
+		IssuedAt:  now.Unix(),
+		ExpiresAt: expiresAt.Unix(),
+		Metadata: map[string]string{
+			tokenMetadataPurpose:         tokenPurposeClientReconnect,
+			tokenMetadataPasswordVersion: user.VersionPasswordHash.String(),
+		},
+	})
+	if err != nil {
+		return "", 0, err
+	}
+	return token, expiresAt.Unix(), nil
+}
+
+func (h *HTTP) authenticateClientReconnectToken(ctx context.Context, token string) (store.User, error) {
+	if h.signer == nil {
+		return store.User{}, errors.New("reconnect token authentication is disabled")
+	}
+	claims, err := h.signer.Verify(strings.TrimSpace(token))
+	if err != nil {
+		return store.User{}, err
+	}
+	if claims.ExpiresAt <= 0 || time.Now().UTC().Unix() >= claims.ExpiresAt {
+		return store.User{}, errors.New("reconnect token expired")
+	}
+	if claims.Metadata[tokenMetadataPurpose] != tokenPurposeClientReconnect {
+		return store.User{}, errors.New("invalid reconnect token purpose")
+	}
+	key, err := parseUserSubject(claims.Subject)
+	if err != nil {
+		return store.User{}, errors.New("invalid reconnect token subject")
+	}
+	user, err := h.service.GetUser(ctx, key)
+	if err != nil {
+		return store.User{}, err
+	}
+	if !user.CanLogin() || claims.Metadata[tokenMetadataPasswordVersion] != user.VersionPasswordHash.String() {
+		return store.User{}, errors.New("stale reconnect token")
+	}
+	return user, nil
 }
 
 func (h *HTTP) handleCreateUser(w http.ResponseWriter, r *http.Request) {
@@ -1959,6 +2022,9 @@ func (h *HTTP) authenticateRequest(ctx context.Context, r *http.Request) (*reque
 	claims, err := h.signer.Verify(token)
 	if err != nil {
 		return nil, err
+	}
+	if claims.Metadata[tokenMetadataPurpose] != "" {
+		return nil, errors.New("invalid token purpose")
 	}
 	now := time.Now().UTC().Unix()
 	if claims.ExpiresAt <= 0 || now >= claims.ExpiresAt {

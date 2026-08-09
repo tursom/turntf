@@ -87,6 +87,8 @@ message_sync_mode = "no_sync"
 token_secret = "replace-me"
 # 登录 token 有效期（分钟）；0 使用默认值 1440（24 小时）。
 token_ttl_minutes = 1440
+# 长连接重连 token 有效期（分钟）；0 使用默认值 5。
+reconnect_token_ttl_minutes = 5
 
 # 保底超级管理员。启动时确保该用户名存在且拥有 super_admin 权限。
 # 仅首次创建时使用此处配置，后续不会强制覆盖已有密码。

@@ -77,12 +77,17 @@ message LoginRequest {
   repeated MessageCursor seen_messages = 4;
   bool transient_only = 5;
   string protocol_version = 6;
+  // 短期重连凭据；提供时优先于 password 校验。
+  string reconnect_token = 7;
 }
 
 message LoginResponse {
   User user = 1;
   string protocol_version = 2;
   SessionRef session_ref = 3;
+  // 每次成功登录都会签发或刷新；仅用于后续长连接登录。
+  string reconnect_token = 4;
+  int64 reconnect_token_expires_at_unix = 5;
 }
 
 message SendMessageRequest {

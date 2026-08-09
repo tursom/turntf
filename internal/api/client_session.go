@@ -171,7 +171,11 @@ func (s *clientWSSession) login(ctx context.Context) error {
 		return fmt.Errorf("exactly one of login user or login_name must be provided")
 	}
 	var user store.User
-	if hasLoginNameSelector {
+	reconnectToken := strings.TrimSpace(login.ReconnectToken)
+	usedReconnectToken := reconnectToken != ""
+	if usedReconnectToken {
+		user, err = s.http.authenticateClientReconnectToken(ctx, reconnectToken)
+	} else if hasLoginNameSelector {
 		user, err = s.http.service.AuthenticateUserByLoginName(ctx, loginName, login.Password)
 	} else {
 		key := store.UserKey{NodeID: login.User.NodeId, UserID: login.User.UserId}
@@ -183,6 +187,21 @@ func (s *clientWSSession) login(ctx context.Context) error {
 	loginName, err = s.http.service.GetUserLoginName(ctx, user.Key())
 	if err != nil {
 		return fmt.Errorf("load login name: %w", err)
+	}
+	if usedReconnectToken {
+		if hasLoginNameSelector && loginName != strings.TrimSpace(login.LoginName) {
+			return fmt.Errorf("invalid credentials")
+		}
+		if hasUserSelector {
+			selector := store.UserKey{NodeID: login.User.NodeId, UserID: login.User.UserId}
+			if selector != user.Key() {
+				return fmt.Errorf("invalid credentials")
+			}
+		}
+	}
+	issuedReconnectToken, reconnectTokenExpiresAtUnix, err := s.http.issueClientReconnectToken(user)
+	if err != nil {
+		return fmt.Errorf("issue reconnect token: %w", err)
 	}
 	for _, cursor := range login.SeenMessages {
 		if cursor == nil || cursor.NodeId <= 0 || cursor.Seq <= 0 {
@@ -205,13 +224,16 @@ func (s *clientWSSession) login(ctx context.Context) error {
 	s.logInfo("client_authenticated").
 		Bool("realtime_stream", s.realtimeOnly).
 		Bool("transient_only", s.transientOnly).
+		Bool("reconnect_token", usedReconnectToken).
 		Msg("client transport authenticated")
 	if err := s.writeEnvelope(&internalproto.ServerEnvelope{
 		Body: &internalproto.ServerEnvelope_LoginResponse{
 			LoginResponse: &internalproto.LoginResponse{
-				User:            clientProtoUserWithLoginName(user, loginName),
-				ProtocolVersion: internalproto.ClientProtocolVersion,
-				SessionRef:      clientProtoSessionRef(s.sessionRef),
+				User:                        clientProtoUserWithLoginName(user, loginName),
+				ProtocolVersion:             internalproto.ClientProtocolVersion,
+				SessionRef:                  clientProtoSessionRef(s.sessionRef),
+				ReconnectToken:              issuedReconnectToken,
+				ReconnectTokenExpiresAtUnix: reconnectTokenExpiresAtUnix,
 			},
 		},
 	}); err != nil {

@@ -30,6 +30,7 @@ type benchmarkPersistentLoginFixture struct {
 	serverURL      string
 	userKey        store.UserKey
 	password       string
+	reconnectToken string
 	expectedBodies [][]byte
 	timeout        time.Duration
 	closeFns       []func()
@@ -132,6 +133,41 @@ func BenchmarkClientWebSocketPersistentLoginAuthenticated(b *testing.B) {
 	}
 }
 
+func BenchmarkClientWebSocketPersistentReconnectTokenAuthenticated(b *testing.B) {
+	for _, mode := range benchroot.Modes(b) {
+		mode := mode
+		b.Run(mode.Name(), func(b *testing.B) {
+			for _, historyCount := range []int{0, 100, 1000} {
+				b.Run(fmt.Sprintf("%s/history-%d/256B", store.EngineSQLite, historyCount), func(b *testing.B) {
+					silenceAPIBenchmarkLogs(b)
+					fixture := openBenchmarkPersistentLoginFixture(b, mode, historyCount)
+					b.Cleanup(fixture.Close)
+
+					_, _ = fixture.LoginOnce(b)
+					_, _ = fixture.ReconnectOnce(b)
+					b.ReportMetric(float64(historyCount), "history_messages/op")
+					if historyCount > 0 {
+						b.SetBytes(int64(historyCount * persistentClientBenchmarkPayloadSize))
+					}
+					b.ResetTimer()
+
+					var totalLogin time.Duration
+					var totalCatchup time.Duration
+					for i := 0; i < b.N; i++ {
+						loginLatency, catchupLatency := fixture.ReconnectOnce(b)
+						totalLogin += loginLatency
+						totalCatchup += catchupLatency
+					}
+
+					b.StopTimer()
+					reportAPIBenchmarkAverageLatencyMetric(b, totalLogin, "login_ms/op")
+					reportAPIBenchmarkAverageLatencyMetric(b, totalCatchup, "catchup_ms/op")
+				})
+			}
+		})
+	}
+}
+
 func BenchmarkClientWebSocketPersistentSendMessageAuthenticatedLinearMeshWithOnlineUsers(b *testing.B) {
 	for _, mode := range benchroot.Modes(b) {
 		mode := mode
@@ -203,6 +239,18 @@ func (f *benchmarkPersistentLoginFixture) Close() {
 }
 
 func (f *benchmarkPersistentLoginFixture) LoginOnce(tb testing.TB) (time.Duration, time.Duration) {
+	return f.loginOnce(tb, f.password, "")
+}
+
+func (f *benchmarkPersistentLoginFixture) ReconnectOnce(tb testing.TB) (time.Duration, time.Duration) {
+	tb.Helper()
+	if f.reconnectToken == "" {
+		tb.Fatal("reconnect benchmark requires a password login first")
+	}
+	return f.loginOnce(tb, "", f.reconnectToken)
+}
+
+func (f *benchmarkPersistentLoginFixture) loginOnce(tb testing.TB, password, reconnectToken string) (time.Duration, time.Duration) {
 	tb.Helper()
 
 	parsed, err := url.Parse(f.serverURL)
@@ -222,7 +270,8 @@ func (f *benchmarkPersistentLoginFixture) LoginOnce(tb testing.TB) (time.Duratio
 		Body: &internalproto.ClientEnvelope_Login{
 			Login: &internalproto.LoginRequest{
 				User:            &internalproto.UserRef{NodeId: f.userKey.NodeID, UserId: f.userKey.UserID},
-				Password:        f.password,
+				Password:        password,
+				ReconnectToken:  reconnectToken,
 				ProtocolVersion: internalproto.ClientProtocolVersion,
 			},
 		},
@@ -246,10 +295,12 @@ func (f *benchmarkPersistentLoginFixture) LoginOnce(tb testing.TB) (time.Duratio
 	if loginResponse == nil ||
 		loginResponse.GetUser().GetNodeId() != f.userKey.NodeID ||
 		loginResponse.GetUser().GetUserId() != f.userKey.UserID ||
-		loginResponse.GetProtocolVersion() != internalproto.ClientProtocolVersion {
+		loginResponse.GetProtocolVersion() != internalproto.ClientProtocolVersion ||
+		loginResponse.GetReconnectToken() == "" {
 		_ = conn.Close()
 		tb.Fatalf("unexpected persistent login response: %+v", loginResponse)
 	}
+	f.reconnectToken = loginResponse.GetReconnectToken()
 
 	catchupLatency := loginLatency
 	for idx, expectedBody := range f.expectedBodies {

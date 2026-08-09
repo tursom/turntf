@@ -103,9 +103,10 @@ func serveRuntime(ctx context.Context, configPath string, logOutput io.Writer) e
 
 	svc := api.New(st, manager)
 	httpAPI := api.NewHTTP(svc, api.HTTPOptions{
-		NodeID:   st.NodeID(),
-		Signer:   signer,
-		TokenTTL: time.Duration(cfg.Auth.TokenTTLMinutes) * time.Minute,
+		NodeID:            st.NodeID(),
+		Signer:            signer,
+		TokenTTL:          time.Duration(cfg.Auth.TokenTTLMinutes) * time.Minute,
+		ReconnectTokenTTL: time.Duration(cfg.Auth.ReconnectTokenTTLMinutes) * time.Minute,
 	})
 	defer httpAPI.Close()
 	if manager != nil {

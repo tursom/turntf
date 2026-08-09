@@ -26,7 +26,7 @@
 长连接鉴权和 HTTP 不同：
 
 - WebSocket / ZeroMQ 不使用 query token，也不读取 HTTP `Authorization` header。
-- 登录时始终通过首个 protobuf `LoginRequest` 提交密码。
+- 首次登录通过首个 protobuf `LoginRequest` 提交密码；成功后保存服务端返回的短期 `reconnect_token`，后续重连优先用它替代密码。
 - `LoginRequest` 也必须二选一提供 `user` 或 `login_name`；两者同时提供或同时缺失都会被拒绝。
 - 每次初连和重连都必须声明 `LoginRequest.protocol_version = "client-v1alpha5"`；服务端在凭据校验和会话注册前严格拒绝空值或其他版本。
 
@@ -58,14 +58,14 @@
    - 实时流 WebSocket：`GET /ws/realtime`。
    - 仅关闭持久化补发但仍保留标准 RPC：在标准长连接登录时设置 `LoginRequest.transient_only = true`。
 7. 如果使用 ZeroMQ CURVE，先完成 CURVE socket 配置；随后发送 `ZeroMQMuxHello{role=CLIENT, protocol_version="zeromq-mux-v1"}`。
-8. 客户端发送 `ClientEnvelope.login`，携带固定的 `protocol_version = "client-v1alpha5"`、`user` 或 `login_name`、`password`、可选的 `seen_messages`，以及可选的 `transient_only`。
-9. 服务端返回 `LoginResponse`，其中包含 `user`、固定的 `protocol_version = "client-v1alpha5"` 和当前连接的 `session_ref`；客户端先校验版本，再进入已登录状态。
+8. 客户端发送 `ClientEnvelope.login`，携带固定的 `protocol_version = "client-v1alpha5"`、`user` 或 `login_name`、首次登录用的 `password` 或后续登录用的 `reconnect_token`、可选的 `seen_messages`，以及可选的 `transient_only`。
+9. 服务端返回 `LoginResponse`，其中包含 `user`、固定的 `protocol_version = "client-v1alpha5"`、当前连接的 `session_ref`、最新 `reconnect_token` 及其过期时间；客户端先校验版本并安全持久化新 token，再进入已登录状态。
 10. 如果当前连接不是 transient-only，服务端会先补发“当前用户可见且不在 `seen_messages` 中”的持久消息，然后继续推送实时消息。
 11. 客户端收到 `MessagePushed` 后，按 `(node_id, seq)` 做幂等检查，先落库，再保存游标，最后可选发送 `AckMessage`。
 12. 客户端收到 `PacketPushed` 时不要写消息游标；如需去重，可按 `packet_id` 做短期应用层去重。
 13. 客户端可继续在同一条长连接上执行 RPC，例如 `send_message`、`get_user`、`list_messages`、`list_users`、`get_user_metadata`、`scan_user_metadata`、`upsert_user_attachment`、`list_user_attachments`、`list_cluster_nodes`、`list_node_logged_in_users`、`resolve_user_sessions`、`list_events`、`operations_status`、`metrics`。
 14. 如果需要把瞬时包定向到某个在线会话，先用 `resolve_user_sessions` 获取目标用户的 `session_ref`，再把它放进 `SendMessageRequest.target_session`。
-15. 网络断开后，客户端用本地游标重连，服务端按新的 `seen_messages` 跳过已持久化消息。
+15. 网络断开后，客户端用短期 `reconnect_token` 和本地游标重连，服务端按新的 `seen_messages` 跳过已持久化消息；token 失效时清除它，再显式进行一次密码登录。
 
 ## 服务端准备
 

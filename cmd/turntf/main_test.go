@@ -710,6 +710,9 @@ db_path = "./data/node-a.db"
 	if cfg.Auth.TokenTTLMinutes != 1440 {
 		t.Fatalf("unexpected default auth ttl: %d", cfg.Auth.TokenTTLMinutes)
 	}
+	if cfg.Auth.ReconnectTokenTTLMinutes != 5 {
+		t.Fatalf("unexpected default reconnect token ttl: %d", cfg.Auth.ReconnectTokenTTLMinutes)
+	}
 }
 
 func TestLoadServeRuntimeConfigUsesDefaultLogging(t *testing.T) {

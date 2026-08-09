@@ -640,6 +640,14 @@ func (s *Service) subscribeMessageCommits() (<-chan struct{}, func()) {
 	return s.store.SubscribeMessageCommits()
 }
 
+// subscribeSubscriptionChanges 订阅 Store 已提交的频道订阅关系变化。
+func (s *Service) subscribeSubscriptionChanges(handler func([]store.SubscriptionChange)) func() {
+	if s == nil || s.store == nil {
+		return func() {}
+	}
+	return s.store.SubscribeSubscriptionChanges(handler)
+}
+
 // BlockUser 将目标用户加入黑名单，屏蔽其发送的消息。
 func (s *Service) BlockUser(ctx context.Context, params store.BlacklistParams) (store.BlacklistEntry, store.Event, error) {
 	if err := s.allowWrite(ctx); err != nil {

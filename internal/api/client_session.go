@@ -51,7 +51,6 @@ type clientWSSession struct {
 	persistentReady   bool                                   // 持久化推送是否已就绪
 	pendingPersistent []queuedPersistentMessage              // 推送就绪前暂存的持久化消息
 	blacklistCache    map[store.UserKey]clientBoolCacheEntry // 黑名单查询缓存
-	subscriptionCache map[store.UserKey]clientBoolCacheEntry // 频道订阅查询缓存
 }
 
 // AcceptZeroMQConn 接受 ZeroMQ 客户端连接，将其纳入与 WebSocket 相同的服务流程。
@@ -74,14 +73,13 @@ func (h *HTTP) serveClientConnWithLoginTimeout(conn clientTransportConn, baseCtx
 		return
 	}
 	sess := &clientWSSession{
-		http:              h,
-		conn:              conn,
-		protocol:          conn.Transport(),
-		remoteAddr:        conn.RemoteAddr(),
-		realtimeOnly:      path == clientRealtimeWSPath,
-		seen:              make(map[clientMessageCursor]struct{}),
-		blacklistCache:    make(map[store.UserKey]clientBoolCacheEntry),
-		subscriptionCache: make(map[store.UserKey]clientBoolCacheEntry),
+		http:           h,
+		conn:           conn,
+		protocol:       conn.Transport(),
+		remoteAddr:     conn.RemoteAddr(),
+		realtimeOnly:   path == clientRealtimeWSPath,
+		seen:           make(map[clientMessageCursor]struct{}),
+		blacklistCache: make(map[store.UserKey]clientBoolCacheEntry),
 	}
 	defer conn.Close()
 	log.Info().
@@ -220,7 +218,9 @@ func (s *clientWSSession) login(ctx context.Context) error {
 	s.sessionRef = s.http.newSessionRef()
 	s.loginName = loginName
 	s.principal = &requestPrincipal{User: user}
-	s.http.registerClientSession(s.principal.User.Key(), s)
+	if err := s.http.registerClientSessionContext(ctx, s.principal.User.Key(), s); err != nil {
+		return fmt.Errorf("register client session: %w", err)
+	}
 	s.logInfo("client_authenticated").
 		Bool("realtime_stream", s.realtimeOnly).
 		Bool("transient_only", s.transientOnly).

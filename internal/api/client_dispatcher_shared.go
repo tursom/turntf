@@ -7,14 +7,13 @@ import (
 
 	"github.com/rs/zerolog/log"
 
-	"github.com/tursom/turntf/internal/permission"
 	"github.com/tursom/turntf/internal/store"
 )
 
-// clientWSVisibilityCacheTTL 客户端可见性缓存（黑名单、频道订阅、用户角色）的 TTL。
+// clientWSVisibilityCacheTTL 客户端可见性缓存（黑名单、用户角色）的 TTL。
 const clientWSVisibilityCacheTTL = 5 * time.Second
 
-// clientBoolCacheEntry 布尔值缓存条目（用于黑名单和频道订阅）。
+// clientBoolCacheEntry 布尔值缓存条目（用于黑名单）。
 type clientBoolCacheEntry struct {
 	value     bool
 	expiresAt time.Time
@@ -30,6 +29,11 @@ type clientRoleCacheEntry struct {
 type queuedPersistentMessage struct {
 	eventSequence int64
 	message       *encodedPersistentMessage
+}
+
+type persistentDispatchPlan struct {
+	role       string
+	candidates []*clientWSSession
 }
 
 // startPersistentDispatcher 启动持久化事件分发器的后台 goroutine（仅启动一次）。
@@ -110,10 +114,8 @@ func (h *HTTP) runPersistentDispatcherWithFallback(
 				break
 			}
 
+			retryBatch := false
 			for _, event := range events {
-				if event.Sequence > afterSequence {
-					afterSequence = event.Sequence
-				}
 				message, ok, err := messageFromClientPushEvent(event)
 				if err != nil {
 					log.Warn().
@@ -122,15 +124,21 @@ func (h *HTTP) runPersistentDispatcherWithFallback(
 						Str("event", "client_persistent_dispatcher_decode_failed").
 						Int64("event_sequence", event.Sequence).
 						Msg("client persistent dispatcher failed to decode event")
+					afterSequence = event.Sequence
 					continue
 				}
 				if !ok {
+					afterSequence = event.Sequence
 					continue
 				}
-				h.dispatchPersistentMessage(ctx, event.Sequence, message)
+				if err := h.dispatchPersistentMessage(ctx, event.Sequence, message); err != nil {
+					retryBatch = true
+					break
+				}
+				afterSequence = event.Sequence
 			}
 
-			if len(events) < clientWSPollBatchSize {
+			if retryBatch || len(events) < clientWSPollBatchSize {
 				break
 			}
 		}
@@ -138,17 +146,14 @@ func (h *HTTP) runPersistentDispatcherWithFallback(
 }
 
 // dispatchPersistentMessage 将一条持久化消息分发给所有符合条件的候选会话。
-// 先解析消息目标角色，获取候选会话列表，然后逐个检查可见性并推送。
-func (h *HTTP) dispatchPersistentMessage(ctx context.Context, eventSequence int64, message store.Message) {
+// 先解析消息目标角色并获取候选会话；只有 direct 消息需要逐会话检查黑名单。
+func (h *HTTP) dispatchPersistentMessage(ctx context.Context, eventSequence int64, message store.Message) error {
 	if h == nil {
-		return
+		return nil
 	}
 
-	candidates, err := h.persistentCandidatesForMessage(ctx, message)
+	plan, err := h.persistentCandidatesForMessage(ctx, message)
 	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			return
-		}
 		log.Warn().
 			Err(err).
 			Str("component", "api").
@@ -157,22 +162,26 @@ func (h *HTTP) dispatchPersistentMessage(ctx context.Context, eventSequence int6
 			Int64("recipient_node_id", message.Recipient.NodeID).
 			Int64("recipient_user_id", message.Recipient.UserID).
 			Msg("client persistent dispatcher failed to resolve message target")
-		return
+		return err
 	}
+	h.persistentCandidateCount.Add(int64(len(plan.candidates)))
 	encoded, encodeErr := encodePersistentMessage(message)
 
-	for _, sess := range candidates {
+	for _, sess := range plan.candidates {
 		if sess == nil || sess.shouldSkipPersistentEvent(eventSequence) {
 			continue
 		}
 
-		visible, err := sess.canSeeMessage(ctx, message)
-		if err != nil {
-			_ = sess.handlePersistentEvent(eventSequence, nil)
-			sess.logWarn("client_persistent_authorize_failed", err).
-				Int64("event_sequence", eventSequence).
-				Msg("client persistent dispatcher failed to authorize message")
-			continue
+		visible := true
+		if plan.role != store.RoleBroadcast && plan.role != store.RoleChannel {
+			visible, err = sess.canReceiveDirectMessage(ctx, message)
+			if err != nil {
+				_ = sess.handlePersistentEvent(eventSequence, nil)
+				sess.logWarn("client_persistent_authorize_failed", err).
+					Int64("event_sequence", eventSequence).
+					Msg("client persistent dispatcher failed to authorize message")
+				continue
+			}
 		}
 		if visible {
 			if encodeErr != nil {
@@ -187,6 +196,7 @@ func (h *HTTP) dispatchPersistentMessage(ctx context.Context, eventSequence int6
 		}
 		_ = sess.handlePersistentEvent(eventSequence, nil)
 	}
+	return nil
 }
 
 // hasPersistentSessions 检查是否有任何需要持久化推送的客户端会话。
@@ -194,23 +204,19 @@ func (h *HTTP) hasPersistentSessions() bool {
 	if h == nil {
 		return false
 	}
-	h.persistentMu.RLock()
-	defer h.persistentMu.RUnlock()
-	return len(h.persistent) > 0
+	return h.persistentSessions != nil && h.persistentSessions.HasSessions()
 }
 
 // registerPersistentSession 注册一个需要持久化推送的客户端会话。会自动启动分发器（如果尚未启动）。
-func (h *HTTP) registerPersistentSession(sess *clientWSSession) {
-	if h == nil || sess == nil {
-		return
+func (h *HTTP) registerPersistentSession(ctx context.Context, sess *clientWSSession) error {
+	if h == nil || sess == nil || h.persistentSessions == nil {
+		return nil
+	}
+	if err := h.persistentSessions.Register(ctx, sess); err != nil {
+		return err
 	}
 	h.startPersistentDispatcher()
-	h.persistentMu.Lock()
-	h.persistent[sess] = struct{}{}
-	if sess.principal != nil && permission.IsAdminRole(sess.principal.User.Role) {
-		h.persistentAdmin[sess] = struct{}{}
-	}
-	h.persistentMu.Unlock()
+	return nil
 }
 
 // unregisterPersistentSession 注销一个持久化推送会话。
@@ -218,77 +224,32 @@ func (h *HTTP) unregisterPersistentSession(sess *clientWSSession) {
 	if h == nil || sess == nil {
 		return
 	}
-	h.persistentMu.Lock()
-	delete(h.persistent, sess)
-	delete(h.persistentAdmin, sess)
-	h.persistentMu.Unlock()
+	if h.persistentSessions != nil {
+		h.persistentSessions.Unregister(sess)
+	}
 }
 
 // persistentCandidatesForMessage 确定消息的候选推送会话：
-//   - 广播/频道消息 → 所有持久化会话
+//   - 广播消息 → 所有持久化会话
+//   - 频道消息 → 在线订阅会话 + 所有管理员会话
 //   - 普通用户消息 → 该用户的直接接收者会话 + 所有管理员会话
-func (h *HTTP) persistentCandidatesForMessage(ctx context.Context, message store.Message) ([]*clientWSSession, error) {
+func (h *HTTP) persistentCandidatesForMessage(ctx context.Context, message store.Message) (persistentDispatchPlan, error) {
 	role, err := h.messageTargetRole(ctx, message.UserKey())
 	if err != nil {
-		return nil, err
+		if errors.Is(err, store.ErrNotFound) {
+			return persistentDispatchPlan{}, nil
+		}
+		return persistentDispatchPlan{}, err
 	}
 	switch role {
-	case store.RoleBroadcast, store.RoleChannel:
-		return h.clonePersistentSessions(), nil
+	case store.RoleBroadcast:
+		return persistentDispatchPlan{role: role, candidates: h.persistentSessions.AllCandidates()}, nil
+	case store.RoleChannel:
+		candidates, err := h.persistentSessions.ChannelCandidates(ctx, message.UserKey())
+		return persistentDispatchPlan{role: role, candidates: candidates}, err
 	default:
-		return h.clonePersistentDirectRecipients(message.UserKey()), nil
+		return persistentDispatchPlan{role: role, candidates: h.persistentSessions.DirectCandidates(message.UserKey())}, nil
 	}
-}
-
-// clonePersistentSessions 返回所有持久化会话的快照副本。
-func (h *HTTP) clonePersistentSessions() []*clientWSSession {
-	if h == nil {
-		return nil
-	}
-	h.persistentMu.RLock()
-	sessions := make([]*clientWSSession, 0, len(h.persistent))
-	for sess := range h.persistent {
-		sessions = append(sessions, sess)
-	}
-	h.persistentMu.RUnlock()
-	return sessions
-}
-
-// clonePersistentDirectRecipients 返回指定接收者的直接会话 + 所有管理员会话的去重副本。
-// 先查 shard 中的目标用户会话，再合并管理员。
-func (h *HTTP) clonePersistentDirectRecipients(recipient store.UserKey) []*clientWSSession {
-	if h == nil {
-		return nil
-	}
-
-	dedup := make(map[*clientWSSession]struct{})
-	sessions := make([]*clientWSSession, 0, 4)
-
-	shard := h.sessionShard(recipient)
-	if shard != nil {
-		shard.mu.RLock()
-		if bucket := shard.sessions[recipient]; bucket != nil {
-			for _, sess := range bucket.snapshot {
-				if sess == nil || !sess.requiresPersistentPush() {
-					continue
-				}
-				dedup[sess] = struct{}{}
-				sessions = append(sessions, sess)
-			}
-		}
-		shard.mu.RUnlock()
-	}
-
-	h.persistentMu.RLock()
-	for sess := range h.persistentAdmin {
-		if _, exists := dedup[sess]; exists {
-			continue
-		}
-		dedup[sess] = struct{}{}
-		sessions = append(sessions, sess)
-	}
-	h.persistentMu.RUnlock()
-	return sessions
 }
 
 // messageTargetRole 带缓存查询消息目标用户的角色（用于确定推送策略：广播/频道/直接）。
@@ -328,13 +289,6 @@ func (h *HTTP) invalidateTargetRoleCache(key store.UserKey) {
 	h.targetRoleMu.Lock()
 	delete(h.targetRoleCache, key)
 	h.targetRoleMu.Unlock()
-}
-
-// invalidateUserChannelSubscriptionCache 使指定用户的频道订阅缓存失效（遍历该用户的所有会话）。
-func (h *HTTP) invalidateUserChannelSubscriptionCache(subscriber, channel store.UserKey) {
-	for _, sess := range h.cloneSessionsForUser(subscriber) {
-		sess.invalidateChannelSubscriptionCache(channel)
-	}
 }
 
 // invalidateUserBlacklistCache 使指定用户的黑名单缓存失效（遍历该用户的所有会话）。

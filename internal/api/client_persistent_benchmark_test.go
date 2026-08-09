@@ -682,6 +682,7 @@ func (f *benchmarkPersistentDispatchFixture) RunScenario(b *testing.B, scenario 
 
 	requestID := f.takeRequestID()
 	_, _, _ = f.sendOnce(b, f.sender, scenario, payload, requestID)
+	candidatesBefore := f.persistentCandidateCount()
 	b.SetBytes(int64(len(payload) * len(scenario.recipients)))
 	b.ReportMetric(float64(len(scenario.recipients)), "delivered/op")
 	b.ReportMetric(float64(f.onlineUsersTotal), "online_users")
@@ -704,11 +705,23 @@ func (f *benchmarkPersistentDispatchFixture) RunScenario(b *testing.B, scenario 
 	}
 
 	b.StopTimer()
+	candidatesAfter := f.persistentCandidateCount()
+	if b.N > 0 {
+		b.ReportMetric(float64(candidatesAfter-candidatesBefore)/float64(b.N), "candidates/op")
+	}
 	reportAPIBenchmarkAverageLatencyMetric(b, totalWrite, "write_ms/op")
 	reportAPIBenchmarkAverageLatencyMetric(b, totalFirstPush, "first_push_ms/op")
 	reportAPIBenchmarkAverageLatencyMetric(b, totalLastPush, "last_push_ms/op")
 	reportAPIBenchmarkTailLatencyMetrics(b, writeLatencies, "write")
 	reportAPIBenchmarkTailLatencyMetrics(b, lastPushLatencies, "last_push")
+}
+
+func (f *benchmarkPersistentDispatchFixture) persistentCandidateCount() int64 {
+	var count int64
+	for _, node := range f.cluster.nodes {
+		count += node.http.persistentCandidateCount.Load()
+	}
+	return count
 }
 
 func reportAPIBenchmarkTailLatencyMetrics(b *testing.B, samples []time.Duration, prefix string) {

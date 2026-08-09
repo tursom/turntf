@@ -49,27 +49,27 @@ type onlineUserState struct {
 // 持久化事件分发和在线用户统计。它同时实现了 TransientPacketReceiver 和
 // LoggedInUserProvider 接口，桥接 Service 层与集群 mesh 层。
 type HTTP struct {
-	service           *Service
-	authorizer        *permission.Authorizer
-	mux               *http.ServeMux
-	nodeID            int64
-	signer            *auth.Signer                                // JWT 签名器，nil 表示禁用认证
-	tokenTTL          time.Duration                               // JWT 有效期
-	reconnectTokenTTL time.Duration                               // 客户端重连凭据有效期
-	sessionShards     [clientSessionShardCount]clientSessionShard // 分片会话存储
-	persistentMu      sync.RWMutex
-	persistent        map[*clientWSSession]struct{} // 需要持久化推送的会话集合
-	persistentAdmin   map[*clientWSSession]struct{} // 管理员会话（接收所有消息）
-	onlineUsersMu     sync.RWMutex
-	onlineUsers       map[store.UserKey]onlineUserState // 在线用户聚合状态
-	onlineUserCount   atomic.Int64
-	sessionRegistry   OnlineSessionRegistry // 集群会话注册器
-	sessionSequence   atomic.Uint64         // 会话 ID 自增序列
-	targetRoleMu      sync.Mutex
-	targetRoleCache   map[store.UserKey]clientRoleCacheEntry // 用户角色缓存
-	dispatcherMu      sync.Mutex
-	dispatcherCancel  context.CancelFunc // 持久化分发器取消函数
-	closeOnce         sync.Once          // 确保 Close 只执行一次
+	service                        *Service
+	authorizer                     *permission.Authorizer
+	mux                            *http.ServeMux
+	nodeID                         int64
+	signer                         *auth.Signer                                // JWT 签名器，nil 表示禁用认证
+	tokenTTL                       time.Duration                               // JWT 有效期
+	reconnectTokenTTL              time.Duration                               // 客户端重连凭据有效期
+	sessionShards                  [clientSessionShardCount]clientSessionShard // 分片会话存储
+	persistentSessions             *persistentSessionIndex                     // 持久化会话及频道订阅索引
+	persistentCandidateCount       atomic.Int64
+	onlineUsersMu                  sync.RWMutex
+	onlineUsers                    map[store.UserKey]onlineUserState // 在线用户聚合状态
+	onlineUserCount                atomic.Int64
+	sessionRegistry                OnlineSessionRegistry // 集群会话注册器
+	sessionSequence                atomic.Uint64         // 会话 ID 自增序列
+	targetRoleMu                   sync.Mutex
+	targetRoleCache                map[store.UserKey]clientRoleCacheEntry // 用户角色缓存
+	dispatcherMu                   sync.Mutex
+	dispatcherCancel               context.CancelFunc // 持久化分发器取消函数
+	unsubscribeSubscriptionChanges func()
+	closeOnce                      sync.Once // 确保 Close 只执行一次
 }
 
 // HTTPOptions 配置 HTTP 服务的可选参数。
@@ -194,11 +194,15 @@ func NewHTTP(service *Service, opts ...HTTPOptions) *HTTP {
 		signer:            resolved.Signer,
 		tokenTTL:          tokenTTL,
 		reconnectTokenTTL: reconnectTokenTTL,
-		persistent:        make(map[*clientWSSession]struct{}),
-		persistentAdmin:   make(map[*clientWSSession]struct{}),
 		onlineUsers:       make(map[store.UserKey]onlineUserState),
 		targetRoleCache:   make(map[store.UserKey]clientRoleCacheEntry),
 	}
+	h.persistentSessions = newPersistentSessionIndex(func(ctx context.Context, subscriber store.UserKey) ([]store.Subscription, error) {
+		if service == nil {
+			return nil, fmt.Errorf("client service is not configured")
+		}
+		return service.ListChannelSubscriptions(ctx, subscriber)
+	})
 	if service != nil && service.sessionRegistry != nil {
 		h.sessionRegistry = service.sessionRegistry
 	}
@@ -208,6 +212,7 @@ func NewHTTP(service *Service, opts ...HTTPOptions) *HTTP {
 	if service != nil {
 		service.SetTransientPacketReceiver(h)
 		service.SetLoggedInUserProvider(h)
+		h.unsubscribeSubscriptionChanges = service.subscribeSubscriptionChanges(h.persistentSessions.ApplySubscriptionChanges)
 	}
 	h.routes()
 	return h
@@ -224,6 +229,9 @@ func (h *HTTP) Close() error {
 		return nil
 	}
 	h.closeOnce.Do(func() {
+		if h.unsubscribeSubscriptionChanges != nil {
+			h.unsubscribeSubscriptionChanges()
+		}
 		if h.dispatcherCancel != nil {
 			h.dispatcherCancel()
 		}
@@ -1005,7 +1013,6 @@ func (h *HTTP) handleSubscribeChannel(w http.ResponseWriter, r *http.Request) {
 		writeStoreError(w, err)
 		return
 	}
-	h.invalidateUserChannelSubscriptionCache(subscriber, channel)
 	writeJSON(w, http.StatusCreated, subscriptionResponseFromStore(subscription))
 }
 
@@ -1038,7 +1045,6 @@ func (h *HTTP) handleUnsubscribeChannel(w http.ResponseWriter, r *http.Request) 
 		writeStoreError(w, err)
 		return
 	}
-	h.invalidateUserChannelSubscriptionCache(subscriber, subscription.Channel)
 	writeJSON(w, http.StatusOK, subscriptionResponseFromStore(subscription))
 }
 
@@ -1488,12 +1494,25 @@ func removeClientSessionSnapshot(snapshot []*clientWSSession, sessionID string) 
 }
 
 func (h *HTTP) registerClientSession(key store.UserKey, sess *clientWSSession) {
+	_ = h.registerClientSessionContext(context.Background(), key, sess)
+}
+
+func (h *HTTP) registerClientSessionContext(ctx context.Context, key store.UserKey, sess *clientWSSession) error {
 	if h == nil || sess == nil {
-		return
+		return nil
+	}
+	if sess.sessionRef.SessionID == "" {
+		return fmt.Errorf("client session id is required")
+	}
+	if sess.requiresPersistentPush() {
+		if err := h.registerPersistentSession(ctx, sess); err != nil {
+			return err
+		}
 	}
 	shard := h.sessionShard(key)
 	if shard == nil {
-		return
+		h.unregisterPersistentSession(sess)
+		return fmt.Errorf("client session shard is unavailable")
 	}
 	shard.mu.Lock()
 	bucket := shard.sessions[key]
@@ -1501,13 +1520,10 @@ func (h *HTTP) registerClientSession(key store.UserKey, sess *clientWSSession) {
 		bucket = newClientSessionBucket()
 		shard.sessions[key] = bucket
 	}
-	if sess.sessionRef.SessionID == "" {
-		shard.mu.Unlock()
-		return
-	}
 	if _, exists := bucket.bySessionID[sess.sessionRef.SessionID]; exists {
 		shard.mu.Unlock()
-		return
+		h.unregisterPersistentSession(sess)
+		return fmt.Errorf("client session %q is already registered", sess.sessionRef.SessionID)
 	}
 	bucket.bySessionID[sess.sessionRef.SessionID] = sess
 	bucket.snapshot = appendClientSessionSnapshot(bucket.snapshot, sess)
@@ -1536,14 +1552,15 @@ func (h *HTTP) registerClientSession(key store.UserKey, sess *clientWSSession) {
 			LoginName: state.LoginName,
 		})
 	}
-	if sess.requiresPersistentPush() {
-		h.registerPersistentSession(sess)
-	}
+	return nil
 }
 
 func (h *HTTP) unregisterClientSession(key store.UserKey, sess *clientWSSession) {
 	if h == nil || sess == nil {
 		return
+	}
+	if sess.requiresPersistentPush() {
+		h.unregisterPersistentSession(sess)
 	}
 	shard := h.sessionShard(key)
 	if shard == nil {
@@ -1581,9 +1598,6 @@ func (h *HTTP) unregisterClientSession(key store.UserKey, sess *clientWSSession)
 
 	if h.service != nil {
 		h.service.UnregisterLocalSession(key, sess.sessionRef)
-	}
-	if sess.requiresPersistentPush() {
-		h.unregisterPersistentSession(sess)
 	}
 }
 
@@ -1991,8 +2005,6 @@ func allowCurrentUserSentinelForAttachmentList(attachmentType store.AttachmentTy
 // invalidateAttachmentCaches 当附件变更时使相关客户端缓存失效（频道订阅或黑名单）。
 func (h *HTTP) invalidateAttachmentCaches(attachment store.Attachment) {
 	switch attachment.Type {
-	case store.AttachmentTypeChannelSubscription:
-		h.invalidateUserChannelSubscriptionCache(attachment.Owner, attachment.Subject)
 	case store.AttachmentTypeUserBlacklist:
 		h.invalidateUserBlacklistCache(attachment.Owner, attachment.Subject)
 	}

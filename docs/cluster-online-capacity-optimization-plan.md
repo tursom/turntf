@@ -72,7 +72,7 @@
 - `HTTP` 已经维护常驻 `onlineUsers` registry，并用 `onlineUserCount` 预估容量；`ListLoggedInUsers()` 不再靠遍历整张 session map 组装在线列表。
 - 客户端 session 已经改成 `256` 个 shard 的分片存储，并且每个用户桶维护稳定快照 `snapshot`，本地 transient 投递不再每次复制一份新的 session slice。
 - 持久化消息推送已切到节点级共享分发器：后台只启动一个 `runPersistentDispatcher()`。本地或复制消息提交后会立即唤醒 dispatcher；原有 1 秒 ticker 仅作为通知缺失时的兜底。每次触发会连续分页读取 event log 直到追平，再把消息分发给需要持久化推送的 session。
-- 黑名单、频道订阅、目标角色都已经有短 TTL 缓存；频道订阅和黑名单更新后也会主动失效对应缓存。
+- 黑名单和目标角色保留短 TTL 缓存；频道订阅改由节点本地 `channel -> persistent online sessions` 索引维护，不再按会话执行 TTL 查询。
 - 当前协议已经包含 `session_ref`、`resolve_user_sessions` 和 `target_session`，瞬时包可以精确路由到某个在线会话，而不只是“打给这个用户的所有在线节点”。
 
 ### 2.2 已过期的旧判断
@@ -107,8 +107,8 @@
 
 - 正常路径由可合并的消息提交通知触发 `ListEvents(afterSequence, 100)`；连续满批时会继续读取直到追平，1 秒 ticker 只负责异常兜底，不再构成正常推送的尾延迟下限。
 - 对 direct 消息，需要解析候选接收 session。
-- 对 broadcast / channel 消息，需要克隆全部持久化 session，再逐个做可见性判定。
-- `canSeeMessage()` 虽然已有缓存，但缓存 miss 时仍然可能触发黑名单、频道订阅和目标角色查询。
+- 对 broadcast 消息，业务语义要求枚举全部持久化 session；对 channel 消息，候选集直接来自在线订阅索引并合并管理员 session。
+- direct 消息仍需为实际接收者检查黑名单；channel 投递不再逐会话查询 SQLite 订阅关系。
 
 2026-08-09 在同一台本地机器上执行 3 节点 SQLite direct 定向单次验证：
 
@@ -179,12 +179,13 @@
 | 3. 本地在线用户 registry 常驻化 | 已完成 | `onlineUsers` + `onlineUserCount` 已是当前实现。 |
 | 4. session registry 分片 | 已完成 | 当前是 `256` shard，并为每个用户维护 `snapshot`。 |
 | 5. 节点级 shared event tailer | 已完成 | 当前持久化推送由 `runPersistentDispatcher()` 统一负责；消息提交事件立即唤醒并跨 batch 追平，1 秒 ticker 仅作为兜底。 |
-| 6. 可见性判断缓存化 | 已完成 | 黑名单、频道订阅、目标角色都已有 TTL 缓存和局部失效。 |
+| 6. 可见性判断缓存化 | 已完成 | 黑名单和目标角色保留 TTL 缓存；频道订阅已迁移到在线索引。 |
 | 7. transient / persistent 路径拆分 | 部分完成 | `/ws/client` 与 `/ws/realtime` 已分流，但 ZeroMQ 仍复用标准客户端语义，也还没有单独的 edge 接入层。 |
 | 8. 接入层与 cluster 节点角色拆分 | 未开始 | 当前节点仍同时承载 API、连接、store 和 mesh。 |
 | 9. 用户或 session 粘性放置 | 未开始 | 还没有 consistent hash / sticky routing，但 `session_ref` / `resolve_user_sessions` / `target_session` 已具备前置能力。 |
 | 10. 在线连接分级、配额与背压 | 未开始 | 当前代码里还没有明确的每节点连接上限、每用户并发上限或连接爬升限速。 |
 | 11. 在线状态增量与分片校验 | 已完成 | 50ms 用户增量、16 分片、500ms 单分片权威校验，8 秒完成一轮自愈。 |
+| 12. channel 在线会话索引 | 已完成 | Store 在本地写入、复制和快照提交后同步更新 `channel -> persistent online sessions`，channel 投递不再扫描全部在线会话。 |
 
 ## 5. 现在最值得继续做的事
 
@@ -194,7 +195,7 @@
 
 - 保留现有 realtime / transient-only 场景，重新采样当前代码。
 - 采集 full-client 登录的 `login_ms/op` / `catchup_ms/op`。
-- 采集 full-client 稳态分发的 `write_ms/op` / `first_push_ms/op` / `last_push_ms/op`，并保留 `delivered/op`。
+- 采集 full-client 稳态分发的 `write_ms/op` / `first_push_ms/op` / `last_push_ms/op`，并保留 `delivered/op` 与 `candidates/op`。
 
 只有实际采样完成后，才能分别回答 transient realtime 与标准持久化客户端的当前容量；benchmark 存在本身不等于容量数字已经成立。
 
@@ -202,13 +203,9 @@
 
 如果要做下一项代码优化，我会优先投在共享持久化分发器，而不是再回头优化已经不存在的 per-session `pushLoop`。
 
-更具体地说，最值得继续做的是：
+direct 已按目标用户索引，channel 也已通过在线订阅索引把候选集缩小到订阅会话与管理员会话；benchmark 新增 `candidates/op` 用于直接验证候选规模。broadcast 的业务语义就是投递全部持久化会话，因此 O(N) fanout 仍然存在，不能通过候选索引消除。
 
-- 为 direct / broadcast / channel 建立更细的候选 session 索引
-- 避免 broadcast / channel 每次都从“所有持久化 session”开始筛
-- 补缓存命中率、候选集大小、授权 miss 的观测指标
-
-这才是当前 full client 在线上限的真实结构性热点。
+后续应继续补充授权 miss 和索引重载的运行时观测，并在同机重新采样后再判断容量变化；索引完成本身不构成性能提升数字或生产 SLA。
 
 ### 5.3 第三优先级：补连接治理能力
 
@@ -279,6 +276,6 @@ go test ./internal/api -run '^$' -bench '^BenchmarkClientWebSocketPersistentSend
 
 原因：
 
-- `transient_only`、登录水位、在线用户 registry、session shard、shared dispatcher、可见性缓存都已经落地。
+- `transient_only`、登录水位、在线用户 registry、session shard、shared dispatcher、可见性缓存和 channel 在线会话索引都已经落地。
 - full-client benchmark 已经存在，当前最容易误导人的地方变成“把 benchmark 场景存在误写成容量数字已经得到验证”。
 - 真正决定 full client 在线上限的，已经是共享持久化分发器及其高 fanout 授权路径，而不是旧版文档中描述的 per-session 轮询模型。

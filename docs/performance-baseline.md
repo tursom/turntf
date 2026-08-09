@@ -46,7 +46,7 @@
 - `BenchmarkClientWebSocketTransientSendMessageAuthenticatedLinearMeshWithOnlineUsers`：当前仅跑 `SQLite`；在 3 节点 / 7 节点线性拓扑下先建立大批常驻在线的实时会话，再测一条跨节点 transient `SendMessage`，用于观察大规模在线连接负载下的端到端延迟。背景连接走 `/ws/realtime`，被测发送/接收连接使用 `TransientOnly` 登录，不经过持久化补发路径。
 - `BenchmarkClientWebSocketPersistentLoginAuthenticated`：标准 `/ws/client` 持久化登录基线，固定使用 `SQLite` 和 `256B` 消息，按 `0/100/1000` 条历史分层。每轮重新建立连接并校验登录响应、历史消息数量、顺序和内容，分别记录收到登录响应与完成历史补发的时间。
 - `BenchmarkClientWebSocketPersistentReconnectTokenAuthenticated`：与密码登录基线使用相同连接、历史和校验路径，但每轮使用上次登录刷新出的短期 `reconnect_token`，用于隔离测量跳过 bcrypt 后的重连成本。
-- `BenchmarkClientWebSocketPersistentSendMessageAuthenticatedLinearMeshWithOnlineUsers`：标准 `/ws/client` 持久化稳态容量基线，固定使用 `SQLite`，覆盖 3 节点 / 7 节点以及 `1000/5000/10000` 个普通在线会话，另有一个管理员发送会话。背景客户端按协议发送低频 `Ping` 保持长期连接；每个容量场景共享一次普通连接 setup，再分别测 direct、broadcast 和确定性分布到所有节点的 10% channel 订阅者；结果以所有预期目标收到同一条消息为完成条件。
+- `BenchmarkClientWebSocketPersistentSendMessageAuthenticatedLinearMeshWithOnlineUsers`：标准 `/ws/client` 持久化稳态容量基线，固定使用 `SQLite`，覆盖 3 节点 / 7 节点以及 `1000/5000/10000` 个普通在线会话，另有一个管理员发送会话。背景客户端按协议发送低频 `Ping` 保持长期连接；每个容量场景共享一次普通连接 setup，再分别测 direct、broadcast 和确定性分布到所有节点的 10% channel 订阅者；结果以所有预期目标收到同一条消息为完成条件，并记录各节点实际枚举的候选会话总数。
 - `BenchmarkClientWebSocketTransientSendMessageAuthenticatedPointToPointThroughput`：客户端 transient 端到端点对点吞吐；固定使用 `SQLite`。默认构建覆盖单节点、2 节点纯协议直连和 7 节点纯协议线性 `WebSocket/libp2p`；带 `-tags zeromq` 时再追加 `ZeroMQ` 直连 / 线性。当前不包含 mixed bridge 子场景，并且统一走实时客户端路径，不切 `tmp/disk` 子场景。
 - `BenchmarkClientZeroMQTransientSendMessageAuthenticatedPointToPointThroughput`：客户端通过 ZeroMQ 长连接接入时的 transient 端到端点对点吞吐；固定使用 `SQLite`，需要 `-tags zeromq`。客户端先发送 `ZeroMQMuxHello{role=CLIENT}` 再登录，覆盖 `2` 节点直连与 `7` 节点纯 `ZeroMQ` 线性拓扑，用于把“客户端 ZeroMQ 入口开销”和“节点间 ZeroMQ mesh hop 开销”单独拉平观察。
 
@@ -165,6 +165,7 @@ go test -tags zeromq ./internal/api -run '^$' -bench 'BenchmarkClientZeroMQTrans
 - `write_p95_ms/op` / `write_p99_ms/op` / `write_max_ms/op`：同一次采集中持久写响应的 p95、p99 和最大延迟。
 - `last_push_p95_ms/op` / `last_push_p99_ms/op` / `last_push_max_ms/op`：同一次采集中最后目标到达的 p95、p99 和最大延迟。
 - `delivered/op`：持久消息场景每次操作必须收到并校验的目标会话数；该场景的 `MB/s` 按 `payload * delivered` 计算。
+- `candidates/op`：持久消息场景每次操作在所有节点上实际枚举的候选会话总数；channel 场景应接近订阅会话数加管理员会话数，而不是总在线会话数。
 - `query_ms/op`：查询场景单次多跳 `QueryLoggedInUsers` 的平均耗时。
 - `delivery_ms/op`：瞬时包场景从源节点发起路由到目标节点本地 handler 收到包的平均耗时。
 - `snapshot_ms/op`：snapshot repair 场景从发送 digest 到目标节点收敛的平均耗时。

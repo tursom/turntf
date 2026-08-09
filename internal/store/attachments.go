@@ -73,6 +73,7 @@ func (s *Store) UpsertAttachment(ctx context.Context, params UpsertAttachmentPar
 	if err := tx.Commit(); err != nil {
 		return Attachment{}, Event{}, fmt.Errorf("commit upsert attachment: %w", err)
 	}
+	s.notifySubscriptionAttachmentChanged(attachment)
 	return attachment, event, nil
 }
 
@@ -134,6 +135,7 @@ func (s *Store) DeleteAttachment(ctx context.Context, params DeleteAttachmentPar
 	if err := tx.Commit(); err != nil {
 		return Attachment{}, Event{}, fmt.Errorf("commit delete attachment: %w", err)
 	}
+	s.notifySubscriptionAttachmentChanged(current)
 	return current, event, nil
 }
 

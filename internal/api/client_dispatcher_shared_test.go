@@ -73,11 +73,7 @@ func TestPersistentDispatcherSharesEncodedBroadcastAcrossReadyAndQueuedSessions(
 	sessB := newPersistentPayloadCaptureSession(testAPI.http, userB, connB)
 	sessC := newPersistentPayloadCaptureSession(testAPI.http, userC, connC)
 	sessC.persistentReady = false
-	testAPI.http.persistentMu.Lock()
-	testAPI.http.persistent[sessA] = struct{}{}
-	testAPI.http.persistent[sessB] = struct{}{}
-	testAPI.http.persistent[sessC] = struct{}{}
-	testAPI.http.persistentMu.Unlock()
+	registerPersistentPayloadCaptureSessions(t, testAPI.http, sessA, sessB, sessC)
 
 	message := store.Message{
 		Recipient: store.UserKey{NodeID: testNodeID(1), UserID: store.BroadcastUserID},
@@ -149,10 +145,7 @@ func TestPersistentDispatcherContinuesSharedBroadcastAfterSessionWriteFailure(t 
 	healthyConn := &persistentPayloadCaptureConn{}
 	failingSession := newPersistentPayloadCaptureSession(testAPI.http, failingUser, failingConn)
 	healthySession := newPersistentPayloadCaptureSession(testAPI.http, healthyUser, healthyConn)
-	testAPI.http.persistentMu.Lock()
-	testAPI.http.persistent[failingSession] = struct{}{}
-	testAPI.http.persistent[healthySession] = struct{}{}
-	testAPI.http.persistentMu.Unlock()
+	registerPersistentPayloadCaptureSessions(t, testAPI.http, failingSession, healthySession)
 
 	testAPI.http.dispatchPersistentMessage(ctx, 101, store.Message{
 		Recipient: store.UserKey{NodeID: testNodeID(1), UserID: store.BroadcastUserID},
@@ -191,15 +184,26 @@ func mustCreatePersistentDispatchUser(t *testing.T, httpAPI *HTTP, username stri
 
 func newPersistentPayloadCaptureSession(httpAPI *HTTP, user store.User, conn *persistentPayloadCaptureConn) *clientWSSession {
 	return &clientWSSession{
-		http:              httpAPI,
-		conn:              conn,
-		protocol:          "capture",
-		remoteAddr:        "capture",
-		principal:         &requestPrincipal{User: user},
-		seen:              make(map[clientMessageCursor]struct{}),
-		persistentReady:   true,
-		blacklistCache:    make(map[store.UserKey]clientBoolCacheEntry),
-		subscriptionCache: make(map[store.UserKey]clientBoolCacheEntry),
+		http:            httpAPI,
+		conn:            conn,
+		protocol:        "capture",
+		remoteAddr:      "capture",
+		principal:       &requestPrincipal{User: user},
+		seen:            make(map[clientMessageCursor]struct{}),
+		persistentReady: true,
+		blacklistCache:  make(map[store.UserKey]clientBoolCacheEntry),
+	}
+}
+
+func registerPersistentPayloadCaptureSessions(t *testing.T, httpAPI *HTTP, sessions ...*clientWSSession) {
+	t.Helper()
+	for _, sess := range sessions {
+		if err := httpAPI.persistentSessions.Register(context.Background(), sess); err != nil {
+			t.Fatalf("register persistent payload capture session: %v", err)
+		}
+		t.Cleanup(func() {
+			httpAPI.persistentSessions.Unregister(sess)
+		})
 	}
 }
 
@@ -315,6 +319,63 @@ func TestPersistentDispatcherFallbackTrigger(t *testing.T) {
 	pushed := readServerEnvelope(t, conn).GetMessagePushed()
 	if pushed == nil || pushed.Message == nil || string(pushed.Message.GetBody()) != "fallback-push" {
 		t.Fatalf("unexpected fallback event push: %+v", pushed)
+	}
+}
+
+func TestPersistentDispatcherRetriesChannelEventAfterSubscriptionReloadFailure(t *testing.T) {
+	testAPI, _, conn, adminToken, aliceKey := openControlledPersistentDispatcherTest(t)
+	channelKey := createUserAs(t, testAPI.handler, adminToken, "dispatcher-channel", "channel-password", store.RoleChannel)
+	doJSONWithHeaders(t, testAPI.handler, http.MethodPost, subscriptionsPath(aliceKey.NodeID, aliceKey.UserID), map[string]any{
+		"channel_node_id": channelKey.NodeID,
+		"channel_user_id": channelKey.UserID,
+	}, map[string]string{"Authorization": "Bearer " + adminToken}, http.StatusCreated)
+
+	afterSequence, err := testAPI.http.service.LastEventSequence(context.Background())
+	if err != nil {
+		t.Fatalf("load channel retry dispatcher watermark: %v", err)
+	}
+
+	index := testAPI.http.persistentSessions
+	originalLoad := index.load
+	reloadStarted := make(chan struct{})
+	releaseReload := make(chan struct{})
+	firstLoad := true
+	index.load = func(ctx context.Context, subscriber store.UserKey) ([]store.Subscription, error) {
+		if firstLoad {
+			firstLoad = false
+			close(reloadStarted)
+			<-releaseReload
+			return nil, fmt.Errorf("temporary subscription reload failure: %w", store.ErrNotFound)
+		}
+		return originalLoad(ctx, subscriber)
+	}
+	index.ApplySubscriptionChanges([]store.SubscriptionChange{{
+		Subscriber: aliceKey,
+		Channel:    channelKey,
+		Reload:     true,
+	}})
+
+	fallback := make(chan time.Time, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go testAPI.http.runPersistentDispatcherWithFallback(ctx, afterSequence, nil, fallback)
+
+	adminKey := store.UserKey{NodeID: testNodeID(1), UserID: store.BootstrapAdminUserID}
+	if _, _, err := testAPI.http.service.store.CreateMessage(context.Background(), store.CreateMessageParams{
+		UserKey: channelKey,
+		Sender:  adminKey,
+		Body:    []byte("channel-reload-retry"),
+	}); err != nil {
+		t.Fatalf("create channel retry message: %v", err)
+	}
+	fallback <- time.Now()
+	<-reloadStarted
+	close(releaseReload)
+	fallback <- time.Now()
+
+	pushed := readServerEnvelope(t, conn).GetMessagePushed()
+	if pushed == nil || pushed.Message == nil || string(pushed.Message.GetBody()) != "channel-reload-retry" {
+		t.Fatalf("unexpected retried channel event push: %+v", pushed)
 	}
 }
 

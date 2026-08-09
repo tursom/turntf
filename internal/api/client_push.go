@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"errors"
 	"time"
 
 	gproto "google.golang.org/protobuf/proto"
@@ -112,37 +111,20 @@ func (s *clientWSSession) handlePersistentDispatchFailure(err error) {
 	_ = s.conn.Close()
 }
 
-// canSeeMessage 判断当前会话是否有权看到某条消息：
-//   - 管理员可以看到所有消息
-//   - 消息直接接收者需检查是否拉黑了发送者
-//   - 其他人需检查是否是广播或已订阅频道
-func (s *clientWSSession) canSeeMessage(ctx context.Context, message store.Message) (bool, error) {
+// canReceiveDirectMessage 判断当前会话是否能接收一条 direct 消息。
+// 管理员始终可见；普通接收者仍需检查消息创建时是否已拉黑发送者。
+func (s *clientWSSession) canReceiveDirectMessage(ctx context.Context, message store.Message) (bool, error) {
 	if permission.IsAdminRole(s.principal.User.Role) {
 		return true, nil
 	}
-	key := message.UserKey()
-	if key == s.principal.User.Key() {
-		blocked, err := s.isSenderBlockedCached(ctx, message.Sender, message.CreatedAt)
-		if err != nil {
-			return false, err
-		}
-		return !blocked, nil
-	}
-	role, err := s.http.messageTargetRole(ctx, key)
-	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			return false, nil
-		}
-		return false, err
-	}
-	switch role {
-	case store.RoleBroadcast:
-		return true, nil
-	case store.RoleChannel:
-		return s.isSubscribedToChannelCached(ctx, key)
-	default:
+	if message.UserKey() != s.principal.User.Key() {
 		return false, nil
 	}
+	blocked, err := s.isSenderBlockedCached(ctx, message.Sender, message.CreatedAt)
+	if err != nil {
+		return false, err
+	}
+	return !blocked, nil
 }
 
 // isSenderBlockedCached 带缓存的查询：sender 是否被当前用户拉黑。缓存 TTL 为 clientWSVisibilityCacheTTL。
@@ -168,29 +150,6 @@ func (s *clientWSSession) isSenderBlockedCached(ctx context.Context, sender stor
 	return blocked, nil
 }
 
-// isSubscribedToChannelCached 带缓存的查询：当前用户是否订阅了指定频道。
-func (s *clientWSSession) isSubscribedToChannelCached(ctx context.Context, channel store.UserKey) (bool, error) {
-	s.persistentMu.Lock()
-	if entry, ok := s.subscriptionCache[channel]; ok && time.Now().Before(entry.expiresAt) {
-		s.persistentMu.Unlock()
-		return entry.value, nil
-	}
-	s.persistentMu.Unlock()
-
-	subscribed, err := s.http.service.IsSubscribedToChannel(ctx, s.principal.User.Key(), channel)
-	if err != nil {
-		return false, err
-	}
-
-	s.persistentMu.Lock()
-	s.subscriptionCache[channel] = clientBoolCacheEntry{
-		value:     subscribed,
-		expiresAt: time.Now().Add(clientWSVisibilityCacheTTL),
-	}
-	s.persistentMu.Unlock()
-	return subscribed, nil
-}
-
 // invalidateBlacklistCache 使指定发送者的黑名单缓存失效（当用户更新黑名单时调用）。
 func (s *clientWSSession) invalidateBlacklistCache(sender store.UserKey) {
 	if s == nil {
@@ -198,16 +157,6 @@ func (s *clientWSSession) invalidateBlacklistCache(sender store.UserKey) {
 	}
 	s.persistentMu.Lock()
 	delete(s.blacklistCache, sender)
-	s.persistentMu.Unlock()
-}
-
-// invalidateChannelSubscriptionCache 使指定频道的订阅缓存失效（当用户订阅/退订时调用）。
-func (s *clientWSSession) invalidateChannelSubscriptionCache(channel store.UserKey) {
-	if s == nil {
-		return
-	}
-	s.persistentMu.Lock()
-	delete(s.subscriptionCache, channel)
 	s.persistentMu.Unlock()
 }
 

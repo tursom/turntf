@@ -62,6 +62,7 @@ func (s *Store) ApplyReplicatedEvent(ctx context.Context, event *internalproto.R
 
 	deferredMessageProjection := false
 	changedUser := false
+	var subscriptionChanges []subscriptionChangeKey
 	switch body := decoded.Body.(type) {
 	case *internalproto.UserCreatedEvent, *internalproto.UserUpdatedEvent:
 		if err := s.applyReplicatedUserUpsert(ctx, tx, body); err != nil {
@@ -76,8 +77,15 @@ func (s *Store) ApplyReplicatedEvent(ctx context.Context, event *internalproto.R
 	case *internalproto.MessageCreatedEvent:
 		deferredMessageProjection = true
 	case *internalproto.UserAttachmentUpsertedEvent, *internalproto.UserAttachmentDeletedEvent:
-		if err := s.applyReplicatedAttachment(ctx, tx, body, decoded.OriginNodeID); err != nil {
+		attachment, err := s.applyReplicatedAttachment(ctx, tx, body, decoded.OriginNodeID)
+		if err != nil {
 			return err
+		}
+		if attachment.Type == AttachmentTypeChannelSubscription {
+			subscriptionChanges = append(subscriptionChanges, subscriptionChangeKey{
+				subscriber: attachment.Owner,
+				channel:    attachment.Subject,
+			})
 		}
 	case *internalproto.UserMetadataUpsertedEvent, *internalproto.UserMetadataDeletedEvent:
 		if err := s.applyReplicatedUserMetadata(ctx, tx, body, decoded.OriginNodeID); err != nil {
@@ -123,6 +131,7 @@ VALUES(?, ?, ?)
 	if changedUser {
 		s.invalidateUserCache()
 	}
+	s.notifySubscriptionChanges(subscriptionChanges)
 	if !deferredMessageProjection {
 		return nil
 	}
@@ -221,33 +230,36 @@ VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
 
 // applyReplicatedAttachment 处理来自 peer 的用户附件变更（新增或删除）。
 // 先解析事件体中的附件数据，校验所有者与被关联用户的有效性，然后委托 upsertAttachmentTx。
-func (s *Store) applyReplicatedAttachment(ctx context.Context, tx *sql.Tx, body internalproto.EventBody, originNodeID int64) error {
+func (s *Store) applyReplicatedAttachment(ctx context.Context, tx *sql.Tx, body internalproto.EventBody, originNodeID int64) (Attachment, error) {
 	attachment, err := attachmentFromEventBody(body)
 	if err != nil {
-		return err
+		return Attachment{}, err
 	}
 	if originNodeID != 0 && originNodeID != attachment.OriginNodeID {
-		return fmt.Errorf("%w: attachment origin node id %d does not match event origin %d", ErrInvalidInput, attachment.OriginNodeID, originNodeID)
+		return Attachment{}, fmt.Errorf("%w: attachment origin node id %d does not match event origin %d", ErrInvalidInput, attachment.OriginNodeID, originNodeID)
 	}
 	if attachment.DeletedAt == nil {
 		if err := s.validateAttachmentUsersTx(ctx, tx, attachment.Owner, attachment.Subject, attachment.Type); err != nil {
-			return err
+			return Attachment{}, err
 		}
 	} else {
 		if _, err := s.getUserByIDTx(ctx, tx, attachment.Owner, false); err != nil {
 			if errors.Is(err, ErrNotFound) {
-				return nil
+				return Attachment{}, nil
 			}
-			return err
+			return Attachment{}, err
 		}
 		if _, err := s.getUserByIDTx(ctx, tx, attachment.Subject, false); err != nil {
 			if errors.Is(err, ErrNotFound) {
-				return nil
+				return Attachment{}, nil
 			}
-			return err
+			return Attachment{}, err
 		}
 	}
-	return s.upsertAttachmentTx(ctx, tx, attachment)
+	if err := s.upsertAttachmentTx(ctx, tx, attachment); err != nil {
+		return Attachment{}, err
+	}
+	return attachment, nil
 }
 
 // attachmentFromEventBody 从事件体中提取 Attachment 结构，支持 UserAttachmentUpsertedEvent 和 UserAttachmentDeletedEvent。

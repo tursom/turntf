@@ -214,6 +214,7 @@ func (s *Store) ApplySnapshotChunk(ctx context.Context, chunk *clusterproto.Snap
 	}
 	defer tx.Rollback()
 
+	var subscriptionChanges []subscriptionChangeKey
 	switch {
 	case partition == SnapshotUsersPartition:
 		if chunk.Kind != snapshotPartitionKindUsers {
@@ -231,6 +232,16 @@ func (s *Store) ApplySnapshotChunk(ctx context.Context, chunk *clusterproto.Snap
 		for _, row := range chunk.Rows {
 			if err := s.applyAttachmentSnapshotRowTx(ctx, tx, row); err != nil {
 				return err
+			}
+			attachment, err := attachmentFromSnapshotRow(row.GetAttachment())
+			if err != nil {
+				return err
+			}
+			if attachment.Type == AttachmentTypeChannelSubscription {
+				subscriptionChanges = append(subscriptionChanges, subscriptionChangeKey{
+					subscriber: attachment.Owner,
+					channel:    attachment.Subject,
+				})
 			}
 		}
 	case partition == SnapshotLoginNamesPartition:
@@ -273,6 +284,7 @@ func (s *Store) ApplySnapshotChunk(ctx context.Context, chunk *clusterproto.Snap
 	if partition == SnapshotUsersPartition {
 		s.invalidateUserCache()
 	}
+	s.notifySubscriptionChanges(subscriptionChanges)
 	if maxTimestamp != (clock.Timestamp{}) {
 		s.clock.Observe(maxTimestamp)
 	}

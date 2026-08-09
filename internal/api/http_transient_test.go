@@ -97,16 +97,15 @@ func (c *transientPacketCaptureConn) packetCount() int {
 
 func newTransientCaptureSession(httpAPI *HTTP, user store.User, sessionID string, conn *transientPacketCaptureConn) *clientWSSession {
 	return &clientWSSession{
-		http:              httpAPI,
-		conn:              conn,
-		protocol:          "capture",
-		remoteAddr:        "capture",
-		sessionRef:        store.SessionRef{ServingNodeID: user.NodeID, SessionID: sessionID},
-		principal:         &requestPrincipal{User: user},
-		transientOnly:     true,
-		seen:              make(map[clientMessageCursor]struct{}),
-		blacklistCache:    make(map[store.UserKey]clientBoolCacheEntry),
-		subscriptionCache: make(map[store.UserKey]clientBoolCacheEntry),
+		http:           httpAPI,
+		conn:           conn,
+		protocol:       "capture",
+		remoteAddr:     "capture",
+		sessionRef:     store.SessionRef{ServingNodeID: user.NodeID, SessionID: sessionID},
+		principal:      &requestPrincipal{User: user},
+		transientOnly:  true,
+		seen:           make(map[clientMessageCursor]struct{}),
+		blacklistCache: make(map[store.UserKey]clientBoolCacheEntry),
 	}
 }
 

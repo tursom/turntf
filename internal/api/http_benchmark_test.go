@@ -120,6 +120,10 @@ func benchmarkHTTPListMessagesByUserAuthenticated(b *testing.B, mode benchroot.M
 }
 
 func openBenchmarkAuthenticatedTestAPI(tb testing.TB, mode benchroot.Mode, scenario apiBenchmarkEngineScenario) (authenticatedTestAPI, func()) {
+	return openBenchmarkAuthenticatedTestAPIWithMessageWindowSize(tb, mode, scenario, 0)
+}
+
+func openBenchmarkAuthenticatedTestAPIWithMessageWindowSize(tb testing.TB, mode benchroot.Mode, scenario apiBenchmarkEngineScenario, messageWindowSize int) (authenticatedTestAPI, func()) {
 	tb.Helper()
 
 	dir, cleanupDir := mode.MkdirTemp(tb, "turntf-api-bench-*")
@@ -128,6 +132,7 @@ func openBenchmarkAuthenticatedTestAPI(tb testing.TB, mode benchroot.Mode, scena
 		Engine:                scenario.engine,
 		PebbleProfile:         scenario.pebbleProfile,
 		PebbleMessageSyncMode: scenario.pebbleMessageSyncMode,
+		MessageWindowSize:     messageWindowSize,
 	}
 	if scenario.engine == store.EnginePebble {
 		opts.PebblePath = filepath.Join(dir, "api.pebble")

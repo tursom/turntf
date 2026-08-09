@@ -173,7 +173,8 @@
 - 持久复制 / snapshot repair / truncated catchup 的主基线仍是纯 `WebSocket` 线性 mesh，暂时没有纯 `libp2p` 或纯 `ZeroMQ` 的同类 durable benchmark。
 - mixed transport benchmark 当前主要服务于 transient 数据面；bridge 不承载 `replication_stream` / `snapshot_bulk`，因此不能用 mixed transient 结果替代 durable 结论。
 - 客户端点对点吞吐当前没有 mixed bridge 子场景。
-- `performance-baseline.md` 里已有的历史样本表格仍以旧的 `tmp` 采集为主；新增的 steady-state、parallel、客户端点对点和 `zeromq` 子场景还缺更完整的历史对照表。
+- full-client 登录与在线稳态分发已经有独立 benchmark，但尚未形成可引用的正式历史样本表。
+- `performance-baseline.md` 里已有的历史样本表格仍以旧的 `tmp` 采集为主；新增的 steady-state、parallel、客户端点对点、full-client 和 `zeromq` 子场景还缺更完整的历史对照表。
 
 ## 4. 现阶段建议的优化阶段
 
@@ -275,6 +276,9 @@
   - `BenchmarkClientWebSocketTransientSendMessageAuthenticatedLinearMeshWithOnlineUsers`
   - `BenchmarkClientWebSocketTransientSendMessageAuthenticatedPointToPointThroughput`
   - `BenchmarkClientZeroMQTransientSendMessageAuthenticatedPointToPointThroughput`
+- 客户端 full-client 登录与持久分发：
+  - `BenchmarkClientWebSocketPersistentLoginAuthenticated`
+  - `BenchmarkClientWebSocketPersistentSendMessageAuthenticatedLinearMeshWithOnlineUsers`
 - 在线用户查询：
   - `BenchmarkMeshQueryLoggedInUsersPebbleLinear`
   - 它测的是“mesh presence mirror 收敛后的读取成本”，不是“每次远程 RPC 查询”的 TTL cache 成本。
@@ -283,6 +287,7 @@
 
 - `BenchmarkClientWebSocketTransientSendMessageAuthenticatedLinearMesh` 当前发送端和接收端都走 `/ws/realtime`。
 - `BenchmarkClientWebSocketTransientSendMessageAuthenticatedLinearMeshWithOnlineUsers` 当前只跑 `SQLite`，背景在线会话通过 `/ws/realtime` 建立，被测发送/接收连接使用 `TransientOnly` 登录。
+- `BenchmarkClientWebSocketPersistentLoginAuthenticated` 与 `BenchmarkClientWebSocketPersistentSendMessageAuthenticatedLinearMeshWithOnlineUsers` 当前只跑 `SQLite`；后者使用标准 `/ws/client`，并以所有预期会话收到同一条持久消息作为 fanout 完成条件。
 
 ## 6. 验证命令
 
@@ -308,13 +313,20 @@ go test -tags zeromq ./internal/cluster -run '^$' -bench 'BenchmarkMeshTransient
 `store` / `api` / 客户端 transient 基线：
 
 ```bash
-go test ./internal/store ./internal/api -run '^$' -bench 'Benchmark(Store|HTTP|ClientWebSocket)' -benchmem -count=1
+go test ./internal/store ./internal/api -run '^$' -bench 'Benchmark(Store|HTTP|ClientWebSocketTransient)' -benchmem -count=1
 go test ./internal/api -run '^$' -bench 'BenchmarkClientWebSocketTransientSendMessageAuthenticatedPointToPointThroughput' -benchmem -count=1
 go test -tags zeromq ./internal/api -run '^$' -bench 'BenchmarkClientWebSocketTransientSendMessageAuthenticatedPointToPointThroughput' -benchmem -count=1
 go test -tags zeromq ./internal/api -run '^$' -bench 'BenchmarkClientZeroMQTransientSendMessageAuthenticatedPointToPointThroughput' -benchmem -count=1
 ```
 
-如果只想快速确认场景没有漂移，可以统一加 `-benchtime=1x` 做轻量探针。
+full-client 基线需要显式单独运行：
+
+```bash
+go test ./internal/api -run '^$' -bench '^BenchmarkClientWebSocketPersistentLoginAuthenticated$' -benchmem -count=1
+go test ./internal/api -run '^$' -bench '^BenchmarkClientWebSocketPersistentSendMessageAuthenticatedLinearMeshWithOnlineUsers$' -benchmem -benchtime=1x -count=1
+```
+
+如果只想快速确认常规场景没有漂移，可以统一加 `-benchtime=1x` 做轻量探针；full-client 容量矩阵始终应保留 `-benchtime=1x`，并用子场景正则缩小开发期运行范围。
 
 ## 7. 当前建议
 

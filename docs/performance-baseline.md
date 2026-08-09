@@ -17,6 +17,7 @@
   - [internal/store/store_degradation_benchmark_test.go](/root/dev/sys/turntf/turntf/internal/store/store_degradation_benchmark_test.go)
   - [internal/api/http_benchmark_test.go](/root/dev/sys/turntf/turntf/internal/api/http_benchmark_test.go)
   - [internal/api/client_benchmark_test.go](/root/dev/sys/turntf/turntf/internal/api/client_benchmark_test.go)
+  - [internal/api/client_persistent_benchmark_test.go](/root/dev/sys/turntf/turntf/internal/api/client_persistent_benchmark_test.go)
   - [internal/api/client_point_to_point_throughput_benchmark_test.go](/root/dev/sys/turntf/turntf/internal/api/client_point_to_point_throughput_benchmark_test.go)
   - [internal/api/client_point_to_point_throughput_benchmark_zeromq_test.go](/root/dev/sys/turntf/turntf/internal/api/client_point_to_point_throughput_benchmark_zeromq_test.go)
   - [internal/api/client_point_to_point_throughput_zeromq_client_benchmark_test.go](/root/dev/sys/turntf/turntf/internal/api/client_point_to_point_throughput_zeromq_client_benchmark_test.go)
@@ -41,6 +42,8 @@
 - `BenchmarkClientWebSocketTransientSendMessageAuthenticated`：带鉴权的 `WS /ws/client` transient `SendMessage` RPC，发送端校验 `TransientAccepted`，接收端校验 `PacketPushed`，并确认消息未落盘。
 - `BenchmarkClientWebSocketTransientSendMessageAuthenticatedLinearMesh`：3 节点 / 7 节点线性拓扑下的带鉴权 WebSocket transient `SendMessage` RPC；发送端和接收端都走 `/ws/realtime`，校验多跳 mesh 后的 `TransientAccepted` / `PacketPushed` 端到端路径，并确认消息未落盘。
 - `BenchmarkClientWebSocketTransientSendMessageAuthenticatedLinearMeshWithOnlineUsers`：当前仅跑 `SQLite`；在 3 节点 / 7 节点线性拓扑下先建立大批常驻在线的实时会话，再测一条跨节点 transient `SendMessage`，用于观察大规模在线连接负载下的端到端延迟。背景连接走 `/ws/realtime`，被测发送/接收连接使用 `TransientOnly` 登录，不经过持久化补发路径。
+- `BenchmarkClientWebSocketPersistentLoginAuthenticated`：标准 `/ws/client` 持久化登录基线，固定使用 `SQLite` 和 `256B` 消息，按 `0/100/1000` 条历史分层。每轮重新建立连接并校验登录响应、历史消息数量、顺序和内容，分别记录收到登录响应与完成历史补发的时间。
+- `BenchmarkClientWebSocketPersistentSendMessageAuthenticatedLinearMeshWithOnlineUsers`：标准 `/ws/client` 持久化稳态容量基线，固定使用 `SQLite`，覆盖 3 节点 / 7 节点以及 `1000/5000/10000` 个普通在线会话，另有一个管理员发送会话。背景客户端按协议发送低频 `Ping` 保持长期连接；每个容量场景共享一次普通连接 setup，再分别测 direct、broadcast 和确定性分布到所有节点的 10% channel 订阅者；结果以所有预期目标收到同一条消息为完成条件。
 - `BenchmarkClientWebSocketTransientSendMessageAuthenticatedPointToPointThroughput`：客户端 transient 端到端点对点吞吐；固定使用 `SQLite`。默认构建覆盖单节点、2 节点纯协议直连和 7 节点纯协议线性 `WebSocket/libp2p`；带 `-tags zeromq` 时再追加 `ZeroMQ` 直连 / 线性。当前不包含 mixed bridge 子场景，并且统一走实时客户端路径，不切 `tmp/disk` 子场景。
 - `BenchmarkClientZeroMQTransientSendMessageAuthenticatedPointToPointThroughput`：客户端通过 ZeroMQ 长连接接入时的 transient 端到端点对点吞吐；固定使用 `SQLite`，需要 `-tags zeromq`。客户端先发送 `ZeroMQMuxHello{role=CLIENT}` 再登录，覆盖 `2` 节点直连与 `7` 节点纯 `ZeroMQ` 线性拓扑，用于把“客户端 ZeroMQ 入口开销”和“节点间 ZeroMQ mesh hop 开销”单独拉平观察。
 
@@ -52,6 +55,7 @@
 - 如果默认临时目录所在文件系统是内存文件系统，例如当前机器的 `/tmp` 是 `tmpfs`，同一条 `go test` 命令会自动补跑 `disk` 子场景。
 - `disk` 子场景固定写入仓库根目录下的 `./.benchdata`。
 - 常规 benchmark 会在正式计时前做一轮不计时 warmup；恢复类 benchmark 也会先做一轮缩小版 dry-run，避免 `-benchtime=1x` 时把首轮控制路径冷启动完全混进结果。
+- full-client 容量 benchmark 会真实建立最多 `10000` 个连接并等待高 fanout 完成，完整矩阵应显式使用 `-benchtime=1x` 手动采集，不并入常规 benchmark 命令。
 - 读取结论时，优先看本次采集中第一个非内存文件系统结果：
   - 出现 `disk` 时，以 `disk` 为主。
   - 未出现 `disk` 时，说明 `tmp` 本身已经跑在非内存文件系统上。
@@ -86,10 +90,19 @@ go test -tags zeromq ./internal/api -run '^$' -bench 'BenchmarkClientZeroMQTrans
 `store/api` benchmark：
 
 ```bash
-go test ./internal/store ./internal/api -run '^$' -bench 'Benchmark(Store|HTTP|ClientWebSocket)' -benchmem -count=1
+go test ./internal/store ./internal/api -run '^$' -bench 'Benchmark(Store|HTTP|ClientWebSocketTransient)' -benchmem -count=1
 ```
 
-这条命令当前会命中 `BenchmarkStoreCreateMessage*`、`BenchmarkStoreListMessagesByUser`、`BenchmarkStorePruneEventLogOnce`、`BenchmarkHTTP*` 和 `BenchmarkClientWebSocket*`；`BenchmarkClientZeroMQTransientSendMessageAuthenticatedPointToPointThroughput` 仍需单独加 `-tags zeromq` 执行。
+这条命令当前会命中 `BenchmarkStoreCreateMessage*`、`BenchmarkStoreListMessagesByUser`、`BenchmarkStorePruneEventLogOnce`、`BenchmarkHTTP*` 和默认构建下的 `BenchmarkClientWebSocketTransient*`；`BenchmarkClientZeroMQTransientSendMessageAuthenticatedPointToPointThroughput` 仍需单独加 `-tags zeromq` 执行。
+
+full-client 登录与稳态容量 benchmark：
+
+```bash
+go test ./internal/api -run '^$' -bench '^BenchmarkClientWebSocketPersistentLoginAuthenticated$' -benchmem -count=1
+go test ./internal/api -run '^$' -bench '^BenchmarkClientWebSocketPersistentSendMessageAuthenticatedLinearMeshWithOnlineUsers$' -benchmem -benchtime=1x -count=1
+```
+
+登录基线可在同一机器上使用更高 `-count` 做前后统计对比。容量矩阵的 setup 和 fanout 成本较高，优化前后应保留完全相同的 `-benchtime=1x -count=1` 命令和原始输出；需要缩短开发期反馈时，用完整子场景名称的正则只选择 `3-nodes/1000-online`。
 
 退化曲线 benchmark：
 
@@ -111,7 +124,9 @@ go test ./internal/cluster ./internal/store ./internal/api -count=1
 
 ```bash
 go test ./internal/cluster -run '^$' -bench 'BenchmarkMesh(Replication|QueryLoggedInUsers|TransientRoute|SnapshotRepair|TruncatedCatchup)' -benchmem -count=1 -benchtime=1x
-go test ./internal/store ./internal/api -run '^$' -bench 'Benchmark(Store|HTTP|ClientWebSocket)' -benchmem -count=1 -benchtime=1x
+go test ./internal/store ./internal/api -run '^$' -bench 'Benchmark(Store|HTTP|ClientWebSocketTransient)' -benchmem -count=1 -benchtime=1x
+go test ./internal/api -run '^$' -bench '^BenchmarkClientWebSocketPersistentLoginAuthenticated/tmp/sqlite/history-(0|100|1000)/256B$' -benchmem -count=1 -benchtime=1x
+go test ./internal/api -run '^$' -bench '^BenchmarkClientWebSocketPersistentSendMessageAuthenticatedLinearMeshWithOnlineUsers/tmp/sqlite/3-nodes/1000-online/(direct|broadcast|channel-10pct)/256B$' -benchmem -count=1 -benchtime=1x
 go test ./internal/cluster -run '^$' -bench 'BenchmarkMeshTransientPointToPointThroughput' -benchmem -count=1 -benchtime=1x
 go test ./internal/api -run '^$' -bench 'BenchmarkClientWebSocketTransientSendMessageAuthenticatedPointToPointThroughput' -benchmem -count=1 -benchtime=1x
 go test -tags zeromq ./internal/cluster -run '^$' -bench 'BenchmarkMeshTransientPointToPointThroughput' -benchmem -count=1 -benchtime=1x
@@ -129,6 +144,12 @@ go test -tags zeromq ./internal/api -run '^$' -bench 'BenchmarkClientZeroMQTrans
 - `ack_ms/op`：复制场景从本地创建消息并广播，到最远端应用完成且源节点看到 `Ack` 推进的平均耗时。
 - `accept_ms/op`：客户端 WebSocket transient 场景中，从发送请求到发送端收到 `TransientAccepted` 的平均耗时。
 - `push_ms/op`：客户端 WebSocket transient 场景中，从发送请求到接收端收到 `PacketPushed` 的平均耗时。
+- `login_ms/op`：full-client 登录场景从开始建立 WebSocket 到收到 `LoginResponse` 的平均耗时。
+- `catchup_ms/op`：full-client 登录场景从开始建立 WebSocket 到收到最后一条历史 `MessagePushed` 的平均耗时；无历史时等于 `login_ms/op`。
+- `history_messages/op`：full-client 登录场景每次连接校验的历史消息条数。
+- `write_ms/op`：持久消息场景从发送请求到收到包含已落库消息的 `SendMessageResponse` 的平均耗时。
+- `first_push_ms/op` / `last_push_ms/op`：持久消息场景从发送请求到首个 / 最后一个预期目标收到 `MessagePushed` 的平均耗时。
+- `delivered/op`：持久消息场景每次操作必须收到并校验的目标会话数；该场景的 `MB/s` 按 `payload * delivered` 计算。
 - `query_ms/op`：查询场景单次多跳 `QueryLoggedInUsers` 的平均耗时。
 - `delivery_ms/op`：瞬时包场景从源节点发起路由到目标节点本地 handler 收到包的平均耗时。
 - `snapshot_ms/op`：snapshot repair 场景从发送 digest 到目标节点收敛的平均耗时。
@@ -142,7 +163,7 @@ go test -tags zeromq ./internal/api -run '^$' -bench 'BenchmarkClientZeroMQTrans
 以下结果来自 **2026-04-25** 的一次本地基线采集。
 这批数据发生在“自适应 `tmp` / `disk` 基线”引入之前，应按当前语义视为一组 **`tmp` 历史样本**，不能直接代表今天文档里所说的“官方非内存文件系统结果”。
 
-下面这组 **2026-04-25** 的历史样本只整理了当时采集入表的 `cluster`、`store` 和 `HTTP` 数据；当前 benchmark 集合里的 `BenchmarkStoreCreateMessageSteadyState`、`BenchmarkStoreCreateMessageParallel`、全部 `BenchmarkClientWebSocket*`，以及 `-tags zeromq` 才会出现的点对点吞吐场景，都还没有对应的历史样本表格。
+下面这组 **2026-04-25** 的历史样本只整理了当时采集入表的 `cluster`、`store` 和 `HTTP` 数据；当前 benchmark 集合里的 `BenchmarkStoreCreateMessageSteadyState`、`BenchmarkStoreCreateMessageParallel`、全部 `BenchmarkClientWebSocket*`（包括 full-client 登录与容量场景），以及 `-tags zeromq` 才会出现的点对点吞吐场景，都还没有对应的历史样本表格。
 
 - `cluster` 命令：`go test ./internal/cluster -run '^$' -bench 'BenchmarkMesh(Replication|QueryLoggedInUsers|TransientRoute|SnapshotRepair|TruncatedCatchup)' -benchmem -count=1`
 - `cluster` 总耗时：`103.271s`
@@ -244,6 +265,8 @@ go test -tags zeromq ./internal/api -run '^$' -bench 'BenchmarkClientZeroMQTrans
 
 `BenchmarkClientWebSocketTransientSendMessageAuthenticatedLinearMeshWithOnlineUsers` 则用于观察“大量常驻在线实时会话存在时”的前台跨节点 transient 延迟，而不是 HTTP 轮询或历史补发路径。
 后续重新采集时，应至少按总在线用户数、节点数和 `256B` payload 记录它的 `accept_ms/op`、`push_ms/op` 与是否能在设定时间内进入稳态。
+
+`BenchmarkClientWebSocketPersistentLoginAuthenticated` 和 `BenchmarkClientWebSocketPersistentSendMessageAuthenticatedLinearMeshWithOnlineUsers` 已补上 full-client 登录与稳态分发边界，但当前仍没有正式历史样本表格。后续采集时应把登录历史层与 `direct/broadcast/channel-10pct` 容量层分开保存，不能用 transient-only 结果替代。
 
 ## 如何使用这份基线
 

@@ -6,12 +6,15 @@
 
 - [performance-baseline.md](/root/dev/sys/turntf/turntf/docs/performance-baseline.md)
 - [internal/api/client_benchmark_test.go](/root/dev/sys/turntf/turntf/internal/api/client_benchmark_test.go)
+- [internal/api/client_persistent_benchmark_test.go](/root/dev/sys/turntf/turntf/internal/api/client_persistent_benchmark_test.go)
 
 ## 1. 当前结论
 
-当前唯一直接覆盖“大量在线会话 + 跨节点 transient 前台延迟”的 benchmark 仍然是：
+当前已经把在线连接基线拆成两组互不替代的 benchmark：
 
 - `BenchmarkClientWebSocketTransientSendMessageAuthenticatedLinearMeshWithOnlineUsers`
+- `BenchmarkClientWebSocketPersistentLoginAuthenticated`
+- `BenchmarkClientWebSocketPersistentSendMessageAuthenticatedLinearMeshWithOnlineUsers`
 
 但这组 benchmark 的语义，需要按**当前代码**重新理解：
 
@@ -26,7 +29,7 @@
 - **大量 realtime / transient-only 在线会话存在时**
 - **一条跨节点 transient `SendMessage` 的前台端到端延迟**
 
-它**不是**下面这些能力的直接容量证明：
+它**不是**下面这些能力的直接容量证明；这些能力现在由两组 full-client benchmark 单独承接：
 
 - 标准 `/ws/client` 持久化客户端的稳态在线上限
 - 大量历史消息补发时的登录吞吐
@@ -86,12 +89,13 @@
 
 在现状下，在线容量的主要风险点已经从“每连接一条持久化轮询 goroutine”转移到了别处。
 
-### 3.1 当前 benchmark 仍然没有覆盖 full client 路径
+### 3.1 full client 路径已经有独立 benchmark，仍需单独采样
 
 最先需要澄清的不是代码，而是结论边界：
 
-- 现在的在线容量 benchmark 主要覆盖 realtime / transient-only 连接。
-- 它没有压到 `pushInitialMessages()`、共享持久化分发器、管理员全量可见、频道订阅 fanout、broadcast fanout 这些 full client 成本。
+- `BenchmarkClientWebSocketPersistentLoginAuthenticated` 以 `0/100/1000` 条历史拆出登录与补发成本。
+- `BenchmarkClientWebSocketPersistentSendMessageAuthenticatedLinearMeshWithOnlineUsers` 使用标准 `/ws/client`，覆盖 3/7 节点、1k/5k/10k 普通会话以及 direct、broadcast、10% channel fanout。
+- 两组 full-client benchmark 固定使用 SQLite，与现有 transient-only 在线容量口径保持可比；它们是本地手动基线，不是 CI 硬阈值或生产 SLA。
 
 所以当前最大的“文档风险”是：
 
@@ -161,23 +165,15 @@
 
 ## 5. 现在最值得继续做的事
 
-### 5.1 第一优先级：先把 benchmark 结论补齐
+### 5.1 第一优先级：采集并持续对比分层 benchmark
 
-如果今天要继续推进在线容量，最先该补的不是“再实现一次 `transient_only`”，而是把 benchmark 分层补全：
+在线容量 benchmark 已经按 realtime 与 full client 分层，后续优化前应先在同一机器重新采样：
 
 - 保留现有 realtime / transient-only 场景，重新采样当前代码。
-- 额外增加 full client 版本：
-  - 背景连接走 `/ws/client`
-  - 不启用 `TransientOnly`
-  - 让共享持久化分发器、历史补发和可见性判断真正进入场景
+- 采集 full-client 登录的 `login_ms/op` / `catchup_ms/op`。
+- 采集 full-client 稳态分发的 `write_ms/op` / `first_push_ms/op` / `last_push_ms/op`，并保留 `delivered/op`。
 
-否则我们仍然只能回答：
-
-- transient realtime 场景大概能到哪里
-
-而不能回答：
-
-- 标准持久化客户端到底能稳定挂多少
+只有实际采样完成后，才能分别回答 transient realtime 与标准持久化客户端的当前容量；benchmark 存在本身不等于容量数字已经成立。
 
 ### 5.2 第二优先级：继续优化共享持久化分发器
 
@@ -217,14 +213,14 @@
 
 ### 6.2 full client 路径
 
-标准持久化客户端需要单独的验收场景，至少应覆盖：
+标准持久化客户端已有独立验收场景，覆盖：
 
 - 背景连接为 `/ws/client`
 - 不启用 `TransientOnly`
 - 有历史补发
-- 有共享持久化分发器参与
+- 有共享持久化分发器参与，并分别校验 direct、broadcast 和 10% channel fanout 的最后一个目标到达时间
 
-在没有这组 benchmark 前，不应把 realtime / transient-only 路径的结果外推成 full client 容量。
+在没有同机实际采样结果前，仍不应把 realtime / transient-only 路径的结果外推成 full client 容量。
 
 ### 6.3 对外承诺
 
@@ -232,17 +228,17 @@
 
 更稳妥的口径是：
 
-- 先补齐当前实现对应的 benchmark
+- 使用当前实现对应的分层 benchmark 完成同机采样
 - 再分别给出 realtime / transient-only 与 full client 的独立容量数字
 
 ## 7. 当前最推荐的答案
 
 如果只让我从今天的现状里选一个“最值得继续做”的方向，我会选：
 
-- **先补 full client 在线容量 benchmark，再围绕共享持久化分发器做优化**
+- **先采集 full client 在线容量基线，再围绕共享持久化分发器做优化**
 
 原因：
 
 - `transient_only`、登录水位、在线用户 registry、session shard、shared dispatcher、可见性缓存都已经落地。
-- 当前文档里最容易误导人的地方，不再是“还没实现哪些优化”，而是“拿 transient realtime 样本去替代整个客户端模型的容量结论”。
+- full-client benchmark 已经存在，当前最容易误导人的地方变成“把 benchmark 场景存在误写成容量数字已经得到验证”。
 - 真正决定 full client 在线上限的，已经是共享持久化分发器及其高 fanout 授权路径，而不是旧版文档中描述的 per-session 轮询模型。

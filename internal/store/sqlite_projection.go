@@ -279,8 +279,11 @@ func (r *sqliteMessageProjectionRepository) ListMessagesByUser(ctx context.Conte
 	}
 
 	candidates := make([]Message, 0, limit)
-	seen := make(map[string]struct{})
+	var seen map[messageIdentityKey]struct{}
 	add := func(messages []Message) {
+		if len(messages) > 0 && seen == nil {
+			seen = make(map[messageIdentityKey]struct{}, len(messages))
+		}
 		for _, message := range messages {
 			id := messageIdentity(message)
 			if _, ok := seen[id]; ok {
@@ -497,6 +500,9 @@ LIMIT ?`
 
 	var messages []Message
 	for rows.Next() {
+		if messages == nil {
+			messages = make([]Message, 0, limit)
+		}
 		message, err := scanMessage(rows)
 		if err != nil {
 			return nil, err

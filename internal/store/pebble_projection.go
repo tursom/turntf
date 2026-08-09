@@ -518,8 +518,11 @@ func (r *pebbleMessageProjectionRepository) ListMessagesByUser(ctx context.Conte
 // 合并所有来源后按时间降序排序，取最新 limit 条。
 func (r *pebbleMessageProjectionRepository) listLoginMessagesByUserLegacy(ctx context.Context, key UserKey, limit int) ([]Message, error) {
 	candidates := make([]Message, 0, limit)
-	seen := make(map[string]struct{})
+	var seen map[messageIdentityKey]struct{}
 	add := func(messages []Message) {
+		if len(messages) > 0 && seen == nil {
+			seen = make(map[messageIdentityKey]struct{}, len(messages))
+		}
 		for _, message := range messages {
 			id := messageIdentity(message)
 			if _, ok := seen[id]; ok {
@@ -629,7 +632,7 @@ func (r *pebbleMessageProjectionRepository) listLoginMessagesByUserViaInbox(ctx 
 		return nil, false, err
 	}
 	if len(broadcasts) > 0 {
-		seen := make(map[string]struct{}, len(candidates)+len(broadcasts))
+		seen := make(map[messageIdentityKey]struct{}, len(candidates)+len(broadcasts))
 		merged := make([]Message, 0, len(candidates)+len(broadcasts))
 		for _, message := range candidates {
 			id := messageIdentity(message)
@@ -976,8 +979,11 @@ func (r *pebbleMessageProjectionRepository) listMessagesByUserIndex(ctx context.
 	}
 	defer iter.Close()
 
-	messages := make([]Message, 0)
+	var messages []Message
 	for valid := iter.First(); valid; valid = iter.Next() {
+		if messages == nil {
+			messages = make([]Message, 0, limit)
+		}
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
@@ -1418,12 +1424,6 @@ func parsePebbleMessageIDKey(key []byte) (UserKey, int64, int64, error) {
 		return UserKey{}, 0, 0, fmt.Errorf("parse message id key %q: invalid format", key)
 	}
 	return UserKey{NodeID: int64(decodeUint64(key[1:9])), UserID: int64(decodeUint64(key[9:17]))}, int64(decodeUint64(key[17:25])), int64(decodeUint64(key[25:33])), nil
-}
-
-// messageIdentity 返回消息的唯一标识字符串（格式："recipient_node/recipient_user/node/seq"）。
-// 用于日志和错误报告中的消息定位。
-func messageIdentity(message Message) string {
-	return fmt.Sprintf("%d/%d/%d/%d", message.Recipient.NodeID, message.Recipient.UserID, message.NodeID, message.Seq)
 }
 
 // sortMessages 对消息切片按时间降序排序。

@@ -17,6 +17,39 @@ type encodedPersistentMessage struct {
 	payload []byte
 }
 
+type initialPersistentMessageEncoder struct {
+	recipient internalproto.UserRef
+	sender    internalproto.UserRef
+	message   internalproto.Message
+	pushed    internalproto.MessagePushed
+	body      internalproto.ServerEnvelope_MessagePushed
+	envelope  internalproto.ServerEnvelope
+}
+
+func newInitialPersistentMessageEncoder() *initialPersistentMessageEncoder {
+	encoder := &initialPersistentMessageEncoder{}
+	encoder.message.Recipient = &encoder.recipient
+	encoder.message.Sender = &encoder.sender
+	encoder.pushed.Message = &encoder.message
+	encoder.body.MessagePushed = &encoder.pushed
+	encoder.envelope.Body = &encoder.body
+	return encoder
+}
+
+// marshal 在一次初始补发中复用 protobuf 对象树。Body 只借用到本次同步
+// marshal 返回为止；Marshal 每次仍生成独立 payload，允许传输层在 Send 后持有它。
+func (e *initialPersistentMessageEncoder) marshal(message store.Message) ([]byte, error) {
+	e.recipient.NodeId = message.Recipient.NodeID
+	e.recipient.UserId = message.Recipient.UserID
+	e.sender.NodeId = message.Sender.NodeID
+	e.sender.UserId = message.Sender.UserID
+	e.message.NodeId = message.NodeID
+	e.message.Seq = message.Seq
+	e.message.Body = message.Body
+	e.message.CreatedAtHlc = message.CreatedAt.String()
+	return gproto.Marshal(&e.envelope)
+}
+
 const (
 	// clientWSPollInterval 持久化事件分发器在提交通知缺失时的兜底轮询间隔。
 	clientWSPollInterval = time.Second
@@ -30,8 +63,21 @@ func (s *clientWSSession) pushInitialMessages(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if len(messages) == 0 {
+		return nil
+	}
+	encoder := newInitialPersistentMessageEncoder()
 	for i := len(messages) - 1; i >= 0; i-- {
-		if err := s.pushMessage(messages[i]); err != nil {
+		message := messages[i]
+		cursor := clientMessageCursor{nodeID: message.NodeID, seq: message.Seq}
+		if !s.markMessageSeenIfNew(cursor) {
+			continue
+		}
+		payload, err := encoder.marshal(message)
+		if err != nil {
+			return err
+		}
+		if err := s.writeEncodedEnvelope(payload); err != nil {
 			return err
 		}
 	}
@@ -188,14 +234,20 @@ func (s *clientWSSession) pushEncodedPersistentMessage(message *encodedPersisten
 	if message == nil {
 		return nil
 	}
-	s.seenMu.Lock()
-	if _, ok := s.seen[message.cursor]; ok {
-		s.seenMu.Unlock()
+	if !s.markMessageSeenIfNew(message.cursor) {
 		return nil
 	}
-	s.seen[message.cursor] = struct{}{}
-	s.seenMu.Unlock()
 	return s.writeEncodedEnvelope(message.payload)
+}
+
+func (s *clientWSSession) markMessageSeenIfNew(cursor clientMessageCursor) bool {
+	s.seenMu.Lock()
+	defer s.seenMu.Unlock()
+	if _, ok := s.seen[cursor]; ok {
+		return false
+	}
+	s.seen[cursor] = struct{}{}
+	return true
 }
 
 // pushPacket 向客户端推送一条即时消息（通过 PacketPushed 信封发送）。

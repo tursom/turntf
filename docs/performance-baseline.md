@@ -45,6 +45,7 @@
 - `BenchmarkClientWebSocketTransientSendMessageAuthenticatedLinearMesh`：3 节点 / 7 节点线性拓扑下的带鉴权 WebSocket transient `SendMessage` RPC；发送端和接收端都走 `/ws/realtime`，校验多跳 mesh 后的 `TransientAccepted` / `PacketPushed` 端到端路径，并确认消息未落盘。
 - `BenchmarkClientWebSocketTransientSendMessageAuthenticatedLinearMeshWithOnlineUsers`：当前仅跑 `SQLite`；在 3 节点 / 7 节点线性拓扑下先建立大批常驻在线的实时会话，再测一条跨节点 transient `SendMessage`，用于观察大规模在线连接负载下的端到端延迟。背景连接走 `/ws/realtime`，被测发送/接收连接使用 `TransientOnly` 登录，不经过持久化补发路径。
 - `BenchmarkClientWebSocketPersistentLoginAuthenticated`：标准 `/ws/client` 持久化登录基线，固定使用 `SQLite` 和 `256B` 消息，按 `0/100/1000` 条历史分层。每轮重新建立连接并校验登录响应、历史消息数量、顺序和内容，分别记录收到登录响应与完成历史补发的时间。
+- `BenchmarkClientPersistentInitialHistoryPush`：服务端初始历史补发基线，使用可保留原始 payload 的捕获连接，固定使用 `SQLite` 和 `256B` 消息，按 `0/100/1000` 条历史分层。它只测量服务端查询、去重、protobuf 编码和发送调用，不包含 WebSocket 测试客户端的读取与反序列化分配。
 - `BenchmarkClientWebSocketPersistentReconnectTokenAuthenticated`：与密码登录基线使用相同连接、历史和校验路径，但每轮使用上次登录刷新出的短期 `reconnect_token`，用于隔离测量跳过 bcrypt 后的重连成本。
 - `BenchmarkClientWebSocketPersistentSendMessageAuthenticatedLinearMeshWithOnlineUsers`：标准 `/ws/client` 持久化稳态容量基线，固定使用 `SQLite`，覆盖 3 节点 / 7 节点以及 `1000/5000/10000` 个普通在线会话，另有一个管理员发送会话。背景客户端按协议发送低频 `Ping` 保持长期连接；每个容量场景共享一次普通连接 setup，再分别测 direct、broadcast 和确定性分布到所有节点的 10% channel 订阅者；结果以所有预期目标收到同一条消息为完成条件，并记录各节点实际枚举的候选会话总数。
 - `BenchmarkClientWebSocketTransientSendMessageAuthenticatedPointToPointThroughput`：客户端 transient 端到端点对点吞吐；固定使用 `SQLite`。默认构建覆盖单节点、2 节点纯协议直连和 7 节点纯协议线性 `WebSocket/libp2p`；带 `-tags zeromq` 时再追加 `ZeroMQ` 直连 / 线性。当前不包含 mixed bridge 子场景，并且统一走实时客户端路径，不切 `tmp/disk` 子场景。
@@ -138,6 +139,7 @@ go test ./internal/cluster ./internal/store ./internal/api -count=1
 ```bash
 go test ./internal/cluster -run '^$' -bench 'BenchmarkMesh(Replication|QueryLoggedInUsers|TransientRoute|SnapshotRepair|TruncatedCatchup)' -benchmem -count=1 -benchtime=1x
 go test ./internal/store ./internal/api -run '^$' -bench 'Benchmark(Store|HTTP|ClientWebSocketTransient)' -benchmem -count=1 -benchtime=1x
+go test ./internal/api -run '^$' -bench '^BenchmarkClientPersistentInitialHistoryPush/tmp/sqlite/history-(0|100|1000)/256B$' -benchmem -count=1 -benchtime=1x
 go test ./internal/api -run '^$' -bench '^BenchmarkClientWebSocketPersistentLoginAuthenticated/tmp/sqlite/history-(0|100|1000)/256B$' -benchmem -count=1 -benchtime=1x
 go test ./internal/api -run '^$' -bench '^BenchmarkClientWebSocketPersistentSendMessageAuthenticatedLinearMeshWithOnlineUsers/tmp/sqlite/3-nodes/1000-online/(direct|broadcast|channel-10pct)/256B$' -benchmem -count=1 -benchtime=1x
 go test ./internal/cluster -run '^$' -bench 'BenchmarkMeshTransientPointToPointThroughput' -benchmem -count=1 -benchtime=1x
@@ -151,14 +153,15 @@ go test -tags zeromq ./internal/api -run '^$' -bench 'BenchmarkClientZeroMQTrans
 
 - `ns/op`：Go benchmark 的标准单次操作耗时。
 - `MB/s`：对调用了 `SetBytes` 的吞吐 benchmark，Go benchmark 会额外给出按 payload 大小换算后的吞吐率。
-- `B/op`：每次操作平均分配的内存字节数。
-- `allocs/op`：每次操作平均分配次数。
+- `B/op`：每次操作平均分配的内存字节数。full-client WebSocket benchmark 统计同一测试进程内服务端和测试客户端的总分配；分析服务端历史补发时应优先查看 `BenchmarkClientPersistentInitialHistoryPush`。
+- `allocs/op`：每次操作平均分配次数，统计边界与 `B/op` 相同。
 - `bytes/op`：场景里单次操作的业务 payload 大小，便于横向对比不同消息体。
 - `ack_ms/op`：复制场景从本地创建消息并广播，到最远端应用完成且源节点看到 `Ack` 推进的平均耗时。
 - `accept_ms/op`：客户端 WebSocket transient 场景中，从发送请求到发送端收到 `TransientAccepted` 的平均耗时。
 - `push_ms/op`：客户端 WebSocket transient 场景中，从发送请求到接收端收到 `PacketPushed` 的平均耗时。
 - `login_ms/op`：full-client 登录场景从开始建立 WebSocket 到收到 `LoginResponse` 的平均耗时。
 - `catchup_ms/op`：full-client 登录场景从开始建立 WebSocket 到收到最后一条历史 `MessagePushed` 的平均耗时；无历史时等于 `login_ms/op`。
+- `history_push_ms/op`：服务端初始历史补发场景中，从开始查询可见消息到所有历史 payload 交给捕获连接的平均耗时。
 - `history_messages/op`：full-client 登录场景每次连接校验的历史消息条数。
 - `write_ms/op`：持久消息场景从发送请求到收到包含已落库消息的 `SendMessageResponse` 的平均耗时。
 - `first_push_ms/op` / `last_push_ms/op`：持久消息场景从发送请求到首个 / 最后一个预期目标收到 `MessagePushed` 的平均耗时。
@@ -175,6 +178,19 @@ go test -tags zeromq ./internal/api -run '^$' -bench 'BenchmarkClientZeroMQTrans
 - `*_delta_ns_per_1k`：相对首层规模，每额外 `1000` 条消息 / event 带来的平均增量耗时。
 
 ## 基线环境
+
+### 2026-08-09 历史补发分配优化定向样本
+
+以下结果来自同一台 `12th Gen Intel(R) Core(TM) i5-12400` 主机的 `tmp` 场景，均使用 `-benchtime=20x -count=5`，表中取 5 组中位数。`history delta` 为 `history-1000` 减 `history-0`，用于排除固定登录或夹具成本；这组本地定向结果只用于验证本次优化，不构成容量 SLA。
+
+| benchmark | 指标 | 优化前 | 优化后 | 变化 |
+| --- | ---: | ---: | ---: | ---: |
+| 服务端初始补发 | history delta B/op | 2,819,159 | 1,812,161 | -35.7% |
+| 服务端初始补发 | history delta allocs/op | 33,600 | 20,827 | -38.0% |
+| 服务端初始补发 | history-1000 history_push_ms/op | 3.638 | 3.107 | -14.6% |
+| full-client 登录 | history delta B/op | 4,178,409 | 3,170,901 | -24.1% |
+| full-client 登录 | history delta allocs/op | 45,631 | 32,862 | -28.0% |
+| full-client 登录 | history-1000 catchup_ms/op | 62.26 | 61.57 | -1.1% |
 
 ### 2026-08-09 在线状态同步定向样本
 

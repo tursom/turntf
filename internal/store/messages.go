@@ -8,6 +8,20 @@ import (
 	"fmt"
 )
 
+type messageIdentityKey struct {
+	recipient UserKey
+	nodeID    int64
+	seq       int64
+}
+
+func messageIdentity(message Message) messageIdentityKey {
+	return messageIdentityKey{
+		recipient: message.Recipient,
+		nodeID:    message.NodeID,
+		seq:       message.Seq,
+	}
+}
+
 // MessageSession 计算两个用户之间的 session 标识（32 字节 BLOB）。
 // 将两个 UserKey 按 (node_id, user_id) 排序后以大端编码拼接，保证 A↔B 和 B↔A 得到相同的 session。
 func MessageSession(a, b UserKey) []byte {

@@ -40,6 +40,13 @@ type benchmarkPersistentLoginFixture struct {
 	closeFns       []func()
 }
 
+type benchmarkPersistentInitialHistoryFixture struct {
+	conn         *persistentPayloadCaptureConn
+	session      *clientWSSession
+	historyCount int
+	closeFn      func()
+}
+
 type benchmarkPersistentDelivery struct {
 	message    *internalproto.Message
 	receivedAt time.Time
@@ -131,6 +138,36 @@ func BenchmarkClientWebSocketPersistentLoginAuthenticated(b *testing.B) {
 					b.StopTimer()
 					reportAPIBenchmarkAverageLatencyMetric(b, totalLogin, "login_ms/op")
 					reportAPIBenchmarkAverageLatencyMetric(b, totalCatchup, "catchup_ms/op")
+				})
+			}
+		})
+	}
+}
+
+func BenchmarkClientPersistentInitialHistoryPush(b *testing.B) {
+	for _, mode := range benchroot.Modes(b) {
+		mode := mode
+		b.Run(mode.Name(), func(b *testing.B) {
+			for _, historyCount := range []int{0, 100, 1000} {
+				b.Run(fmt.Sprintf("%s/history-%d/256B", store.EngineSQLite, historyCount), func(b *testing.B) {
+					silenceAPIBenchmarkLogs(b)
+					fixture := openBenchmarkPersistentInitialHistoryFixture(b, mode, historyCount)
+					b.Cleanup(fixture.Close)
+
+					_ = fixture.PushOnce(b)
+					b.ReportMetric(float64(historyCount), "history_messages/op")
+					if historyCount > 0 {
+						b.SetBytes(int64(historyCount * persistentClientBenchmarkPayloadSize))
+					}
+					b.ResetTimer()
+
+					var totalPush time.Duration
+					for i := 0; i < b.N; i++ {
+						totalPush += fixture.PushOnce(b)
+					}
+
+					b.StopTimer()
+					reportAPIBenchmarkAverageLatencyMetric(b, totalPush, "history_push_ms/op")
 				})
 			}
 		})
@@ -234,6 +271,77 @@ func openBenchmarkPersistentLoginFixture(tb testing.TB, mode benchroot.Mode, his
 		timeout:        benchmarkAPIClientTimeout(mode, 10*time.Second, 30*time.Second),
 		closeFns:       []func(){closeServer, closeAPI},
 	}
+}
+
+func openBenchmarkPersistentInitialHistoryFixture(tb testing.TB, mode benchroot.Mode, historyCount int) *benchmarkPersistentInitialHistoryFixture {
+	tb.Helper()
+
+	if historyCount < 0 || historyCount > 1000 {
+		tb.Fatalf("persistent initial history must be between 0 and 1000, got %d", historyCount)
+	}
+	scenario := apiBenchmarkEngineScenario{name: store.EngineSQLite, engine: store.EngineSQLite}
+	testAPI, closeAPI := openBenchmarkAuthenticatedTestAPIWithMessageWindowSize(tb, mode, scenario, 1000)
+
+	adminKey := store.UserKey{NodeID: testNodeID(1), UserID: store.BootstrapAdminUserID}
+	adminToken := benchmarkLoginToken(tb, testAPI.handler, adminKey, "root-password")
+	userKey := benchmarkCreateUserAs(tb, testAPI.handler, adminToken, fmt.Sprintf("bench-initial-history-%d", historyCount), "bench-password", store.RoleUser)
+	for i := 0; i < historyCount; i++ {
+		prefix := []byte(fmt.Sprintf("persistent-history-%04d-", i))
+		body := append(prefix, bytes.Repeat([]byte("h"), persistentClientBenchmarkPayloadSize-len(prefix))...)
+		if _, _, err := testAPI.http.service.CreateMessage(context.Background(), store.CreateMessageParams{
+			UserKey: userKey,
+			Sender:  adminKey,
+			Body:    body,
+		}); err != nil {
+			closeAPI()
+			tb.Fatalf("seed persistent initial history %d: %v", i, err)
+		}
+	}
+	user, err := testAPI.http.service.GetUser(context.Background(), userKey)
+	if err != nil {
+		closeAPI()
+		tb.Fatalf("load persistent initial history user: %v", err)
+	}
+	conn := &persistentPayloadCaptureConn{
+		payloads: make([][]byte, 0, historyCount),
+	}
+	return &benchmarkPersistentInitialHistoryFixture{
+		conn:         conn,
+		session:      newPersistentPayloadCaptureSession(testAPI.http, user, conn),
+		historyCount: historyCount,
+		closeFn:      closeAPI,
+	}
+}
+
+func (f *benchmarkPersistentInitialHistoryFixture) Close() {
+	if f.closeFn != nil {
+		f.closeFn()
+	}
+}
+
+func (f *benchmarkPersistentInitialHistoryFixture) PushOnce(tb testing.TB) time.Duration {
+	tb.Helper()
+
+	f.conn.mu.Lock()
+	for i := range f.conn.payloads {
+		f.conn.payloads[i] = nil
+	}
+	f.conn.payloads = f.conn.payloads[:0]
+	f.conn.mu.Unlock()
+	f.session.seenMu.Lock()
+	f.session.seen = make(map[clientMessageCursor]struct{})
+	f.session.seenMu.Unlock()
+
+	start := time.Now()
+	if err := f.session.pushInitialMessages(context.Background()); err != nil {
+		tb.Fatalf("push persistent initial history: %v", err)
+	}
+	duration := time.Since(start)
+	if got := f.conn.payloadCount(); got != f.historyCount {
+		tb.Fatalf("persistent initial history payload count: got %d want %d", got, f.historyCount)
+	}
+	runtime.KeepAlive(f.conn)
+	return duration
 }
 
 func (f *benchmarkPersistentLoginFixture) Close() {

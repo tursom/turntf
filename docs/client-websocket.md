@@ -180,7 +180,7 @@ ServerEnvelope {
 - `session_ref` 是本次连接的全局会话引用，后续可作为瞬时包的 `target_session` 使用。
 - `session_ref` 是不透明标识，客户端应原样保存和回传，不要自行拼接或猜测语义。
 - `reconnect_token` 是专用于 WebSocket / ZeroMQ 后续登录的短期签名凭据，不能作为 HTTP Bearer token 使用。每次成功登录都会刷新 token 和 `reconnect_token_expires_at_unix`。
-- token 同时绑定用户和密码版本；密码变更、用户删除或角色变为不可登录后立即失效。默认有效期为 5 分钟，可通过 `auth.reconnect_token_ttl_minutes` 调整。
+- token 同时绑定用户和密码版本；当前接入节点观察到密码变更、用户删除或角色变为不可登录后即拒绝旧 token。跨节点变更遵循用户副本的最终一致复制语义，复制收敛前可能存在短暂窗口。默认有效期为 5 分钟，可通过 `auth.reconnect_token_ttl_minutes` 调整。
 
 服务端解析出登录首帧后，会先检查协议版本，再读取用户选择器、验证凭据、处理游标、生成 `session_ref` 或注册会话：
 

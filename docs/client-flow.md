@@ -536,9 +536,10 @@ curl -sS -H "Authorization: Bearer ${ADMIN_TOKEN}" \
 
 1. 保留本地已持久化消息和游标。
 2. 使用指数退避重连 `GET /ws/client` 或 ZeroMQ。
-3. 第一帧重新发送 `LoginRequest`。
+3. 第一帧重新发送 `LoginRequest`，优先携带上次登录返回的 `reconnect_token`。
 4. 重新声明 `protocol_version = "client-v1alpha5"`，并把本地游标表中的 `(node_id, seq)` 放入 `seen_messages`。
-5. 对重连后收到的所有持久消息继续按 `(node_id, seq)` 幂等处理。
+5. 如果 token 被拒绝，清除它并显式进行一次密码登录；不要让单次连接在 token 失败后自动回退 bcrypt。
+6. 对重连后收到的所有持久消息继续按 `(node_id, seq)` 幂等处理。
 
 示例：
 
@@ -546,7 +547,7 @@ curl -sS -H "Authorization: Bearer ${ADMIN_TOKEN}" \
 ClientEnvelope {
   login: LoginRequest {
     user: { node_id: 4096, user_id: 1025 }
-    password: "alice-password"
+    reconnect_token: "..."
     protocol_version: "client-v1alpha5"
     seen_messages: [
       { node_id: 4096, seq: 1 },
@@ -605,7 +606,7 @@ ServerEnvelope {
 
 客户端建议：
 
-- `unauthorized`：登录失败、混用 `user` 与 `login_name`、首帧不是登录消息或密码错误。应停止盲目重试并提示重新认证。
+- `unauthorized`：登录失败、混用 `user` 与 `login_name`、首帧不是登录消息或密码/token 错误。应停止盲目重试；token 登录失败时清除 token，再由受控流程进行一次密码认证。
 - `invalid_request`：目标缺失、body 为空、只填了半个 `UserRef`、非法枚举、在持久消息中带了 `delivery_mode`、在瞬时消息中带了 `sync_mode`、在持久消息中带了 `target_session` 等。
 - `forbidden`：当前用户没有权限。必要时刷新订阅/附件关系或联系管理员。
 - `not_found`：目标用户、channel、broadcast 地址或附件资源不存在。
@@ -618,7 +619,7 @@ ServerEnvelope {
 
 集群中任意节点都可以提供标准客户端接入：
 
-- 用户 token 只用于 HTTP；长连接使用密码首帧登录。
+- HTTP Bearer token 只用于 HTTP；长连接首次使用密码，后续使用独立的短期 `reconnect_token`。两类 token 不能混用。
 - 同一用户可以同时在多个节点上有多个在线会话。
 - 切换连接节点时，客户端仍按 `(node_id, seq)` 去重。
 - 如需把瞬时包定向到某个具体在线会话，应先通过 `resolve_user_sessions` 获取那条会话的 `session_ref`。
@@ -630,9 +631,9 @@ ServerEnvelope {
 Disconnected
   -> connect transport (ws client / ws realtime / zeromq)
 Connecting
-  -> send LoginRequest(protocol_version=client-v1alpha5, user or login_name, seen_messages, transient_only?)
+  -> send LoginRequest(protocol_version=client-v1alpha5, user or login_name, password or reconnect_token, seen_messages, transient_only?)
 Authenticating
-  -> receive LoginResponse(client-v1alpha5, user, session_ref), validate version
+  -> receive LoginResponse(client-v1alpha5, user, session_ref, reconnect_token, expiry), validate version and replace saved token
   -> receive unsupported_protocol_version or mismatched LoginResponse: terminal failure
 Online
   -> receive MessagePushed: persist + cursor + optional ack
@@ -646,6 +647,7 @@ Online
 
 - 能创建普通用户，并记录 `(node_id, user_id)` 和可选 `login_name`。
 - 能用 `user` 或 `login_name` 至少一种方式完成首帧登录。
+- 能保存并刷新短期 `reconnect_token`，重连时不再重复执行密码认证。
 - 能在初连和重连声明并验证 `client-v1alpha5`，版本不兼容时停止重连。
 - 能理解 `/ws/client`、`/ws/realtime` 和 `transient_only` 的差异。
 - 能接收历史补发消息。

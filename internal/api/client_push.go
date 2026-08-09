@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	// clientWSPollInterval 持久化事件分发器的轮询间隔。
+	// clientWSPollInterval 持久化事件分发器在提交通知缺失时的兜底轮询间隔。
 	clientWSPollInterval = time.Second
 	// clientWSPollBatchSize 每次轮询拉取的最大事件数。
 	clientWSPollBatchSize = 100

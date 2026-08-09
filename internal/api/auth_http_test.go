@@ -1656,6 +1656,10 @@ func TestClientWebSocketAdminRPCProvidesFullHTTPCapabilities(t *testing.T) {
 	}, map[string]string{
 		"Authorization": "Bearer " + loginToken(t, testAPI.handler, adminKey, "root-password"),
 	}, http.StatusCreated)
+	pushed := readServerEnvelope(t, conn).GetMessagePushed()
+	if pushed == nil || pushed.Message == nil || string(pushed.Message.GetBody()) != "rpc hello" {
+		t.Fatalf("unexpected admin persistent message push: %+v", pushed)
+	}
 
 	writeClientEnvelope(t, conn, &internalproto.ClientEnvelope{
 		Body: &internalproto.ClientEnvelope_ListMessages{

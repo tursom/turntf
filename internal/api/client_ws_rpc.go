@@ -71,16 +71,22 @@ func (s *clientWSSession) handleSendMessage(ctx context.Context, req *internalpr
 	if err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
+	// Store 会在消息提交后立即唤醒 dispatcher。持有 seenMu 直到写入结果被标记，
+	// 避免 dispatcher 抢先把发送方刚创建的消息作为 MessagePushed 回推。
+	s.seenMu.Lock()
 	message, _, err := s.http.service.CreateMessage(ctx, store.CreateMessageParams{
 		UserKey:               target,
 		Sender:                sender,
 		Body:                  req.Body,
 		PebbleMessageSyncMode: syncMode,
 	})
+	if err == nil && message.NodeID > 0 && message.Seq > 0 {
+		s.seen[clientMessageCursor{nodeID: message.NodeID, seq: message.Seq}] = struct{}{}
+	}
+	s.seenMu.Unlock()
 	if err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
-	s.markSeen(message.NodeID, message.Seq)
 	return s.writeEnvelope(&internalproto.ServerEnvelope{
 		Body: &internalproto.ServerEnvelope_SendMessageResponse{
 			SendMessageResponse: &internalproto.SendMessageResponse{

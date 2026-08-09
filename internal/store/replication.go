@@ -126,6 +126,7 @@ VALUES(?, ?, ?)
 	if !deferredMessageProjection {
 		return nil
 	}
+	defer s.notifyMessageCommitted()
 	if err := s.projectMessageEvent(ctx, decoded); err != nil {
 		if recordErr := s.recordPendingProjection(ctx, decoded, err); recordErr != nil {
 			return fmt.Errorf("record pending projection for replicated event %d:%d: %w", decoded.OriginNodeID, decoded.EventID, recordErr)

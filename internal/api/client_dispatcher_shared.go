@@ -33,7 +33,7 @@ type queuedPersistentMessage struct {
 }
 
 // startPersistentDispatcher 启动持久化事件分发器的后台 goroutine（仅启动一次）。
-// 从当前最新事件序列号开始轮询，将新事件推送给所有需要持久化推送的客户端会话。
+// 从当前最新事件序列号开始等待消息提交或兜底轮询，将新事件推送给持久化客户端会话。
 func (h *HTTP) startPersistentDispatcher() {
 	if h == nil || h.service == nil {
 		return
@@ -57,57 +57,82 @@ func (h *HTTP) startPersistentDispatcher() {
 			Msg("client persistent dispatcher failed to load initial watermark")
 	}
 
-	go h.runPersistentDispatcher(ctx, afterSequence)
+	wake, unsubscribe := h.service.subscribeMessageCommits()
+	go func() {
+		defer unsubscribe()
+		h.runPersistentDispatcher(ctx, afterSequence, wake)
+	}()
 }
 
-// runPersistentDispatcher 持久化事件分发器的主循环。每秒轮询一次新事件，
-// 按消息目标角色（广播/频道/普通用户）筛选候选会话，检查可见性后推送。
-func (h *HTTP) runPersistentDispatcher(ctx context.Context, afterSequence int64) {
+// runPersistentDispatcher 持久化事件分发器的生产循环。消息提交事件负责立即唤醒，
+// 每秒 ticker 仅用于在通知缺失时兜底追平事件日志。
+func (h *HTTP) runPersistentDispatcher(ctx context.Context, afterSequence int64, wake <-chan struct{}) {
 	ticker := time.NewTicker(clientWSPollInterval)
 	defer ticker.Stop()
+	h.runPersistentDispatcherWithFallback(ctx, afterSequence, wake, ticker.C)
+}
 
+// runPersistentDispatcherWithFallback 等待消息提交或兜底触发，并在每次触发后连续拉取，
+// 直到事件日志返回不足一个批次。fallback 可为 nil，便于测试事件唤醒路径。
+func (h *HTTP) runPersistentDispatcherWithFallback(
+	ctx context.Context,
+	afterSequence int64,
+	wake <-chan struct{},
+	fallback <-chan time.Time,
+) {
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
+		case <-wake:
+		case <-fallback:
 		}
 
 		if !h.hasPersistentSessions() {
 			continue
 		}
 
-		events, err := h.service.ListEvents(ctx, afterSequence, clientWSPollBatchSize)
-		if err != nil {
+		for {
 			if ctx.Err() != nil {
 				return
 			}
-			log.Warn().
-				Err(err).
-				Str("component", "api").
-				Str("event", "client_persistent_dispatcher_list_events_failed").
-				Msg("client persistent dispatcher failed to list events")
-			continue
-		}
 
-		for _, event := range events {
-			if event.Sequence > afterSequence {
-				afterSequence = event.Sequence
-			}
-			message, ok, err := messageFromClientPushEvent(event)
+			events, err := h.service.ListEvents(ctx, afterSequence, clientWSPollBatchSize)
 			if err != nil {
+				if ctx.Err() != nil {
+					return
+				}
 				log.Warn().
 					Err(err).
 					Str("component", "api").
-					Str("event", "client_persistent_dispatcher_decode_failed").
-					Int64("event_sequence", event.Sequence).
-					Msg("client persistent dispatcher failed to decode event")
-				continue
+					Str("event", "client_persistent_dispatcher_list_events_failed").
+					Msg("client persistent dispatcher failed to list events")
+				break
 			}
-			if !ok {
-				continue
+
+			for _, event := range events {
+				if event.Sequence > afterSequence {
+					afterSequence = event.Sequence
+				}
+				message, ok, err := messageFromClientPushEvent(event)
+				if err != nil {
+					log.Warn().
+						Err(err).
+						Str("component", "api").
+						Str("event", "client_persistent_dispatcher_decode_failed").
+						Int64("event_sequence", event.Sequence).
+						Msg("client persistent dispatcher failed to decode event")
+					continue
+				}
+				if !ok {
+					continue
+				}
+				h.dispatchPersistentMessage(ctx, event.Sequence, message)
 			}
-			h.dispatchPersistentMessage(ctx, event.Sequence, message)
+
+			if len(events) < clientWSPollBatchSize {
+				break
+			}
 		}
 	}
 }

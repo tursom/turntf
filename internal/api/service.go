@@ -632,6 +632,14 @@ func (s *Service) LastEventSequence(ctx context.Context) (int64, error) {
 	return s.store.LastEventSequence(ctx)
 }
 
+// subscribeMessageCommits 订阅 Store 中已提交消息事件的可合并唤醒提示。
+func (s *Service) subscribeMessageCommits() (<-chan struct{}, func()) {
+	if s == nil || s.store == nil {
+		return nil, func() {}
+	}
+	return s.store.SubscribeMessageCommits()
+}
+
 // BlockUser 将目标用户加入黑名单，屏蔽其发送的消息。
 func (s *Service) BlockUser(ctx context.Context, params store.BlacklistParams) (store.BlacklistEntry, store.Event, error) {
 	if err := s.allowWrite(ctx); err != nil {

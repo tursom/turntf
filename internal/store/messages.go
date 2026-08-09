@@ -39,7 +39,11 @@ func (s *Store) CreateMessage(ctx context.Context, params CreateMessageParams) (
 	if err := ctx.Err(); err != nil {
 		return Message{}, Event{}, err
 	}
-	return s.backend.CreateMessage(ctx, s, params)
+	message, event, err := s.backend.CreateMessage(ctx, s, params)
+	if event.Sequence > 0 && event.EventType == EventTypeMessageCreated {
+		s.notifyMessageCommitted()
+	}
+	return message, event, err
 }
 
 // nextMessageSeqTx 为给定 (UserKey, nodeID) 对分配下一个消息序列号，委托给后端。

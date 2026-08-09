@@ -71,7 +71,7 @@
 - 持久化客户端登录时，会先读取 `LastEventSequence()` 作为 `afterSequence` 初始水位；不再存在“默认从 `afterSequence = 0` 扫全历史 event log”的行为。
 - `HTTP` 已经维护常驻 `onlineUsers` registry，并用 `onlineUserCount` 预估容量；`ListLoggedInUsers()` 不再靠遍历整张 session map 组装在线列表。
 - 客户端 session 已经改成 `256` 个 shard 的分片存储，并且每个用户桶维护稳定快照 `snapshot`，本地 transient 投递不再每次复制一份新的 session slice。
-- 持久化消息推送已切到节点级共享分发器：后台只启动一个 `runPersistentDispatcher()` 轮询 event log，再把事件分发给需要持久化推送的 session。
+- 持久化消息推送已切到节点级共享分发器：后台只启动一个 `runPersistentDispatcher()`。本地或复制消息提交后会立即唤醒 dispatcher；原有 1 秒 ticker 仅作为通知缺失时的兜底。每次触发会连续分页读取 event log 直到追平，再把消息分发给需要持久化推送的 session。
 - 黑名单、频道订阅、目标角色都已经有短 TTL 缓存；频道订阅和黑名单更新后也会主动失效对应缓存。
 - 当前协议已经包含 `session_ref`、`resolve_user_sessions` 和 `target_session`，瞬时包可以精确路由到某个在线会话，而不只是“打给这个用户的所有在线节点”。
 
@@ -105,10 +105,17 @@
 
 当前 `runPersistentDispatcher()` 的复杂度来源主要是：
 
-- 每秒每节点一次 `ListEvents(afterSequence, 100)` 轮询。
+- 正常路径由可合并的消息提交通知触发 `ListEvents(afterSequence, 100)`；连续满批时会继续读取直到追平，1 秒 ticker 只负责异常兜底，不再构成正常推送的尾延迟下限。
 - 对 direct 消息，需要解析候选接收 session。
 - 对 broadcast / channel 消息，需要克隆全部持久化 session，再逐个做可见性判定。
 - `canSeeMessage()` 虽然已有缓存，但缓存 miss 时仍然可能触发黑名单、频道订阅和目标角色查询。
+
+2026-08-09 在同一台本地机器上执行 3 节点 SQLite direct 定向单次验证：
+
+- `1000-online`：事件唤醒前 `write_ms/op=0.3121`、`last_push_ms/op=999.4`；事件唤醒后 `write_ms/op=0.2597`、`last_push_ms/op=4.058`。
+- `10000-online`：事件唤醒后 `write_ms/op=0.2654`、`last_push_ms/op=2.971`。
+
+这组结果只验证固定 1 秒轮询不再限制 direct 尾延迟；它是 `benchtime=1x` 的本地定向样本，不是完整容量矩阵或生产 SLA。
 
 这意味着当前 full client 路径的热点已经不再是“每连接一个 ticker”，而是：
 
@@ -156,7 +163,7 @@
 | 2. 登录默认从当前事件水位起步 | 已完成 | 持久化会话登录时会先读取 `LastEventSequence()`。 |
 | 3. 本地在线用户 registry 常驻化 | 已完成 | `onlineUsers` + `onlineUserCount` 已是当前实现。 |
 | 4. session registry 分片 | 已完成 | 当前是 `256` shard，并为每个用户维护 `snapshot`。 |
-| 5. 节点级 shared event tailer | 已完成 | 当前持久化推送由 `runPersistentDispatcher()` 统一负责。 |
+| 5. 节点级 shared event tailer | 已完成 | 当前持久化推送由 `runPersistentDispatcher()` 统一负责；消息提交事件立即唤醒并跨 batch 追平，1 秒 ticker 仅作为兜底。 |
 | 6. 可见性判断缓存化 | 已完成 | 黑名单、频道订阅、目标角色都已有 TTL 缓存和局部失效。 |
 | 7. transient / persistent 路径拆分 | 部分完成 | `/ws/client` 与 `/ws/realtime` 已分流，但 ZeroMQ 仍复用标准客户端语义，也还没有单独的 edge 接入层。 |
 | 8. 接入层与 cluster 节点角色拆分 | 未开始 | 当前节点仍同时承载 API、连接、store 和 mesh。 |

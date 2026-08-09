@@ -156,6 +156,8 @@ type Store struct {
 	subscriptions              SubscriptionRepository
 	blacklists                 BlacklistRepository
 	messageTrim                MessageTrimRepository
+	messageCommitSubscribersMu sync.RWMutex
+	messageCommitSubscribers   map[chan struct{}]struct{}
 }
 
 // UserKey 是用户的复合主键，由节点 ID 和用户 ID 组成，跨集群唯一标识一个用户。

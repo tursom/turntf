@@ -95,6 +95,7 @@
 
 - `BenchmarkClientWebSocketPersistentLoginAuthenticated` 以 `0/100/1000` 条历史拆出登录与补发成本。
 - `BenchmarkClientWebSocketPersistentSendMessageAuthenticatedLinearMeshWithOnlineUsers` 使用标准 `/ws/client`，覆盖 3/7 节点、1k/5k/10k 普通会话以及 direct、broadcast、10% channel fanout。
+- 稳态容量 fixture 为已创建用户预签发短期 `reconnect_token`，批量连接不执行 bcrypt；初始密码登录成本仍由独立登录 benchmark 承担，不能从容量 setup 推导。
 - 两组 full-client benchmark 固定使用 SQLite，与现有 transient-only 在线容量口径保持可比；它们是本地手动基线，不是 CI 硬阈值或生产 SLA。
 
 所以当前最大的“文档风险”是：
@@ -129,6 +130,7 @@
 - 登录成功后仍会执行 `pushInitialMessages()`，最多补发最近 `1000` 条历史消息。
 - 会话会注册到本地在线表和 cluster session registry。
 - 如果后续存在大量持久化消息，这些会话还会加入共享持久化分发器的候选集。
+- 稳态容量 fixture 使用 reconnect token 只是把 bcrypt 从该测量边界中移除，不改变真实首次登录和登录风暴仍需密码认证的事实。
 
 所以“能否快速建立很多连接”与“steady-state 是否稳定”仍然要分开看。
 
@@ -257,7 +259,7 @@ go test ./internal/api -run '^$' -bench '^BenchmarkClientWebSocketPersistentSend
 - `write_ms/op`：`0.6916–0.7125`，p99 `1.604–1.628ms`，max `5.600–18.74ms`。
 - `last_push_ms/op`：`4.162–4.236`，p99 `5.740–5.831ms`，max `20.69–77.92ms`。
 - 三轮均未出现 `last_push >= 1s`。旧样本只记录到约 `1.4s` 的 `last_push` 而没有 p95/p99；即使用新 max 保守比较，周期相关尾延迟也下降 94% 以上。
-- fixture 在计时前验证所有 origin 镜像完整，再等待 8.5 秒覆盖一整轮权威分片并清理 setup GC；正式 10 秒窗口仍会覆盖下一整轮分片校验。
+- fixture 在计时前先等待在线用户镜像数量收敛，再等待 8.5 秒覆盖一整轮权威 presence 分片；随后要求 durable replication/snapshot 连续 2 秒无 pending、游标/确认/快照活动或本地 snapshot digest 变化，最后清理 setup GC。durable 静默只排除后台残留，不要求不同节点的业务 snapshot digest 完全相同；正式 10 秒窗口仍会覆盖下一整轮 presence 分片校验。
 
 ### 6.4 对外承诺
 

@@ -47,7 +47,7 @@
 - `BenchmarkClientWebSocketPersistentLoginAuthenticated`：标准 `/ws/client` 持久化登录基线，固定使用 `SQLite` 和 `256B` 消息，按 `0/100/1000` 条历史分层。每轮重新建立连接并校验登录响应、历史消息数量、顺序和内容，分别记录收到登录响应与完成历史补发的时间。
 - `BenchmarkClientPersistentInitialHistoryPush`：服务端初始历史补发基线，使用可保留原始 payload 的捕获连接，固定使用 `SQLite` 和 `256B` 消息，按 `0/100/1000` 条历史分层。它只测量服务端查询、去重、protobuf 编码和发送调用，不包含 WebSocket 测试客户端的读取与反序列化分配。
 - `BenchmarkClientWebSocketPersistentReconnectTokenAuthenticated`：与密码登录基线使用相同连接、历史和校验路径，但每轮使用上次登录刷新出的短期 `reconnect_token`，用于隔离测量跳过 bcrypt 后的重连成本。
-- `BenchmarkClientWebSocketPersistentSendMessageAuthenticatedLinearMeshWithOnlineUsers`：标准 `/ws/client` 持久化稳态容量基线，固定使用 `SQLite`，覆盖 3 节点 / 7 节点以及 `1000/5000/10000` 个普通在线会话，另有一个管理员发送会话。背景客户端按协议发送低频 `Ping` 保持长期连接；每个容量场景共享一次普通连接 setup，再分别测 direct、broadcast 和确定性分布到所有节点的 10% channel 订阅者；结果以所有预期目标收到同一条消息为完成条件，并记录各节点实际枚举的候选会话总数。
+- `BenchmarkClientWebSocketPersistentSendMessageAuthenticatedLinearMeshWithOnlineUsers`：标准 `/ws/client` 持久化稳态容量基线，固定使用 `SQLite`，覆盖 3 节点 / 7 节点以及 `1000/5000/10000` 个普通在线会话，另有一个管理员发送会话。fixture 直接为已创建用户签发短期 `reconnect_token`，容量连接仍走正常协议校验和 token 验签，但不会把批量 bcrypt 密码认证混入稳态 setup；背景客户端按协议发送低频 `Ping` 保持长期连接。每个容量场景共享一次连接 setup，再分别测 direct、broadcast 和确定性分布到所有节点的 10% channel 订阅者；结果以所有预期目标收到同一条消息为完成条件，并记录各节点实际枚举的候选会话总数。
 - `BenchmarkClientWebSocketTransientSendMessageAuthenticatedPointToPointThroughput`：客户端 transient 端到端点对点吞吐；固定使用 `SQLite`。默认构建覆盖单节点、2 节点纯协议直连和 7 节点纯协议线性 `WebSocket/libp2p`；带 `-tags zeromq` 时再追加 `ZeroMQ` 直连 / 线性。当前不包含 mixed bridge 子场景，并且统一走实时客户端路径，不切 `tmp/disk` 子场景。
 - `BenchmarkClientZeroMQTransientSendMessageAuthenticatedPointToPointThroughput`：客户端通过 ZeroMQ 长连接接入时的 transient 端到端点对点吞吐；固定使用 `SQLite`，需要 `-tags zeromq`。客户端先发送 `ZeroMQMuxHello{role=CLIENT}` 再登录，覆盖 `2` 节点直连与 `7` 节点纯 `ZeroMQ` 线性拓扑，用于把“客户端 ZeroMQ 入口开销”和“节点间 ZeroMQ mesh hop 开销”单独拉平观察。
 
@@ -59,6 +59,7 @@
 - 如果默认临时目录所在文件系统是内存文件系统，例如当前机器的 `/tmp` 是 `tmpfs`，同一条 `go test` 命令会自动补跑 `disk` 子场景。
 - `disk` 子场景固定写入仓库根目录下的 `./.benchdata`。
 - 常规 benchmark 会在正式计时前做一轮不计时 warmup；恢复类 benchmark 也会先做一轮缩小版 dry-run，避免 `-benchtime=1x` 时把首轮控制路径冷启动完全混进结果。
+- full-client 容量 fixture 在计时前分别等待在线 presence 分片完成一轮权威校验，以及 durable replication/snapshot 连续 2 秒无 pending、游标/确认/快照活动或本地 snapshot digest 变化；这两个屏障只用于排除 setup 残留，不证明跨节点业务快照完全相同。
 - full-client 容量 benchmark 会真实建立最多 `10000` 个连接并等待高 fanout 完成，完整矩阵可使用 `-benchtime=1x` 手动验证；需要观察周期工作时，应精确选择 direct 子场景并使用 `-benchtime=10s -count=3`。
 - 读取结论时，优先看本次采集中第一个非内存文件系统结果：
   - 出现 `disk` 时，以 `disk` 为主。
@@ -116,7 +117,7 @@ go test ./internal/api -run '^$' -bench '^BenchmarkClientWebSocketPersistentSend
 go test ./internal/api -run '^$' -bench '^BenchmarkClientWebSocketPersistentSendMessageAuthenticatedLinearMeshWithOnlineUsers/tmp/sqlite/3-nodes/10000-online/direct/256B$' -benchmem -benchtime=10s -count=3
 ```
 
-登录基线可在同一机器上使用更高 `-count` 做前后统计对比。容量矩阵的 setup 和 fanout 成本较高，功能验证应保留完全相同的 `-benchtime=1x -count=1` 命令和原始输出。旧式 `-benchtime=10x` 可能因测量窗口短于 5 秒而错过周期 ticker；周期尾延迟对比必须使用上面的持续 10 秒 direct 命令。
+登录基线可在同一机器上使用更高 `-count` 做前后统计对比。密码登录与 reconnect-token 登录必须继续分开报告；容量矩阵使用预签发 reconnect token，只回答连接已经建立后的稳态分发问题。容量矩阵的 setup 和 fanout 成本较高，功能验证应保留完全相同的 `-benchtime=1x -count=1` 命令和原始输出。旧式 `-benchtime=10x` 可能因测量窗口短于 5 秒而错过周期 ticker；周期尾延迟对比必须使用上面的持续 10 秒 direct 命令。
 
 退化曲线 benchmark：
 
@@ -325,7 +326,7 @@ sender 的权威分片场景包含生产路径中的分片索引遍历、用户�
 `BenchmarkClientWebSocketTransientSendMessageAuthenticatedLinearMeshWithOnlineUsers` 则用于观察“大量常驻在线实时会话存在时”的前台跨节点 transient 延迟，而不是 HTTP 轮询或历史补发路径。
 后续重新采集时，应至少按总在线用户数、节点数和 `256B` payload 记录它的 `accept_ms/op`、`push_ms/op` 与是否能在设定时间内进入稳态。
 
-`BenchmarkClientWebSocketPersistentLoginAuthenticated` 和 `BenchmarkClientWebSocketPersistentSendMessageAuthenticatedLinearMeshWithOnlineUsers` 已补上 full-client 登录与稳态分发边界，但当前仍没有正式历史样本表格。后续采集时应把登录历史层与 `direct/broadcast/channel-10pct` 容量层分开保存，不能用 transient-only 结果替代。
+`BenchmarkClientWebSocketPersistentLoginAuthenticated` 和 `BenchmarkClientWebSocketPersistentSendMessageAuthenticatedLinearMeshWithOnlineUsers` 已补上 full-client 登录与稳态分发边界，但当前仍没有正式历史样本表格。后续采集时应把密码登录、reconnect-token 登录和 `direct/broadcast/channel-10pct` 容量层分开保存，不能用预签发 token 的容量 setup 或 transient-only 结果替代密码登录结论。
 
 ## 如何使用这份基线
 

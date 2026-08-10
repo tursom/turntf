@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"runtime"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -27,6 +28,7 @@ const (
 	persistentBroadcastSequenceBase      = int64(2 << 20)
 	persistentChannelSequenceBase        = int64(3 << 20)
 	persistentPresenceStabilization      = 8500 * time.Millisecond
+	persistentDurableQuietPeriod         = 2 * time.Second
 )
 
 type benchmarkPersistentLoginFixture struct {
@@ -60,6 +62,11 @@ type benchmarkPersistentClient struct {
 	stop       chan struct{}
 	closeOnce  sync.Once
 	wg         sync.WaitGroup
+}
+
+type benchmarkPersistentReconnectCredential struct {
+	key   store.UserKey
+	token string
 }
 
 type benchmarkPersistentResponse struct {
@@ -108,6 +115,82 @@ func TestClientWebSocketPersistentLoginBenchmarkFixture(t *testing.T) {
 	if catchupLatency < loginLatency {
 		t.Fatalf("catchup completed before login: login=%s catchup=%s", loginLatency, catchupLatency)
 	}
+}
+
+func TestBenchmarkClientWebSocketReconnectTokenCredential(t *testing.T) {
+	mode := benchroot.Modes(t)[0]
+	scenario := apiBenchmarkEngineScenario{name: store.EngineSQLite, engine: store.EngineSQLite}
+	testAPI, closeAPI := openBenchmarkAuthenticatedTestAPI(t, mode, scenario)
+	defer closeAPI()
+	server, closeServer := openBenchmarkClientWebSocketServer(t, testAPI.handler)
+	defer closeServer()
+
+	adminKey := store.UserKey{NodeID: testNodeID(1), UserID: store.BootstrapAdminUserID}
+	adminToken := benchmarkLoginToken(t, testAPI.handler, adminKey, "root-password")
+	userKey := benchmarkCreateUserAs(t, testAPI.handler, adminToken, "bench-reconnect-credential", "bench-password", store.RoleUser)
+	user, err := testAPI.http.service.GetUser(context.Background(), userKey)
+	if err != nil {
+		t.Fatalf("load reconnect credential user: %v", err)
+	}
+	reconnectToken, _, err := testAPI.http.issueClientReconnectToken(user)
+	if err != nil {
+		t.Fatalf("issue reconnect credential: %v", err)
+	}
+
+	conn, err := dialAndLoginBenchmarkIdleClientWebSocketConnWithCredentials(server.URL, userKey, benchmarkClientLoginCredential{
+		reconnectToken: reconnectToken,
+	}, false)
+	if err != nil {
+		t.Fatalf("dial with reconnect credential: %v", err)
+	}
+	defer conn.Close()
+
+	benchmarkWriteClientEnvelope(t, conn, &internalproto.ClientEnvelope{
+		Body: &internalproto.ClientEnvelope_Ping{Ping: &internalproto.Ping{RequestId: 17}},
+	})
+	envelope := readBenchmarkServerEnvelopeOnce(t, conn, clientWebSocketBenchmarkEnvelopeTimeout)
+	if pong := envelope.GetPong(); pong == nil || pong.GetRequestId() != 17 {
+		t.Fatalf("unexpected reconnect credential pong: %+v", envelope)
+	}
+}
+
+func TestAPIBenchmarkDurableMeshQuietBarrier(t *testing.T) {
+	mode := benchroot.Modes(t)[0]
+	scenario := apiBenchmarkEngineScenario{name: store.EngineSQLite, engine: store.EngineSQLite}
+	meshCluster := openBenchmarkAuthenticatedLinearMeshAPIClusterWithEventLogLimit(t, mode, scenario, 3, 2)
+	defer meshCluster.Close()
+
+	ctx := context.Background()
+	timeout := benchmarkAPIClientTimeout(mode, 15*time.Second, 30*time.Second)
+	sourceNode := meshCluster.nodes[0]
+	targetNode := meshCluster.nodes[len(meshCluster.nodes)-1]
+	waitForAPIBenchmarkMeshRoute(t, sourceNode.nodeID, sourceNode.manager, targetNode.nodeID, mesh.TrafficReplicationStream, timeout)
+	waitForAPIBenchmarkMeshRoute(t, targetNode.nodeID, targetNode.manager, sourceNode.nodeID, mesh.TrafficReplicationStream, timeout)
+	waitForAPIBenchmarkMeshRoute(t, sourceNode.nodeID, sourceNode.manager, targetNode.nodeID, mesh.TrafficSnapshotBulk, timeout)
+	waitForAPIBenchmarkMeshRoute(t, targetNode.nodeID, targetNode.manager, sourceNode.nodeID, mesh.TrafficSnapshotBulk, timeout)
+	passwordHash := benchmarkMustHashPassword(t, "bench-password")
+	probe, _, err := targetNode.service.CreateUser(ctx, store.CreateUserParams{
+		Username:     "bench-durable-replication-probe",
+		PasswordHash: passwordHash,
+		Role:         store.RoleUser,
+	})
+	if err != nil {
+		t.Fatalf("create durable replication probe: %v", err)
+	}
+	waitForAPIBenchmarkCondition(t, timeout, func() bool {
+		replicated, err := sourceNode.service.GetUser(ctx, probe.Key())
+		return err == nil && replicated.Username == probe.Username
+	})
+	for idx, node := range meshCluster.nodes {
+		seedBenchmarkLocalUsers(t, ctx, node, 4, fmt.Sprintf("bench-durable-node-%d", idx+1), passwordHash)
+	}
+	for _, node := range meshCluster.nodes {
+		if _, err := node.service.store.PruneEventLogOnce(ctx); err != nil {
+			t.Fatalf("prune durable barrier event log on node %d: %v", node.nodeID, err)
+		}
+	}
+
+	waitForAPIBenchmarkDurableMeshQuiet(t, ctx, meshCluster.nodes, 50*time.Millisecond, timeout)
 }
 
 func BenchmarkClientWebSocketPersistentLoginAuthenticated(b *testing.B) {
@@ -462,6 +545,8 @@ func openBenchmarkPersistentDispatchFixture(tb testing.TB, mode benchroot.Mode, 
 	targetNode := meshCluster.nodes[len(meshCluster.nodes)-1]
 	waitForAPIBenchmarkMeshRoute(tb, sourceNode.nodeID, sourceNode.manager, targetNode.nodeID, mesh.TrafficReplicationStream, timeout)
 	waitForAPIBenchmarkMeshRoute(tb, targetNode.nodeID, targetNode.manager, sourceNode.nodeID, mesh.TrafficReplicationStream, timeout)
+	waitForAPIBenchmarkMeshRoute(tb, sourceNode.nodeID, sourceNode.manager, targetNode.nodeID, mesh.TrafficSnapshotBulk, timeout)
+	waitForAPIBenchmarkMeshRoute(tb, targetNode.nodeID, targetNode.manager, sourceNode.nodeID, mesh.TrafficSnapshotBulk, timeout)
 	waitForAPIBenchmarkMeshRoute(tb, targetNode.nodeID, targetNode.manager, sourceNode.nodeID, mesh.TrafficControlCritical, timeout)
 
 	passwordHash := benchmarkMustHashPassword(tb, "bench-password")
@@ -599,7 +684,8 @@ func openBenchmarkPersistentDispatchFixture(tb testing.TB, mode benchroot.Mode, 
 
 	clients := make([]*benchmarkPersistentClient, 0, onlineUsersTotal)
 	for idx, keys := range keysByNode {
-		nodeClients := dialAndLoginBenchmarkPersistentClients(tb, meshCluster.nodes[idx].serverURL, keys, "bench-password", 64)
+		credentials := issueBenchmarkPersistentReconnectCredentials(tb, ctx, meshCluster.nodes[idx], keys)
+		nodeClients := dialAndLoginBenchmarkPersistentClients(tb, meshCluster.nodes[idx].serverURL, credentials, 64)
 		clients = append(clients, nodeClients...)
 	}
 	cleanupClients := func() {
@@ -662,7 +748,8 @@ func openBenchmarkPersistentDispatchFixture(tb testing.TB, mode benchroot.Mode, 
 	}
 
 	senderKey := store.UserKey{NodeID: sourceNode.nodeID, UserID: store.BootstrapAdminUserID}
-	sender, err := dialAndLoginBenchmarkPersistentSender(sourceNode.serverURL, senderKey, "root-password")
+	senderCredentials := issueBenchmarkPersistentReconnectCredentials(tb, ctx, sourceNode, []store.UserKey{senderKey})
+	sender, err := dialAndLoginBenchmarkPersistentSender(sourceNode.serverURL, senderCredentials[0])
 	if err != nil {
 		cleanupClients()
 		meshCluster.Close()
@@ -672,6 +759,7 @@ func openBenchmarkPersistentDispatchFixture(tb testing.TB, mode benchroot.Mode, 
 	waitForAPIBenchmarkPresenceMirrors(tb, timeout, meshCluster.nodes, expectedOnlineUsersByNode)
 	// 数量收敛后再经过一整轮 16 分片权威校验，避免登录期间的 delta/retry 残留进入计时窗口。
 	time.Sleep(persistentPresenceStabilization)
+	waitForAPIBenchmarkDurableMeshQuiet(tb, ctx, meshCluster.nodes, persistentDurableQuietPeriod, timeout)
 	runtime.GC()
 	time.Sleep(500 * time.Millisecond)
 	return &benchmarkPersistentDispatchFixture{
@@ -715,6 +803,163 @@ func waitForAPIBenchmarkPresenceMirrors(tb testing.TB, timeout time.Duration, no
 			}
 		}
 	}
+}
+
+func waitForAPIBenchmarkDurableMeshQuiet(tb testing.TB, ctx context.Context, nodes []benchmarkLinearMeshAPINode, quietPeriod, timeout time.Duration) {
+	tb.Helper()
+
+	if quietPeriod <= 0 {
+		tb.Fatalf("benchmark durable quiet period must be positive, got %s", quietPeriod)
+	}
+	if len(nodes) == 0 {
+		tb.Fatal("benchmark durable quiet barrier requires nodes")
+	}
+
+	deadline := time.Now().Add(timeout)
+	var stableFingerprint string
+	var stableSince time.Time
+	var stableDigests map[int64]*internalproto.SnapshotDigest
+	var lastDetail string
+	for time.Now().Before(deadline) {
+		fingerprint, ready, detail, err := observeAPIBenchmarkDurableMesh(ctx, nodes)
+		if err != nil {
+			lastDetail = err.Error()
+			stableFingerprint = ""
+			stableSince = time.Time{}
+			stableDigests = nil
+			time.Sleep(10 * time.Millisecond)
+			continue
+		}
+		if !ready {
+			lastDetail = detail
+			stableFingerprint = ""
+			stableSince = time.Time{}
+			stableDigests = nil
+			time.Sleep(10 * time.Millisecond)
+			continue
+		}
+
+		now := time.Now()
+		if fingerprint != stableFingerprint {
+			stableFingerprint = fingerprint
+			stableSince = time.Time{}
+			stableDigests = nil
+		}
+		if stableSince.IsZero() {
+			stableDigests, err = captureAPIBenchmarkSnapshotDigests(ctx, nodes)
+			if err != nil {
+				lastDetail = err.Error()
+				time.Sleep(10 * time.Millisecond)
+				continue
+			}
+			stableSince = now
+		}
+		if now.Sub(stableSince) < quietPeriod {
+			time.Sleep(10 * time.Millisecond)
+			continue
+		}
+
+		currentDigests, err := captureAPIBenchmarkSnapshotDigests(ctx, nodes)
+		if err == nil && benchmarkAPISnapshotDigestsUnchanged(stableDigests, currentDigests) {
+			currentFingerprint, currentReady, currentDetail, currentErr := observeAPIBenchmarkDurableMesh(ctx, nodes)
+			if currentErr == nil && currentReady && currentFingerprint == stableFingerprint {
+				return
+			}
+			switch {
+			case currentErr != nil:
+				lastDetail = currentErr.Error()
+			case !currentReady:
+				lastDetail = currentDetail
+			default:
+				lastDetail = "durable cursor or snapshot activity changed at quiet-window boundary"
+			}
+			stableSince = time.Time{}
+			stableDigests = nil
+			continue
+		}
+		if err != nil {
+			lastDetail = err.Error()
+		} else {
+			lastDetail = "snapshot digest changed during durable quiet window"
+		}
+		stableSince = time.Time{}
+		stableDigests = nil
+	}
+	tb.Fatalf("benchmark durable replication/snapshot did not stay quiet for %s within %s: %s", quietPeriod, timeout, lastDetail)
+}
+
+func observeAPIBenchmarkDurableMesh(ctx context.Context, nodes []benchmarkLinearMeshAPINode) (string, bool, string, error) {
+	var fingerprint strings.Builder
+	for _, node := range nodes {
+		status, err := node.manager.Status(ctx)
+		if err != nil {
+			return "", false, "", fmt.Errorf("read benchmark cluster status on node %d: %w", node.nodeID, err)
+		}
+		sort.Slice(status.Peers, func(i, j int) bool { return status.Peers[i].NodeID < status.Peers[j].NodeID })
+		for _, peer := range status.Peers {
+			if peer.PendingSnapshotPartitions > 0 {
+				return "", false, fmt.Sprintf("node=%d peer=%d pending_snapshot=%d", node.nodeID, peer.NodeID, peer.PendingSnapshotPartitions), nil
+			}
+			for _, origin := range peer.Origins {
+				if origin.PendingCatchup {
+					return "", false, fmt.Sprintf("node=%d peer=%d origin=%d pending_catchup", node.nodeID, peer.NodeID, origin.OriginNodeID), nil
+				}
+			}
+			fmt.Fprintf(&fingerprint, "s:%d:%d:%d:%d:%d:%d;", node.nodeID, peer.NodeID, peer.SnapshotDigestsSentTotal, peer.SnapshotDigestsRecvTotal, peer.SnapshotChunksSentTotal, peer.SnapshotChunksRecvTotal)
+		}
+
+		originCursors, err := node.service.store.ListOriginCursors(ctx)
+		if err != nil {
+			return "", false, "", fmt.Errorf("list benchmark origin cursors on node %d: %w", node.nodeID, err)
+		}
+		for _, cursor := range originCursors {
+			fmt.Fprintf(&fingerprint, "o:%d:%d:%d:%s;", node.nodeID, cursor.OriginNodeID, cursor.AppliedEventID, cursor.UpdatedAt.String())
+		}
+		originProgress, err := node.service.store.ListOriginProgress(ctx)
+		if err != nil {
+			return "", false, "", fmt.Errorf("list benchmark origin progress on node %d: %w", node.nodeID, err)
+		}
+		for _, progress := range originProgress {
+			fmt.Fprintf(&fingerprint, "p:%d:%d:%d;", node.nodeID, progress.OriginNodeID, progress.LastEventID)
+		}
+		ackCursors, err := node.service.store.ListPeerAckCursors(ctx)
+		if err != nil {
+			return "", false, "", fmt.Errorf("list benchmark peer ack cursors on node %d: %w", node.nodeID, err)
+		}
+		for _, cursor := range ackCursors {
+			fmt.Fprintf(&fingerprint, "a:%d:%d:%d:%d:%s;", node.nodeID, cursor.PeerNodeID, cursor.OriginNodeID, cursor.AckedEventID, cursor.UpdatedAt.String())
+		}
+	}
+	return fingerprint.String(), true, "durable cursors converged with no pending catchup or snapshot", nil
+}
+
+func captureAPIBenchmarkSnapshotDigests(ctx context.Context, nodes []benchmarkLinearMeshAPINode) (map[int64]*internalproto.SnapshotDigest, error) {
+	producerNodeIDs := make([]int64, 0, len(nodes))
+	for _, node := range nodes {
+		producerNodeIDs = append(producerNodeIDs, node.nodeID)
+	}
+
+	digests := make(map[int64]*internalproto.SnapshotDigest, len(nodes))
+	for _, node := range nodes {
+		digest, err := node.service.store.BuildSnapshotDigest(ctx, producerNodeIDs)
+		if err != nil {
+			return nil, fmt.Errorf("build benchmark snapshot digest on node %d: %w", node.nodeID, err)
+		}
+		digests[node.nodeID] = digest
+	}
+	return digests, nil
+}
+
+func benchmarkAPISnapshotDigestsUnchanged(before, after map[int64]*internalproto.SnapshotDigest) bool {
+	if len(before) != len(after) {
+		return false
+	}
+	for nodeID, beforeDigest := range before {
+		if !gproto.Equal(beforeDigest, after[nodeID]) {
+			return false
+		}
+	}
+	return true
 }
 
 func seedBenchmarkPersistentMessageSequences(tb testing.TB, ctx context.Context, nodes []benchmarkLinearMeshAPINode, source benchmarkLinearMeshAPINode, messages []store.Message) {
@@ -903,8 +1148,10 @@ func (f *benchmarkPersistentDispatchFixture) sendOnce(tb testing.TB, sender *ben
 	return responseReceivedAt.Sub(start), firstReceivedAt.Sub(start), lastReceivedAt.Sub(start)
 }
 
-func dialAndLoginBenchmarkPersistentSender(serverURL string, key store.UserKey, password string) (*benchmarkPersistentSender, error) {
-	conn, err := dialAndLoginBenchmarkIdleClientWebSocketConnWithOptions(serverURL, key, password, false)
+func dialAndLoginBenchmarkPersistentSender(serverURL string, credential benchmarkPersistentReconnectCredential) (*benchmarkPersistentSender, error) {
+	conn, err := dialAndLoginBenchmarkIdleClientWebSocketConnWithCredentials(serverURL, credential.key, benchmarkClientLoginCredential{
+		reconnectToken: credential.token,
+	}, false)
 	if err != nil {
 		return nil, err
 	}
@@ -986,21 +1233,42 @@ func (s *benchmarkPersistentSender) Close() {
 	s.wg.Wait()
 }
 
-func dialAndLoginBenchmarkPersistentClients(tb testing.TB, serverURL string, keys []store.UserKey, password string, parallelism int) []*benchmarkPersistentClient {
+func issueBenchmarkPersistentReconnectCredentials(tb testing.TB, ctx context.Context, node benchmarkLinearMeshAPINode, keys []store.UserKey) []benchmarkPersistentReconnectCredential {
 	tb.Helper()
 
-	if len(keys) == 0 {
+	credentials := make([]benchmarkPersistentReconnectCredential, len(keys))
+	for idx, key := range keys {
+		user, err := node.service.GetUser(ctx, key)
+		if err != nil {
+			tb.Fatalf("load persistent benchmark reconnect user %+v on node %d: %v", key, node.nodeID, err)
+		}
+		token, _, err := node.http.issueClientReconnectToken(user)
+		if err != nil {
+			tb.Fatalf("issue persistent benchmark reconnect token for %+v on node %d: %v", key, node.nodeID, err)
+		}
+		if token == "" {
+			tb.Fatalf("persistent benchmark reconnect token for %+v on node %d is empty", key, node.nodeID)
+		}
+		credentials[idx] = benchmarkPersistentReconnectCredential{key: key, token: token}
+	}
+	return credentials
+}
+
+func dialAndLoginBenchmarkPersistentClients(tb testing.TB, serverURL string, credentials []benchmarkPersistentReconnectCredential, parallelism int) []*benchmarkPersistentClient {
+	tb.Helper()
+
+	if len(credentials) == 0 {
 		return nil
 	}
 	if parallelism <= 0 {
 		parallelism = 1
 	}
-	if parallelism > len(keys) {
-		parallelism = len(keys)
+	if parallelism > len(credentials) {
+		parallelism = len(credentials)
 	}
 
-	clients := make([]*benchmarkPersistentClient, len(keys))
-	indexes := make(chan int, len(keys))
+	clients := make([]*benchmarkPersistentClient, len(credentials))
+	indexes := make(chan int, len(credentials))
 	errCh := make(chan error, 1)
 	var wg sync.WaitGroup
 	for worker := 0; worker < parallelism; worker++ {
@@ -1008,7 +1276,10 @@ func dialAndLoginBenchmarkPersistentClients(tb testing.TB, serverURL string, key
 		go func() {
 			defer wg.Done()
 			for idx := range indexes {
-				conn, err := dialAndLoginBenchmarkIdleClientWebSocketConnWithOptions(serverURL, keys[idx], password, false)
+				credential := credentials[idx]
+				conn, err := dialAndLoginBenchmarkIdleClientWebSocketConnWithCredentials(serverURL, credential.key, benchmarkClientLoginCredential{
+					reconnectToken: credential.token,
+				}, false)
 				if err != nil {
 					select {
 					case errCh <- err:
@@ -1017,7 +1288,7 @@ func dialAndLoginBenchmarkPersistentClients(tb testing.TB, serverURL string, key
 					return
 				}
 				client := &benchmarkPersistentClient{
-					key:        keys[idx],
+					key:        credential.key,
 					conn:       conn,
 					deliveries: make(chan benchmarkPersistentDelivery, 1),
 					errs:       make(chan error, 1),
@@ -1030,7 +1301,7 @@ func dialAndLoginBenchmarkPersistentClients(tb testing.TB, serverURL string, key
 			}
 		}()
 	}
-	for idx := range keys {
+	for idx := range credentials {
 		indexes <- idx
 	}
 	close(indexes)

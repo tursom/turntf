@@ -41,6 +41,11 @@ type benchmarkClientWebSocket struct {
 	errs      chan error
 }
 
+type benchmarkClientLoginCredential struct {
+	password       string
+	reconnectToken string
+}
+
 type benchmarkClusterSink struct {
 	manager *cluster.Manager
 }
@@ -773,6 +778,15 @@ func dialAndLoginBenchmarkIdleClientWebSocketConn(serverURL string, key store.Us
 }
 
 func dialAndLoginBenchmarkIdleClientWebSocketConnWithOptions(serverURL string, key store.UserKey, password string, transientOnly bool) (*websocket.Conn, error) {
+	return dialAndLoginBenchmarkIdleClientWebSocketConnWithCredentials(serverURL, key, benchmarkClientLoginCredential{
+		password: password,
+	}, transientOnly)
+}
+
+func dialAndLoginBenchmarkIdleClientWebSocketConnWithCredentials(serverURL string, key store.UserKey, credential benchmarkClientLoginCredential, transientOnly bool) (*websocket.Conn, error) {
+	if (credential.password == "") == (credential.reconnectToken == "") {
+		return nil, fmt.Errorf("benchmark client login requires exactly one credential")
+	}
 	parsed, err := url.Parse(serverURL)
 	if err != nil {
 		return nil, fmt.Errorf("parse server url: %w", err)
@@ -789,7 +803,8 @@ func dialAndLoginBenchmarkIdleClientWebSocketConnWithOptions(serverURL string, k
 		Body: &internalproto.ClientEnvelope_Login{
 			Login: &internalproto.LoginRequest{
 				User:            &internalproto.UserRef{NodeId: key.NodeID, UserId: key.UserID},
-				Password:        password,
+				Password:        credential.password,
+				ReconnectToken:  credential.reconnectToken,
 				TransientOnly:   transientOnly,
 				ProtocolVersion: internalproto.ClientProtocolVersion,
 			},

@@ -294,13 +294,26 @@ func (r *sqliteMessageProjectionRepository) ListMessagesByUser(ctx context.Conte
 		}
 	}
 
-	direct, err := r.listRawMessagesByUser(ctx, key, 0)
+	direct, err := r.listRawMessagesByUser(ctx, key, limit)
 	if err != nil {
 		return nil, err
 	}
+	directCount := len(direct)
 	direct, err = filterDirectMessagesByBlacklist(ctx, r.userRepository, r.blacklists, key, direct)
 	if err != nil {
 		return nil, err
+	}
+	// 无过滤时，每个来源的前 limit 条足以组成全局前 limit 条。
+	// 若黑名单移除了候选且窗口可能尚未读完，沿用完整窗口以补足可见消息。
+	if len(direct) < directCount && directCount == limit && limit < 1000 {
+		direct, err = r.listRawMessagesByUser(ctx, key, 0)
+		if err != nil {
+			return nil, err
+		}
+		direct, err = filterDirectMessagesByBlacklist(ctx, r.userRepository, r.blacklists, key, direct)
+		if err != nil {
+			return nil, err
+		}
 	}
 	add(direct)
 
@@ -309,7 +322,7 @@ func (r *sqliteMessageProjectionRepository) ListMessagesByUser(ctx context.Conte
 		return nil, err
 	}
 	for _, broadcast := range broadcasts {
-		messages, err := r.listRawMessagesByUser(ctx, broadcast, 0)
+		messages, err := r.listRawMessagesByUser(ctx, broadcast, limit)
 		if err != nil {
 			return nil, err
 		}
@@ -321,7 +334,7 @@ func (r *sqliteMessageProjectionRepository) ListMessagesByUser(ctx context.Conte
 		return nil, err
 	}
 	for _, subscription := range subscriptions {
-		messages, err := r.listRawMessagesByUserSince(ctx, subscription.Channel, 0, &subscription.SubscribedAt)
+		messages, err := r.listRawMessagesByUserSince(ctx, subscription.Channel, limit, &subscription.SubscribedAt)
 		if err != nil {
 			return nil, err
 		}

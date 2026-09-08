@@ -178,6 +178,26 @@ go test -tags zeromq ./internal/api -run '^$' -bench 'BenchmarkClientZeroMQTrans
 - `*_vs_*_x`：相对首层规模的退化倍数。
 - `*_delta_ns_per_1k`：相对首层规模，每额外 `1000` 条消息 / event 带来的平均增量耗时。
 
+## SQLite 消息列表候选下推
+
+本轮优化将可登录用户的直达、广播、频道候选查询限制为请求的 `limit`，避免查询最近 50 条时先解码每个来源最多 1000 条消息。各来源使用与最终合并相同的排序；每个来源的前 `limit` 条足以组成全局前 `limit` 条。若黑名单过滤移除了直达候选且可能还有未读取的历史，则回退到原有完整窗口读取，以保留可见消息补足语义。Pebble 路径未修改。
+
+同一台 `12th Gen Intel(R) Core(TM) i5-12400` 主机，SQLite、预先写入 1000 条消息（默认窗口实际保留 500 条）、请求 50 条，三轮中位数：
+
+| 指标 | 优化前 | 优化后 | 变化 |
+| --- | ---: | ---: | ---: |
+| ns/op | 1,150,531 | 154,762 | -86.5% |
+| B/op | 656,074 | 50,328 | -92.3% |
+| allocs/op | 9,117 | 1,011 | -88.9% |
+
+复测命令（在服务端仓库执行）：
+
+```bash
+go test ./internal/store -run '^$' -bench '^BenchmarkStoreListMessagesByUser/tmp/sqlite/history-1000$' -benchmem -benchtime=1s -count=3
+```
+
+这是本机 `tmp` 查询微基准，不代表生产容量或集群端到端吞吐；黑名单触发回退时可能比原路径多一次有限候选读取。回归测试 `TestSQLiteMessageCandidateLimit` 对照完整窗口查询，覆盖跨来源排序、不同 limit 和黑名单过滤后补足。全量 `go test ./... -count=1`、存储层相关测试的 race 检查及 `./scripts/smoke.sh` 均通过。
+
 ## 基线环境
 
 ### 2026-08-09 历史补发分配优化定向样本

@@ -3,7 +3,6 @@ package cluster
 import (
 	"context"
 	"fmt"
-	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -498,9 +497,6 @@ func configuredPeerMatchesMeshObservation(peer *configuredPeer, observation mesh
 	if peer == nil {
 		return false
 	}
-	if peer.nodeID > 0 && peer.nodeID == observation.RemoteNodeID {
-		return true
-	}
 	if transportKindForPeerURL(peer.URL) != observation.Transport {
 		return false
 	}
@@ -517,9 +513,6 @@ func configuredPeerMatchesMeshObservation(peer *configuredPeer, observation mesh
 func discoveredPeerMatchesMeshObservation(peer *discoveredPeerState, observation mesh.AdjacencyObservation) bool {
 	if peer == nil {
 		return false
-	}
-	if peer.nodeID > 0 && peer.nodeID == observation.RemoteNodeID {
-		return true
 	}
 	if transportKindForPeerURL(peer.url) != observation.Transport {
 		return false
@@ -551,25 +544,9 @@ func meshObservationAdvertisesURL(observation mesh.AdjacencyObservation, peerURL
 
 // meshObservationEndpointMatchesPeerURL 检查端点是否匹配对等URL。
 func meshObservationEndpointMatchesPeerURL(transport mesh.TransportKind, endpoint, peerURL string) bool {
-	if normalized, ok := normalizedMeshObservationHint(endpoint); ok && normalized == peerURL {
-		return true
-	}
-	if transport != mesh.TransportWebSocket {
-		return false
-	}
-	endpoint = strings.TrimSpace(endpoint)
-	if !strings.HasPrefix(endpoint, "/") {
-		return false
-	}
-	normalizedPeer, err := normalizePeerURL(peerURL)
-	if err != nil || transportKindForPeerURL(normalizedPeer) != mesh.TransportWebSocket {
-		return false
-	}
-	parsed, err := url.Parse(normalizedPeer)
-	if err != nil {
-		return false
-	}
-	return parsed.Path == endpoint
+	// 相对路径仅表示服务入口，不包含节点身份；多个主机通常通告相同路径。
+	normalized, ok := normalizedMeshObservationHint(endpoint)
+	return ok && transportKindForPeerURL(normalized) == transport && normalized == peerURL
 }
 
 // normalizedMeshObservationHint 规范化网格观测的远程提示。

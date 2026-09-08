@@ -18,7 +18,11 @@
 
 ## 校时采样
 
-代码里已经实现了单轮校时、7 次采样择优和 30 秒周期循环这套机制；对应逻辑在 [internal/cluster/manager_time_sync.go](/root/dev/sys/turntf/turntf/internal/cluster/manager_time_sync.go)。但当前 transport 会话生命周期里还没有自动调用 `performTimeSync` / `sessionSyncLoop` 的入口，因此下面描述的是“已有校时实现本身”的行为，而不是“连接建立后一定会自动发生的事”。另外，mesh runtime 的 `TimeSyncObservation` 仅更新 RTT，不会把 peer 置为 `trusted`，也不会打开旧的写闸门。
+当前真实 mesh transport 使用运行时的 `TimeSyncRequest` / `TimeSyncResponse`，连接建立后立即采样，之后默认每 2 秒采样。响应需匹配本地 pending request 与发送时间，且本地时间、服务端收发时间不能倒退；服务端处理时长不得超过本地完整 RTT（允许 1ms 毫秒量化容差）。无效响应不会刷新可信时间。`observeMeshTimeSync` 将已认证直连的样本送入现有时钟状态机，自动建立 `trusted` 并打开写闸门，不需要手动注入可信样本。
+
+Mesh 每个观测使用四时间戳公式计算 offset；可信度使用本地测得的完整往返 RTT（保守地包含服务端处理耗时），不确定性为 `max(RTT / 2, EWMA jitter / 2) + 50ms`。这是 mesh 的周期采样路径，不是下面的旧会话 7 次择优算法。
+
+旧会话的单轮校时、7 次采样择优和 30 秒周期循环仍在 [internal/cluster/manager_time_sync.go](/root/dev/sys/turntf/turntf/internal/cluster/manager_time_sync.go) 中保留，但 mesh 不调用 `performTimeSync` / `sessionSyncLoop`，以免向没有 consumer 的合成 session 队列发送请求。下面的多样本描述仅适用于旧会话实现。
 
 单轮校时使用 `TimeSyncRequest` 和 `TimeSyncResponse`，采集四个时间点：
 
@@ -161,5 +165,6 @@ Prometheus 指标包括：
 - offset 修正来自 peer 间校时，不替代生产环境 NTP；所有节点仍应使用可靠系统时间源。
 - `observing` 是一个可写宽限状态，用于避免短暂校时波动直接造成不可用；它不表示时钟完全健康。
 - `cluster.clock.max_skew_ms = 0` 只关闭超限拒绝和未来 HLC 上界检查，不关闭首次可信校时前的写闸门。
-- 当前 transport 会话生命周期尚未自动启动 `performTimeSync` / `sessionSyncLoop`；如果没有额外调用这些入口或直接注入可信样本，节点会一直停留在 `unsynced`，`write_gate_ready` 不会自动打开。
-- mesh runtime 的 time sync 目前只用于链路 RTT 观测，不参与旧的时钟信任状态机；mesh 合成会话会绕过旧的 event/snapshot gate，但不会绕过未来 HLC 检查。
+- mesh runtime 的四时间戳观测参与现有时钟信任状态机；最后一条直连断开时撤销该 peer 的 offset 信任，并按既有节点宽限窗口降级。无论 peer 是否已有可信 session，最后直连断开都会清空连续健康计数；重连后的恢复仍要求配置规定的连续健康样本数，断连后的迟到观测不能重新建立信任。
+- mesh 尚不把未响应的 ping 转换成旧会话的 `recordTimeSyncFailure` 计数；没有后续有效样本时，由既有 freshness 与 grace 窗口使写闸门降级关闭。
+- mesh 合成会话仍保留原有 event/snapshot gate 行为及未来 HLC 检查；本次接线没有放宽这些保护或任何 clock 配置。

@@ -236,7 +236,12 @@ func (m *Manager) recordTimeSyncSample(sess *session, sample timeSyncSample) (cl
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.recordTimeSyncSampleLocked(sess, sample, now)
+}
 
+// recordTimeSyncSampleLocked also lets mesh validate adjacency liveness and
+// record trust atomically with the last-adjacency disconnect callback.
+func (m *Manager) recordTimeSyncSampleLocked(sess *session, sample timeSyncSample, now time.Time) (clockState, string) {
 	peer := m.peers[sess.peerID]
 	if peer == nil {
 		return clockStateProbing, "peer_untracked"

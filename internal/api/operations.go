@@ -64,6 +64,7 @@ type operationsStatus struct {
 }
 
 type meshStatus struct {
+	TCPMTLS               app.ClusterTCPMTLSStatus  `json:"tcp_mtls"`
 	Enabled               bool                      `json:"enabled"`
 	ForwardingEnabled     bool                      `json:"forwarding_enabled"`
 	BridgeEnabled         bool                      `json:"bridge_enabled"`
@@ -408,6 +409,21 @@ func (s *Service) Metrics(ctx context.Context) (string, error) {
 	writeGauge(&buf, "notifier_membership_advertisements_rejected_total", map[string]string{"node_id": nodeIDLabel}, float64(status.Discovery.RejectedTotal))
 	writeMetricHelp(&buf, "notifier_discovered_peer_persist_failures_total", "Discovered peer persistence failures.", "counter")
 	writeGauge(&buf, "notifier_discovered_peer_persist_failures_total", map[string]string{"node_id": nodeIDLabel}, float64(status.Discovery.PersistFailuresTotal))
+	writeMetricHelp(&buf, "notifier_tcp_mtls_enabled", "Whether native TCP mTLS is enabled.", "gauge")
+	writeGauge(&buf, "notifier_tcp_mtls_enabled", map[string]string{"node_id": nodeIDLabel}, boolGauge(status.Mesh.TCPMTLS.Enabled))
+	writeMetricHelp(&buf, "notifier_tcp_mtls_active_adjacencies", "Authenticated TCP mTLS mesh adjacencies.", "gauge")
+	writeGauge(&buf, "notifier_tcp_mtls_active_adjacencies", map[string]string{"node_id": nodeIDLabel}, float64(status.Mesh.TCPMTLS.ActiveAdjacencies))
+	for _, counter := range []struct {
+		name  string
+		value uint64
+	}{
+		{"notifier_tcp_mtls_dial_attempts_total", status.Mesh.TCPMTLS.DialAttempts},
+		{"notifier_tcp_mtls_handshake_rejected_total", status.Mesh.TCPMTLS.HandshakeRejected},
+		{"notifier_tcp_mtls_established_total", status.Mesh.TCPMTLS.EstablishedTotal},
+	} {
+		writeMetricHelp(&buf, counter.name, "Native TCP mTLS transport counter.", "counter")
+		writeGauge(&buf, counter.name, map[string]string{"node_id": nodeIDLabel}, float64(counter.value))
+	}
 	writeMetricHelp(&buf, "forwarded_packets_total", "Mesh forwarded packets grouped by traffic and path class.", "counter")
 	for _, sample := range status.Mesh.Metrics.ForwardedPackets {
 		writeGauge(&buf, "forwarded_packets_total", map[string]string{
@@ -627,6 +643,7 @@ func mergePeerStatus(storePeers []store.PeerOperationsStats, clusterPeers []app.
 // meshStatusFromCluster 将集群层的 mesh 状态转换为 API 响应格式。
 func meshStatusFromCluster(status app.ClusterMeshStatus) meshStatus {
 	out := meshStatus{
+		TCPMTLS:            status.TCPMTLS,
 		Enabled:            status.Enabled,
 		ForwardingEnabled:  status.ForwardingEnabled,
 		BridgeEnabled:      status.BridgeEnabled,

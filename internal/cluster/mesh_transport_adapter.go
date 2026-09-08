@@ -44,7 +44,10 @@ type meshTransportConn struct {
 
 // NewMeshTransportAdapters 为所有启用的传输创建适配器。
 func NewMeshTransportAdapters(cfg Config, zeroMQCurveServerKeyForPeer func(string) string) []mesh.TransportAdapter {
-	adapters := make([]mesh.TransportAdapter, 0, 3)
+	adapters := make([]mesh.TransportAdapter, 0, 4)
+	if adapter := NewTCPMTLSMeshTransportAdapter(cfg); adapter != nil {
+		adapters = append(adapters, adapter)
+	}
 	if adapter := NewWebSocketMeshTransportAdapter(cfg); adapter != nil {
 		adapters = append(adapters, adapter)
 	}

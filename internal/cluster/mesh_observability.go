@@ -69,6 +69,8 @@ func meshPathClassLabel(class mesh.PathClass) string {
 // meshTransportLabel 将传输类型枚举转换为字符串标签。
 func meshTransportLabel(kind mesh.TransportKind) string {
 	switch kind {
+	case mesh.TransportTCPMTLS:
+		return transportTCPMTLS
 	case mesh.TransportLibP2P:
 		return "libp2p"
 	case mesh.TransportZeroMQ:

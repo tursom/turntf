@@ -171,6 +171,12 @@ func (m *Manager) observePeerAdvertisement(sourcePeerNodeID int64, item *interna
 		return err
 	}
 
+	if transportForPeerURL(normalized) == transportTCPMTLS {
+		_, id, err := parseTCPMTLSEndpoint(normalized)
+		if err != nil || id != item.NodeId {
+			return errors.New("tcp mTLS advertisement node ID mismatch")
+		}
+	}
 	if item.NodeId == m.cfg.NodeID {
 		m.mu.Lock()
 		m.selfKnownURLs[normalized] = item.Generation
@@ -354,12 +360,9 @@ func (m *Manager) expireDiscoveredCandidates() {
 
 // reconcileDiscoveredDialers 协调发现节点的拨号状态。
 //
-// 选择逻辑：
-//  1. 排除静态配置的URL和过期节点
-//  2. 排除无法拨号的节点
-//  3. 排除已有活跃连接的节点
-//  4. 按优先级排序：已存在的动态节点 > 以前连接过的节点 > 最近见过的节点
-//  5. 最多选择maxDynamicDiscoveredPeers（8）个节点进行拨号
+// 优先补齐节点/传输组合，并平衡传输和节点覆盖；TCP 主用、WebSocket
+// 备用在同等覆盖度下优先。额外地址最后分配，已有动态 URL 仅用于稳定排序。
+// 动态 URL 最多 maxDynamicDiscoveredPeers（8）个，静态 URL 不占名额。
 func (m *Manager) reconcileDiscoveredDialers() {
 	type candidate struct {
 		peer           discoveredPeerState
@@ -372,10 +375,40 @@ func (m *Manager) reconcileDiscoveredDialers() {
 	toPersist := make([]discoveredPeerState, 0)
 	m.mu.Lock()
 	dynamicCount := 0
+	type coverageKey struct {
+		nodeID    int64
+		transport string
+	}
+	pairs := make(map[coverageKey]int)
+	nodes := make(map[int64]int)
+	transports := make(map[string]int)
+	cover := func(nodeID int64, url string) {
+		kind := transportForPeerURL(url)
+		pairs[coverageKey{nodeID, kind}]++
+		nodes[nodeID]++
+		transports[kind]++
+	}
+	priority := func(url string) int {
+		switch transportForPeerURL(url) {
+		case transportTCPMTLS:
+			return 0
+		case transportWebSocket:
+			return 1
+		default:
+			return 2
+		}
+	}
 	staticURLs := make(map[string]struct{}, len(m.configuredPeers))
 	for _, peer := range m.configuredPeers {
 		if normalized, err := normalizePeerURL(peer.URL); err == nil {
 			staticURLs[normalized] = struct{}{}
+			nodeID := peer.nodeID
+			if discovered := m.discoveredPeers[normalized]; nodeID <= 0 && discovered != nil {
+				nodeID = discovered.nodeID
+			}
+			if nodeID > 0 && m.canDialPeerURL(normalized) {
+				cover(nodeID, normalized)
+			}
 		}
 	}
 	for url, peer := range m.discoveredPeers {
@@ -394,10 +427,11 @@ func (m *Manager) reconcileDiscoveredDialers() {
 			}
 			continue
 		}
-		if active := m.peers[peer.nodeID]; active != nil && active.active != nil {
+		if active := m.peers[peer.nodeID]; m.meshRuntime == nil && active != nil && active.active != nil {
 			if _, ok := m.dynamicPeers[url]; ok {
 				desired[url] = struct{}{}
 				dynamicCount++
+				cover(peer.nodeID, url)
 				peer.dialing = false
 			}
 			continue
@@ -405,10 +439,24 @@ func (m *Manager) reconcileDiscoveredDialers() {
 		_, alreadyDynamic := m.dynamicPeers[url]
 		candidates = append(candidates, candidate{peer: *peer, alreadyDynamic: alreadyDynamic})
 	}
-	// 排序优先级：已存在的动态节点 > 有连接历史 > 最近连接 > 最近看见 > URL
-	sort.Slice(candidates, func(i, j int) bool {
+	// 每选一个 URL 后重新评估覆盖，不能用一次排序让同节点多地址占满预算。
+	less := func(i, j int) bool {
 		left := candidates[i].peer
 		right := candidates[j].peer
+		lk, rk := transportForPeerURL(left.url), transportForPeerURL(right.url)
+		lp, rp := pairs[coverageKey{left.nodeID, lk}], pairs[coverageKey{right.nodeID, rk}]
+		if lp != rp {
+			return lp < rp
+		}
+		if transports[lk] != transports[rk] {
+			return transports[lk] < transports[rk]
+		}
+		if nodes[left.nodeID] != nodes[right.nodeID] {
+			return nodes[left.nodeID] < nodes[right.nodeID]
+		}
+		if priority(left.url) != priority(right.url) {
+			return priority(left.url) < priority(right.url)
+		}
 		if candidates[i].alreadyDynamic != candidates[j].alreadyDynamic {
 			return candidates[i].alreadyDynamic
 		}
@@ -422,17 +470,18 @@ func (m *Manager) reconcileDiscoveredDialers() {
 			return left.lastSeenAt.After(right.lastSeenAt)
 		}
 		return left.url < right.url
-	})
-	for _, item := range candidates {
-		if dynamicCount >= maxDynamicDiscoveredPeers {
-			break
-		}
+	}
+	for len(candidates) > 0 && dynamicCount < maxDynamicDiscoveredPeers {
+		sort.Slice(candidates, less)
+		item := candidates[0]
+		candidates = candidates[1:]
 		peer := m.discoveredPeers[item.peer.url]
 		if peer == nil {
 			continue
 		}
 		desired[peer.url] = struct{}{}
 		dynamicCount++
+		cover(peer.nodeID, peer.url)
 		if _, ok := m.dynamicPeers[peer.url]; ok {
 			continue
 		}
@@ -596,6 +645,11 @@ func (m *Manager) buildMembershipEnvelope() *internalproto.Envelope {
 			continue
 		}
 		add(peer.nodeID, peer.url, peer.zeroMQCurveServerPublicKey, peer.generation)
+	}
+	if m.cfg.TCPMTLS.Enabled {
+		for _, endpoint := range m.cfg.TCPMTLS.AdvertisedEndpoints {
+			add(m.cfg.NodeID, endpoint, "", generation)
+		}
 	}
 	// gossip 和历史记录中的 selfKnownURLs 不证明地址归属；由验证该 URL 的其他 peer 广告。
 	sort.Slice(items, func(i, j int) bool {

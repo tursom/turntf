@@ -78,10 +78,11 @@ membership update 当前会广播两类地址：
 
 - 跳过 `node_id <= 0` 或等于本节点 `node_id` 的记录。
 - 跳过 URL 已存在于静态 `cluster.peers` 的记录。
-- 跳过已经存在动态拨号器、正在拨号、已过期或同 `node_id` 已有活跃 session 的记录。
-- 跳过当前 transport 不可出站拨号的记录：`zmq+tcp` 需要 `services.zeromq.enabled = true` 且 ZeroMQ forwarding 允许出站；libp2p 需要 `services.libp2p.enabled = true`。
-- 候选按 `last_connected_at`、`last_seen_at` 和 URL 排序，优先拨最近成功连接过、最近被观测到的地址。
-- 每个节点最多启动 8 个动态发现拨号循环，避免 membership 抖动时无限扩张连接数。
+- 跳过已过期的记录；mesh 模式下，同节点已有活跃连接不妨碍补建另一传输。
+- 跳过当前 transport 不可出站拨号的记录：`zmq+tcp` 需要 `services.zeromq.enabled = true` 且 ZeroMQ forwarding 允许出站；libp2p 需要 `services.libp2p.enabled = true`；`tcp+tls` 需要 TCP+mTLS 启用且 URL 节点身份在白名单内。
+- 每轮最多选择 8 个动态 URL。每选一个地址后重新计算覆盖度：先选择覆盖次数少的 `(node_id, transport)` 组合，再平衡传输和节点覆盖；同等覆盖度下按 TCP、WebSocket、其他传输优先。静态地址的已知节点/传输计入覆盖但不占动态预算。
+- 同节点同传输的额外地址排在未覆盖组合之后；已有动态 URL 仅在覆盖度和传输优先级相同时优先保留，其后按连接历史、最近观测时间及 URL 稳定排序。8 个 WSS 多地址不能阻止合法 TCP 补建，反向也不能阻止 WSS 备用。
+- 未选中的动态种子被取消；预算不足时不能保证所有节点均有主备，重要主备地址应显式配置为静态 peers。
 
 动态拨号连接和静态拨号连接最终都会进入同一套 mesh 建链、HMAC、校时、复制和反熵逻辑。广告中的 `node_id` 是候选声明，不是 URL 归属证明；实际地址匹配的邻接会回填远端身份。libp2p 候选还会校验 multiaddr 中的 PeerID 与远端 stream PeerID 一致，随后再绑定业务 `node_id`。
 
@@ -202,7 +203,7 @@ membership update 当前会广播两类地址：
 
 - `discovered_peers = 0` 且 `membership_updates_received = 0`：先确认至少有一个入口已建立 mesh 邻接，再检查 `mesh.ProtocolVersion`、`cluster.secret`、静态种子或 libp2p bootstrap/mDNS 入口，以及网络访问。
 - `rejected_total` 持续增长：检查广告 URL 是否为空、是否使用非 `ws` / `wss` / `zmq+tcp` 地址，或 libp2p multiaddr 缺少 `/p2p/<peer_id>`，以及广告来源是否与 session peer 身份不一致。
-- 候选长期停在 `candidate`：检查是否已达到 8 个动态拨号器上限，或同 `node_id` 是否已经存在活跃连接。
+- 候选长期停在 `candidate`：检查传输启用状态和白名单，以及 8 个动态 URL 名额的节点/传输覆盖分配；同节点额外地址的优先级低于补齐其他组合。
 - 候选进入 `failed`：优先查看 `last_discovery_error`、`mesh_discovered_peer_seed_failed`、`mesh_membership_update_forward_failed` 和对端 transport 日志；常见原因是网络不可达、WebSocket/ZeroMQ/libp2p 入口配置错误、ZeroMQ forwarding 被禁用、CURVE key 缺失、HMAC 不一致或协议版本不一致。
 - 候选进入 `expired`：说明 10 分钟内没有再次收到该候选广告。检查提供该广告的源 peer 是否仍在线，或该地址是否已经不再被任何已连接节点传播。
 - `/cluster/nodes` 能看到 `source = "discovered"` 但复制进度不前进：自动发现只负责建链，后续仍按复制、补拉、反熵和校时状态排查。

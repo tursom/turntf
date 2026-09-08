@@ -16,6 +16,7 @@ func TestMeshObservabilityHTTPStatusAndMetrics(t *testing.T) {
 		status: app.ClusterStatus{
 			NodeID: testNodeID(1),
 			Mesh: app.ClusterMeshStatus{
+				TCPMTLS:            app.ClusterTCPMTLSStatus{Enabled: true, DialAttempts: 7, HandshakeRejected: 2, EstablishedTotal: 4, ActiveAdjacencies: 1},
 				Enabled:            true,
 				ForwardingEnabled:  true,
 				BridgeEnabled:      false,
@@ -94,10 +95,18 @@ func TestMeshObservabilityHTTPStatusAndMetrics(t *testing.T) {
 		t.Fatalf("unexpected mesh metrics: %+v", status.Mesh.Metrics)
 	}
 
+	if !status.Mesh.TCPMTLS.Enabled || status.Mesh.TCPMTLS.DialAttempts != 7 || status.Mesh.TCPMTLS.ActiveAdjacencies != 1 {
+		t.Fatalf("TCP mTLS status missing: %+v", status.Mesh.TCPMTLS)
+	}
 	metrics := doPlain(t, testAPI.handler, http.MethodGet, "/metrics", map[string]string{
 		"Authorization": "Bearer " + adminToken,
 	}, http.StatusOK)
 	for _, want := range []string{
+		`notifier_tcp_mtls_enabled{node_id="4096"} 1`,
+		`notifier_tcp_mtls_dial_attempts_total{node_id="4096"} 7`,
+		`notifier_tcp_mtls_handshake_rejected_total{node_id="4096"} 2`,
+		`notifier_tcp_mtls_established_total{node_id="4096"} 4`,
+		`notifier_tcp_mtls_active_adjacencies{node_id="4096"} 1`,
 		`forwarded_packets_total{node_id="4096",path_class="direct",traffic_class="control_query"} 3`,
 		`forwarded_bytes_total{node_id="4096",path_class="direct",traffic_class="control_query"} 2048`,
 		`routing_decision_cost{node_id="4096",traffic_class="control_query"} 13`,

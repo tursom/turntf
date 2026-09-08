@@ -82,6 +82,7 @@ type ClusterDiscoveryStatus struct {
 // ClusterMeshStatus 描述集群 Mesh 网络的运行时状态。
 // Mesh 网络负责节点间的流量转发、路由决策和桥接通信等功能。
 type ClusterMeshStatus struct {
+	TCPMTLS ClusterTCPMTLSStatus
 	// Enabled Mesh 网络是否启用
 	Enabled bool
 	// ForwardingEnabled 跨节点流量转发是否启用
@@ -103,6 +104,15 @@ type ClusterMeshStatus struct {
 }
 
 // ClusterMeshTransportCapability 描述一种传输协议的能力配置。
+// ClusterTCPMTLSStatus 不包含证书内容；EstablishedTotal 仅统计 TLS 建链，ActiveAdjacencies 统计已验证 Hello。
+type ClusterTCPMTLSStatus struct {
+	Enabled           bool   `json:"enabled"`
+	DialAttempts      uint64 `json:"dial_attempts"`
+	HandshakeRejected uint64 `json:"handshake_rejected"`
+	EstablishedTotal  uint64 `json:"established_total"`
+	ActiveAdjacencies int    `json:"active_adjacencies"`
+}
+
 type ClusterMeshTransportCapability struct {
 	// Transport 传输协议名称，如 tcp、quic、webrtc
 	Transport string

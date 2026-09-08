@@ -41,6 +41,7 @@ type serveConfig struct {
 
 // servicesConfig 包含所有传输层服务的配置。
 type servicesConfig struct {
+	TCPMTLS cluster.TCPMTLSConfig `toml:"tcp_mtls"`
 	// HTTP HTTP API 服务配置
 	HTTP httpServiceConfig `toml:"http"`
 	// ZeroMQ ZeroMQ 协议监听器配置
@@ -521,6 +522,7 @@ func (c serveConfig) runtimeConfig(configPath string) (runtimeServeConfig, error
 	}
 	libP2PCfg := c.Services.LibP2P.runtimeConfig()
 	clusterCfg := cluster.Config{
+		TCPMTLS:                         c.Services.TCPMTLS,
 		AdvertisePath:                   cluster.WebSocketPath,
 		ClusterSecret:                   strings.TrimSpace(c.Cluster.Secret),
 		DisconnectSuspicionGraceMs:      disconnectSuspicionGraceMs,

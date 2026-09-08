@@ -7,7 +7,7 @@
 - 任意节点可写，本地提交后异步复制
 - 用户数据最终完全一致；消息数据按每节点每用户最近 N 条（默认 500）最终一致
 - 字段级 LWW 冲突收敛 + 反熵快照修复 + 断线事件日志补发
-- 多传输层支持（WebSocket / ZeroMQ / libp2p）
+- 多传输层支持（WebSocket / 原生 TCP+mTLS / ZeroMQ / libp2p）
 
 当前已完成本地存储内核、HTTP/JSON API、客户端 WebSocket + Protobuf 接口、集群同步链路、事件日志补发、多主冲突收敛、消息窗口收敛、反熵同步与快照修复、认证安全控制，以及运维观测能力。
 
@@ -116,6 +116,7 @@ printf 'secret' | go run ./cmd/turntf hash --stdin
 
 - **WebSocket**：`/internal/cluster/ws`（固定路径，集群模式自动挂载）
 - **ZeroMQ**：与客户端共用 `services.zeromq.bind_url`，首包发送 `ZeroMQMuxHello{role=CLUSTER}`
+- **原生 TCP+mTLS**：仅集群使用 `tcp+tls://host:port/nodeID`，严格双向证书与节点身份绑定，默认关闭；启用后优先 TCP，WSS 热备用并自动恢复切回
 - **libp2p**：仅服务节点间通信，不新增业务客户端入口
 
 ### 瞬时包
@@ -227,6 +228,7 @@ cp ./config.example.toml ./config.toml   # 完整配置模板
 | 配置段 | 说明 |
 |---|---|
 | `services.http` | HTTP API 监听地址，默认 `:8080`；集群入口 `/internal/cluster/ws` 固定挂载在此监听器 |
+| `services.tcp_mtls` | 原生集群 TCP+mTLS，默认关闭；CA、节点证书、白名单、帧上限与握手超时 |
 | `services.zeromq` | ZeroMQ 传输，需 `enabled = true`，支持 `none` 和 `curve` 安全模式 |
 | `services.libp2p` | libp2p 集群传输，支持 DHT、mDNS、relay、hole punching、Gossipsub |
 | `store` | 存储引擎 (`sqlite` / `pebble`)、消息窗口大小（默认 500）、事件日志裁剪策略 |
@@ -252,6 +254,7 @@ cp ./config.example.toml ./config.toml   # 完整配置模板
 - [运维手册](docs/operations.md)
 - [异构转发与路由规划](docs/heterogeneous-forwarding-routing-plan.md)
 - [libp2p 接入计划](docs/libp2p-plan.md)
+- [原生 TCP+mTLS 集群传输](docs/tcp-mtls-cluster.md)
 - [ZeroMQ 传输计划](docs/zeromq-transport-plan.md)
 - [Mesh 路由邻接表计划](docs/mesh-routing-adjacency-list-plan.md)
 - [分布式测试框架增强计划](docs/distributed-test-framework-enhancement.md)

@@ -54,6 +54,12 @@ type OnlineSessionResolver interface {
 	ResolveUserSessions(context.Context, store.UserKey) ([]store.OnlineSession, error)
 }
 
+// NodeSessionResolver 对已指定的 serving node 做实时会话查询，避免等待无关节点。
+// 未实现此可选接口的 provider 仍使用原有全节点查询。
+type NodeSessionResolver interface {
+	ResolveUserSessionsAtNode(context.Context, store.UserKey, int64) ([]store.OnlineSession, error)
+}
+
 // noopEventSink 空实现的事件发布器，当不需要事件复制时使用（例如单节点模式）。
 type noopEventSink struct{}
 
@@ -332,7 +338,13 @@ func (s *Service) DispatchTransientPacketTo(ctx context.Context, recipient store
 	}
 	if targetSession.Valid() {
 		if s.sessions != nil {
-			sessions, err := s.sessions.ResolveUserSessions(ctx, recipient)
+			var sessions []store.OnlineSession
+			var err error
+			if resolver, ok := s.sessions.(NodeSessionResolver); ok {
+				sessions, err = resolver.ResolveUserSessionsAtNode(ctx, recipient, targetSession.ServingNodeID)
+			} else {
+				sessions, err = s.sessions.ResolveUserSessions(ctx, recipient)
+			}
 			if err != nil {
 				return store.TransientPacket{}, err
 			}

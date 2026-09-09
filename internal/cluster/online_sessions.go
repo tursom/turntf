@@ -168,6 +168,30 @@ func (m *Manager) ResolveUserSessions(ctx context.Context, user store.UserKey) (
 	return results, nil
 }
 
+// ResolveUserSessionsAtNode 仅向指定节点查询该用户的实时会话，不使用 presence 缓存判断有效性。
+// 定向投递已携带 serving node，因此不需要等待其他节点；未知节点返回空列表，
+// 已知节点的传输或查询失败仍原样返回，不能误判为会话不存在。
+func (m *Manager) ResolveUserSessionsAtNode(ctx context.Context, user store.UserKey, nodeID int64) ([]store.OnlineSession, error) {
+	if m == nil {
+		return nil, fmt.Errorf("%w: cluster manager is not configured", app.ErrServiceUnavailable)
+	}
+	if err := user.Validate(); err != nil {
+		return nil, err
+	}
+	if nodeID <= 0 {
+		return nil, store.ErrInvalidInput
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	for _, known := range m.allKnownNodeIDs() {
+		if known == nodeID {
+			return m.resolveUserSessionsAtNode(ctx, nodeID, user)
+		}
+	}
+	return nil, nil
+}
+
 // resolveUserSessionsAcrossNodes 在指定的候选节点列表中解析用户会话。
 // skip参数包含已查询过的节点。
 func (m *Manager) resolveUserSessionsAcrossNodes(ctx context.Context, user store.UserKey, candidates []int64, skip map[int64]struct{}) ([]store.OnlineSession, error, map[int64]struct{}) {

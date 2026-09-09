@@ -2,7 +2,10 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -42,6 +45,98 @@ func TestRunWithoutArgsDefaultsToServe(t *testing.T) {
 	if !strings.Contains(err.Error(), "read config ./config.toml") {
 		t.Fatalf("unexpected error: %v", err)
 	}
+}
+
+func TestServeRuntimeStopsWhenContextIsCancelled(t *testing.T) {
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.toml")
+	writeTestConfig(t, configPath, `
+[services.http]
+listen_addr = "127.0.0.1:0"
+
+[store.sqlite]
+db_path = "`+filepath.Join(tempDir, "turntf.db")+`"
+`)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- serveRuntime(ctx, configPath, io.Discard)
+	}()
+
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("serve runtime returned after cancellation with error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("serve runtime did not stop after context cancellation")
+	}
+}
+
+func TestServeRuntimeReturnsHTTPListenFailure(t *testing.T) {
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve HTTP address: %v", err)
+	}
+	defer listener.Close()
+
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.toml")
+	writeTestConfig(t, configPath, `
+[services.http]
+listen_addr = "`+listener.Addr().String()+`"
+
+[store.sqlite]
+db_path = "`+filepath.Join(tempDir, "turntf.db")+`"
+`)
+
+	err = serveRuntime(context.Background(), configPath, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "address already in use") {
+		t.Fatalf("unexpected HTTP listen error: %v", err)
+	}
+}
+
+func TestEventLogPruneLoopPrunesOnInterval(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "prune-loop.db"), store.Options{
+		NodeID:                     int64(4096),
+		MessageWindowSize:          store.DefaultMessageWindowSize,
+		EventLogMaxEventsPerOrigin: 1,
+	})
+	if err != nil {
+		t.Fatalf("open prune-loop store: %v", err)
+	}
+	defer st.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := st.Init(ctx); err != nil {
+		t.Fatalf("init prune-loop store: %v", err)
+	}
+	user, _, err := st.CreateUser(ctx, store.CreateUserParams{Username: "prune-loop-user", PasswordHash: "hash"})
+	if err != nil {
+		t.Fatalf("create prune-loop user: %v", err)
+	}
+	for _, body := range []string{"first", "second"} {
+		if _, _, err := st.CreateMessage(ctx, store.CreateMessageParams{UserKey: user.Key(), Sender: user.Key(), Body: []byte(body)}); err != nil {
+			t.Fatalf("create prune-loop message %q: %v", body, err)
+		}
+	}
+
+	startEventLogPruneLoop(ctx, st, 10*time.Millisecond)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		events, err := st.ListEvents(ctx, 0, 100)
+		if err != nil {
+			t.Fatalf("list events while waiting for prune: %v", err)
+		}
+		if len(events) == 1 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("event log prune loop did not enforce the configured retention")
 }
 
 func TestInitStoreCommandRemoved(t *testing.T) {

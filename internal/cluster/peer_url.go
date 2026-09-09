@@ -6,8 +6,8 @@ import (
 	"net/url"
 	"strings"
 
-	ma "github.com/multiformats/go-multiaddr"
 	"github.com/libp2p/go-libp2p/core/peer"
+	ma "github.com/multiformats/go-multiaddr"
 )
 
 // 对等节点URL的scheme常量。
@@ -128,6 +128,12 @@ func normalizePeerURLScheme(raw string, allowZeroMQ bool) (string, error) {
 
 	scheme := strings.ToLower(parsed.Scheme)
 	switch scheme {
+	case tcpMTLSScheme:
+		endpoint, _, err := parseTCPMTLSEndpoint(trimmed)
+		if err != nil {
+			return "", err
+		}
+		return endpoint.String(), nil
 	case peerSchemeWebSocket, peerSchemeWebSocketTLS:
 		if strings.TrimSpace(parsed.Host) == "" {
 			return "", errors.New("peer url host cannot be empty")
@@ -174,6 +180,8 @@ func normalizePeerURLScheme(raw string, allowZeroMQ bool) (string, error) {
 // transportForPeerURL 根据对等节点URL返回对应的传输类型名称。
 func transportForPeerURL(raw string) string {
 	switch {
+	case strings.HasPrefix(strings.TrimSpace(raw), tcpMTLSScheme+"://"):
+		return transportTCPMTLS
 	case isWebSocketPeerURL(raw):
 		return transportWebSocket
 	case isZeroMQPeerURL(raw):

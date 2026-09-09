@@ -37,6 +37,45 @@ func TestConfigEffectiveForwardingDefaults(t *testing.T) {
 	}
 }
 
+func TestParseForwardingDispositionAcceptsDocumentedValues(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		raw  string
+		want mesh.ForwardingDisposition
+	}{
+		{name: "unspecified", raw: "  ", want: mesh.DispositionUnspecified},
+		{name: "allow", raw: " allow ", want: mesh.DispositionAllow},
+		{name: "discourage", raw: "DisCoUrAgE", want: mesh.DispositionDiscourage},
+		{name: "deny", raw: "DENY", want: mesh.DispositionDeny},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := ParseForwardingDisposition(tt.raw)
+			if err != nil {
+				t.Fatalf("parse forwarding disposition %q: %v", tt.raw, err)
+			}
+			if got != tt.want {
+				t.Fatalf("unexpected forwarding disposition: got=%v want=%v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseForwardingDispositionRejectsUnknownValue(t *testing.T) {
+	t.Parallel()
+
+	got, err := ParseForwardingDisposition("forward")
+	if err == nil {
+		t.Fatal("expected unknown forwarding disposition to fail")
+	}
+	if got != mesh.DispositionUnspecified {
+		t.Fatalf("unexpected disposition on failure: got=%v want=%v", got, mesh.DispositionUnspecified)
+	}
+}
+
 func TestConfigEffectiveForwardingHighFeeDefaults(t *testing.T) {
 	t.Parallel()
 

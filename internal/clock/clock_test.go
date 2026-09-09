@@ -1,6 +1,9 @@
 package clock
 
-import "testing"
+import (
+	"math"
+	"testing"
+)
 
 func TestTimestampStringRoundTrip(t *testing.T) {
 	t.Parallel()
@@ -148,5 +151,56 @@ func TestTimestampStringSortMatchesCompare(t *testing.T) {
 	}
 	if first.String() >= second.String() {
 		t.Fatalf("expected lexical order to increase, first=%s second=%s", first.String(), second.String())
+	}
+}
+
+func TestClockTimeAccessorsKeepPhysicalAndAdjustedTimeSeparate(t *testing.T) {
+	t.Parallel()
+
+	const physical = int64(1740000000000)
+	clock := NewClockWithSource(17, func() int64 { return physical })
+	clock.SetOffsetMs(-375)
+
+	if got := clock.OffsetMs(); got != -375 {
+		t.Fatalf("unexpected offset: got %d want -375", got)
+	}
+	if got := clock.PhysicalTimeMs(); got != physical {
+		t.Fatalf("unexpected physical time: got %d want %d", got, physical)
+	}
+	if got := clock.WallTimeMs(); got != physical-375 {
+		t.Fatalf("unexpected adjusted wall time: got %d want %d", got, physical-375)
+	}
+}
+
+func TestClockNowRemainsMonotonicWhenLogicalCounterOverflows(t *testing.T) {
+	t.Parallel()
+
+	clock := NewClockWithSource(19, func() int64 { return 1740000000000 })
+	previous := clock.Now()
+	for range math.MaxUint16 + 1 {
+		next := clock.Now()
+		if next.Compare(previous) <= 0 {
+			t.Fatalf("clock regressed after logical overflow: previous=%s next=%s", previous, next)
+		}
+		previous = next
+	}
+}
+
+func TestClockObserveAdvancesPastRemoteLogicalCounterOverflow(t *testing.T) {
+	t.Parallel()
+
+	clock := NewClockWithSource(21, func() int64 { return 1740000000000 })
+	remote := Timestamp{
+		WallTimeMs: 1740000001000,
+		Logical:    math.MaxUint16,
+		NodeID:     22,
+	}
+
+	observed := clock.Observe(remote)
+	if observed.Compare(remote) <= 0 {
+		t.Fatalf("observed timestamp must advance past remote overflow: remote=%s observed=%s", remote, observed)
+	}
+	if observed.WallTimeMs != remote.WallTimeMs+1 || observed.Logical != 0 {
+		t.Fatalf("logical overflow should carry into wall time: remote=%s observed=%s", remote, observed)
 	}
 }

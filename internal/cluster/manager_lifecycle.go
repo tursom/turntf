@@ -50,6 +50,20 @@ func (m *Manager) transportForPeerURL(peerURL string) (string, error) {
 // WebSocket始终可以拨号；ZeroMQ需要启用且允许转发；libp2p需要启用。
 func (m *Manager) canDialPeerURL(peerURL string) bool {
 	switch transportForPeerURL(peerURL) {
+	case transportTCPMTLS:
+		if m == nil || !m.cfg.TCPMTLS.Enabled {
+			return false
+		}
+		_, id, err := parseTCPMTLSEndpoint(peerURL)
+		if err != nil || id == m.cfg.NodeID {
+			return false
+		}
+		for _, allowed := range m.cfg.TCPMTLS.AllowedNodeIDs {
+			if id == allowed {
+				return true
+			}
+		}
+		return false
 	case transportWebSocket:
 		return true
 	case transportZeroMQ:

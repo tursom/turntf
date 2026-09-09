@@ -7,7 +7,7 @@ import (
 
 // Peer 表示集群中的一个静态配置的对等节点。
 type Peer struct {
-	// URL 是对等节点的地址，支持 ws、wss 或 zmq+tcp scheme。
+	// URL 是对等节点的地址，支持 ws、wss、tcp+tls、zmq+tcp 或 libp2p multiaddr。
 	URL string
 	// ZeroMQCurveServerPublicKey 是ZeroMQ Curve加密中该对等节点的Z85服务器公钥。
 	// 仅当URL使用 zmq+tcp scheme 且启用了 curve 安全时使用。
@@ -73,6 +73,8 @@ type ZeroMQCurveConfig struct {
 // Config 是集群模块的完整配置。
 // 零值字段将在WithDefaults和Validate过程中填充为合理的默认值。
 type Config struct {
+	// TCPMTLS 是默认关闭的原生集群 TCP 双向 TLS 配置。
+	TCPMTLS TCPMTLSConfig
 	// NodeID 是当前节点的唯一标识符，必须大于0。
 	NodeID int64
 	// AdvertisePath 是对外通告的HTTP WebSocket路径（如 /internal/cluster/ws）。
@@ -134,6 +136,7 @@ const (
 
 // WithDefaults 返回填充了所有零值字段默认值的Config副本。
 func (c Config) WithDefaults() Config {
+	c.TCPMTLS = c.TCPMTLS.withDefaults()
 	c.Forwarding = c.Forwarding.withDefaults()
 	if c.ZeroMQ.ForwardingEnabled == nil {
 		c.ZeroMQ.ForwardingEnabled = boolPtr(boolValue(c.Forwarding.Enabled, true))
@@ -180,9 +183,9 @@ func (c Config) WithDefaults() Config {
 }
 
 // Enabled 返回集群模式是否已启用。
-// 当设置了集群密钥、配置了对等节点或启用了libp2p时，集群模式生效。
+// 当设置了集群密钥、配置了对等节点或启用了libp2p/TCP+mTLS时，集群模式生效。
 func (c Config) Enabled() bool {
-	return strings.TrimSpace(c.ClusterSecret) != "" || len(c.Peers) > 0 || c.LibP2P.Enabled
+	return strings.TrimSpace(c.ClusterSecret) != "" || len(c.Peers) > 0 || c.LibP2P.Enabled || c.TCPMTLS.Enabled
 }
 
 // Validate 验证配置的有效性，并在验证前填充默认值。
@@ -192,6 +195,9 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("cluster config cannot be nil")
 	}
 	*c = c.WithDefaults()
+	if err := c.TCPMTLS.validate(); err != nil {
+		return err
+	}
 	if c.NodeID <= 0 {
 		return fmt.Errorf("node id cannot be empty")
 	}
@@ -274,6 +280,21 @@ func (c *Config) Validate() error {
 		normalizedURL, err := normalizeConfiguredPeerURL(c.Peers[idx].URL)
 		if err != nil {
 			return err
+		}
+		if transportForPeerURL(normalizedURL) == transportTCPMTLS {
+			if !c.TCPMTLS.Enabled {
+				return fmt.Errorf("tcp mTLS peer requires services.tcp_mtls.enabled")
+			}
+			_, target, _ := parseTCPMTLSEndpoint(normalizedURL)
+			allowed := false
+			for _, id := range c.TCPMTLS.AllowedNodeIDs {
+				if id == target {
+					allowed = true
+				}
+			}
+			if !allowed {
+				return fmt.Errorf("tcp mTLS peer node ID must be in allowed_node_ids")
+			}
 		}
 		if isZeroMQPeerURL(normalizedURL) && !c.ZeroMQ.Enabled {
 			return fmt.Errorf("zeromq peer url %q requires services.zeromq.enabled", normalizedURL)

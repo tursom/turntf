@@ -109,6 +109,12 @@ func (a *WebSocketMeshTransportAdapter) Handler() http.HandlerFunc {
 			http.Error(w, "websocket mesh adapter not started", http.StatusServiceUnavailable)
 			return
 		}
+		select {
+		case <-ctx.Done():
+			http.Error(w, "websocket mesh adapter stopped", http.StatusServiceUnavailable)
+			return
+		default:
+		}
 		conn, err := a.transport.Upgrade(w, r)
 		if err != nil {
 			return

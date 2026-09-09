@@ -285,8 +285,9 @@ func (m *Manager) recordTimeSyncSample(sess *session, sample timeSyncSample) (cl
 			// 样本在安全范围内
 			peer.clockSkewViolationStreak = 0
 			peer.clockHealthyStreak++
-			// 从observing恢复需要连续多个健康样本
-			if peer.clockState == clockStateObserving && peer.clockHealthyStreak < m.cfg.ClockRecoverAfterHealthySamples {
+			// 从观察或拒绝状态恢复需要连续多个健康样本。
+			if (peer.clockState == clockStateObserving || peer.clockState == clockStateRejected) &&
+				peer.clockHealthyStreak < m.cfg.ClockRecoverAfterHealthySamples {
 				reason = "clock_recovery_pending"
 				nextState = clockStateObserving
 			}

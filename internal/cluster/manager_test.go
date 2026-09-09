@@ -92,6 +92,267 @@ func TestQueryLoggedInUsersWithoutMeshReturnsUnavailable(t *testing.T) {
 	}
 }
 
+func TestManagerPublicConfigurationAndLocalLoggedInUsers(t *testing.T) {
+	t.Parallel()
+
+	mgr := newHandshakeTestManager(t)
+	if got := mgr.AdvertisePath(); got != websocketPath {
+		t.Fatalf("unexpected advertise path: got=%q want=%q", got, websocketPath)
+	}
+
+	want := []app.LoggedInUserSummary{{
+		NodeID:    testNodeID(1),
+		UserID:    17,
+		Username:  "local-user",
+		LoginName: "local-login",
+	}}
+	mgr.SetLoggedInUsersProvider(func(ctx context.Context) ([]app.LoggedInUserSummary, error) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		return want, nil
+	})
+	got, err := mgr.QueryLoggedInUsers(context.Background(), testNodeID(1))
+	if err != nil {
+		t.Fatalf("query local logged-in users: %v", err)
+	}
+	if len(got) != 1 || got[0] != want[0] {
+		t.Fatalf("unexpected local logged-in users: got=%+v want=%+v", got, want)
+	}
+}
+
+func TestManagerQueryLoggedInUsersRejectsInvalidRequests(t *testing.T) {
+	t.Parallel()
+
+	var unavailable *Manager
+	if _, err := unavailable.QueryLoggedInUsers(context.Background(), testNodeID(1)); !errors.Is(err, app.ErrServiceUnavailable) {
+		t.Fatalf("expected unavailable manager error, got %v", err)
+	}
+
+	mgr := newHandshakeTestManager(t)
+	if _, err := mgr.QueryLoggedInUsers(context.Background(), 0); !errors.Is(err, store.ErrInvalidInput) {
+		t.Fatalf("expected invalid node id error, got %v", err)
+	}
+	if _, err := mgr.QueryLoggedInUsers(context.Background(), testNodeID(1)); !errors.Is(err, app.ErrServiceUnavailable) {
+		t.Fatalf("expected missing local provider error, got %v", err)
+	}
+}
+
+func TestManagerLocalOnlineSessionLifecycleIsVisibleThroughPublicQueries(t *testing.T) {
+	t.Parallel()
+
+	var unavailable *Manager
+	user := clusterUserKey(testNodeID(1), 17)
+	if _, err := unavailable.QueryOnlineUserPresence(context.Background(), user); !errors.Is(err, app.ErrServiceUnavailable) {
+		t.Fatalf("expected unavailable presence query error, got %v", err)
+	}
+	if _, err := unavailable.ResolveUserSessions(context.Background(), user); !errors.Is(err, app.ErrServiceUnavailable) {
+		t.Fatalf("expected unavailable session query error, got %v", err)
+	}
+
+	mgr := newHandshakeTestManager(t)
+	invalidUser := store.UserKey{}
+	if _, err := mgr.QueryOnlineUserPresence(context.Background(), invalidUser); !errors.Is(err, store.ErrInvalidInput) {
+		t.Fatalf("expected invalid presence query error, got %v", err)
+	}
+	if _, err := mgr.ResolveUserSessions(context.Background(), invalidUser); !errors.Is(err, store.ErrInvalidInput) {
+		t.Fatalf("expected invalid session query error, got %v", err)
+	}
+
+	summary := app.LoggedInUserSummary{
+		NodeID:   user.NodeID,
+		UserID:   user.UserID,
+		Username: "online-user",
+	}
+	second := store.OnlineSession{
+		User:       user,
+		SessionRef: store.SessionRef{ServingNodeID: testNodeID(1), SessionID: "session-b"},
+		Transport:  transportWebSocket,
+	}
+	first := store.OnlineSession{
+		User:       user,
+		SessionRef: store.SessionRef{ServingNodeID: testNodeID(1), SessionID: "session-a"},
+		Transport:  transportZeroMQ,
+	}
+	mgr.RegisterLocalSession(second, summary)
+	mgr.RegisterLocalSession(first, summary)
+
+	presence, err := mgr.QueryOnlineUserPresence(context.Background(), user)
+	if err != nil {
+		t.Fatalf("query online presence: %v", err)
+	}
+	if len(presence) != 1 || presence[0].User != user || presence[0].ServingNodeID != testNodeID(1) ||
+		presence[0].SessionCount != 2 || presence[0].TransportHint != "mixed" {
+		t.Fatalf("unexpected online presence: %+v", presence)
+	}
+
+	sessions, err := mgr.ResolveUserSessions(context.Background(), user)
+	if err != nil {
+		t.Fatalf("resolve local user sessions: %v", err)
+	}
+	if len(sessions) != 2 || sessions[0] != first || sessions[1] != second {
+		t.Fatalf("unexpected sorted sessions: got=%+v want=[%+v %+v]", sessions, first, second)
+	}
+
+	mgr.UnregisterLocalSession(user, first.SessionRef)
+	presence, err = mgr.QueryOnlineUserPresence(context.Background(), user)
+	if err != nil {
+		t.Fatalf("query presence after first logout: %v", err)
+	}
+	if len(presence) != 1 || presence[0].SessionCount != 1 || presence[0].TransportHint != transportWebSocket {
+		t.Fatalf("unexpected presence after first logout: %+v", presence)
+	}
+
+	mgr.UnregisterLocalSession(user, second.SessionRef)
+	presence, err = mgr.QueryOnlineUserPresence(context.Background(), user)
+	if err != nil {
+		t.Fatalf("query presence after final logout: %v", err)
+	}
+	if len(presence) != 0 {
+		t.Fatalf("expected no presence after final logout, got %+v", presence)
+	}
+	sessions, err = mgr.ResolveUserSessions(context.Background(), user)
+	if err != nil {
+		t.Fatalf("resolve sessions after final logout: %v", err)
+	}
+	if len(sessions) != 0 {
+		t.Fatalf("expected no sessions after final logout, got %+v", sessions)
+	}
+}
+
+func TestManagerAllowWriteFollowsClockTrustState(t *testing.T) {
+	t.Parallel()
+
+	var unavailable *Manager
+	if err := unavailable.AllowWrite(context.Background()); err != nil {
+		t.Fatalf("nil manager should not gate writes: %v", err)
+	}
+
+	isolated, err := NewManager(Config{
+		NodeID:            testNodeID(1),
+		AdvertisePath:     websocketPath,
+		ClusterSecret:     "secret",
+		MessageWindowSize: store.DefaultMessageWindowSize,
+		MaxClockSkewMs:    DefaultMaxClockSkewMs,
+		DiscoveryDisabled: true,
+	}, nil)
+	if err != nil {
+		t.Fatalf("new isolated manager: %v", err)
+	}
+	if err := isolated.AllowWrite(context.Background()); err != nil {
+		t.Fatalf("single-node manager should allow writes: %v", err)
+	}
+
+	mgr := newHandshakeTestManager(t)
+	if err := mgr.AllowWrite(context.Background()); !errors.Is(err, app.ErrClockNotSynchronized) {
+		t.Fatalf("expected unsynchronized manager to reject writes, got %v", err)
+	}
+
+	mgr.mu.Lock()
+	mgr.lastTrustedClockSync = time.Now().UTC()
+	mgr.mu.Unlock()
+	if err := mgr.AllowWrite(context.Background()); err != nil {
+		t.Fatalf("recently synchronized observing manager should allow writes: %v", err)
+	}
+
+	mgr.mu.Lock()
+	mgr.lastTrustedClockSync = time.Now().UTC().Add(-mgr.clockObserveGraceWindow() - time.Second)
+	mgr.mu.Unlock()
+	if err := mgr.AllowWrite(context.Background()); !errors.Is(err, app.ErrClockNotSynchronized) {
+		t.Fatalf("expected degraded manager to reject writes, got %v", err)
+	}
+
+	readySnapshotTestSession(mgr, testNodeID(2), store.DefaultMessageWindowSize)
+	if err := mgr.AllowWrite(context.Background()); err != nil {
+		t.Fatalf("trusted manager should allow writes: %v", err)
+	}
+}
+
+func TestManagerRestoresPersistedDiscoveryState(t *testing.T) {
+	t.Parallel()
+
+	st := newReplicationTestStore(t, "discovery-reload", 1)
+	ctx := context.Background()
+	now := st.Clock().Now()
+	validURL := "ws://127.0.0.1:9082/internal/cluster/ws"
+	for _, peer := range []store.DiscoveredPeer{
+		{
+			NodeID:           testNodeID(2),
+			URL:              validURL,
+			SourcePeerNodeID: testNodeID(3),
+			State:            discoveryStateFailed,
+			FirstSeenAt:      now,
+			LastSeenAt:       now,
+			LastError:        "dial failed",
+			Generation:       7,
+		},
+		{
+			NodeID:      testNodeID(1),
+			URL:         "ws://127.0.0.1:9081/internal/cluster/ws",
+			State:       discoveryStateConnected,
+			FirstSeenAt: now,
+			LastSeenAt:  now,
+			Generation:  8,
+		},
+		{
+			NodeID:      testNodeID(4),
+			URL:         "://invalid",
+			State:       discoveryStateCandidate,
+			FirstSeenAt: now,
+			LastSeenAt:  now,
+			Generation:  9,
+		},
+	} {
+		if err := st.UpsertDiscoveredPeer(ctx, peer); err != nil {
+			t.Fatalf("seed discovered peer %+v: %v", peer, err)
+		}
+	}
+
+	mgr, err := NewManager(Config{
+		NodeID:            testNodeID(1),
+		AdvertisePath:     websocketPath,
+		ClusterSecret:     "secret",
+		MessageWindowSize: store.DefaultMessageWindowSize,
+		MaxClockSkewMs:    DefaultMaxClockSkewMs,
+	}, st)
+	if err != nil {
+		t.Fatalf("new manager with persisted discovery state: %v", err)
+	}
+	status, err := mgr.Status(ctx)
+	if err != nil {
+		t.Fatalf("manager status: %v", err)
+	}
+	if status.Discovery.DiscoveredPeers != 1 {
+		t.Fatalf("unexpected restored discovery count: got=%d want=1", status.Discovery.DiscoveredPeers)
+	}
+	if len(status.Peers) != 1 {
+		t.Fatalf("unexpected restored peer count: got=%d want=1", len(status.Peers))
+	}
+	peer := status.Peers[0]
+	if peer.NodeID != testNodeID(2) || peer.Source != peerSourceDiscovered || peer.DiscoveredURL != validURL || peer.DiscoveryState != discoveryStateFailed || peer.LastDiscoveryError != "dial failed" {
+		t.Fatalf("unexpected restored peer status: %+v", peer)
+	}
+}
+
+func TestNewManagerFailsWhenPersistedDiscoveryStateCannotBeRead(t *testing.T) {
+	t.Parallel()
+
+	st := newReplicationTestStore(t, "discovery-closed", 1)
+	if err := st.Close(); err != nil {
+		t.Fatalf("close discovery store: %v", err)
+	}
+	_, err := NewManager(Config{
+		NodeID:            testNodeID(1),
+		AdvertisePath:     websocketPath,
+		ClusterSecret:     "secret",
+		MessageWindowSize: store.DefaultMessageWindowSize,
+		MaxClockSkewMs:    DefaultMaxClockSkewMs,
+	}, st)
+	if err == nil {
+		t.Fatal("expected manager creation to fail when persisted discovery state cannot be read")
+	}
+}
+
 func TestActivateSessionLogsPeerReconnectForKnownPeer(t *testing.T) {
 	mgr := newHandshakeTestManager(t)
 	mgr.peers[testNodeID(2)] = &peerState{joinedLogged: true}
@@ -116,8 +377,6 @@ func TestActivateSessionLogsPeerReconnectForKnownPeer(t *testing.T) {
 }
 
 func TestRequestCatchupIfNeededLogsRequestedPull(t *testing.T) {
-	t.Parallel()
-
 	mgr := newReplicationTestManager(t, newReplicationTestStore(t, "node-b", 2))
 	logOutput := captureClusterLogs(t)
 
@@ -374,8 +633,6 @@ func TestHandleEventBatchTruncatedResponseSkipsMessageSnapshotForWindowMismatch(
 }
 
 func TestHandleSnapshotDigestLogsPartitionMismatch(t *testing.T) {
-	t.Parallel()
-
 	sourceStore := newReplicationTestStore(t, "node-a", 1)
 	targetStore := newReplicationTestStore(t, "node-b", 2)
 	mgr := newReplicationTestManager(t, targetStore)
@@ -416,8 +673,6 @@ func TestHandleSnapshotDigestLogsPartitionMismatch(t *testing.T) {
 }
 
 func TestRouteTransientPacketLogsRetryQueueEntry(t *testing.T) {
-	t.Parallel()
-
 	mgr := newHandshakeTestManager(t)
 	logOutput := captureClusterLogs(t)
 

@@ -67,6 +67,28 @@ func (p *Planner) Compute(snapshot TopologySnapshot, destinationNodeID int64, tr
 		return RouteDecision{}, false
 	}
 
+	// 仅本地发起且目标 TCP 直连已建立时强制优先；其他路径继续走原有规划，
+	// 避免 WSS-only 目标的复制流因第一跳选 TCP 而落入禁止跨传输桥接的死路。
+	if ingressTransport == TransportUnspecified {
+		if cap := localNode.TransportCaps[TransportTCPMTLS]; cap != nil && cap.OutboundEnabled {
+			var preferred plannerMeta
+			found := false
+			for _, link := range snapshot.outgoing(p.localNodeID, TransportTCPMTLS) {
+				if link.ToNodeID != destinationNodeID || !link.Established || link.PathClass != PathClassDirect {
+					continue
+				}
+				meta := plannerMeta{cost: link.CostMs + link.JitterMs, externalHops: 1, firstHopNode: destinationNodeID, firstTransport: TransportTCPMTLS}
+				if !found || betterMeta(meta, preferred) {
+					preferred = meta
+					found = true
+				}
+			}
+			if found {
+				return buildRouteDecision(destinationNodeID, snapshot.TopologyGeneration, preferred), true
+			}
+		}
+	}
+
 	// 构建初始状态：从本地节点所有启用了出站能力的传输（或指定入站传输）开始。
 	starts := make([]plannerState, 0, len(localNode.TransportCaps))
 	if ingressTransport != TransportUnspecified {
@@ -186,11 +208,8 @@ func (p *Planner) expand(snapshot TopologySnapshot, destinationNodeID int64, tra
 }
 
 // canTransit 检查指定节点是否允许为给定流量类别中转流量。
-// 中转条件：
-//   - 目标节点（destinationNodeID）和本地节点（localNodeID）不允许中转（它们分别是终点和起点）。
-//   - 本地节点的中转需额外检查入站传输：若指定了入站传输（非 unspecified），
-//     则必须启用了入站 TransitEnabled 且策略不允许拒绝该流量类别。
-//   - 远端节点必须 TransitEnabled = true 且 Disposition 不为 Deny。
+// 目标节点不参与中转；本地发起的流量不受本地 transit 开关限制。
+// 入站转发和远端中转均要求 TransitEnabled，且流量类别未被拒绝。
 func (p *Planner) canTransit(snapshot TopologySnapshot, destinationNodeID int64, trafficClass TrafficClass, ingressTransport TransportKind, nodeID int64) bool {
 	if nodeID == destinationNodeID {
 		return false

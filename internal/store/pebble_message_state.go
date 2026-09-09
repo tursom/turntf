@@ -346,6 +346,9 @@ func (r *pebbleMessageProjectionRepository) prepareMessageWrite(batch *pebble.Ba
 	if err := batch.Set(pebbleMessageProducerKey(message), r.producerIndexValue(value, message), nil); err != nil {
 		return pebbleMessageUserState{}, nil, fmt.Errorf("write message producer index: %w", err)
 	}
+	if err := batch.Set(pebbleMessageSessionKey(message), pebbleMessageIndexValue(pebbleMessageRefFromMessage(message)), nil); err != nil {
+		return pebbleMessageUserState{}, nil, fmt.Errorf("write message session index: %w", err)
+	}
 
 	state.StoredCount++
 	if message.Seq > state.MaxSeq {

@@ -354,7 +354,8 @@ type Adjacency struct {
 	jitterEWMA    float64              // 抖动的指数加权移动平均值（毫秒）
 	samples       int                  // 已采集的测量样本数
 	established   bool                 // 连接是否已成功建立
-	inflightPings map[uint64]time.Time // 正在途中的 Ping 请求（ID -> 发送时间）
+	inflightPings map[uint64]time.Time // 正在途中的 Ping 请求（最多一个）
+	pingStarted   time.Time            // 本地单调时钟，用于应答期限，不受 HLC/墙钟调整影响
 }
 
 // NewRuntime 根据配置选项构造一个 Runtime 实例。
@@ -841,6 +842,14 @@ func (r *Runtime) Start(ctx context.Context) error {
 		}
 		if err := adapter.Start(runCtx); err != nil {
 			cancel()
+			for range seedStarts {
+				r.wg.Done()
+			}
+			for _, candidate := range adapters {
+				if closer, ok := candidate.(interface{ Close() error }); ok {
+					_ = closer.Close()
+				}
+			}
 			return fmt.Errorf("mesh: adapter %v start: %w", adapter.Kind(), err)
 		}
 	}
@@ -893,6 +902,11 @@ func (r *Runtime) Close() error {
 		_ = conn.Close()
 	}
 	r.wg.Wait()
+	for _, adapter := range r.adapters {
+		if closer, ok := adapter.(interface{ Close() error }); ok {
+			_ = closer.Close()
+		}
+	}
 	return nil
 }
 
@@ -1035,6 +1049,12 @@ func (r *Runtime) runConn(ctx context.Context, kind TransportKind, conn Transpor
 	if err := r.validateRemoteHello(hello, kind); err != nil {
 		return
 	}
+	if kind == TransportTCPMTLS {
+		identity, ok := conn.(interface{ AuthenticatedNodeID() int64 })
+		if !ok || identity.AuthenticatedNodeID() != hello.NodeId {
+			return
+		}
+	}
 	adj := r.registerAdjacency(conn, kind, hello, inbound)
 	if adj == nil {
 		return
@@ -1046,9 +1066,18 @@ func (r *Runtime) runConn(ctx context.Context, kind TransportKind, conn Transpor
 	r.bumpGenerationAndPublish(ctx)
 	r.replayCachedTopology(ctx, adj)
 
-	// 为此邻接关系启动链路测量 goroutine。
+	// 测量循环属于单条连接；退出读取后立即取消并等待，避免重连累积协程。
+	measureCtx, cancelMeasure := context.WithCancel(ctx)
+	measurementDone := make(chan struct{})
 	r.wg.Add(1)
-	go r.linkMeasurementLoop(ctx, adj)
+	go func() {
+		defer close(measurementDone)
+		r.linkMeasurementLoop(measureCtx, adj)
+	}()
+	defer func() {
+		cancelMeasure()
+		<-measurementDone
+	}()
 
 	r.readLoop(ctx, adj)
 }
@@ -1256,11 +1285,15 @@ func (r *Runtime) onAdjacencyLost(adj *Adjacency) {
 		PathClass:   classifyPathClass(adj),
 		Established: false,
 	}
-	r.pendingTombstones = append(r.pendingTombstones, tombstone)
+	if len(r.adjByRoute[routeAdjacencyKey{nodeID: adj.RemoteNodeID, transport: adj.Transport}]) == 0 {
+		r.pendingTombstones = append(r.pendingTombstones, tombstone)
+	}
 	ctx := r.ctx
 	r.mu.Unlock()
 	adj.mu.Lock()
 	adj.established = false
+	clear(adj.inflightPings)
+	adj.pingStarted = time.Time{}
 	adj.mu.Unlock()
 	if ctx == nil {
 		return
@@ -1530,7 +1563,7 @@ func clampNonNegative(v int64) int64 {
 //     否则归为 PathClassDirect。
 func classifyPathClass(adj *Adjacency) PathClass {
 	switch adj.Transport {
-	case TransportWebSocket, TransportZeroMQ:
+	case TransportWebSocket, TransportZeroMQ, TransportTCPMTLS:
 		return PathClassDirect
 	case TransportLibP2P:
 		if remoteHintSuggestsRelay(adj.RemoteHint) {
@@ -1675,6 +1708,20 @@ func (r *Runtime) sendPing(ctx context.Context, adj *Adjacency) {
 	id := r.pingID.Add(1)
 	now := r.now().UnixMilli()
 	adj.mu.Lock()
+	// 一次只保留一个探测。其他业务帧不能替代匹配的 TimeSyncResponse。
+	if len(adj.inflightPings) > 0 {
+		if time.Since(adj.pingStarted) < 3*r.pingInterval {
+			adj.mu.Unlock()
+			return
+		}
+		clear(adj.inflightPings)
+		if adj.Transport == TransportTCPMTLS {
+			adj.mu.Unlock()
+			_ = adj.Conn.Close() // 唤醒阻塞 Receive，走统一邻接丢失与拓扑回退流程。
+			return
+		}
+	}
+	adj.pingStarted = time.Now()
 	adj.inflightPings[id] = time.Unix(0, now*int64(time.Millisecond))
 	adj.mu.Unlock()
 	envelope := &ClusterEnvelope{
@@ -1687,6 +1734,9 @@ func (r *Runtime) sendPing(ctx context.Context, adj *Adjacency) {
 		adj.mu.Lock()
 		delete(adj.inflightPings, id)
 		adj.mu.Unlock()
+		if adj.Transport == TransportTCPMTLS {
+			_ = adj.Conn.Close()
+		}
 	}
 }
 

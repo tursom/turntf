@@ -172,22 +172,25 @@ func (c *Clock) Observe(remote Timestamp) Timestamp {
 	nowMs := c.adjustedWallTimeLocked()
 	maxWall := maxInt64(nowMs, c.last.WallTimeMs, remote.WallTimeMs)
 
+	nextWall := maxWall
+	var nextLogical uint16
 	switch {
 	case maxWall == c.last.WallTimeMs && maxWall == remote.WallTimeMs:
 		// 本地和远程的 WallTimeMs 相同且都是最大值：取两者逻辑计数器的最大值再递增
-		c.last.Logical = maxUint16(c.last.Logical, remote.Logical) + 1
+		nextWall, nextLogical = incrementLogical(maxWall, maxUint16(c.last.Logical, remote.Logical))
 	case maxWall == c.last.WallTimeMs:
 		// 本地 WallTimeMs 最大：递增本地逻辑计数器
-		c.last.Logical++
+		nextWall, nextLogical = incrementLogical(maxWall, c.last.Logical)
 	case maxWall == remote.WallTimeMs:
 		// 远程 WallTimeMs 最大：追赶远程逻辑计数器再加 1
-		c.last.Logical = remote.Logical + 1
+		nextWall, nextLogical = incrementLogical(maxWall, remote.Logical)
 	default:
 		// 当前物理时钟前进到了新的最大值：逻辑计数器重置为 0
-		c.last.Logical = 0
+		nextLogical = 0
 	}
 
-	c.last.WallTimeMs = maxWall
+	c.last.WallTimeMs = nextWall
+	c.last.Logical = nextLogical
 	c.last.NodeID = c.nodeID
 	return c.last
 }
@@ -239,11 +242,19 @@ func (c *Clock) nextLocked(nowMs int64) Timestamp {
 		c.last.Logical = 0
 	} else {
 		// 物理时钟停滞或回拨：递增逻辑计数器以维持单调递增性
-		c.last.Logical++
+		c.last.WallTimeMs, c.last.Logical = incrementLogical(c.last.WallTimeMs, c.last.Logical)
 	}
 
 	c.last.NodeID = c.nodeID
 	return c.last
+}
+
+// incrementLogical 递增逻辑计数器；计数器耗尽时向物理时间进一毫秒，保持时间戳单调。
+func incrementLogical(wallTimeMs int64, logical uint16) (int64, uint16) {
+	if logical == ^uint16(0) {
+		return wallTimeMs + 1, 0
+	}
+	return wallTimeMs, logical + 1
 }
 
 // adjustedWallTimeLocked 返回调整后的物理时间，即 wallClock() + offsetMs。

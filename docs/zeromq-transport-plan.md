@@ -121,9 +121,12 @@ ZeroMQ 地址传播遵循“传播已知可拨号地址，而不是广播本机�
 
 仓库自带 Dockerfile 已经接线了这套约束：
 
-- builder 阶段在 `ENABLE_ZEROMQ=true` 时安装 `zeromq-dev`，并用 `-tags zeromq` 构建。
-- runtime 阶段在 `ENABLE_ZEROMQ=true` 时安装 `zeromq` 运行库。
-- 默认镜像构建参数就是 `ENABLE_ZEROMQ=true`，因此官方容器路径下 ZeroMQ 已经不是“未接线计划”。
+- builder 阶段在 `ENABLE_ZEROMQ=true` 时下载并校验固定版本 libzmq 4.3.5 源码，使用 `--enable-drafts --with-libsodium` 构建共享库，再通过其 pkg-config 配置用 `-tags zeromq` 编译 Go 服务。
+- runtime 阶段复制 builder 产出的同一份 libzmq 共享库，安装 `libstdc++` 和 `libsodium` 运行依赖，确保 draft ABI 与 CURVE 能力一致。
+- 不能直接使用 Alpine 3.22 的 `zeromq-dev` / `zeromq` 包替代：其默认配置不提供所需的 draft C ABI，会导致 `C.ZMQ_ROUTER_NOTIFY` 编译失败；仅补头文件宏也不能补齐库符号。
+- 默认镜像构建参数为 `ENABLE_ZEROMQ=true`；`--build-arg ENABLE_ZEROMQ=false` 跳过 libzmq 构建和运行依赖安装。
+
+修改镜像依赖后，应分别验证启用和禁用 ZeroMQ 的镜像构建，并在 builder 环境运行 `go test -tags zeromq ./... -count=1`，覆盖 ROUTER 断线通知与 CURVE 测试。当前 `benchroot` 测试要求模块目录名为 `turntf`，因此容器内全量测试需把 `/src` 复制到 `/turntf` 后执行。
 
 部署时还需要注意：
 

@@ -147,9 +147,10 @@ type ForwardingDisposition = internalproto.ForwardingDisposition
 // TransportKind 常量。
 const (
 	TransportUnspecified = internalproto.TransportKind_TRANSPORT_KIND_UNSPECIFIED // 零值，表示未指定传输类型。
-	TransportLibP2P      = internalproto.TransportKind_TRANSPORT_KIND_LIBP2P      // libp2p 传输。
-	TransportZeroMQ      = internalproto.TransportKind_TRANSPORT_KIND_ZEROMQ      // ZeroMQ 传输。
-	TransportWebSocket   = internalproto.TransportKind_TRANSPORT_KIND_WEBSOCKET   // WebSocket 传输。
+	TransportTCPMTLS     = internalproto.TransportKind_TRANSPORT_KIND_TCP_MTLS
+	TransportLibP2P      = internalproto.TransportKind_TRANSPORT_KIND_LIBP2P    // libp2p 传输。
+	TransportZeroMQ      = internalproto.TransportKind_TRANSPORT_KIND_ZEROMQ    // ZeroMQ 传输。
+	TransportWebSocket   = internalproto.TransportKind_TRANSPORT_KIND_WEBSOCKET // WebSocket 传输。
 )
 
 // TrafficClass 常量。

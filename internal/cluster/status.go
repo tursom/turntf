@@ -242,6 +242,15 @@ func (m *Manager) meshStatusSnapshot() app.ClusterMeshStatus {
 		NodeFeeWeight:      policy.GetNodeFeeWeight(),
 		TopologyGeneration: binding.TopologyStore().Snapshot().TopologyGeneration,
 	}
+	if binding.tcp != nil {
+		stats := binding.tcp.Stats()
+		status.TCPMTLS = app.ClusterTCPMTLSStatus{Enabled: true, DialAttempts: stats.DialAttempts, HandshakeRejected: stats.HandshakeRejected, EstablishedTotal: stats.Established}
+		for _, adj := range runtime.Adjacencies() {
+			if adj.Transport == mesh.TransportTCPMTLS && adj.Established {
+				status.TCPMTLS.ActiveAdjacencies++
+			}
+		}
+	}
 	for _, capability := range runtime.LocalCapabilities() {
 		if capability == nil {
 			continue

@@ -537,6 +537,9 @@ func (r *sqliteMessageProjectionRepository) ListMessagesBySession(ctx context.Co
 	if limit <= 0 || limit > 1000 {
 		limit = 100
 	}
+	if err := requester.Validate(); err != nil {
+		return nil, err
+	}
 
 	rows, err := r.db.QueryContext(ctx, `
 SELECT user_node_id, user_id, node_id, seq, sender_node_id, sender_user_id, body, created_at_hlc, session

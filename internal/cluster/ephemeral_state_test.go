@@ -259,8 +259,6 @@ func TestManagerConnectivityRumorDoesNotCreateSuspicionWhenDirectAdjacencyExists
 }
 
 func TestLogMeshForwardFailureUsesDebugForNoRoute(t *testing.T) {
-	t.Parallel()
-
 	mgr := newHandshakeTestManager(t)
 	logOutput := captureClusterLogs(t)
 	sess := &session{
@@ -284,8 +282,6 @@ func TestLogMeshForwardFailureUsesDebugForNoRoute(t *testing.T) {
 }
 
 func TestLogMeshForwardFailureUsesWarnForUnexpectedError(t *testing.T) {
-	t.Parallel()
-
 	mgr := newHandshakeTestManager(t)
 	logOutput := captureClusterLogs(t)
 	sess := &session{

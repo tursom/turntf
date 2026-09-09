@@ -8,6 +8,8 @@ ARG ENABLE_ZEROMQ=true
 ARG TARGETOS
 ARG TARGETARCH
 
+# Alpine's libzmq package lacks the draft C ABI required by ROUTER_NOTIFY.
+# Build and ship the same draft-enabled library, with libsodium for CURVE.
 RUN set -eu; \
     retry() { \
         n=0; \
@@ -20,7 +22,21 @@ RUN set -eu; \
         done; \
     }; \
     retry apk add --no-cache build-base pkgconfig; \
-    if [ "${ENABLE_ZEROMQ}" = "true" ]; then retry apk add --no-cache zeromq-dev; fi
+    mkdir -p /out/lib; \
+    if [ "${ENABLE_ZEROMQ}" = "true" ]; then \
+        retry apk add --no-cache curl libsodium-dev; \
+        retry curl -fsSL https://github.com/zeromq/libzmq/releases/download/v4.3.5/zeromq-4.3.5.tar.gz -o /tmp/zeromq.tar.gz; \
+        echo '6653ef5910f17954861fe72332e68b03ca6e4d9c7160eb3a8de5a5a913bfab43  /tmp/zeromq.tar.gz' | sha256sum -c -; \
+        tar -xzf /tmp/zeromq.tar.gz -C /tmp; \
+        cd /tmp/zeromq-4.3.5; \
+        ./configure --prefix=/usr/local --enable-drafts --disable-static --with-libsodium --without-docs; \
+        make -j"$(getconf _NPROCESSORS_ONLN)"; \
+        make install; \
+        cp -a /usr/local/lib/libzmq.so* /out/lib/; \
+        rm -rf /tmp/zeromq-4.3.5 /tmp/zeromq.tar.gz; \
+    fi
+
+ENV PKG_CONFIG_PATH=/usr/local/lib/pkgconfig
 
 COPY go.mod go.sum ./
 RUN --mount=type=cache,target=/go/pkg/mod \
@@ -66,11 +82,12 @@ RUN set -eu; \
         done; \
     }; \
     retry apk add --no-cache ca-certificates tzdata; \
-    if [ "${ENABLE_ZEROMQ}" = "true" ]; then retry apk add --no-cache zeromq; fi
+    if [ "${ENABLE_ZEROMQ}" = "true" ]; then retry apk add --no-cache libstdc++ libsodium; fi
 
 WORKDIR /app
 
 COPY --from=builder /out/turntf /usr/local/bin/turntf
+COPY --from=builder /out/lib/ /usr/local/lib/
 
 RUN mkdir -p /app/data
 

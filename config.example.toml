@@ -2,6 +2,18 @@
 [services.http]
 listen_addr = ":8080"
 
+# 原生 TCP+mTLS 仅用于集群；默认关闭。证书绑定持久化 node_id，详见 docs/tcp-mtls-cluster.md。
+[services.tcp_mtls]
+enabled = false
+listen_addr = ""
+advertised_endpoints = []
+ca_file = ""
+cert_file = ""
+key_file = ""
+allowed_node_ids = []
+handshake_timeout_ms = 5000
+max_frame_bytes = 8388608
+
 # ZeroMQ 传输层，可服务业务客户端或用于节点间同步。
 # 不需要时保持 disabled。
 [services.zeromq]

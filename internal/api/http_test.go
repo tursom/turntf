@@ -17,6 +17,19 @@ import (
 	"github.com/tursom/turntf/internal/store"
 )
 
+func TestHealthEndpoint(t *testing.T) {
+	t.Parallel()
+
+	handler := newTestHandler(t)
+	data := doJSON(t, handler, http.MethodGet, "/healthz", nil, http.StatusOK)
+
+	var response map[string]string
+	mustJSON(t, data, &response)
+	if response["status"] != "ok" {
+		t.Fatalf("unexpected health response: %+v", response)
+	}
+}
+
 func TestUserAndMessageHTTPAPI(t *testing.T) {
 	t.Parallel()
 

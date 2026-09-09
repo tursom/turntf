@@ -16,6 +16,7 @@ import (
 // 入站连接通过适配器的InjectInbound方法推送；
 // 出站拨号复用Manager的拨号器。
 type MeshRuntimeBinding struct {
+	tcp      *TCPMTLSMeshTransportAdapter
 	runtime  *mesh.Runtime
 	store    mesh.TopologyStore
 	adapters map[mesh.TransportKind]*meshInboundAdapter
@@ -73,6 +74,10 @@ func (m *Manager) BuildMeshRuntime() (*MeshRuntimeBinding, error) {
 	for _, adapter := range adapters {
 		adapterList = append(adapterList, adapter)
 	}
+	tcp := NewTCPMTLSMeshTransportAdapter(m.cfg)
+	if tcp != nil {
+		adapterList = append(adapterList, tcp)
+	}
 	store := mesh.NewMemoryTopologyStore()
 	seeds := m.collectDialSeeds()
 	authenticator := newMeshEnvelopeAuthenticator(m.cfg.ClusterSecret)
@@ -99,7 +104,7 @@ func (m *Manager) BuildMeshRuntime() (*MeshRuntimeBinding, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &MeshRuntimeBinding{runtime: runtime, store: store, adapters: adapters}, nil
+	return &MeshRuntimeBinding{tcp: tcp, runtime: runtime, store: store, adapters: adapters}, nil
 }
 
 // buildMeshInboundAdapters 为每种启用的传输类型构建入站适配器。
@@ -378,7 +383,7 @@ func (b *MeshRuntimeBinding) DescribeRoute(destinationNodeID int64, trafficClass
 
 // startMeshDialSeed 为动态发现的节点启动网格拨号。
 func (m *Manager) startMeshDialSeed(peer *configuredPeer) error {
-	if peer == nil {
+	if peer == nil || !m.canDialPeerURL(peer.URL) {
 		return nil
 	}
 	seed, ok := dialSeedForURL(peer.URL)
@@ -433,7 +438,7 @@ func (m *Manager) collectDialSeeds() []mesh.DialSeed {
 
 	seeds := make([]mesh.DialSeed, 0, len(peers)+len(discovered))
 	for _, peer := range peers {
-		if peer == nil {
+		if peer == nil || !m.canDialPeerURL(peer.URL) {
 			continue
 		}
 		if seed, ok := dialSeedForURL(peer.URL); ok {
@@ -453,14 +458,22 @@ func configuredPeerMatchesMeshObservation(peer *configuredPeer, observation mesh
 	if peer == nil {
 		return false
 	}
-	if peer.nodeID > 0 && peer.nodeID == observation.RemoteNodeID {
-		return true
-	}
 	if transportKindForPeerURL(peer.URL) != observation.Transport {
 		return false
 	}
-	if normalized, ok := normalizedMeshObservationHint(observation.RemoteHint); ok && peer.URL == normalized {
+	if peer.nodeID > 0 && peer.nodeID != observation.RemoteNodeID {
+		return false
+	}
+	if observation.Transport != mesh.TransportTCPMTLS && peer.nodeID == observation.RemoteNodeID {
 		return true
+	}
+	if normalized, ok := normalizedMeshObservationHint(observation.RemoteHint); ok {
+		if observation.Transport == mesh.TransportTCPMTLS {
+			return peer.URL == normalized
+		}
+		if peer.URL == normalized {
+			return true
+		}
 	}
 	if peer.libP2PPeerID != "" && peer.libP2PPeerID == strings.TrimSpace(observation.RemoteHint) {
 		return true
@@ -473,14 +486,22 @@ func discoveredPeerMatchesMeshObservation(peer *discoveredPeerState, observation
 	if peer == nil {
 		return false
 	}
-	if peer.nodeID > 0 && peer.nodeID == observation.RemoteNodeID {
-		return true
-	}
 	if transportKindForPeerURL(peer.url) != observation.Transport {
 		return false
 	}
-	if normalized, ok := normalizedMeshObservationHint(observation.RemoteHint); ok && peer.url == normalized {
+	if peer.nodeID > 0 && peer.nodeID != observation.RemoteNodeID {
+		return false
+	}
+	if observation.Transport != mesh.TransportTCPMTLS && peer.nodeID == observation.RemoteNodeID {
 		return true
+	}
+	if normalized, ok := normalizedMeshObservationHint(observation.RemoteHint); ok {
+		if observation.Transport == mesh.TransportTCPMTLS {
+			return peer.url == normalized
+		}
+		if peer.url == normalized {
+			return true
+		}
 	}
 	return meshObservationAdvertisesURL(observation, peer.url)
 }
@@ -539,6 +560,8 @@ func normalizedMeshObservationHint(raw string) (string, bool) {
 // transportKindForPeerURL 将对等URL映射到网格传输类型。
 func transportKindForPeerURL(peerURL string) mesh.TransportKind {
 	switch transportForPeerURL(strings.TrimSpace(peerURL)) {
+	case transportTCPMTLS:
+		return mesh.TransportTCPMTLS
 	case transportWebSocket:
 		return mesh.TransportWebSocket
 	case transportZeroMQ:
@@ -557,6 +580,8 @@ func dialSeedForURL(peerURL string) (mesh.DialSeed, bool) {
 		return mesh.DialSeed{}, false
 	}
 	switch transportForPeerURL(trimmed) {
+	case transportTCPMTLS:
+		return mesh.DialSeed{Transport: mesh.TransportTCPMTLS, Endpoint: trimmed}, true
 	case transportWebSocket:
 		return mesh.DialSeed{Transport: mesh.TransportWebSocket, Endpoint: trimmed}, true
 	case transportZeroMQ:

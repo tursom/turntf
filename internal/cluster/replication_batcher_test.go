@@ -174,6 +174,38 @@ func TestHandleEventBatchAcksLastEventForBatchedApply(t *testing.T) {
 	}
 }
 
+func TestManagerPublishBatchesEventsForActivePeer(t *testing.T) {
+	t.Parallel()
+
+	mgr := newHandshakeTestManager(t)
+	mgr.ctx, mgr.cancel = context.WithCancel(context.Background())
+	sess := readySnapshotTestSession(mgr, testNodeID(2), store.DefaultMessageWindowSize)
+	first := batcherTestMessageEvent(mgr.cfg.NodeID, 1, 1, 16)
+	second := batcherTestMessageEvent(mgr.cfg.NodeID, 2, 2, 16)
+	mgr.Publish(first)
+	mgr.Publish(second)
+	mgr.wg.Add(1)
+	go mgr.publishLoop()
+	t.Cleanup(func() {
+		mgr.cancel()
+		mgr.wg.Wait()
+	})
+
+	select {
+	case envelope := <-sess.send:
+		batch := envelope.GetEventBatch()
+		if batch == nil || envelope.GetNodeId() != mgr.cfg.NodeID || envelope.GetSequence() != uint64(second.Sequence) ||
+			envelope.GetSentAtHlc() != second.HLC.String() || batch.GetOriginNodeId() != mgr.cfg.NodeID || len(batch.GetEvents()) != 2 {
+			t.Fatalf("unexpected published event batch: %+v", envelope)
+		}
+		if batch.Events[0].GetEventId() != first.EventID || batch.Events[1].GetEventId() != second.EventID {
+			t.Fatalf("unexpected published event order: %+v", batch.Events)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for published event batch")
+	}
+}
+
 func TestHandleEventBatchPushDoesNotMarkSnapshotDigestDirty(t *testing.T) {
 	t.Parallel()
 

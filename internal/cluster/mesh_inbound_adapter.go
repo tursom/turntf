@@ -103,6 +103,10 @@ func (a *meshInboundAdapter) InjectInbound(conn TransportConn) bool {
 	if ctx == nil {
 		return false
 	}
+	if ctx.Err() != nil {
+		closeTransport(conn, "shutdown")
+		return false
+	}
 	wrapped := wrapMeshTransportConn(a.kind, conn)
 	select {
 	case a.acceptCh <- wrapped:

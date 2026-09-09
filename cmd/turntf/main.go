@@ -16,6 +16,8 @@ package main
 import (
 	"context"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/rs/zerolog/log"
 )
@@ -25,8 +27,10 @@ import (
 // 命令执行失败时通过 Fatal 日志记录错误并退出。
 func main() {
 	configureDefaultLogger(os.Stderr)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 	cmd := newRootCommand(commandIO{
-		Context: context.Background(),
+		Context: ctx,
 		Stdin:   os.Stdin,
 		Stdout:  os.Stdout,
 		Stderr:  os.Stderr,

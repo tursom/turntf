@@ -11,6 +11,7 @@ enum TransportKind {
   TRANSPORT_KIND_LIBP2P = 1;
   TRANSPORT_KIND_ZEROMQ = 2;
   TRANSPORT_KIND_WEBSOCKET = 3;
+  TRANSPORT_KIND_TCP_MTLS = 4;
 }
 
 enum TrafficClass {

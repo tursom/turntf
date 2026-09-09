@@ -255,6 +255,124 @@ func TestCanCreateMessage(t *testing.T) {
 	}
 }
 
+func TestActorScopedPermissions(t *testing.T) {
+	t.Parallel()
+
+	admin := testActor(store.RoleAdmin, 1)
+	user := testActor(store.RoleUser, 2)
+
+	adminOnly := []struct {
+		name  string
+		check func(ActorContext) error
+	}{
+		{name: "list users", check: CanListUsers},
+		{name: "list events", check: CanListEvents},
+		{name: "read operations status", check: CanReadOpsStatus},
+		{name: "read metrics", check: CanReadMetrics},
+	}
+	for _, tt := range adminOnly {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if err := tt.check(ActorContext{Actor: admin}); err != nil {
+				t.Fatalf("admin should be allowed: %v", err)
+			}
+			if err := tt.check(ActorContext{Actor: user}); !errors.Is(err, store.ErrForbidden) {
+				t.Fatalf("regular user should be forbidden, got %v", err)
+			}
+			if err := tt.check(ActorContext{}); !errors.Is(err, store.ErrForbidden) {
+				t.Fatalf("anonymous actor should be forbidden, got %v", err)
+			}
+		})
+	}
+
+	authenticated := []struct {
+		name  string
+		check func(ActorContext) error
+	}{
+		{name: "list cluster nodes", check: CanListClusterNodes},
+		{name: "list logged-in users", check: CanListLoggedInUsers},
+	}
+	for _, tt := range authenticated {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if err := tt.check(ActorContext{Actor: user}); err != nil {
+				t.Fatalf("authenticated user should be allowed: %v", err)
+			}
+			if err := tt.check(ActorContext{}); !errors.Is(err, store.ErrForbidden) {
+				t.Fatalf("anonymous actor should be forbidden, got %v", err)
+			}
+		})
+	}
+}
+
+func TestSelfOrAdminPermissions(t *testing.T) {
+	t.Parallel()
+
+	admin := testActor(store.RoleAdmin, 1)
+	alice := testActor(store.RoleUser, 2)
+	bob := testActor(store.RoleUser, 3)
+
+	checks := []struct {
+		name  string
+		check func(SelfScopedContext) error
+	}{
+		{name: "view user", check: CanViewUser},
+		{name: "manage subscription", check: CanManageSubscription},
+		{name: "list subscription", check: CanListSubscription},
+		{name: "manage blacklist", check: CanManageBlacklist},
+		{name: "list blacklist", check: CanListBlacklist},
+	}
+	for _, tt := range checks {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if err := tt.check(SelfScopedContext{Actor: alice, TargetKey: alice.Key()}); err != nil {
+				t.Fatalf("self access should be allowed: %v", err)
+			}
+			if err := tt.check(SelfScopedContext{Actor: admin, TargetKey: bob.Key()}); err != nil {
+				t.Fatalf("admin access should be allowed: %v", err)
+			}
+			if err := tt.check(SelfScopedContext{Actor: alice, TargetKey: bob.Key()}); !errors.Is(err, store.ErrForbidden) {
+				t.Fatalf("cross-user access should be forbidden, got %v", err)
+			}
+			if err := tt.check(SelfScopedContext{TargetKey: bob.Key()}); !errors.Is(err, store.ErrForbidden) {
+				t.Fatalf("anonymous access should be forbidden, got %v", err)
+			}
+		})
+	}
+}
+
+func TestCanListMessages(t *testing.T) {
+	t.Parallel()
+
+	admin := testActor(store.RoleAdmin, 1)
+	alice := testActor(store.RoleUser, 2)
+	bob := testActor(store.RoleUser, 3)
+
+	for _, tt := range []struct {
+		name    string
+		actor   *store.User
+		target  store.User
+		wantErr error
+	}{
+		{name: "admin", actor: admin, target: *bob},
+		{name: "self", actor: alice, target: *alice},
+		{name: "other user", actor: alice, target: *bob, wantErr: store.ErrForbidden},
+		{name: "anonymous", target: *bob, wantErr: store.ErrForbidden},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := CanListMessages(ListMessagesContext{Actor: tt.actor, Target: tt.target})
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("unexpected result: got %v want %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
 func testActor(role string, userID int64) *store.User {
 	return testUser(role, userID, false)
 }

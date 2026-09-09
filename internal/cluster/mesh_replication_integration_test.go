@@ -40,6 +40,40 @@ func TestManagerReplicatesEventBatchViaMeshMultiHop(t *testing.T) {
 	})
 }
 
+func TestManagerPullsMissingEventsViaMeshMultiHop(t *testing.T) {
+	t.Parallel()
+
+	mgrA, _, mgrC := startLinearMeshManagers(t)
+	waitForMeshRoute(t, mgrC, testNodeID(1), mesh.TrafficReplicationStream)
+	waitForMeshRoute(t, mgrA, testNodeID(3), mesh.TrafficReplicationStream)
+
+	user, _, err := mgrA.store.CreateUser(context.Background(), store.CreateUserParams{
+		Username:     "mesh-pull-user",
+		PasswordHash: "hash-pull",
+	})
+	if err != nil {
+		t.Fatalf("create source user: %v", err)
+	}
+	sess := mgrC.meshPeerSession(testNodeID(1))
+	requestID, ok := sess.beginPendingPull(testNodeID(1), 0)
+	if !ok {
+		t.Fatal("expected mesh pull request to start")
+	}
+	if err := mgrC.routeMeshPullRequest(context.Background(), testNodeID(1), &internalproto.PullEvents{
+		OriginNodeId: testNodeID(1),
+		AfterEventId: 0,
+		Limit:        pullBatchSize,
+		RequestId:    requestID,
+	}); err != nil {
+		t.Fatalf("route mesh pull request: %v", err)
+	}
+
+	waitFor(t, 5*time.Second, func() bool {
+		replicated, getErr := mgrC.store.GetUser(context.Background(), user.Key())
+		return getErr == nil && replicated.Username == user.Username
+	})
+}
+
 func TestManagerRepairsSnapshotViaMeshMultiHop(t *testing.T) {
 	t.Parallel()
 

@@ -161,9 +161,19 @@ func serveRuntime(ctx context.Context, configPath string, logOutput io.Writer) e
 	go func() {
 		errCh <- apiServer.ListenAndServe()
 	}()
-	// 阻塞等待 HTTP 服务器返回错误（正常关闭时为 ErrServerClosed，视为成功）
-	err = <-errCh
-	_ = apiServer.Close()
+	// 同时等待监听失败和进程级取消；取消时给现有请求一个有界的退出窗口。
+	select {
+	case err = <-errCh:
+	case <-runCtx.Done():
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		shutdownErr := apiServer.Shutdown(shutdownCtx)
+		shutdownCancel()
+		if shutdownErr != nil {
+			_ = apiServer.Close()
+			return shutdownErr
+		}
+		err = <-errCh
+	}
 	if errors.Is(err, http.ErrServerClosed) {
 		return nil
 	}

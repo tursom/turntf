@@ -61,7 +61,7 @@ func TestEnvelopeBatchRoundTrip(t *testing.T) {
 		t.Fatalf("unmarshal envelope: %v", err)
 	}
 	if decoded.GetNodeId() != testNodeID || decoded.GetSequence() != 7 {
-		t.Fatalf("unexpected envelope: %+v", decoded)
+		t.Fatalf("unexpected envelope: %+v", &decoded)
 	}
 
 	decodedBatch := decoded.GetEventBatch()

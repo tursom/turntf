@@ -91,6 +91,11 @@ jobs:
           export GOCACHE="${RUNNER_TEMP}/go-build-cache"
           ./scripts/smoke.sh "${RUNNER_TEMP}/turntf"
 
+      - name: Run WebSocket cluster preflight
+        env:
+          TURNTF_PREFLIGHT_BINARY: ${{ runner.temp }}/turntf
+        run: go test -tags integration ./integration -v -count=1 -timeout=420s
+
   build:
     needs:
       - prepare

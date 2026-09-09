@@ -56,12 +56,17 @@ func (m *Manager) loadDiscoveredPeers(ctx context.Context) error {
 			m.selfKnownURLs[normalized] = peer.Generation
 			continue
 		}
+		state := peer.State
+		// 历史连接只用于候选调度，不证明本轮运行中的 URL 绑定。
+		if state == discoveryStateConnected {
+			state = discoveryStateCandidate
+		}
 		m.discoveredPeers[normalized] = &discoveredPeerState{
 			nodeID:                     peer.NodeID,
 			url:                        normalized,
 			zeroMQCurveServerPublicKey: strings.TrimSpace(peer.ZeroMQCurveServerPublicKey),
 			sourcePeerNodeID:           peer.SourcePeerNodeID,
-			state:                      peer.State,
+			state:                      state,
 			firstSeenAt:                timestampWallTime(peer.FirstSeenAt.WallTimeMs),
 			lastSeenAt:                 timestampWallTime(peer.LastSeenAt.WallTimeMs),
 			lastError:                  peer.LastError,
@@ -592,14 +597,14 @@ func (m *Manager) membershipSessions() []*session {
 }
 
 // buildMembershipEnvelope 构建成员资格更新信封。
-// 包含本节点已知的所有节点（配置节点、已连接发现节点、自我认知URL）。
+// 仅包含已绑定的配置节点和本轮验证为 connected 的发现节点。
 func (m *Manager) buildMembershipEnvelope() *internalproto.Envelope {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	m.membershipGeneration++
 	generation := m.membershipGeneration
-	items := make([]*internalproto.PeerAdvertisement, 0, len(m.configuredPeers)+len(m.discoveredPeers)+len(m.selfKnownURLs))
+	items := make([]*internalproto.PeerAdvertisement, 0, len(m.configuredPeers)+len(m.discoveredPeers))
 	seen := make(map[string]struct{})
 	add := func(nodeID int64, rawURL, zeroMQCurveServerPublicKey string, itemGeneration uint64) {
 		if nodeID <= 0 || strings.TrimSpace(rawURL) == "" {
@@ -646,9 +651,7 @@ func (m *Manager) buildMembershipEnvelope() *internalproto.Envelope {
 			add(m.cfg.NodeID, endpoint, "", generation)
 		}
 	}
-	for rawURL, itemGeneration := range m.selfKnownURLs {
-		add(m.cfg.NodeID, rawURL, m.cfg.zeroMQCurveServerPublicKey(), itemGeneration)
-	}
+	// gossip 和历史记录中的 selfKnownURLs 不证明地址归属；由验证该 URL 的其他 peer 广告。
 	sort.Slice(items, func(i, j int) bool {
 		if items[i].NodeId != items[j].NodeId {
 			return items[i].NodeId < items[j].NodeId

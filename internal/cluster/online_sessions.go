@@ -149,7 +149,12 @@ func (m *Manager) ResolveUserSessions(ctx context.Context, user store.UserKey) (
 	candidates := m.presenceCandidateNodeIDs(user)
 	results, lastErr, queried := m.resolveUserSessionsAcrossNodes(ctx, user, candidates, nil)
 	if len(results) == 0 {
+		candidateErr := lastErr
 		results, lastErr, _ = m.resolveUserSessionsAcrossNodes(ctx, user, m.allKnownNodeIDs(), queried)
+		// 已查询的候选会被 fallback 跳过，空成功不能证明这些节点没有会话。
+		if len(results) == 0 && lastErr == nil {
+			lastErr = candidateErr
+		}
 	}
 	sort.Slice(results, func(i, j int) bool {
 		if results[i].SessionRef.ServingNodeID != results[j].SessionRef.ServingNodeID {
@@ -204,7 +209,38 @@ func (m *Manager) resolveUserSessionsAtNode(ctx context.Context, nodeID int64, u
 	if nodeID == m.cfg.NodeID {
 		return m.localUserSessions(user), nil
 	}
+	started := time.Now()
 	requestID, resultCh := m.beginResolveUserSessionsQuery()
+	// 仅记录失败，且不输出请求、会话引用或远端提供的自由文本。
+	logFailure := func(err error) {
+		kind := "query_failed"
+		var safeErr error
+		for _, known := range []struct {
+			err  error
+			kind string
+		}{
+			{context.Canceled, "canceled"},
+			{context.DeadlineExceeded, "deadline_exceeded"},
+			{errSessionClosed, "peer_session_closed"},
+			{mesh.ErrNoRoute, "no_route"},
+			{app.ErrServiceUnavailable, "service_unavailable"},
+			{store.ErrInvalidInput, "invalid_request"},
+			{store.ErrNotFound, "not_found"},
+			{store.ErrForbidden, "forbidden"},
+		} {
+			if errors.Is(err, known.err) {
+				kind, safeErr = known.kind, known.err
+				break
+			}
+		}
+		m.logWarn("session_lookup_failed", safeErr).
+			Uint64("query_request_id", requestID).
+			Int64("target_node_id", nodeID).
+			Dur("elapsed_ms", time.Since(started)).
+			Str("error_kind", kind).
+			Str("error_type", fmt.Sprintf("%T", err)).
+			Msg("session lookup failed; absence is not confirmed")
+	}
 	req := &internalproto.QueryResolveUserSessionsRequest{
 		RequestId:     requestID,
 		TargetNodeId:  nodeID,
@@ -213,11 +249,16 @@ func (m *Manager) resolveUserSessionsAtNode(ctx context.Context, nodeID int64, u
 		User:          &internalproto.ClusterUserRef{NodeId: user.NodeID, UserId: user.UserID},
 	}
 	if m.MeshRuntime() == nil {
+		logFailure(mesh.ErrNoRoute)
 		m.cancelResolveUserSessionsQuery(requestID, meshNoRouteError(nodeID))
 		return nil, meshNoRouteError(nodeID)
 	}
 	if err := m.routeMeshResolveUserSessionsRequest(ctx, req); err != nil {
+		logFailure(err)
 		m.cancelResolveUserSessionsQuery(requestID, err)
+		if errors.Is(err, context.Canceled) {
+			return nil, err
+		}
 		return nil, fmt.Errorf("%w: node %d is not reachable", app.ErrServiceUnavailable, nodeID)
 	}
 
@@ -230,6 +271,7 @@ func (m *Manager) resolveUserSessionsAtNode(ctx context.Context, nodeID int64, u
 
 	select {
 	case <-timeoutCtx.Done():
+		logFailure(timeoutCtx.Err())
 		m.cancelResolveUserSessionsQuery(requestID, timeoutCtx.Err())
 		if errors.Is(timeoutCtx.Err(), context.DeadlineExceeded) {
 			return nil, fmt.Errorf("%w: timed out resolving user sessions on node %d", app.ErrServiceUnavailable, nodeID)
@@ -237,6 +279,7 @@ func (m *Manager) resolveUserSessionsAtNode(ctx context.Context, nodeID int64, u
 		return nil, timeoutCtx.Err()
 	case result := <-resultCh:
 		if result.err != nil {
+			logFailure(result.err)
 			if errors.Is(result.err, context.DeadlineExceeded) {
 				return nil, fmt.Errorf("%w: timed out resolving user sessions on node %d", app.ErrServiceUnavailable, nodeID)
 			}
@@ -246,6 +289,7 @@ func (m *Manager) resolveUserSessionsAtNode(ctx context.Context, nodeID int64, u
 			return nil, result.err
 		}
 		if err := clusterQueryErrorCode(result.response.GetErrorCode(), result.response.GetErrorMessage()); err != nil {
+			logFailure(err)
 			return nil, err
 		}
 		return storeOnlineSessionsFromCluster(result.response.GetUser(), result.response.GetItems()), nil

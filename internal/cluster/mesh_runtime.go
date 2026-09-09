@@ -3,7 +3,6 @@ package cluster
 import (
 	"context"
 	"fmt"
-	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -251,17 +250,55 @@ func (b *MeshRuntimeBinding) ForwardPacket(ctx context.Context, packet *mesh.For
 	return b.runtime.ForwardPacket(ctx, packet)
 }
 
-// observeMeshTimeSync 处理网格时间同步观测结果，仅更新RTT信号。
+// observeMeshTimeSync 将已认证直连的四时间戳观测接入现有时钟保护状态机。
+// Mesh 每两秒采样一次；使用链路 RTT 与 EWMA jitter 保守估计不确定性。
 func (m *Manager) observeMeshTimeSync(observation mesh.TimeSyncObservation) {
 	if m == nil || observation.RemoteNodeID <= 0 || observation.RemoteNodeID == m.cfg.NodeID {
+		return
+	}
+	if observation.ClientSendTimeMs <= 0 ||
+		observation.ClientReceiveTimeMs < observation.ClientSendTimeMs ||
+		observation.ServerReceiveTimeMs <= 0 ||
+		observation.ServerSendTimeMs < observation.ServerReceiveTimeMs ||
+		observation.RTTMs < 0 {
+		return
+	}
+	// 正值且有序的时间戳保证相减不溢出；1ms 容差覆盖毫秒量化。
+	// 同时检查本地收发时间与实测 RTT，避免绕过 runtime 的观测刷新信任。
+	serverProcessingMs := observation.ServerSendTimeMs - observation.ServerReceiveTimeMs
+	clientElapsedMs := observation.ClientReceiveTimeMs - observation.ClientSendTimeMs
+	rttMs := observation.RTTMs
+	if (serverProcessingMs > clientElapsedMs && serverProcessingMs-clientElapsedMs > 1) ||
+		(serverProcessingMs > rttMs && serverProcessingMs-rttMs > 1) {
 		return
 	}
 	sess := m.meshPeerSession(observation.RemoteNodeID)
 	if sess == nil {
 		return
 	}
-	rttMs := maxInt64(observation.RTTMs, 0)
 	sess.observeRTT(rttMs)
+	// 同号差值先除再相加，避免中间和溢出；异号直接求和以保持向零取整。
+	receiveOffset := observation.ServerReceiveTimeMs - observation.ClientSendTimeMs
+	sendOffset := observation.ServerSendTimeMs - observation.ClientReceiveTimeMs
+	offsetMs := receiveOffset/2 + sendOffset/2 + (receiveOffset%2+sendOffset%2)/2
+	if (receiveOffset < 0) != (sendOffset < 0) {
+		offsetMs = (receiveOffset + sendOffset) / 2
+	}
+	now := time.Now().UTC()
+	sample := timeSyncSample{
+		offsetMs:      offsetMs,
+		rttMs:         rttMs,
+		uncertaintyMs: maxInt64(rttMs/2, observation.JitterMs/2) + 50,
+		sampledAt:     now,
+		credible:      rttMs <= m.cfg.ClockCredibleRttMs,
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	// 与最后一条直连断开的处理共用锁，防止迟到样本重新建立信任。
+	if m.directAdjacencyCounts[observation.RemoteNodeID] == 0 {
+		return
+	}
+	m.recordTimeSyncSampleLocked(sess, sample, now)
 }
 
 // observeMeshAdjacency 处理网格邻接观测（连接建立或断开）。
@@ -338,6 +375,13 @@ func (m *Manager) observeMeshAdjacency(observation mesh.AdjacencyObservation) {
 		nextDirectAdjacencyCount := prevDirectAdjacencyCount - 1
 		if nextDirectAdjacencyCount == 0 {
 			delete(m.directAdjacencyCounts, observation.RemoteNodeID)
+			if peer := m.peers[observation.RemoteNodeID]; peer != nil {
+				// 恢复中的 peer 也必须丢弃上一连接的健康样本计数。
+				peer.clockHealthyStreak = 0
+				if peer.trustedSession != nil && peer.trustedSession.conn == nil {
+					m.setPeerClockStateLocked(peer.trustedSession, peer, clockStateObserving, "mesh_adjacency_lost")
+				}
+			}
 			targetRuntimeEpoch := m.currentRuntimeEpochForNodeLocked(observation.RemoteNodeID)
 			if targetRuntimeEpoch > 0 {
 				rumor = &internalproto.NodeConnectivityRumor{
@@ -461,11 +505,8 @@ func configuredPeerMatchesMeshObservation(peer *configuredPeer, observation mesh
 	if transportKindForPeerURL(peer.URL) != observation.Transport {
 		return false
 	}
-	if peer.nodeID > 0 && peer.nodeID != observation.RemoteNodeID {
+	if observation.Transport == mesh.TransportTCPMTLS && peer.nodeID > 0 && peer.nodeID != observation.RemoteNodeID {
 		return false
-	}
-	if observation.Transport != mesh.TransportTCPMTLS && peer.nodeID == observation.RemoteNodeID {
-		return true
 	}
 	if normalized, ok := normalizedMeshObservationHint(observation.RemoteHint); ok {
 		if observation.Transport == mesh.TransportTCPMTLS {
@@ -489,11 +530,8 @@ func discoveredPeerMatchesMeshObservation(peer *discoveredPeerState, observation
 	if transportKindForPeerURL(peer.url) != observation.Transport {
 		return false
 	}
-	if peer.nodeID > 0 && peer.nodeID != observation.RemoteNodeID {
+	if observation.Transport == mesh.TransportTCPMTLS && peer.nodeID > 0 && peer.nodeID != observation.RemoteNodeID {
 		return false
-	}
-	if observation.Transport != mesh.TransportTCPMTLS && peer.nodeID == observation.RemoteNodeID {
-		return true
 	}
 	if normalized, ok := normalizedMeshObservationHint(observation.RemoteHint); ok {
 		if observation.Transport == mesh.TransportTCPMTLS {
@@ -527,25 +565,9 @@ func meshObservationAdvertisesURL(observation mesh.AdjacencyObservation, peerURL
 
 // meshObservationEndpointMatchesPeerURL 检查端点是否匹配对等URL。
 func meshObservationEndpointMatchesPeerURL(transport mesh.TransportKind, endpoint, peerURL string) bool {
-	if normalized, ok := normalizedMeshObservationHint(endpoint); ok && normalized == peerURL {
-		return true
-	}
-	if transport != mesh.TransportWebSocket {
-		return false
-	}
-	endpoint = strings.TrimSpace(endpoint)
-	if !strings.HasPrefix(endpoint, "/") {
-		return false
-	}
-	normalizedPeer, err := normalizePeerURL(peerURL)
-	if err != nil || transportKindForPeerURL(normalizedPeer) != mesh.TransportWebSocket {
-		return false
-	}
-	parsed, err := url.Parse(normalizedPeer)
-	if err != nil {
-		return false
-	}
-	return parsed.Path == endpoint
+	// 相对路径仅表示服务入口，不包含节点身份；多个主机通常通告相同路径。
+	normalized, ok := normalizedMeshObservationHint(endpoint)
+	return ok && transportKindForPeerURL(normalized) == transport && normalized == peerURL
 }
 
 // normalizedMeshObservationHint 规范化网格观测的远程提示。

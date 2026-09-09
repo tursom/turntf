@@ -13,7 +13,15 @@ import (
 // 支持的消息类型：SendMessage、CreateUser、GetUser、UpdateUser、DeleteUser、ListMessages、
 // 用户元数据 CRUD、附件 CRUD、ListEvents、运维状态、集群节点、在线用户、会话解析、Metrics、Ack、Ping 等。
 // 类型为 ClientEnvelope_Login 的消息在认证后收到会返回错误。
-func (s *clientWSSession) readLoop(ctx context.Context) error {
+func (s *clientWSSession) readLoop(ctx context.Context) (loopErr error) {
+	var sends *realtimeSendGroup
+	defer func() {
+		if sends != nil {
+			if err := sends.finish(); err != nil {
+				loopErr = err
+			}
+		}
+	}()
 	for {
 		select {
 		case <-ctx.Done():
@@ -41,6 +49,15 @@ func (s *clientWSSession) readLoop(ctx context.Context) error {
 			}
 			continue
 		}
+		req := envelope.GetSendMessage()
+		concurrentSend := s.realtimeOnly && req.GetDeliveryKind() == internalproto.ClientDeliveryKind_CLIENT_DELIVERY_KIND_TRANSIENT && req.GetTargetSession() != nil
+		// 非定向瞬态请求仍是顺序屏障，包括登录、Ping 和其他 RPC。
+		if !concurrentSend && sends != nil {
+			sends.pending.Wait()
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+		}
 		switch body := envelope.Body.(type) {
 		case *internalproto.ClientEnvelope_SendMessage:
 			if s.realtimeOnly && body.SendMessage.GetDeliveryKind() != internalproto.ClientDeliveryKind_CLIENT_DELIVERY_KIND_TRANSIENT {
@@ -54,6 +71,16 @@ func (s *clientWSSession) readLoop(ctx context.Context) error {
 				Int64("target_user_id", body.SendMessage.GetTarget().GetUserId()).
 				Str("delivery_kind", body.SendMessage.GetDeliveryKind().String()).
 				Msg("client transport request")
+			if concurrentSend {
+				if sends == nil {
+					sends = newRealtimeSendGroup(ctx, s)
+					ctx = sends.ctx
+				}
+				if err := sends.submit(body.SendMessage); err != nil {
+					return err
+				}
+				continue
+			}
 			if err := s.handleSendMessage(ctx, body.SendMessage); err != nil {
 				return err
 			}

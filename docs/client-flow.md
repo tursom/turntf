@@ -276,6 +276,18 @@ ServerEnvelope {
 - 用户管理、消息历史、metadata、附件、`list_events`、`operations_status`、`metrics` 等大多数 RPC 会返回 `invalid_request`。
 - `list_cluster_nodes`、`list_node_logged_in_users`、`resolve_user_sessions`、`ping` 仍可使用。
 
+### 定向瞬时发送的并发边界
+
+登录完成后，只有 `/ws/realtime` 中同时指定 `delivery_kind = TRANSIENT` 和 `target_session` 的 `send_message` 会有界并发处理。每连接最多 16 个在途请求；满额时读取循环保留当前一个已解码请求并等待名额，不增加 `busy` 错误，也不建立无界队列。WebSocket 原有 1MiB 帧上限不变。
+
+每个请求仍独立执行权限、黑名单、目标用户、目标会话和路由验证，不复用 session 查询结果。这里的登录 principal（含角色）是登录时的快照，不是每包重新认证或重新加载发送者身份；黑名单/权限提前拒绝时不进入 resolver，经过这些检查的定向请求才各自查询 session。失效会话或不属于 recipient 的会话仍返回 `not_found`；远端查询失败和超时仍使用原错误映射和预算。无上游 deadline 时，3 秒是单个远端节点查询在路由提交后等待响应的默认超时，不是所有候选节点与 fallback 合计的 lookup 总预算；有上游 deadline 时沿用该 deadline。`transient_accepted` 仍仅代表原有的接受语义，不代表对端已消费。
+
+这个范围内的请求执行、投递和响应可能重排，客户端必须按 `request_id` 关联响应；需要有序字节流的上层协议必须自行携带序号并重组。后续其他合法 protobuf 请求（包括 Ping、重复 Login、未定向发送和其他 RPC）等待此前这些在途请求完成后，仍按原串行路径处理。首帧登录、普通 `/ws/client`（包括 `transient_only=true`）、持久消息、HTTP 和 ZeroMQ 不启用此并发路径。
+
+读取到断线、会话 context 取消或响应写失败时，会取消在途请求、关闭发送连接的传输，并等待关闭回调和处理任务退出。此取消不保证另一个本地 receiver 正在进行的写入立即停止：本地投递使用接收端原有写路径，`writeEncodedEnvelope` 向 transport 传入 `context.Background()`，不继承发送方取消信号。接收端的 session `writeMu`、transport 写锁以及原 WS 单次写 deadline（此路径为 10 秒）仍约束退出；锁等待本身不因发送方 context 取消而中断，不能把一次 write timeout 当成全部任务 join 的总预算。此处只保证并发任务最多 16 个，不新增全局 write context 或可取消写锁。
+
+满额背压或等待其他 RPC 的顺序屏障期间，网络断开可能到下一次读写才能被观察；原服务查询超时仍生效，不承诺在尚未观察到断线时立即取消。并发上限按连接计算，不是整个节点的全局限流。
+
 ZeroMQ 客户端连接流程：
 
 1. 拨号 `zmq+tcp://host:port`。

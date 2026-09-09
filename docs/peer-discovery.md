@@ -34,20 +34,19 @@
 1. 节点启用集群模式后创建 `Manager`，从本地 SQLite `discovered_peers` 表加载历史发现记录。
 2. 节点把静态 peer 和可拨号的历史发现记录交给 mesh runtime 作为初始 dial seed；如果存在历史发现记录，发现循环也会继续为未标记 `expired` 的候选补齐动态拨号状态。
 3. 当前生产实现先由 mesh runtime 在 WebSocket、ZeroMQ 或 libp2p 连接上交换 `MeshNodeHello`，校验 `mesh.ProtocolVersion`、远端 `node_id`、传输能力和转发策略。
-4. mesh 邻接建立后，观测结果会把远端 `node_id` 回填到匹配的静态 peer 或 discovered peer；如果同一 URL 已经绑定到其他 `node_id`，该候选不会被接受为有效发现结果。
+4. mesh 邻接建立后，观测结果会把远端 `node_id` 回填到地址匹配的静态 peer 或 discovered peer。已知相同 `node_id` 不证明另一 URL 的归属；WebSocket 的相同相对路径也不证明主机、端口或 scheme 相同。匹配仍要求对应 transport 的完整地址，保留 libp2p 原有的 PeerID 匹配。实际匹配的邻接可纠正内存中的旧身份绑定；普通广告不能覆盖同 URL 已有的不同身份候选。
 5. 发现循环每 5 秒执行一次：过期候选、补齐动态拨号器、向当前活跃的 mesh peer session 广播 membership update。当前实现里，合成的 mesh session 会把 membership update 作为 `control_critical` 流量经 mesh 转发，而不是依赖旧的 cluster `Hello.supports_membership` 协商。
 6. 收到 membership update 后，节点先做 envelope 校验，并要求 `membership_update.origin_node_id` 等于当前 session 的 `peerID`。
 7. 每条 peer advertisement 会被规范化和验证：WebSocket 只允许 `ws`/`wss`，ZeroMQ 只允许 `zmq+tcp`，libp2p 必须是合法 multiaddr 且包含 `/p2p/<peer_id>`。
-8. 如果 advertisement 指向当前节点自己的 `node_id`，节点只把该 URL 放入内存中的 `selfKnownURLs`，用于后续继续传播“别人眼中的我”；不会拨号自己。
+8. 如果 advertisement 指向当前节点自己的 `node_id`，节点只把该 URL 放入内存中的 `selfKnownURLs` 供状态观测，不会拨号自己，也不会将它加入 membership 输出。来自 gossip 或历史记录的自我地址不构成 URL 验证证明。
 9. 如果 advertisement 指向其他节点，节点会记录或更新发现候选，持久化到 `discovered_peers`，并在下一轮 reconcile 中按规则启动动态拨号。
 
-membership update 当前会广播三类地址：
+membership update 当前会广播两类地址：
 
 - 已建立 mesh 邻接并绑定 `node_id` 的静态 peer URL。
-- 状态为 `connected` 的发现 peer URL。
-- 其他 peer 曾经广告过、且 `node_id` 等于当前节点的 URL，也就是 `selfKnownURLs`。
+- 本轮运行中经过对应地址邻接验证、状态为 `connected` 的发现 peer URL。
 
-libp2p 遵循“别人眼中的我”模型：本节点不会把自己的 `listen_addrs` 改写成公网地址再广播；只有其他节点配置并成功验证过的本节点 multiaddr，或其他节点曾经广告过且绑定到本节点 `node_id` 的地址，才会进入 `selfKnownURLs` 并继续传播。
+本节点不会把自己的 `listen_addrs` 改写成公网地址再广播，也不转发 `selfKnownURLs`。包括 libp2p 在内，本节点的地址由其他实际建立并验证该地址邻接的 peer 广告；仅收到“别人眼中的我”不再触发自我转发。
 
 ## 状态机
 
@@ -63,6 +62,7 @@ libp2p 遵循“别人眼中的我”模型：本节点不会把自己的 `liste
 
 状态转换的关键规则：
 
+- 重启加载时，历史 `connected` 仅恢复为内存 `candidate`，必须在本轮重新验证对应 URL 才能作为已连接发现地址广播。`last_connected_at` 保留用于调度和观测，其他历史状态不变；加载本身不改写数据库。
 - 新广告默认进入 `candidate`；如果原状态是 `failed` 或 `expired`，再次收到广告会重新回到 `candidate`。
 - 动态拨号启动时进入 `dialing`；拨号失败进入 `failed`；mesh 邻接建立并完成身份绑定后进入 `connected`。
 - 非 `connected` 且非 `expired` 的候选，如果 `last_seen_at` 超过 10 分钟没有刷新，会进入 `expired` 并记录 `candidate expired`。
@@ -84,7 +84,7 @@ libp2p 遵循“别人眼中的我”模型：本节点不会把自己的 `liste
 - 同节点同传输的额外地址排在未覆盖组合之后；已有动态 URL 仅在覆盖度和传输优先级相同时优先保留，其后按连接历史、最近观测时间及 URL 稳定排序。8 个 WSS 多地址不能阻止合法 TCP 补建，反向也不能阻止 WSS 备用。
 - 未选中的动态种子被取消；预算不足时不能保证所有节点均有主备，重要主备地址应显式配置为静态 peers。
 
-动态拨号连接和静态拨号连接最终都会进入同一套 mesh 建链、HMAC、校时、复制和反熵逻辑。广告中的 `node_id` 会成为动态拨号时的期望身份；如果真正建立的 mesh 邻接回填出不同的 `node_id`，该候选不会被接受。libp2p 候选还会校验 multiaddr 中的 PeerID 与远端 stream PeerID 一致，随后再绑定业务 `node_id`。
+动态拨号连接和静态拨号连接最终都会进入同一套 mesh 建链、HMAC、校时、复制和反熵逻辑。广告中的 `node_id` 是候选声明，不是 URL 归属证明；实际地址匹配的邻接会回填远端身份。libp2p 候选还会校验 multiaddr 中的 PeerID 与远端 stream PeerID 一致，随后再绑定业务 `node_id`。
 
 ## 持久化
 
@@ -111,7 +111,8 @@ libp2p 遵循“别人眼中的我”模型：本节点不会把自己的 `liste
 - `zeromq_curve_server_public_key` 只有在新值非空时才会覆盖旧值，避免后续广告把已验证过的 key 擦掉。
 - 如果新状态没有携带 `last_connected_at`，已有的最近连接时间会保留。
 - `generation` 只会向前推进，不会被较小值覆盖。
-- 节点重启时会重新加载表内记录，并继续尝试未过期、可拨号的候选。
+- 节点重启时会重新加载表内记录，并继续尝试未过期、可拨号的候选；磁盘 `connected` 和历史连接时间不能当作本轮验证证明。
+- 同 URL 的旧 `(node_id, url)` 行不会因内存身份纠正而自动删除。本次防护阻断未验证状态的传播，不提供重复绑定的存储迁移或无人工干预的通用自愈。
 
 ## 运维接口
 
@@ -138,7 +139,7 @@ libp2p 遵循“别人眼中的我”模型：本节点不会把自己的 `liste
 - `libp2p_mode`：代码层面支持 `disabled`、`outbound_only` 或 `listening`；`turntf` 的运行时配置路径在启用 libp2p 且未显式给出 `listen_addrs` 时，会自动补成 `/ip4/0.0.0.0/tcp/0`，所以常见部署里通常看到的是 `listening`。
 - `libp2p_peer_id`：本地 libp2p PeerID。
 - `libp2p_listen_addrs`：本地 host 实际监听地址，包含 `/p2p/<peer_id>`，仅用于观测。
-- `libp2p_verified_addrs`：当前节点已验证、并可能参与传播的 libp2p 地址视图；它可能来自静态 peer、已连接的 discovered peer，或 `selfKnownURLs` 中“别人眼中的我”地址。
+- `libp2p_verified_addrs`：现有地址观测视图，可能来自静态 peer、已连接的 discovered peer，或 `selfKnownURLs`；其中自我地址可能仅来自 gossip 或历史记录，不是本轮验证证明，也不参与 membership 输出。
 - `libp2p_dht_enabled`、`libp2p_dht_bootstrapped`：私有 DHT 开关和 bootstrap 状态。
 - `libp2p_gossipsub_topic`、`libp2p_gossipsub_peers`：事件 topic 与当前 topic peer 数。
 - `libp2p_relay_enabled`、`libp2p_hole_punching`：relay 与 hole punching 开关状态；只有配置 `relay_peers` 时才实际启用。
@@ -190,6 +191,13 @@ libp2p 遵循“别人眼中的我”模型：本节点不会把自己的 `liste
 - 反向代理必须支持 WebSocket 升级，并保持集群内部 HMAC secret 一致。
 - 如果节点的对外地址发生变化，至少需要有一个已连接 peer 广告新 URL；旧 URL 会保留为失败或过期记录，当前没有自动删除表记录的运维 API。
 - 备份 SQLite 时会同时备份 `schema_meta.node_id` 和 `discovered_peers`。恢复节点身份时不要把同一份 SQLite 同时启动成两个实例。
+
+## 污染恢复边界
+
+- 防护不会自动修复或清除历史错误绑定。同 `node_id` 已有活跃 session 时，原有动态拨号筛选仍可能跳过其他候选 URL。恢复应依赖已核实完整 URL 的静态 fullmesh bootstrap；存在出站限制时，必须先核实剩余静态拓扑的可达性。
+- 恢复分两轮逐台滚动，由运维任务执行：第一轮先让所有节点部署防护版本并重启，避免旧节点继续传播污染；全员完成后，第二轮逐台停止服务、进行 SQLite 一致性备份、仅清理 `discovered_peers`，再启动并验收。不要在线清表，也不要同时停止所有节点。
+- 每台检查真实远端身份与完整 URL、校时、路由、消息投递及复制恢复后再继续。最终跨多个 membership 周期检查绑定，并再次重启一个节点复验。不得删除消息、事件、复制游标、身份配置或整个数据库；本实现不包含线上数据清理代码。
+- 仅相对路径修复的旧版本不足以支撑安全清理，清理后回退到无完整防护的版本会重新开放污染传播路径。
 
 ## 常见排查
 

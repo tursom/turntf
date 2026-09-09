@@ -1782,9 +1782,20 @@ func (r *Runtime) handleTimeSyncResponse(adj *Adjacency, resp *TimeSyncResponse)
 	if !ok {
 		return
 	}
+	// 校时信任必须使用本地记录的 T1，不能接受 peer 改写的回显时间。
+	// 畸形响应不进入观测回调，也不刷新可信样本的新鲜度。
+	if resp.ClientSendTimeMs != start.UnixMilli() || receivedAt.Before(start) ||
+		resp.ServerReceiveTimeMs <= 0 || resp.ServerSendTimeMs < resp.ServerReceiveTimeMs {
+		return
+	}
 	rtt := receivedAt.Sub(start).Milliseconds()
 	if rtt < 0 {
 		rtt = 0
+	}
+	// 两端毫秒截断最多造成 1ms 差异；用差值比较避免容差相加溢出。
+	serverProcessingMs := resp.ServerSendTimeMs - resp.ServerReceiveTimeMs
+	if serverProcessingMs > rtt && serverProcessingMs-rtt > 1 {
+		return
 	}
 	adj.mu.Lock()
 	prevCost := int64(adj.rttEWMA)

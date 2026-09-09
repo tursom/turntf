@@ -64,7 +64,7 @@ func TestManagerMeshMembershipBroadcastDoesNotUseSyntheticSessionQueue(t *testin
 	}
 }
 
-func TestMeshTimeSyncDoesNotTrustPeerClock(t *testing.T) {
+func TestMeshTimeSyncWithoutAdjacencyDoesNotTrustPeerClock(t *testing.T) {
 	mgr := newMeshClockTestManager(t)
 	peerID := testNodeID(2)
 	sess := mgr.meshPeerSession(peerID)
@@ -109,40 +109,21 @@ func TestMeshTimeSyncDoesNotTrustPeerClock(t *testing.T) {
 	}
 }
 
-func TestManagerMeshRuntimeTimeSyncDoesNotTrustPeerClock(t *testing.T) {
+func TestManagerMeshRuntimeTimeSyncTrustsPeerClock(t *testing.T) {
 	mgrA, mgrB := startMeshManagerPair(t, true)
-	waitForMeshRoute(t, mgrA, testNodeID(2), mesh.TrafficControlCritical)
-	waitForMeshRoute(t, mgrB, testNodeID(1), mesh.TrafficControlCritical)
-
-	mgrA.observeMeshTimeSync(mesh.TimeSyncObservation{
-		RemoteNodeID: testNodeID(2),
-		Transport:    mesh.TransportWebSocket,
-		RTTMs:        2,
+	waitFor(t, 5*time.Second, func() bool {
+		for _, mgr := range []*Manager{mgrA, mgrB} {
+			status, err := mgr.Status(context.Background())
+			if err != nil || !status.WriteGateReady || status.ClockState != string(clockStateTrusted) {
+				return false
+			}
+		}
+		return true
 	})
-	mgrB.observeMeshTimeSync(mesh.TimeSyncObservation{
-		RemoteNodeID: testNodeID(1),
-		Transport:    mesh.TransportWebSocket,
-		RTTMs:        2,
-	})
-	if meshSessionRTT(mgrA, testNodeID(2)) <= 0 || meshSessionRTT(mgrB, testNodeID(1)) <= 0 {
-		t.Fatal("expected mesh time-sync observation to update synthetic session RTT")
-	}
-
-	stateA, reasonA := mgrA.peerClockState(testNodeID(2))
-	stateB, reasonB := mgrB.peerClockState(testNodeID(1))
-	if stateA == string(clockStateTrusted) || stateB == string(clockStateTrusted) {
-		t.Fatalf("mesh runtime time-sync should not trust peer clocks: stateA=%s reasonA=%s stateB=%s reasonB=%s", stateA, reasonA, stateB, reasonB)
-	}
-	statusA, err := mgrA.Status(context.Background())
-	if err != nil {
-		t.Fatalf("manager A status: %v", err)
-	}
-	statusB, err := mgrB.Status(context.Background())
-	if err != nil {
-		t.Fatalf("manager B status: %v", err)
-	}
-	if statusA.WriteGateReady || statusB.WriteGateReady {
-		t.Fatalf("mesh runtime time-sync should not open write gates: A=%v B=%v", statusA.WriteGateReady, statusB.WriteGateReady)
+	stateA, _ := mgrA.peerClockState(testNodeID(2))
+	stateB, _ := mgrB.peerClockState(testNodeID(1))
+	if stateA != string(clockStateTrusted) || stateB != string(clockStateTrusted) {
+		t.Fatalf("real mesh samples must establish peer trust: A=%s B=%s", stateA, stateB)
 	}
 }
 

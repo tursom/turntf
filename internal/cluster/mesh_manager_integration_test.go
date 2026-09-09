@@ -231,7 +231,7 @@ func TestManagerMeshAdjacencyBackfillsConfiguredPeerNodeID(t *testing.T) {
 	}
 }
 
-func TestManagerMeshAdjacencyBackfillsConfiguredPeerNodeIDFromWebSocketPathCapability(t *testing.T) {
+func TestManagerMeshAdjacencyDoesNotBackfillConfiguredPeerNodeIDFromWebSocketPathAlone(t *testing.T) {
 	t.Parallel()
 
 	peerURL := "ws://127.0.0.1:9915" + websocketPath
@@ -264,8 +264,8 @@ func TestManagerMeshAdjacencyBackfillsConfiguredPeerNodeIDFromWebSocketPathCapab
 
 	mgr.mu.Lock()
 	defer mgr.mu.Unlock()
-	if len(mgr.configuredPeers) != 1 || mgr.configuredPeers[0].nodeID != testNodeID(2) {
-		t.Fatalf("expected configured peer node id backfill from websocket path capability, got %+v", mgr.configuredPeers)
+	if len(mgr.configuredPeers) != 1 || mgr.configuredPeers[0].nodeID != 0 {
+		t.Fatalf("websocket path alone must not identify a configured peer, got %+v", mgr.configuredPeers)
 	}
 }
 
@@ -334,7 +334,7 @@ func TestManagerObserveMeshAdjacencyUpdatesDiscoveredPeerState(t *testing.T) {
 	}
 }
 
-func TestManagerObserveMeshAdjacencyMatchesDiscoveredWebSocketPathCapability(t *testing.T) {
+func TestManagerObserveMeshAdjacencyDoesNotMatchDiscoveredWebSocketPathAlone(t *testing.T) {
 	t.Parallel()
 
 	mgr, err := NewManager(Config{
@@ -378,8 +378,8 @@ func TestManagerObserveMeshAdjacencyMatchesDiscoveredWebSocketPathCapability(t *
 	if discovered == nil {
 		t.Fatalf("expected discovered peer to remain tracked")
 	}
-	if discovered.nodeID != testNodeID(2) || discovered.state != discoveryStateConnected || discovered.dialing {
-		t.Fatalf("expected discovered peer to match websocket path capability, got %+v", discovered)
+	if discovered.nodeID != 0 || discovered.state != discoveryStateDialing || !discovered.dialing {
+		t.Fatalf("websocket path alone must not identify a discovered peer, got %+v", discovered)
 	}
 }
 

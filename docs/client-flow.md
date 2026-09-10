@@ -276,6 +276,12 @@ ServerEnvelope {
 - 用户管理、消息历史、metadata、附件、`list_events`、`operations_status`、`metrics` 等大多数 RPC 会返回 `invalid_request`。
 - `list_cluster_nodes`、`list_node_logged_in_users`、`resolve_user_sessions`、`ping` 仍可使用。
 
+### 拓扑一致性与回跳恢复
+
+同一节点、同一传输的多条连接只通告一个逻辑链路，选择 RTT 与抖动之和最低的存活连接。单条并行连接断开时，不用墓碑覆盖仍然存活的逻辑链路。拓扑快照内容改变时分配新的生成号，包括周期发布发现的细小指标变化；相同生成号不用于不同内容。生成号、持久化和本地快照准备串行完成，网络发送在该锁之外进行。
+
+拓扑收敛期间，如果下一跳等于上一跳，转发引擎会在临时视图中排除本节点返回上一跳的边，并用原规划器重新选择路径。TTL、转发权限、传输与桥接约束保持；不存在合法替代路径时仍拒绝转发。成功恢复会记录 `mesh_route_loop_avoided`，只包含节点、包 ID 与流量类别，不包含业务内容。这不是任意长环的无环保证，TTL 仍是最终保护。
+
 ### 定向瞬时发送的并发边界
 
 登录完成后，只有 `/ws/realtime` 中同时指定 `delivery_kind = TRANSIENT` 和 `target_session` 的 `send_message` 会有界并发处理。每连接最多 16 个在途请求；满额时读取循环保留当前一个已解码请求并等待名额，不增加 `busy` 错误，也不建立无界队列。WebSocket 原有 1MiB 帧上限不变。

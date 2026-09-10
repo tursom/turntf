@@ -207,6 +207,16 @@ func (m *Manager) observeMeshForwarding(observation mesh.ForwardingObservation) 
 	if m == nil {
 		return
 	}
+	if observation.LoopAvoided {
+		m.logInfo("mesh_route_loop_avoided").
+			Int64("source_node_id", observation.SourceNodeID).
+			Int64("last_hop_node_id", observation.LastHopNodeID).
+			Int64("next_hop_node_id", observation.NextHopNodeID).
+			Int64("target_node_id", observation.TargetNodeID).
+			Uint64("packet_id", observation.PacketID).
+			Str("traffic_class", meshTrafficClassLabel(observation.TrafficClass)).
+			Msg("replanned packet without returning to previous hop")
+	}
 	if observation.NoPath {
 		m.recordMeshNoPath(observation.TrafficClass)
 		return

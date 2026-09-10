@@ -43,6 +43,11 @@ type ForwardingObservation struct {
 	TargetNodeID       int64        // 原始目标节点 ID。
 	TopologyGeneration uint64       // 路由计算时使用的拓扑世代号。
 	NoPath             bool         // 是否未找到路径（无可用路由）。
+	LoopAvoided        bool         // 是否通过排除上一跳恢复转发。
+	SourceNodeID       int64
+	LastHopNodeID      int64
+	NextHopNodeID      int64
+	PacketID           uint64
 }
 
 // ForwardingObserver 接收每次转发决策的指标记录。
@@ -242,9 +247,23 @@ func (e *Engine) forward(ctx context.Context, packet *ForwardedPacket, ingress T
 		return ErrNoRoute
 	}
 
-	// 回环检测：如果下一跳等于上一跳，则存在转发循环。
+	// 各节点的拓扑视图在收敛期间可能暂时不同。不要把包送回上一跳，
+	// 也不要在存在其他合法路径时直接丢弃；仅排除本节点到上一跳的边，
+	// 使用同一规划器重新校验传输、桥接及转发策略。共享快照不被修改。
+	loopAvoided := false
 	if packet.LastHopNodeId != 0 && decision.NextHopNodeID == packet.LastHopNodeId {
-		return ErrLoopDetected
+		filtered := TopologySnapshot{Nodes: snapshot.Nodes, TopologyGeneration: snapshot.TopologyGeneration}
+		filtered.Links = make([]LinkState, 0, len(snapshot.Links))
+		for _, link := range snapshot.Links {
+			if link.FromNodeID != e.localNodeID || link.ToNodeID != packet.LastHopNodeId {
+				filtered.Links = append(filtered.Links, link)
+			}
+		}
+		decision, ok = e.planner.Compute(filtered, packet.TargetNodeId, packet.TrafficClass, ingress)
+		if !ok || decision.NextHopNodeID == packet.LastHopNodeId || decision.NextHopNodeID == 0 || decision.OutboundTransport == TransportUnspecified {
+			return ErrLoopDetected
+		}
+		loopAvoided = true
 	}
 
 	next := cloneForwardedPacket(packet)
@@ -274,7 +293,7 @@ func (e *Engine) forward(ctx context.Context, packet *ForwardedPacket, ingress T
 		}
 		return err
 	}
-	e.observeForward(packet, ingress, decision)
+	e.observeForward(packet, ingress, decision, loopAvoided)
 	return nil
 }
 
@@ -366,18 +385,26 @@ func (e *Engine) sweepSeenLocked(now time.Time) {
 
 // observeForward 构造转发成功的观察指标并通知 observer。
 // 其中 PathClass 根据入站/出站传输比较和决策信息动态判定。
-func (e *Engine) observeForward(packet *ForwardedPacket, ingress TransportKind, decision RouteDecision) {
+func (e *Engine) observeForward(packet *ForwardedPacket, ingress TransportKind, decision RouteDecision, loopAvoided bool) {
 	if e == nil || e.observer == nil || packet == nil {
 		return
 	}
-	e.observer(ForwardingObservation{
+	observation := ForwardingObservation{
 		TrafficClass:       packet.TrafficClass,
 		PathClass:          observedPathClass(packet, ingress, decision),
 		EstimatedCost:      decision.EstimatedCost,
 		PayloadBytes:       forwardedPacketPayloadBytes(packet),
 		TargetNodeID:       packet.TargetNodeId,
 		TopologyGeneration: decision.TopologyGeneration,
-	})
+	}
+	if loopAvoided {
+		observation.LoopAvoided = true
+		observation.SourceNodeID = packet.SourceNodeId
+		observation.LastHopNodeID = packet.LastHopNodeId
+		observation.NextHopNodeID = decision.NextHopNodeID
+		observation.PacketID = packet.PacketId
+	}
+	e.observer(observation)
 }
 
 // observeNoPath 构造路由失败的观察指标（NoPath = true）并通知 observer。

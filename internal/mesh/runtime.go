@@ -270,12 +270,13 @@ type Runtime struct {
 	adapterByKnd map[TransportKind]TransportAdapter // 按 TransportKind 索引的适配器映射
 
 	// ---- 运行时状态 ----
-	mu      sync.Mutex         // 保护所有可变状态的互斥锁
-	started bool               // 是否已启动（保证 Start 最多被调用一次）
-	closed  bool               // 是否已关闭
-	ctx     context.Context    // 运行时的根 Context，在 Start 时创建，Close 时取消
-	cancel  context.CancelFunc // 用于取消根 Context 的函数
-	wg      sync.WaitGroup     // 等待所有后台 goroutine 退出的同步原语
+	mu                sync.Mutex         // 保护所有可变状态的互斥锁
+	topologyPublishMu sync.Mutex         // 串行化快照与版本分配，不覆盖网络发送
+	started           bool               // 是否已启动（保证 Start 最多被调用一次）
+	closed            bool               // 是否已关闭
+	ctx               context.Context    // 运行时的根 Context，在 Start 时创建，Close 时取消
+	cancel            context.CancelFunc // 用于取消根 Context 的函数
+	wg                sync.WaitGroup     // 等待所有后台 goroutine 退出的同步原语
 
 	// ---- 邻接关系索引 ----
 	adjByConn  map[TransportConn]*Adjacency                  // 按连接对象索引的邻接表
@@ -1422,18 +1423,7 @@ func (r *Runtime) dispatchEnvelope(ctx context.Context, adj *Adjacency, envelope
 //
 // 如果配置了 GenerationPersistence，会将新生成号持久化。
 func (r *Runtime) bumpGenerationAndPublish(ctx context.Context) {
-	r.mu.Lock()
-	r.generation++
-	if ms := uint64(r.now().UnixMilli()); ms > r.generation {
-		r.generation = ms
-	}
-	gen := r.generation
-	persistence := r.persistence
-	r.mu.Unlock()
-	if persistence != nil {
-		_ = persistence.Store(gen)
-	}
-	r.publishLocalTopology(ctx)
+	r.publishTopology(ctx, true)
 }
 
 // topologyPublishLoop 按 topologyPublishPeriod 周期定期发布本地拓扑更新。
@@ -1461,9 +1451,38 @@ func (r *Runtime) topologyPublishLoop(ctx context.Context) {
 //     更新进行循环处理。
 //  4. 向所有当前已建立的邻接连接发送该拓扑更新 Envelope。
 func (r *Runtime) publishLocalTopology(ctx context.Context) {
+	r.publishTopology(ctx, false)
+}
+
+func (r *Runtime) publishTopology(ctx context.Context, force bool) {
+	// A generation identifies one immutable advertisement. Periodic refreshes
+	// also need a new generation when metrics changed below the RTT threshold.
+	// Serialize preparation/persistence only; a slow peer must not hold this
+	// lock while sending the advertisement to the other peers.
+	r.topologyPublishMu.Lock()
 	update := NormalizeTopologyUpdate(r.buildLocalTopologyUpdate())
 	if update == nil {
+		r.topologyPublishMu.Unlock()
 		return
+	}
+	r.mu.Lock()
+	previous := r.lastUpdate[r.localNodeID]
+	changed := force || previous == nil
+	if previous != nil {
+		update.Generation = previous.Generation
+		changed = changed || !TopologyUpdatesEqual(previous, update)
+	}
+	if changed {
+		r.generation++
+		if ms := uint64(r.now().UnixMilli()); ms > r.generation {
+			r.generation = ms
+		}
+		update.Generation = r.generation
+	}
+	persistence := r.persistence
+	r.mu.Unlock()
+	if changed && persistence != nil {
+		_ = persistence.Store(update.Generation)
 	}
 	// 先本地应用，使 Snapshot 能即时反映最新的生成号。
 	r.store.ApplyTopologyUpdate(update)
@@ -1480,6 +1499,7 @@ func (r *Runtime) publishLocalTopology(ctx context.Context) {
 		targets = append(targets, conn)
 	}
 	r.mu.Unlock()
+	r.topologyPublishMu.Unlock()
 
 	envelope := &ClusterEnvelope{Body: &ClusterEnvelope_TopologyUpdate{TopologyUpdate: update}}
 	for _, conn := range targets {
@@ -1501,20 +1521,32 @@ func (r *Runtime) buildLocalTopologyUpdate() *TopologyUpdate {
 	r.mu.Lock()
 	gen := r.generation
 	caps := r.LocalCapabilities()
-	links := make([]*LinkAdvertisement, 0, len(r.adjByConn)+len(r.pendingTombstones))
+	byRoute := make(map[routeAdjacencyKey]*LinkAdvertisement, len(r.adjByRoute))
 	for _, adj := range r.adjByConn {
-		links = append(links, r.buildLinkAdvertisementLocked(adj, true))
+		link := r.buildLinkAdvertisementLocked(adj, true)
+		key := routeAdjacencyKey{nodeID: adj.RemoteNodeID, transport: adj.Transport}
+		old := byRoute[key]
+		cost := uint64(link.CostMs) + uint64(link.JitterMs)
+		if old == nil || cost < uint64(old.CostMs)+uint64(old.JitterMs) ||
+			(cost == uint64(old.CostMs)+uint64(old.JitterMs) && (link.CostMs < old.CostMs ||
+				(link.CostMs == old.CostMs && link.PathClass < old.PathClass))) {
+			byRoute[key] = link
+		}
 	}
-	// 包含缓存的墓碑记录，确保远程节点至少在 established=false 状态下
-	// 看到一次链路断开，然后才会完全从拓扑中移除。
+	// Only advertise a tombstone when the last connection on that route is
+	// gone. Losing one parallel connection must not hide a healthy survivor.
 	for _, tomb := range r.pendingTombstones {
-		links = append(links, &LinkAdvertisement{
-			FromNodeId:  tomb.FromNodeId,
-			ToNodeId:    tomb.ToNodeId,
-			Transport:   tomb.Transport,
-			PathClass:   tomb.PathClass,
-			Established: false,
-		})
+		key := routeAdjacencyKey{nodeID: tomb.ToNodeId, transport: tomb.Transport}
+		if byRoute[key] == nil {
+			byRoute[key] = &LinkAdvertisement{
+				FromNodeId: tomb.FromNodeId, ToNodeId: tomb.ToNodeId,
+				Transport: tomb.Transport, PathClass: tomb.PathClass, Established: false,
+			}
+		}
+	}
+	links := make([]*LinkAdvertisement, 0, len(byRoute))
+	for _, link := range byRoute {
+		links = append(links, link)
 	}
 	r.pendingTombstones = nil
 	r.mu.Unlock()

@@ -234,6 +234,14 @@ func (m *Manager) resolveUserSessionsAtNode(ctx context.Context, nodeID int64, u
 		return m.localUserSessions(user), nil
 	}
 	started := time.Now()
+	// The default budget covers queueing, transport writes and the response.
+	// Starting it after routeMeshResolveUserSessionsRequest adds the mesh send
+	// timeout to the query timeout and delays relay recovery under congestion.
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, queryLoggedInUsersTimeout)
+		defer cancel()
+	}
 	requestID, resultCh := m.beginResolveUserSessionsQuery()
 	// 仅记录失败，且不输出请求、会话引用或远端提供的自由文本。
 	logFailure := func(err error) {
@@ -283,15 +291,13 @@ func (m *Manager) resolveUserSessionsAtNode(ctx context.Context, nodeID int64, u
 		if errors.Is(err, context.Canceled) {
 			return nil, err
 		}
+		if errors.Is(err, context.DeadlineExceeded) {
+			return nil, fmt.Errorf("%w: timed out resolving user sessions on node %d", app.ErrServiceUnavailable, nodeID)
+		}
 		return nil, fmt.Errorf("%w: node %d is not reachable", app.ErrServiceUnavailable, nodeID)
 	}
 
 	timeoutCtx := ctx
-	if _, ok := ctx.Deadline(); !ok {
-		var cancel context.CancelFunc
-		timeoutCtx, cancel = context.WithTimeout(ctx, queryLoggedInUsersTimeout)
-		defer cancel()
-	}
 
 	select {
 	case <-timeoutCtx.Done():

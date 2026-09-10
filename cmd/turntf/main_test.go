@@ -47,6 +47,18 @@ func TestRunWithoutArgsDefaultsToServe(t *testing.T) {
 	}
 }
 
+type runtimeReadyWriter struct{ ready chan struct{} }
+
+func (w runtimeReadyWriter) Write(p []byte) (int, error) {
+	if bytes.Contains(p, []byte("http_api_listening")) {
+		select {
+		case w.ready <- struct{}{}:
+		default:
+		}
+	}
+	return len(p), nil
+}
+
 func TestServeRuntimeStopsWhenContextIsCancelled(t *testing.T) {
 	tempDir := t.TempDir()
 	configPath := filepath.Join(tempDir, "config.toml")
@@ -59,12 +71,22 @@ db_path = "`+filepath.Join(tempDir, "turntf.db")+`"
 `)
 
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	done := make(chan error, 1)
+	ready := make(chan struct{}, 1)
 	go func() {
-		done <- serveRuntime(ctx, configPath, io.Discard)
+		done <- serveRuntime(ctx, configPath, runtimeReadyWriter{ready: ready})
 	}()
 
-	time.Sleep(100 * time.Millisecond)
+	// Wait for initialization, not a machine-dependent delay: cancellation
+	// during SQLite schema creation legitimately returns an initialization error.
+	select {
+	case <-ready:
+	case err := <-done:
+		t.Fatalf("serve runtime exited before initialization: %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("serve runtime did not finish initialization")
+	}
 	cancel()
 	select {
 	case err := <-done:

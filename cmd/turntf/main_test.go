@@ -717,7 +717,7 @@ func TestHashCommandRejectsPasswordAndStdinTogether(t *testing.T) {
 }
 
 func TestResolvePasswordInputUsesHiddenPromptForTerminal(t *testing.T) {
-	t.Parallel()
+	// Overrides process-wide terminal hooks; run before parallel tests resume.
 
 	file, err := os.CreateTemp(t.TempDir(), "tty")
 	if err != nil {
@@ -756,7 +756,7 @@ func TestResolvePasswordInputUsesHiddenPromptForTerminal(t *testing.T) {
 }
 
 func TestResolvePasswordInputRejectsMismatchedTerminalPasswords(t *testing.T) {
-	t.Parallel()
+	// Overrides process-wide terminal hooks; run before parallel tests resume.
 
 	file, err := os.CreateTemp(t.TempDir(), "tty")
 	if err != nil {

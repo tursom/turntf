@@ -396,12 +396,13 @@ func (a *TCPMTLSMeshTransportAdapter) Close() error {
 // 每个方向独立串行化；取消或部分帧失败必须关闭整个流，禁止继续解析错位数据。
 type tcpMTLSConn struct {
 	net.Conn
-	nodeID         int64
-	hint           string
-	maxFrame       int
-	sendMu, recvMu sync.Mutex
-	closeOnce      sync.Once
-	onClose        func()
+	nodeID    int64
+	hint      string
+	maxFrame  int
+	sendMu    transportWriteMutex
+	recvMu    sync.Mutex
+	closeOnce sync.Once
+	onClose   func()
 }
 
 func (c *tcpMTLSConn) AuthenticatedNodeID() int64    { return c.nodeID }
@@ -421,13 +422,17 @@ func (c *tcpMTLSConn) Send(ctx context.Context, p []byte) error {
 	if len(p) == 0 || len(p) > c.maxFrame {
 		return fmt.Errorf("tcp mTLS frame length out of bounds")
 	}
-	stop := context.AfterFunc(ctx, func() { _ = c.Close() })
-	defer stop()
-	c.sendMu.Lock()
+	if err := c.sendMu.LockContext(ctx); err != nil {
+		return err
+	}
 	defer c.sendMu.Unlock()
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	// Only the owner of the writer may abort partial framing on cancellation.
+	// A queued caller has not touched the stream and must leave it alive.
+	stop := context.AfterFunc(ctx, func() { _ = c.Close() })
+	defer stop()
 	var header [4]byte
 	binary.BigEndian.PutUint32(header[:], uint32(len(p)))
 	for _, part := range [][]byte{header[:], p} {

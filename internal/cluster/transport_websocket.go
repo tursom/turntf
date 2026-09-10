@@ -45,7 +45,7 @@ type webSocketTransportConn struct {
 	writeWait    time.Duration
 	pingInterval time.Duration
 
-	writeMu   sync.Mutex
+	writeMu   transportWriteMutex
 	closeOnce sync.Once
 	done      chan struct{}
 }
@@ -209,7 +209,9 @@ func (c *webSocketTransportConn) writeMessage(ctx context.Context, messageType i
 	default:
 	}
 
-	c.writeMu.Lock()
+	if err := c.writeMu.LockContext(ctx); err != nil {
+		return err
+	}
 	defer c.writeMu.Unlock()
 
 	select {
@@ -221,15 +223,28 @@ func (c *webSocketTransportConn) writeMessage(ctx context.Context, messageType i
 	}
 
 	if err := c.conn.SetWriteDeadline(writeDeadline(ctx, c.writeWait)); err != nil {
+		c.abortWrite()
 		return err
 	}
-	return c.conn.WriteMessage(messageType, payload)
+	if err := c.conn.WriteMessage(messageType, payload); err != nil {
+		// Gorilla and TLS retain a fatal write error. Waiting for the next ping
+		// keeps selecting a permanently unusable adjacency for up to 15 seconds.
+		// Closing the raw socket releases Receive so Runtime can remove it now.
+		c.abortWrite()
+		return err
+	}
+	return nil
 }
 
-// writeControl 发送WebSocket控制帧（ping/pong/close）。
+func (c *webSocketTransportConn) abortWrite() {
+	// Close the socket before entering closeOnce: a concurrent graceful close
+	// may be waiting for this writer. Socket Close is safe with concurrent I/O.
+	_ = c.conn.Close()
+	c.closeOnce.Do(func() { close(c.done) })
+}
+
+// writeControl 可与数据写入并发；Gorilla 自身负责串行化与截止时间。
 func (c *webSocketTransportConn) writeControl(messageType int, payload []byte) error {
-	c.writeMu.Lock()
-	defer c.writeMu.Unlock()
 	return c.conn.WriteControl(messageType, payload, time.Now().Add(c.writeWait))
 }
 

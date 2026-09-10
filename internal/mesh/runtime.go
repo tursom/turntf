@@ -350,6 +350,9 @@ type Adjacency struct {
 	// Inbound 是否为入站连接（true=对方主动连过来的，false=本节点主动拨号的）
 	Inbound bool
 
+	pendingTopology map[int64]*TopologyUpdate // Runtime.mu: latest queued advertisement per origin.
+	topologySending bool                      // Runtime.mu: at most one flood writer.
+
 	mu            sync.Mutex           // 保护链路测量状态的互斥锁
 	rttEWMA       float64              // RTT 的指数加权移动平均值（毫秒）
 	jitterEWMA    float64              // 抖动的指数加权移动平均值（毫秒）
@@ -1501,9 +1504,8 @@ func (r *Runtime) publishTopology(ctx context.Context, force bool) {
 	r.mu.Unlock()
 	r.topologyPublishMu.Unlock()
 
-	envelope := &ClusterEnvelope{Body: &ClusterEnvelope_TopologyUpdate{TopologyUpdate: update}}
 	for _, conn := range targets {
-		_ = r.sendEnvelopeCtx(ctx, conn, envelope, r.helloTimeout)
+		r.queueTopologyFlood(conn, update)
 	}
 }
 
@@ -1668,9 +1670,8 @@ func (r *Runtime) handleTopologyUpdate(ctx context.Context, ingress *Adjacency, 
 	r.mu.Unlock()
 	r.store.ApplyTopologyUpdate(update)
 
-	envelope := &ClusterEnvelope{Body: &ClusterEnvelope_TopologyUpdate{TopologyUpdate: update}}
 	for _, conn := range targets {
-		_ = r.sendEnvelopeCtx(ctx, conn, envelope, r.helloTimeout)
+		r.queueTopologyFlood(conn, update)
 	}
 }
 

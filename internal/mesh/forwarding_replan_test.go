@@ -11,8 +11,11 @@ func loopReplanTopology() TopologySnapshot {
 		{OriginNodeID: 2, FromNodeID: 2, ToNodeID: 1, Transport: TransportWebSocket, PathClass: PathClassDirect, CostMs: 1, Established: true},
 		{OriginNodeID: 1, FromNodeID: 1, ToNodeID: 3, Transport: TransportWebSocket, PathClass: PathClassDirect, CostMs: 1, Established: true},
 		{OriginNodeID: 2, FromNodeID: 2, ToNodeID: 3, Transport: TransportWebSocket, PathClass: PathClassDirect, CostMs: 50, Established: true},
+		// Removing only 2->1 still leaves the tempting detour 2->4->1->3.
+		{OriginNodeID: 2, FromNodeID: 2, ToNodeID: 4, Transport: TransportWebSocket, PathClass: PathClassDirect, CostMs: 1, Established: true},
+		{OriginNodeID: 4, FromNodeID: 4, ToNodeID: 1, Transport: TransportWebSocket, PathClass: PathClassDirect, CostMs: 1, Established: true},
 	}}
-	for _, id := range []int64{1, 2, 3} {
+	for _, id := range []int64{1, 2, 3, 4} {
 		snapshot.Nodes[id] = NodeState{NodeID: id, ForwardingPolicy: DefaultForwardingPolicy(id), TransportCaps: map[TransportKind]*TransportCapability{TransportWebSocket: {Transport: TransportWebSocket, OutboundEnabled: true, InboundEnabled: true}}}
 	}
 	snapshot.ensureOutgoingLinks()
@@ -48,6 +51,25 @@ func TestEngineReplanKeepsPolicyAndTTL(t *testing.T) {
 				t.Fatalf("policy bypass: %v sends=%d", err, sender.count)
 			}
 		})
+	}
+}
+
+func TestEngineReplanAvoidsIndirectReturn(t *testing.T) {
+	s := loopReplanTopology()
+	s.Links = s.Links[1:]
+	s.outgoingLinks = nil
+	planner := NewPlanner(2)
+	before, ok := planner.Compute(s, 3, TrafficControlQuery, TransportWebSocket)
+	if !ok || before.NextHopNodeID != 4 {
+		t.Fatal("fixture must return through a third node")
+	}
+	sender := &recordingSender{}
+	e := NewEngine(2, func() TopologySnapshot { return s }, planner, sender, nil, nil)
+	if err := e.HandleInbound(context.Background(), &ForwardedPacket{SourceNodeId: 1, LastHopNodeId: 1, TargetNodeId: 3, PacketId: 11, TrafficClass: TrafficControlQuery, IngressTransport: TransportWebSocket, TtlHops: 4, Payload: []byte("query")}); err != nil {
+		t.Fatal(err)
+	}
+	if sender.nextHop != 3 {
+		t.Fatalf("route still visits source indirectly: %d", sender.nextHop)
 	}
 }
 

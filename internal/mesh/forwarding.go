@@ -48,6 +48,8 @@ type ForwardingObservation struct {
 	LastHopNodeID      int64
 	NextHopNodeID      int64
 	PacketID           uint64
+	DropReason         string
+	RemainingHops      uint32
 }
 
 // ForwardingObserver 接收每次转发决策的指标记录。
@@ -176,7 +178,25 @@ func (e *Engine) Forward(ctx context.Context, packet *ForwardedPacket) error {
 // 与 Forward 的关键区别：入站数据包在管道开始时立即标记为已见，
 // 防止同一数据包从多个入站连接重复到达。
 func (e *Engine) HandleInbound(ctx context.Context, packet *ForwardedPacket) error {
-	return e.forward(ctx, packet, packet.GetIngressTransport(), false)
+	err := e.forward(ctx, packet, packet.GetIngressTransport(), false)
+	if err != nil && e != nil && e.observer != nil && packet != nil {
+		reason := "delivery_error"
+		switch {
+		case errors.Is(err, ErrDuplicatePacket):
+			reason = "duplicate"
+		case errors.Is(err, ErrTTLExceeded):
+			reason = "ttl_exhausted"
+		case errors.Is(err, ErrLoopDetected):
+			reason = "loop"
+		case errors.Is(err, ErrNoRoute):
+			reason = "no_route"
+		}
+		e.observer(ForwardingObservation{TrafficClass: packet.TrafficClass,
+			SourceNodeID: packet.SourceNodeId, TargetNodeID: packet.TargetNodeId,
+			LastHopNodeID: packet.LastHopNodeId, PacketID: packet.PacketId,
+			RemainingHops: packet.TtlHops, DropReason: reason})
+	}
+	return err
 }
 
 // forward 是统一的转发管道核心，outbound 为 true 表示由本地产生，false 表示由远端入站。
@@ -247,23 +267,25 @@ func (e *Engine) forward(ctx context.Context, packet *ForwardedPacket, ingress T
 		return ErrNoRoute
 	}
 
-	// 各节点的拓扑视图在收敛期间可能暂时不同。不要把包送回上一跳，
-	// 也不要在存在其他合法路径时直接丢弃；仅排除本节点到上一跳的边，
-	// 使用同一规划器重新校验传输、桥接及转发策略。共享快照不被修改。
+	// A path can return to a visited node indirectly through another neighbor.
+	// For transit routes, exclude every edge entering the source or previous
+	// hop, not just the local edge. Direct delivery needs no extra search.
 	loopAvoided := false
-	if packet.LastHopNodeId != 0 && decision.NextHopNodeID == packet.LastHopNodeId {
+	if packet.LastHopNodeId != 0 && (decision.NextHopNodeID != packet.TargetNodeId ||
+		decision.NextHopNodeID == packet.LastHopNodeId || decision.NextHopNodeID == packet.SourceNodeId) {
+		previousDecision := decision
 		filtered := TopologySnapshot{Nodes: snapshot.Nodes, TopologyGeneration: snapshot.TopologyGeneration}
 		filtered.Links = make([]LinkState, 0, len(snapshot.Links))
 		for _, link := range snapshot.Links {
-			if link.FromNodeID != e.localNodeID || link.ToNodeID != packet.LastHopNodeId {
+			if link.ToNodeID != packet.LastHopNodeId && link.ToNodeID != packet.SourceNodeId {
 				filtered.Links = append(filtered.Links, link)
 			}
 		}
 		decision, ok = e.planner.Compute(filtered, packet.TargetNodeId, packet.TrafficClass, ingress)
-		if !ok || decision.NextHopNodeID == packet.LastHopNodeId || decision.NextHopNodeID == 0 || decision.OutboundTransport == TransportUnspecified {
+		if !ok || decision.NextHopNodeID == packet.LastHopNodeId || decision.NextHopNodeID == packet.SourceNodeId || decision.NextHopNodeID == 0 || decision.OutboundTransport == TransportUnspecified {
 			return ErrLoopDetected
 		}
-		loopAvoided = true
+		loopAvoided = decision.NextHopNodeID != previousDecision.NextHopNodeID || decision.OutboundTransport != previousDecision.OutboundTransport
 	}
 
 	next := cloneForwardedPacket(packet)

@@ -207,6 +207,18 @@ func (m *Manager) observeMeshForwarding(observation mesh.ForwardingObservation) 
 	if m == nil {
 		return
 	}
+	if observation.DropReason != "" {
+		m.logInfo("mesh_packet_dropped").
+			Str("reason", observation.DropReason).
+			Str("traffic_class", meshTrafficClassLabel(observation.TrafficClass)).
+			Int64("source_node_id", observation.SourceNodeID).
+			Int64("target_node_id", observation.TargetNodeID).
+			Int64("last_hop_node_id", observation.LastHopNodeID).
+			Uint64("packet_id", observation.PacketID).
+			Uint32("remaining_hops", observation.RemainingHops).
+			Msg("inbound mesh packet was not forwarded or delivered")
+		return
+	}
 	if observation.LoopAvoided {
 		m.logInfo("mesh_route_loop_avoided").
 			Int64("source_node_id", observation.SourceNodeID).

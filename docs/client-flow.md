@@ -276,10 +276,6 @@ ServerEnvelope {
 - 用户管理、消息历史、metadata、附件、`list_events`、`operations_status`、`metrics` 等大多数 RPC 会返回 `invalid_request`。
 - `list_cluster_nodes`、`list_node_logged_in_users`、`resolve_user_sessions`、`ping` 仍可使用。
 
-### 集群连接上的控制与数据隔离
-
-同一下一跳、同一传输有多条已建立连接时，控制查询及关键控制消息使用 RTT + Jitter 最优的连接；瞬时包、复制流和快照数据使用次优连接，避免批量数据占据控制查询的共享写队列和 TCP 字节流。不新建连接、不改变消息校验或超时。只剩一条连接时，两类流量都回退到该连接；不可用连接不参与选择。连接质量变化仍会影响选择，不能保证单连接或整个网络拥塞时查询无延迟。数据可能使用 RTT 较高的路径，需结合部署环境验证吞吐与查询尾延迟。
-
 ### 定向瞬时发送的并发边界
 
 登录完成后，只有 `/ws/realtime` 中同时指定 `delivery_kind = TRANSIENT` 和 `target_session` 的 `send_message` 会有界并发处理。每连接最多 16 个在途请求；满额时读取循环保留当前一个已解码请求并等待名额，不增加 `busy` 错误，也不建立无界队列。WebSocket 原有 1MiB 帧上限不变。

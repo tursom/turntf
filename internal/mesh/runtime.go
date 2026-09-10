@@ -695,9 +695,8 @@ func (r *Runtime) DescribeRoute(destinationNodeID int64, trafficClass TrafficCla
 
 // SendPacket 实现 PacketSender 接口，供 Engine 调用以发送数据包到下一跳。
 //
-// 它选择一个质量最优的邻接关系（按 RTT+Jitter 评分），将数据包封装为
-// ClusterEnvelope 后通过该连接发送。如果找不到符合条件的邻接关系，
-// 返回 ErrNoRoute。此方法在转发路径上，对每个中间节点都会被调用。
+// 它按流量类别选择已建立的邻接关系，将数据包封装为 ClusterEnvelope 后发送。
+// 多连接时控制流量使用最优连接，数据流量使用次优连接；找不到可用连接时返回 ErrNoRoute。
 func (r *Runtime) SendPacket(ctx context.Context, nextHopNodeID int64, transport TransportKind, packet *ForwardedPacket) error {
 	if r == nil {
 		return ErrRuntimeClosed
@@ -705,7 +704,7 @@ func (r *Runtime) SendPacket(ctx context.Context, nextHopNodeID int64, transport
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	adj := r.bestAdjacency(nextHopNodeID, transport)
+	adj := r.bestAdjacencyForTraffic(nextHopNodeID, transport, packet.GetTrafficClass())
 	if adj == nil {
 		return ErrNoRoute
 	}
@@ -719,14 +718,21 @@ func (r *Runtime) SendPacket(ctx context.Context, nextHopNodeID int64, transport
 // 评分数值最小的一个。如果同一节点通过同一传输类型有多个连接，
 // 返回综合质量最好的那个。
 func (r *Runtime) bestAdjacency(nextHopNodeID int64, transport TransportKind) *Adjacency {
+	return r.bestAdjacencyForTraffic(nextHopNodeID, transport, TrafficControlQuery)
+}
+
+// 多条已建立连接可用时，为控制消息保留质量最优的连接。
+// 数据使用次优连接，避免查询与批量数据共用同一写队列和 TCP 字节流。
+// 不创建额外连接；只有一条连接时沿用原路径。
+func (r *Runtime) bestAdjacencyForTraffic(nextHopNodeID int64, transport TransportKind, traffic TrafficClass) *Adjacency {
 	if nextHopNodeID <= 0 || transport == TransportUnspecified {
 		return nil
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	candidates := r.adjByRoute[routeAdjacencyKey{nodeID: nextHopNodeID, transport: transport}]
-	var best *Adjacency
-	var bestScore int64
+	var best, alternate *Adjacency
+	var bestScore, alternateScore int64
 	for _, adj := range candidates {
 		if adj == nil {
 			continue
@@ -739,9 +745,15 @@ func (r *Runtime) bestAdjacency(nextHopNodeID int64, transport TransportKind) *A
 			continue
 		}
 		if best == nil || score < bestScore {
+			alternate, alternateScore = best, bestScore
 			best = adj
 			bestScore = score
+		} else if alternate == nil || score < alternateScore {
+			alternate, alternateScore = adj, score
 		}
+	}
+	if alternate != nil && (traffic == TrafficTransientInteractive || traffic == TrafficReplicationStream || traffic == TrafficSnapshotBulk) {
+		return alternate
 	}
 	return best
 }

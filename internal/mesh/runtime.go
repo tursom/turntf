@@ -259,6 +259,7 @@ type Runtime struct {
 	adjacencyObserver      AdjacencyObserver           // 邻接变化观察者
 
 	// ---- 定时器/时间参数 ----
+	queryResponseSlots    chan struct{}    // mu: bounded asynchronous response sends.
 	helloTimeout          time.Duration    // 握手超时时间
 	dialRetryInterval     time.Duration    // 拨号失败后的重试间隔
 	pingInterval          time.Duration    // 心跳探测间隔

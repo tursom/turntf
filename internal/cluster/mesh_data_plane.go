@@ -58,7 +58,15 @@ func (m *Manager) routeMeshResolveUserSessionsResponse(ctx context.Context, resp
 			},
 		},
 	}
-	return m.routeMeshEnvelope(ctx, resp.OriginNodeId, mesh.TrafficControlQuery, envelope)
+	binding := m.MeshRuntime()
+	if binding == nil {
+		return fmt.Errorf("mesh runtime is not attached")
+	}
+	// Validation and the session snapshot are complete before admission.
+	// A congested response write must not prevent this reader from processing
+	// the responses needed by other local queries. Origin deadlines still
+	// detect delivery failures; admission itself is not an end-to-end ACK.
+	return binding.RouteQueryResponse(ctx, resp.OriginNodeId, envelope)
 }
 
 // routeMeshMembershipUpdate 通过网格路由成员资格更新（control_critical流量类别）。

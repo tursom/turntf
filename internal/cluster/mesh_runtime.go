@@ -242,6 +242,14 @@ func (b *MeshRuntimeBinding) RouteEnvelope(ctx context.Context, targetNodeID int
 	return b.runtime.RouteEnvelope(ctx, targetNodeID, envelope)
 }
 
+// RouteQueryResponse 提交有界的异步响应发送，避免阻塞入站读取循环。
+func (b *MeshRuntimeBinding) RouteQueryResponse(ctx context.Context, targetNodeID int64, envelope *mesh.ClusterEnvelope) error {
+	if b == nil || b.runtime == nil {
+		return fmt.Errorf("mesh: runtime is not attached")
+	}
+	return b.runtime.RouteQueryResponse(ctx, targetNodeID, envelope)
+}
+
 // ForwardPacket 通过网格转发一个数据包。
 func (b *MeshRuntimeBinding) ForwardPacket(ctx context.Context, packet *mesh.ForwardedPacket) error {
 	if b == nil || b.runtime == nil {

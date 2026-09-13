@@ -351,8 +351,10 @@ type Adjacency struct {
 	// Inbound 是否为入站连接（true=对方主动连过来的，false=本节点主动拨号的）
 	Inbound bool
 
-	pendingTopology map[int64]*TopologyUpdate // Runtime.mu: latest queued advertisement per origin.
-	topologySending bool                      // Runtime.mu: at most one flood writer.
+	pendingTimeSyncReply *TimeSyncResponse         // Runtime.mu: newest pending probe response.
+	timeSyncReplying     bool                      // Runtime.mu: one response writer per adjacency.
+	pendingTopology      map[int64]*TopologyUpdate // Runtime.mu: latest queued advertisement per origin.
+	topologySending      bool                      // Runtime.mu: at most one flood writer.
 
 	mu            sync.Mutex           // 保护链路测量状态的互斥锁
 	rttEWMA       float64              // RTT 的指数加权移动平均值（毫秒）
@@ -1776,20 +1778,15 @@ func (r *Runtime) sendPing(ctx context.Context, adj *Adjacency) {
 
 // handleTimeSyncRequest 处理远程节点发来的时间同步请求。
 //
-// 处理逻辑：直接在响应中填入 ServerReceiveTimeMs 和 ServerSendTimeMs
-// （本实现中两者相同，因为处理是即时完成的），然后将请求中的
-// ClientSendTimeMs 原样返回，使发起方能计算完整 RTT。
+// 接收时间在读取循环记录，发送时间在独立的有界响应任务中记录。
+// 出站拥塞不能阻塞此连接后续的查询、DATA 或校时响应读取。
 func (r *Runtime) handleTimeSyncRequest(ctx context.Context, adj *Adjacency, req *TimeSyncRequest) {
 	nowMs := r.now().UnixMilli()
-	resp := &ClusterEnvelope{
-		Body: &ClusterEnvelope_TimeSyncResponse{TimeSyncResponse: &TimeSyncResponse{
-			RequestId:           req.RequestId,
-			ClientSendTimeMs:    req.ClientSendTimeMs,
-			ServerReceiveTimeMs: nowMs,
-			ServerSendTimeMs:    nowMs,
-		}},
-	}
-	_ = r.sendEnvelopeCtx(ctx, adj.Conn, resp, r.helloTimeout)
+	r.queueTimeSyncReply(adj, &TimeSyncResponse{
+		RequestId:           req.RequestId,
+		ClientSendTimeMs:    req.ClientSendTimeMs,
+		ServerReceiveTimeMs: nowMs,
+	})
 }
 
 // handleTimeSyncResponse 处理远程节点返回的时间同步响应，更新链路的

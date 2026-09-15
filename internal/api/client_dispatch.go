@@ -51,8 +51,10 @@ func (s *clientWSSession) readLoop(ctx context.Context) (loopErr error) {
 		}
 		req := envelope.GetSendMessage()
 		concurrentSend := s.realtimeOnly && req.GetDeliveryKind() == internalproto.ClientDeliveryKind_CLIENT_DELIVERY_KIND_TRANSIENT && req.GetTargetSession() != nil
-		// 非定向瞬态请求仍是顺序屏障，包括登录、Ping 和其他 RPC。
-		if !concurrentSend && sends != nil {
+		concurrentLookup := s.realtimeOnly && envelope.GetResolveUserSessions() != nil
+		// Read-only discovery may overlap DATA, but all other RPCs remain
+		// barriers that drain both kinds before observing or changing state.
+		if !concurrentSend && !concurrentLookup && sends != nil {
 			sends.pending.Wait()
 			if err := ctx.Err(); err != nil {
 				return err
@@ -325,6 +327,16 @@ func (s *clientWSSession) readLoop(ctx context.Context) (loopErr error) {
 				Int64("target_node_id", body.ResolveUserSessions.GetUser().GetNodeId()).
 				Int64("target_user_id", body.ResolveUserSessions.GetUser().GetUserId()).
 				Msg("client transport request")
+			if concurrentLookup {
+				if sends == nil {
+					sends = newRealtimeSendGroup(ctx, s)
+					ctx = sends.ctx
+				}
+				if err := sends.submitLookup(body.ResolveUserSessions); err != nil {
+					return err
+				}
+				continue
+			}
 			if err := s.handleResolveUserSessions(ctx, body.ResolveUserSessions); err != nil {
 				return err
 			}

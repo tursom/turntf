@@ -34,6 +34,16 @@ func newRealtimeSendGroup(ctx context.Context, s *clientWSSession) *realtimeSend
 }
 
 func (g *realtimeSendGroup) submit(req *internalproto.SendMessageRequest) error {
+	return g.submitWork(func(ctx context.Context) error { return g.session.handleSendMessage(ctx, req) })
+}
+
+func (g *realtimeSendGroup) submitLookup(req *internalproto.ResolveUserSessionsRequest) error {
+	return g.submitWork(func(ctx context.Context) error { return g.session.handleResolveUserSessions(ctx, req) })
+}
+
+// DATA and read-only session discovery share the same admission limit. This
+// avoids cross-relay ordering barriers without an unbounded lookup queue.
+func (g *realtimeSendGroup) submitWork(handle func(context.Context) error) error {
 	select {
 	case g.slots <- struct{}{}:
 	case <-g.ctx.Done():
@@ -49,7 +59,7 @@ func (g *realtimeSendGroup) submit(req *internalproto.SendMessageRequest) error 
 		defer func() { <-g.slots }()
 		// 完整复用逐请求的权限、黑名单、session 查询和 peer 路由路径。
 		// 业务错误已由 handler 按 request_id 回复；仅传输写失败终止整个会话。
-		if err := g.session.handleSendMessage(g.ctx, req); err != nil {
+		if err := handle(g.ctx); err != nil {
 			select {
 			case g.failed <- err:
 			default:

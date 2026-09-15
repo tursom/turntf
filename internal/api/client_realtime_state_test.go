@@ -74,101 +74,56 @@ func TestRealtimeTargetedStateChanges(t *testing.T) {
 	send(6, replacement, "", 5)
 }
 
-func TestRealtimeTargetedLegalBarrierSandwich(t *testing.T) {
-	for _, kind := range []string{"ack", "resolve_user_sessions"} {
-		t.Run(kind, func(t *testing.T) {
-			s, c, r := realtimeFixture(t, true)
-			entered := make(chan int32, 4)
-			releaseFirst, releaseQuery := make(chan struct{}), make(chan struct{})
-			var firstOnce, queryOnce sync.Once
-			defer firstOnce.Do(func() { close(releaseFirst) })
-			defer queryOnce.Do(func() { close(releaseQuery) })
-			var calls atomic.Int32
-			var ackSeenAtPost atomic.Bool
-			s.http.service.sessions = realtimeResolverFunc(func(ctx context.Context, u store.UserKey) ([]store.OnlineSession, error) {
-				n := calls.Add(1)
-				if kind == "ack" && n == 2 {
-					s.seenMu.Lock()
-					_, ok := s.seen[clientMessageCursor{nodeID: s.principal.User.NodeID, seq: 77}]
-					s.seenMu.Unlock()
-					ackSeenAtPost.Store(ok)
-				}
-				entered <- n
-				var gate <-chan struct{}
-				if n == 1 {
-					gate = releaseFirst
-				} else if kind == "resolve_user_sessions" && n == 2 {
-					gate = releaseQuery
-				}
-				if gate != nil {
-					select {
-					case <-gate:
-					case <-ctx.Done():
-						return nil, ctx.Err()
-					}
-				}
-				return []store.OnlineSession{{User: u, SessionRef: r.ref}}, nil
-			})
-			startRealtimeLoop(t, s, c)
-			awaitCall := func(want int32) {
-				t.Helper()
+func TestRealtimeAckBarrierDrainsDataAndLookup(t *testing.T) {
+	for _, lookup := range []bool{false, true} {
+		s, c, r := realtimeFixture(t, true)
+		entered := make(chan struct{}, 2)
+		release := make(chan struct{})
+		var calls atomic.Int32
+		var ackSeen atomic.Bool
+		s.http.service.sessions = realtimeResolverFunc(func(ctx context.Context, u store.UserKey) ([]store.OnlineSession, error) {
+			n := calls.Add(1)
+			entered <- struct{}{}
+			if n == 1 {
 				select {
-				case got := <-entered:
-					if got != want {
-						t.Fatalf("lookup=%d want=%d", got, want)
-					}
-				case <-time.After(time.Second):
-					t.Fatal("lookup missing")
+				case <-release:
+				case <-ctx.Done():
+					return nil, ctx.Err()
 				}
-			}
-			seen := func() bool {
+			} else {
 				s.seenMu.Lock()
-				defer s.seenMu.Unlock()
 				_, ok := s.seen[clientMessageCursor{nodeID: s.principal.User.NodeID, seq: 77}]
-				return ok
+				s.seenMu.Unlock()
+				ackSeen.Store(ok)
 			}
-			enqueueRealtime(t, s, c, r, 1)
-			awaitCall(1)
-			if kind == "ack" {
-				queueRealtimeEnvelope(t, c, &internalproto.ClientEnvelope{Body: &internalproto.ClientEnvelope_AckMessage{AckMessage: &internalproto.AckMessage{Cursor: &internalproto.MessageCursor{NodeId: s.principal.User.NodeID, Seq: 77}}}})
-			} else {
-				queueRealtimeEnvelope(t, c, &internalproto.ClientEnvelope{Body: &internalproto.ClientEnvelope_ResolveUserSessions{ResolveUserSessions: &internalproto.ResolveUserSessionsRequest{RequestId: 2, User: &internalproto.UserRef{NodeId: s.principal.User.NodeID, UserId: s.principal.User.ID}}}})
-			}
-			enqueueRealtime(t, s, c, r, 3)
-			select {
-			case n := <-entered:
-				t.Fatalf("barrier/post-send overtook first handler: %d", n)
-			case <-time.After(50 * time.Millisecond):
-			}
-			if seen() {
-				t.Fatal("Ack overtook first handler")
-			}
-			firstOnce.Do(func() { close(releaseFirst) })
-			if nextRealtimeResponse(t, c).GetSendMessageResponse().GetRequestId() != 1 {
-				t.Fatal("first response reordered")
-			}
-			awaitCall(2)
-			if kind == "ack" {
-				if !ackSeenAtPost.Load() {
-					t.Fatal("post-send ran before Ack")
-				}
-			} else {
-				select {
-				case n := <-entered:
-					t.Fatalf("post-send overtook query: %d", n)
-				case <-time.After(50 * time.Millisecond):
-				}
-				queryOnce.Do(func() { close(releaseQuery) })
-				resp := nextRealtimeResponse(t, c).GetResolveUserSessionsResponse()
-				if resp.GetRequestId() != 2 || resp.GetCount() != 1 {
-					t.Fatalf("query response: %v", resp)
-				}
-				awaitCall(3)
-			}
-			if nextRealtimeResponse(t, c).GetSendMessageResponse().GetRequestId() != 3 {
-				t.Fatal("post-send response missing")
-			}
+			return []store.OnlineSession{{User: u, SessionRef: r.ref}}, nil
 		})
+		startRealtimeLoop(t, s, c)
+		if lookup {
+			queueSessionLookup(t, s, c, 1)
+		} else {
+			enqueueRealtime(t, s, c, r, 1)
+		}
+		select {
+		case <-entered:
+		case <-time.After(time.Second):
+			t.Fatal("first request missing")
+		}
+		queueRealtimeEnvelope(t, c, &internalproto.ClientEnvelope{Body: &internalproto.ClientEnvelope_AckMessage{AckMessage: &internalproto.AckMessage{Cursor: &internalproto.MessageCursor{NodeId: s.principal.User.NodeID, Seq: 77}}}})
+		enqueueRealtime(t, s, c, r, 3)
+		select {
+		case <-entered:
+			t.Fatal("post-barrier DATA overtook earlier request")
+		case <-time.After(30 * time.Millisecond):
+		}
+		close(release)
+		nextRealtimeResponse(t, c)
+		if got := nextRealtimeResponse(t, c).GetSendMessageResponse().GetRequestId(); got != 3 {
+			t.Fatalf("post barrier response: %d", got)
+		}
+		if !ackSeen.Load() {
+			t.Fatal("post-barrier DATA did not observe ACK")
+		}
 	}
 }
 

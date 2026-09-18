@@ -84,6 +84,7 @@ type KVService interface {
 	KVTxn(context.Context, string, string, []kv.Compare, []kv.Put, []string) (kv.Result, error)
 	KVGrant(context.Context, string, string, string, kv.Permission) (kv.Result, error)
 	KVRevoke(context.Context, string, string, string) (kv.Result, error)
+	KVWatch(string, string, string) (kv.Watch, error)
 }
 
 //   - 写入门控（WriteGate）：阻止非主节点写入

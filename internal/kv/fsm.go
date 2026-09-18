@@ -70,12 +70,51 @@ type Result struct {
 	Succeeded bool
 }
 
-type FSM struct {
-	mu    sync.RWMutex
-	state State
+type Change struct {
+	Revision uint64
+	Database string
+	Key      string
+	Op       string
+	Value    []byte
 }
 
-func NewFSM() *FSM          { return &FSM{state: State{Databases: make(map[string]Database)}} }
+type Watch struct {
+	C      <-chan Change
+	cancel func()
+}
+
+func (w Watch) Close() {
+	if w.cancel != nil {
+		w.cancel()
+	}
+}
+
+type FSM struct {
+	mu        sync.RWMutex
+	state     State
+	nextWatch uint64
+	watchers  map[uint64]chan Change
+}
+
+func NewFSM() *FSM {
+	return &FSM{state: State{Databases: make(map[string]Database)}, watchers: make(map[uint64]chan Change)}
+}
+func (f *FSM) Watch(database, prefix string) Watch {
+	f.mu.Lock()
+	f.nextWatch++
+	id := f.nextWatch
+	ch := make(chan Change, 64)
+	f.watchers[id] = ch
+	f.mu.Unlock()
+	return Watch{C: ch, cancel: func() {
+		f.mu.Lock()
+		if old := f.watchers[id]; old != nil {
+			delete(f.watchers, id)
+			close(old)
+		}
+		f.mu.Unlock()
+	}}
+}
 func (f *FSM) State() State { f.mu.RLock(); defer f.mu.RUnlock(); return cloneState(f.state) }
 func (f *FSM) Apply(log *raft.Log) any {
 	var cmd Command
@@ -90,6 +129,13 @@ func (f *FSM) Apply(log *raft.Log) any {
 	}
 	if err != nil {
 		return err
+	}
+	change := Change{Revision: result.Revision, Database: cmd.Database, Key: cmd.Key, Op: cmd.Op, Value: append([]byte(nil), cmd.Value...)}
+	for _, ch := range f.watchers {
+		select {
+		case ch <- change:
+		default:
+		}
 	}
 	return result
 }

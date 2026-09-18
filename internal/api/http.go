@@ -243,7 +243,7 @@ func (h *HTTP) Close() error {
 func (h *HTTP) routes() {
 	h.mux.HandleFunc("POST /kv/databases", h.handleKVCreateDatabase)
 	h.mux.HandleFunc("GET /kv/{database}/keys/{key}", h.handleKVGet)
-	h.mux.HandleFunc("GET /kv/{database}/list", h.handleKVList)
+	h.mux.HandleFunc("GET /kv/{database}/watch", h.handleKVWatch)
 	h.mux.HandleFunc("PUT /kv/{database}/keys/{key}", h.handleKVPut)
 	h.mux.HandleFunc("DELETE /kv/{database}/keys/{key}", h.handleKVDelete)
 	h.mux.HandleFunc("POST /kv/{database}/txn", h.handleKVTxn)

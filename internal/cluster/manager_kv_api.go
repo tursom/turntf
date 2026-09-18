@@ -8,6 +8,15 @@ import (
 	"github.com/tursom/turntf/internal/kv"
 )
 
+func (m *Manager) KVWatch(principal, database, prefix string) (kv.Watch, error) {
+	if m == nil || m.kvNode == nil {
+		return kv.Watch{}, errors.New("kv: consensus is disabled")
+	}
+	if !m.kvNode.FSM().Can(database, principal, kv.PermissionRead) {
+		return kv.Watch{}, kv.ErrPermission
+	}
+	return m.kvNode.FSM().Watch(database, prefix), nil
+}
 func (m *Manager) KVCreateDatabase(ctx context.Context, principal, database string) (kv.Result, error) {
 	if principal == "" || database == "" {
 		return kv.Result{}, errors.New("kv: principal and database are required")

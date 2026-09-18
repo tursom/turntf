@@ -64,6 +64,9 @@ type ClusterEnvelope_PresenceUpdate = internalproto.ClusterEnvelope_PresenceUpda
 // ClusterEnvelope_ConnectivityRumor 包装连通性谣言传播载荷。
 type ClusterEnvelope_ConnectivityRumor = internalproto.ClusterEnvelope_ConnectivityRumor
 
+// ClusterEnvelope_ConsensusMessage 包装共识消息载荷。
+type ClusterEnvelope_ConsensusMessage = internalproto.ClusterEnvelope_ConsensusMessage
+
 // ---------------- 独立消息类型别名 ----------------
 
 // NodeHello 是连接建立时每个节点发送的第一个消息，包含节点身份、协议版本、传输能力和转发策略。
@@ -126,6 +129,9 @@ type MeshPresenceUpdate = internalproto.MeshPresenceUpdate
 // MeshConnectivityRumor 传播节点间的连通性信息。
 type MeshConnectivityRumor = internalproto.MeshConnectivityRumor
 
+// ConsensusMessage 是共识层原始消息的传输包装，不绑定具体共识实现。
+type ConsensusMessage = internalproto.MeshConsensusMessage
+
 // RouteDiagnostic 携带用于调试的路由追踪信息。
 type RouteDiagnostic = internalproto.MeshRouteDiagnostic
 
@@ -161,6 +167,7 @@ const (
 	TrafficTransientInteractive = internalproto.TrafficClass_TRAFFIC_TRANSIENT_INTERACTIVE // 瞬时交互流量（转发数据包）。
 	TrafficReplicationStream    = internalproto.TrafficClass_TRAFFIC_REPLICATION_STREAM    // 复制流数据。
 	TrafficSnapshotBulk         = internalproto.TrafficClass_TRAFFIC_SNAPSHOT_BULK         // 批量快照传输。
+	TrafficConsensus            = internalproto.TrafficClass_TRAFFIC_CONSENSUS             // 共识协议消息。
 )
 
 // ForwardingDisposition 常量。

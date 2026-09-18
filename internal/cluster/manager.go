@@ -12,6 +12,7 @@ import (
 
 	"github.com/tursom/turntf/internal/app"
 	"github.com/tursom/turntf/internal/clock"
+	"github.com/tursom/turntf/internal/mesh"
 	internalproto "github.com/tursom/turntf/internal/proto"
 	"github.com/tursom/turntf/internal/store"
 )
@@ -156,6 +157,9 @@ type Manager struct {
 	timeSyncer func(*session) (timeSyncSample, error)
 	// transientHandler 处理投递到本节点的瞬态数据包。
 	transientHandler func(store.TransientPacket) bool
+	// consensusHandler 处理经 mesh transport 到达的共识消息；具体 Raft 实现由上层注入。
+	consensusHandler func(context.Context, int64, *mesh.ConsensusMessage) error
+
 	// loggedInUsersProvider 提供本节点的已登录用户列表。
 	loggedInUsersProvider func(context.Context) ([]app.LoggedInUserSummary, error)
 	// supportsMembership 表示本节点是否支持成员资格协议。

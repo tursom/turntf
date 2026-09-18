@@ -41,6 +41,7 @@ var trafficClassFactor = map[TrafficClass]int64{
 	TrafficTransientInteractive: 6,
 	TrafficReplicationStream:    40,
 	TrafficSnapshotBulk:         120,
+	TrafficConsensus:            1,
 }
 
 // DefaultForwardingPolicy 基于 NodeFeeWeight 生成默认转发策略。
@@ -62,6 +63,7 @@ func DefaultForwardingPolicy(nodeFeeWeight int64) *ForwardingPolicy {
 			{TrafficClass: TrafficTransientInteractive, Disposition: DispositionAllow},
 			{TrafficClass: TrafficReplicationStream, Disposition: DispositionAllow},
 			{TrafficClass: TrafficSnapshotBulk, Disposition: DispositionAllow},
+			{TrafficClass: TrafficConsensus, Disposition: DispositionAllow},
 		},
 	}
 	if nodeFeeWeight > 1 {
@@ -71,6 +73,7 @@ func DefaultForwardingPolicy(nodeFeeWeight int64) *ForwardingPolicy {
 			{TrafficClass: TrafficTransientInteractive, Disposition: DispositionDiscourage},
 			{TrafficClass: TrafficReplicationStream, Disposition: DispositionDeny},
 			{TrafficClass: TrafficSnapshotBulk, Disposition: DispositionDeny},
+			{TrafficClass: TrafficConsensus, Disposition: DispositionAllow},
 		}
 	}
 	return policy
@@ -112,6 +115,7 @@ func NormalizeForwardingPolicy(policy *ForwardingPolicy) *ForwardingPolicy {
 		TrafficTransientInteractive,
 		TrafficReplicationStream,
 		TrafficSnapshotBulk,
+		TrafficConsensus,
 	} {
 		if _, ok := seen[class]; ok {
 			continue

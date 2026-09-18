@@ -187,6 +187,8 @@ func (m *Manager) handleMeshEnvelope(ctx context.Context, packet *mesh.Forwarded
 		return m.handleMeshPresenceUpdateEnvelope(packet, body.PresenceUpdate)
 	case *mesh.ClusterEnvelope_ConnectivityRumor:
 		return m.handleMeshConnectivityRumorEnvelope(packet, body.ConnectivityRumor)
+	case *mesh.ClusterEnvelope_ConsensusMessage:
+		return m.handleMeshConsensusMessage(ctx, packet, body.ConsensusMessage)
 	default:
 		return fmt.Errorf("unsupported mesh envelope %T", envelope.Body)
 	}

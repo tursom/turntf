@@ -43,6 +43,8 @@ func (DefaultTrafficClassifier) Classify(envelope *ClusterEnvelope) TrafficClass
 		*ClusterEnvelope_ConnectivityRumor,
 		*ClusterEnvelope_RouteDiagnostic:
 		return TrafficControlCritical
+	case *ClusterEnvelope_ConsensusMessage:
+		return TrafficConsensus
 	case *ClusterEnvelope_QueryRequest,
 		*ClusterEnvelope_QueryResponse:
 		return TrafficControlQuery

@@ -21,6 +21,7 @@ enum TrafficClass {
   TRAFFIC_TRANSIENT_INTERACTIVE = 3;
   TRAFFIC_REPLICATION_STREAM = 4;
   TRAFFIC_SNAPSHOT_BULK = 5;
+  TRAFFIC_CONSENSUS = 6;
 }
 
 enum ForwardingDisposition {
@@ -56,6 +57,7 @@ message ClusterEnvelope {
     MeshMembershipUpdate membership_update = 15;
     MeshPresenceUpdate presence_update = 16;
     MeshConnectivityRumor connectivity_rumor = 17;
+    MeshConsensusMessage consensus_message = 18;
   }
   bytes hmac = 14;
 }
@@ -177,6 +179,21 @@ message MeshMembershipUpdate {
 message MeshPresenceUpdate {
   // presence_update 自 mesh-v1alpha3 起承载用户增量和权威分片，不兼容 v1alpha2 全量快照。
   notifier.cluster.v1.OnlinePresenceUpdate presence_update = 1;
+}
+
+// MeshConsensusMessage 承载共识层的原始 raft message。payload 由 consensus
+// 子系统编码，mesh 只负责认证、路由和可靠传输，不绑定具体 raft 实现。
+message MeshConsensusMessage {
+  // group_id 标识逻辑共识组；当前 KV 使用单个集群级 group。
+  string group_id = 1;
+  // source_node_id 是产生该消息的节点。
+  int64 source_node_id = 2;
+  // target_node_id 为 0 时表示由共识层广播，否则表示定向发送。
+  int64 target_node_id = 3;
+  // message_id 用于日志和幂等诊断，不参与 raft 状态机。
+  uint64 message_id = 4;
+  // payload 是共识实现的有线消息。
+  bytes payload = 5;
 }
 
 message MeshConnectivityRumor {

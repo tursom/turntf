@@ -140,6 +140,17 @@ type clusterFileConfig struct {
 	Clock clockFileConfig `toml:"clock"`
 	// Peers 对等节点列表
 	Peers []peerFileConfig `toml:"peers"`
+	// KVConsensus 显式 CP KV Raft 成员配置
+	KVConsensus kvConsensusFileConfig `toml:"kv_consensus"`
+}
+
+type kvConsensusFileConfig struct {
+	Enabled   bool     `toml:"enabled"`
+	GroupID   string   `toml:"group_id"`
+	DataDir   string   `toml:"data_dir"`
+	Bootstrap bool     `toml:"bootstrap"`
+	Voters    []string `toml:"voters"`
+	Learners  []string `toml:"learners"`
 }
 
 // clusterForwardingFileConfig 消息转发策略配置。
@@ -530,6 +541,7 @@ func (c serveConfig) runtimeConfig(configPath string) (runtimeServeConfig, error
 		ZeroMQ:                          zeroMQCfg,
 		LibP2P:                          libP2PCfg,
 		Peers:                           peers,
+		KVConsensus:                     cluster.KVConsensusConfig{Enabled: c.Cluster.KVConsensus.Enabled, GroupID: strings.TrimSpace(c.Cluster.KVConsensus.GroupID), DataDir: strings.TrimSpace(c.Cluster.KVConsensus.DataDir), Bootstrap: c.Cluster.KVConsensus.Bootstrap, Voters: trimStringSlice(c.Cluster.KVConsensus.Voters), Learners: trimStringSlice(c.Cluster.KVConsensus.Learners)},
 		MessageWindowSize:               messageWindowSize,
 		MaxClockSkewMs:                  maxClockSkewMs,
 		ClockSyncTimeoutMs:              clockSyncTimeoutMs,

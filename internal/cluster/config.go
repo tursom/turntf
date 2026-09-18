@@ -70,7 +70,16 @@ type ZeroMQCurveConfig struct {
 	AllowedClientPublicKeys []string
 }
 
-// Config 是集群模块的完整配置。
+// KVConsensusConfig controls the explicit Raft membership for the CP KV group.
+type KVConsensusConfig struct {
+	Enabled   bool
+	GroupID   string
+	DataDir   string
+	Bootstrap bool
+	Voters    []string
+	Learners  []string
+}
+
 // 零值字段将在WithDefaults和Validate过程中填充为合理的默认值。
 type Config struct {
 	// TCPMTLS 是默认关闭的原生集群 TCP 双向 TLS 配置。
@@ -91,6 +100,9 @@ type Config struct {
 	LibP2P LibP2PConfig
 	// Peers 是静态配置的对等节点列表。
 	Peers []Peer
+	// KVConsensus 是独立于 AP cluster replication 的 CP KV Raft 配置。
+	KVConsensus KVConsensusConfig
+
 	// DiscoveryDisabled 是否禁用自动对等节点发现。
 	DiscoveryDisabled bool
 	// MessageWindowSize 是每个事件流保留的最大事件数。
@@ -243,6 +255,10 @@ func (c *Config) Validate() error {
 	c.ZeroMQ.Curve = normalizeZeroMQCurveConfig(c.ZeroMQ.Curve)
 	c.Forwarding = c.Forwarding.withDefaults()
 	if err := c.Forwarding.validate(); err != nil {
+		return err
+	}
+
+	if err := c.validateKVConsensus(); err != nil {
 		return err
 	}
 

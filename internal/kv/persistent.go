@@ -14,7 +14,8 @@ import (
 // The caller is responsible for closing it before process shutdown.
 type PersistentNode struct {
 	*Node
-	bolt *raftboltdb.BoltStore
+	bolt     *raftboltdb.BoltStore
+	existing bool
 }
 
 func NewPersistentNode(opts NodeOptions, dataDir string) (*PersistentNode, error) {
@@ -38,6 +39,11 @@ func NewPersistentNode(opts NodeOptions, dataDir string) (*PersistentNode, error
 		_ = bolt.Close()
 		return nil, err
 	}
+	existing, err := raft.HasExistingState(bolt, bolt, snapshots)
+	if err != nil {
+		_ = bolt.Close()
+		return nil, err
+	}
 	opts.LogStore = bolt
 	opts.StableStore = bolt
 	opts.SnapshotStore = snapshots
@@ -46,8 +52,10 @@ func NewPersistentNode(opts NodeOptions, dataDir string) (*PersistentNode, error
 		_ = bolt.Close()
 		return nil, err
 	}
-	return &PersistentNode{Node: node, bolt: bolt}, nil
+	return &PersistentNode{Node: node, bolt: bolt, existing: existing}, nil
 }
+func (n *PersistentNode) HasExistingState() bool { return n != nil && n.existing }
+
 func (n *PersistentNode) Close() error {
 	if n == nil {
 		return nil

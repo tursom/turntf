@@ -12,6 +12,7 @@ import (
 
 	"github.com/tursom/turntf/internal/app"
 	"github.com/tursom/turntf/internal/clock"
+	"github.com/tursom/turntf/internal/kv"
 	"github.com/tursom/turntf/internal/mesh"
 	internalproto "github.com/tursom/turntf/internal/proto"
 	"github.com/tursom/turntf/internal/store"
@@ -159,6 +160,10 @@ type Manager struct {
 	transientHandler func(store.TransientPacket) bool
 	// consensusHandler 处理经 mesh transport 到达的共识消息；具体 Raft 实现由上层注入。
 	consensusHandler func(context.Context, int64, *mesh.ConsensusMessage) error
+
+	// kvNode 是可选的 CP KV Raft 节点。
+	kvNode      *kv.PersistentNode
+	kvTransport *kv.Transport
 
 	// loggedInUsersProvider 提供本节点的已登录用户列表。
 	loggedInUsersProvider func(context.Context) ([]app.LoggedInUserSummary, error)

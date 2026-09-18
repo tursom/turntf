@@ -166,6 +166,12 @@ func (m *Manager) Start(parent context.Context) error {
 			}
 			return
 		}
+		if err := m.startKVConsensus(); err != nil {
+			m.startErr = err
+			m.logWarn("kv_consensus_start_failed", err).Msg("kv consensus failed to start")
+			m.cancel()
+			return
+		}
 
 		m.wg.Add(1)
 		go m.publishLoop()
@@ -264,6 +270,11 @@ func (m *Manager) Close() error {
 			_ = m.libp2p.Close()
 		}
 		m.wg.Wait()
+		if m.kvNode != nil {
+			_ = m.kvNode.Close()
+			m.kvNode = nil
+			m.kvTransport = nil
+		}
 		m.mu.Lock()
 		m.meshRuntime = nil
 		m.mu.Unlock()

@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
+
+	"github.com/hashicorp/raft"
 
 	"github.com/tursom/turntf/internal/mesh"
 )
@@ -19,9 +22,19 @@ func (m *Manager) SetConsensusMessageHandler(handler func(context.Context, int64
 	m.mu.Unlock()
 }
 
-// SendConsensusMessage routes an opaque consensus message through the active
-// cluster mesh. All enabled transport implementations can carry it; the
-// payload is deliberately not tied to a concrete consensus library.
+// ConsensusSender returns the adapter expected by internal/kv.Transport.
+// ServerAddress is the decimal cluster node ID, keeping kv independent from
+// Manager and from the concrete cluster transport implementation.
+func (m *Manager) ConsensusSender(groupID string) func(target raft.ServerAddress, payload []byte) error {
+	return func(target raft.ServerAddress, payload []byte) error {
+		id, err := strconv.ParseInt(string(target), 10, 64)
+		if err != nil || id <= 0 {
+			return fmt.Errorf("invalid consensus target %q", target)
+		}
+		return m.SendConsensusMessage(context.Background(), id, groupID, 0, payload)
+	}
+}
+
 func (m *Manager) SendConsensusMessage(ctx context.Context, targetNodeID int64, groupID string, messageID uint64, payload []byte) error {
 	if m == nil || targetNodeID <= 0 || targetNodeID == m.cfg.NodeID {
 		return errors.New("invalid consensus target")

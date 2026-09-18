@@ -7,9 +7,9 @@ import (
 	internalproto "github.com/tursom/turntf/internal/proto"
 )
 
-// 每连接最多保留 16 个处理中的请求，以及 readLoop 已解码、等待名额的一个请求。
+// 每连接最多保留 64 个处理中的请求，以及 readLoop 已解码、等待名额的一个请求。
 // 不增加 busy 错误、不缓存验证结果；满额时直接对读取端施加背压。
-const clientRealtimeSendConcurrency = 16
+const clientRealtimeSendConcurrency = 64
 
 type realtimeSendGroup struct {
 	ctx       context.Context

@@ -9,6 +9,7 @@ import (
 
 	"github.com/tursom/turntf/internal/app"
 	"github.com/tursom/turntf/internal/clock"
+	"github.com/tursom/turntf/internal/kv"
 	"github.com/tursom/turntf/internal/permission"
 	"github.com/tursom/turntf/internal/store"
 )
@@ -74,7 +75,17 @@ type WriteGate interface {
 	AllowWrite(context.Context) error
 }
 
-// Service 是 API 模块的核心服务层，封装了 store.Store 并增加集群协作能力：
+type KVService interface {
+	KVCreateDatabase(context.Context, string, string) (kv.Result, error)
+	KVGet(context.Context, string, string, string) (kv.Entry, uint64, error)
+	KVList(context.Context, string, string, string) (map[string]kv.Entry, uint64, error)
+	KVPut(context.Context, string, string, string, []byte) (kv.Result, error)
+	KVDelete(context.Context, string, string, string) (kv.Result, error)
+	KVTxn(context.Context, string, string, []kv.Compare, []kv.Put, []string) (kv.Result, error)
+	KVGrant(context.Context, string, string, string, kv.Permission) (kv.Result, error)
+	KVRevoke(context.Context, string, string, string) (kv.Result, error)
+}
+
 //   - 写入门控（WriteGate）：阻止非主节点写入
 //   - 事件发布（EventSink）：将变更事件复制到集群其他节点
 //   - 即时包路由（TransientPacketRouter/Receiver）：跨节点投递即时消息
@@ -91,6 +102,7 @@ type Service struct {
 	sessionRegistry OnlineSessionRegistry
 	presence        OnlinePresenceResolver
 	sessions        OnlineSessionResolver
+	kvService       KVService
 	transientRecvMu sync.RWMutex
 	transientRecv   TransientPacketReceiver // 当前活跃的即时包接收器（通常是 HTTP 层）
 	nextTransientID atomic.Uint64           // 即时包 ID 自增计数器
@@ -129,6 +141,10 @@ func New(st *store.Store, eventSink EventSink) *Service {
 	if resolver, ok := eventSink.(OnlineSessionResolver); ok {
 		sessions = resolver
 	}
+	var kvService KVService
+	if service, ok := eventSink.(KVService); ok {
+		kvService = service
+	}
 	return &Service{
 		store:           st,
 		eventSink:       eventSink,
@@ -138,6 +154,8 @@ func New(st *store.Store, eventSink EventSink) *Service {
 		sessionRegistry: sessionRegistry,
 		presence:        presence,
 		sessions:        sessions,
+		kvService:       kvService,
+		transientRecv:   nil,
 	}
 }
 

@@ -535,7 +535,7 @@ func (m *Manager) RouteStreamFrame(ctx context.Context, frame store.StreamFrame)
 		}
 		return nil
 	}
-	return m.MeshRuntime().RouteEnvelope(ctx, frame.Recipient.NodeID, &mesh.ClusterEnvelope{Body: &mesh.ClusterEnvelope_StreamFrame{StreamFrame: &mesh.StreamFrame{StreamId: frame.StreamID, Kind: frame.Kind, Epoch: frame.Epoch, Offset: frame.Offset, Window: frame.Window, Payload: frame.Payload, Sender: &internalproto.ClusterUserRef{NodeId: frame.Sender.NodeID, UserId: frame.Sender.UserID}, Recipient: &internalproto.ClusterUserRef{NodeId: frame.Recipient.NodeID, UserId: frame.Recipient.UserID}, TargetSession: storeSessionRefToCluster(frame.TargetSession)}}})
+	return m.MeshRuntime().RouteEnvelope(ctx, frame.Recipient.NodeID, &mesh.ClusterEnvelope{Body: &mesh.ClusterEnvelope_StreamFrame{StreamFrame: &mesh.StreamFrame{StreamId: frame.StreamID, Kind: frame.Kind, Epoch: frame.Epoch, Offset: frame.Offset, Window: frame.Window, Payload: frame.Payload, Sender: &internalproto.ClusterUserRef{NodeId: frame.Sender.NodeID, UserId: frame.Sender.UserID}, Recipient: &internalproto.ClusterUserRef{NodeId: frame.Recipient.NodeID, UserId: frame.Recipient.UserID}, SourceSession: storeSessionRefToCluster(frame.SourceSession), TargetSession: storeSessionRefToCluster(frame.TargetSession)}}})
 }
 
 func (m *Manager) deliverStreamLocal(frame store.StreamFrame) bool {

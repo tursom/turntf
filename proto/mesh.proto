@@ -196,6 +196,7 @@ message MeshStreamFrame {
   notifier.cluster.v1.ClusterUserRef recipient = 8;
   notifier.cluster.v1.ClusterSessionRef target_session = 9;
   uint32 ttl_hops = 10;
+  notifier.cluster.v1.ClusterSessionRef source_session = 11;
 }
 
 message MeshConsensusMessage {

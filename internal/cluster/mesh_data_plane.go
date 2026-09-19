@@ -181,7 +181,7 @@ func (m *Manager) handleMeshStreamFrame(_ context.Context, _ *mesh.ForwardedPack
 		m.streamEpoch[key] = frame.Epoch
 	}
 	m.streamMu.Unlock()
-	return nilIfFalse(m.deliverStreamLocal(store.StreamFrame{StreamID: append([]byte(nil), frame.StreamId...), Kind: frame.Kind, Epoch: frame.Epoch, Offset: frame.Offset, Window: frame.Window, Payload: append([]byte(nil), frame.Payload...), Sender: store.UserKey{NodeID: frame.Sender.NodeId, UserID: frame.Sender.UserId}, Recipient: store.UserKey{NodeID: frame.Recipient.NodeId, UserID: frame.Recipient.UserId}, TargetSession: clusterSessionRefToStore(frame.TargetSession)}))
+	return nilIfFalse(m.deliverStreamLocal(store.StreamFrame{StreamID: append([]byte(nil), frame.StreamId...), Kind: frame.Kind, Epoch: frame.Epoch, Offset: frame.Offset, Window: frame.Window, Payload: append([]byte(nil), frame.Payload...), Sender: store.UserKey{NodeID: frame.Sender.NodeId, UserID: frame.Sender.UserId}, Recipient: store.UserKey{NodeID: frame.Recipient.NodeId, UserID: frame.Recipient.UserId}, SourceSession: clusterSessionRefToStore(frame.SourceSession), TargetSession: clusterSessionRefToStore(frame.TargetSession)}))
 }
 
 func nilIfFalse(ok bool) error {

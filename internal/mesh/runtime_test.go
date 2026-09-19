@@ -224,7 +224,7 @@ func (p *memoryGenerationPersistence) Store(generation uint64) error {
 	return nil
 }
 
-func newTestRuntime(t *testing.T, localID int64, adapter TransportAdapter, opts ...func(*RuntimeOptions)) *Runtime {
+func newTestRuntime(t testing.TB, localID int64, adapter TransportAdapter, opts ...func(*RuntimeOptions)) *Runtime {
 	t.Helper()
 	options := RuntimeOptions{
 		LocalNodeID:   localID,

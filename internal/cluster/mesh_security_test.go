@@ -66,6 +66,16 @@ func TestMeshEnvelopeAuthenticatorSignsAndVerifies(t *testing.T) {
 				},
 			}},
 		},
+		{
+			name: "direct stream frame",
+			envelope: &mesh.ClusterEnvelope{Body: &mesh.ClusterEnvelope_StreamFrame{
+				StreamFrame: &mesh.StreamFrame{
+					StreamId: []byte("0123456789abcdef"),
+					Epoch:    1,
+					Payload:  []byte("direct-stream"),
+				},
+			}},
+		},
 	}
 
 	for _, tc := range tests {
@@ -187,6 +197,17 @@ func TestMeshEnvelopeAuthenticatorVerifyAcceptsLegacyAndAppendedHMACFrames(t *te
 						ReporterRuntimeEpoch: 64,
 						ObservedAtMs:         65,
 					},
+				},
+			}},
+		},
+		{
+			name:    "direct_stream_frame",
+			bodyTag: 19,
+			envelope: &mesh.ClusterEnvelope{Body: &mesh.ClusterEnvelope_StreamFrame{
+				StreamFrame: &mesh.StreamFrame{
+					StreamId: []byte("0123456789abcdef"),
+					Epoch:    1,
+					Payload:  []byte("direct-stream"),
 				},
 			}},
 		},

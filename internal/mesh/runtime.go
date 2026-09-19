@@ -636,11 +636,14 @@ func keyForDialSeed(seed DialSeed) dialSeedKey {
 	return dialSeedKey{transport: seed.Transport, endpoint: seed.Endpoint}
 }
 
-// RouteEnvelope 将一个内部 Mesh Envelope 包装为 ForwardedPacket 并通过
-// 转发引擎进行路由。这是发送端生成消息的标准入口。
+// RouteEnvelope 将一个内部 Mesh Envelope 通过网格路由。这是发送端生成
+// 消息的标准入口。点对点流在目标存在已建立的直连邻接时直接发送原始
+// Envelope；其他流量以及没有直连的点对点流仍包装为 ForwardedPacket。
 //
 // 参数 targetNodeID 为目标节点在 Mesh 网络中的 ID。
 // 返回 ErrRuntimeClosed 如果运行时已关闭，或 ErrNoRoute 如果无法到达目标。
+// 直连发送一旦开始，其错误会直接返回而不会回退到转发路径，因为传输层
+// 错误不能证明远端未收到该帧，自动重发可能造成重复投递。
 func (r *Runtime) RouteEnvelope(ctx context.Context, targetNodeID int64, envelope *ClusterEnvelope) error {
 	if r == nil {
 		return ErrRuntimeClosed
@@ -658,12 +661,17 @@ func (r *Runtime) RouteEnvelope(ctx context.Context, targetNodeID int64, envelop
 	if trafficClass == TrafficClassUnspecified {
 		return fmt.Errorf("mesh: envelope traffic class is unspecified")
 	}
+	if r.engine == nil {
+		return ErrRuntimeClosed
+	}
+	if trafficClass == TrafficPointToPointStream {
+		if adj := r.bestDirectAdjacency(targetNodeID); adj != nil {
+			return r.sendEnvelopeCtx(ctx, adj.Conn, envelope, r.helloTimeout)
+		}
+	}
 	payload, err := r.codec.Encode(envelope)
 	if err != nil {
 		return err
-	}
-	if r.engine == nil {
-		return ErrRuntimeClosed
 	}
 	// This packet is created here and cannot be observed by the caller, so it
 	// can enter the engine directly. ForwardPacket keeps its defensive clone
@@ -760,6 +768,41 @@ func (r *Runtime) bestAdjacency(nextHopNodeID int64, transport TransportKind) *A
 		if best == nil || score < bestScore {
 			best = adj
 			bestScore = score
+		}
+	}
+	return best
+}
+
+// bestDirectAdjacency selects the best established physical adjacency to a
+// target across all transports. It is used only by the point-to-point stream
+// fast path, where the target itself must be the next hop.
+func (r *Runtime) bestDirectAdjacency(targetNodeID int64) *Adjacency {
+	if targetNodeID <= 0 {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var best *Adjacency
+	var bestScore int64
+	for key, candidates := range r.adjByRoute {
+		if key.nodeID != targetNodeID {
+			continue
+		}
+		for _, adj := range candidates {
+			if adj == nil {
+				continue
+			}
+			adj.mu.Lock()
+			established := adj.established
+			score := int64(adj.rttEWMA + adj.jitterEWMA)
+			adj.mu.Unlock()
+			if !established {
+				continue
+			}
+			if best == nil || score < bestScore {
+				best = adj
+				bestScore = score
+			}
 		}
 	}
 	return best
@@ -1402,6 +1445,7 @@ func (r *Runtime) removeAdjacencyFromRouteIndexLocked(adj *Adjacency) {
 //   - TimeSyncResponse: 时间同步响应处理（更新链路 RTT/Jitter 测量值）
 //   - TopologyUpdate: 拓扑更新处理（洪水广播扩散）
 //   - ForwardedPacket: 转发数据包处理（送入转发引擎 HandleInbound）
+//   - StreamFrame: 已验证的直连点对点流帧（直接送入 EnvelopeHandler）
 func (r *Runtime) dispatchEnvelope(ctx context.Context, adj *Adjacency, envelope *ClusterEnvelope) {
 	switch body := envelope.Body.(type) {
 	case *ClusterEnvelope_TimeSyncRequest:
@@ -1425,6 +1469,17 @@ func (r *Runtime) dispatchEnvelope(ctx context.Context, adj *Adjacency, envelope
 		}
 		body.ForwardedPacket.IngressTransport = adj.Transport
 		_ = r.engine.HandleInbound(ctx, body.ForwardedPacket)
+	case *ClusterEnvelope_StreamFrame:
+		if body.StreamFrame == nil || adj == nil || r.envelopeHandler == nil {
+			return
+		}
+		_ = r.envelopeHandler(ctx, &ForwardedPacket{
+			SourceNodeId:     adj.RemoteNodeID,
+			TargetNodeId:     r.localNodeID,
+			TrafficClass:     TrafficPointToPointStream,
+			LastHopNodeId:    adj.RemoteNodeID,
+			IngressTransport: adj.Transport,
+		}, envelope)
 	default:
 		// 其他 Envelope 类型由后续阶段的处理逻辑覆盖。
 	}

@@ -25,7 +25,7 @@ func (s *clientWSSession) handleStreamFrame(ctx context.Context, req *internalpr
 	if err := s.http.authorizer.CreateMessage(ctx, actorFromPrincipal(s.principal), target); err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
-	frame := store.StreamFrame{StreamID: append([]byte(nil), req.StreamId...), Kind: req.Kind, Epoch: req.Epoch, Offset: req.Offset, Window: req.Window, Payload: append([]byte(nil), req.Payload...), Sender: s.principal.User.Key(), Recipient: target, SourceSession: s.sessionRef, TargetSession: streamTargetSession(req.TargetSession)}
+	frame := store.StreamFrame{StreamID: req.StreamId, Kind: req.Kind, Epoch: req.Epoch, Offset: req.Offset, Window: req.Window, Payload: req.Payload, Sender: s.principal.User.Key(), Recipient: target, SourceSession: s.sessionRef, TargetSession: streamTargetSession(req.TargetSession)}
 	if err := s.http.service.DispatchStreamFrame(ctx, frame); err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}

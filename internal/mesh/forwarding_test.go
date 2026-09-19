@@ -47,6 +47,31 @@ func testTransientForwardedPacket(packetID uint64, sourceNodeID, targetNodeID in
 	}
 }
 
+func TestValidateForwardedPacketAcceptsDedicatedAndLegacyStreamRepresentations(t *testing.T) {
+	base := ForwardedPacket{PacketId: 1, SourceNodeId: 1, TargetNodeId: 2, TrafficClass: TrafficPointToPointStream, TtlHops: DefaultTTLHops}
+	for _, tc := range []struct {
+		name    string
+		payload []byte
+		legacy  *TransientPacket
+		wantErr bool
+	}{
+		{name: "dedicated", payload: []byte("encoded stream frame")},
+		{name: "legacy relay", legacy: &TransientPacket{Body: append([]byte(nil), pointToPointStreamMagic...)}},
+		{name: "missing", wantErr: true},
+		{name: "ambiguous", payload: []byte("encoded stream frame"), legacy: &TransientPacket{Body: append([]byte(nil), pointToPointStreamMagic...)}, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			packet := base
+			packet.Payload = tc.payload
+			packet.TransientPacket = tc.legacy
+			err := validateForwardedPacket(&packet)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("validate stream representation: err=%v wantErr=%v", err, tc.wantErr)
+			}
+		})
+	}
+}
+
 func TestEngineDeliversLocalPacket(t *testing.T) {
 	t.Parallel()
 

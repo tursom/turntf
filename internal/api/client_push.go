@@ -266,7 +266,7 @@ func (s *clientWSSession) pushStreamFrame(frame store.StreamFrame) error {
 			Sender:        &internalproto.UserRef{NodeId: frame.Sender.NodeID, UserId: frame.Sender.UserID},
 			Recipient:     &internalproto.UserRef{NodeId: frame.Recipient.NodeID, UserId: frame.Recipient.UserID},
 			SourceSession: &internalproto.SessionRef{ServingNodeId: frame.SourceSession.ServingNodeID, SessionId: frame.SourceSession.SessionID},
-			StreamId:      append([]byte(nil), frame.StreamID...), Kind: frame.Kind, Epoch: frame.Epoch, Offset: frame.Offset, Window: frame.Window, Payload: append([]byte(nil), frame.Payload...),
+			StreamId:      frame.StreamID, Kind: frame.Kind, Epoch: frame.Epoch, Offset: frame.Offset, Window: frame.Window, Payload: frame.Payload,
 		},
 	}})
 }

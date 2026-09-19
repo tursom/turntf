@@ -89,6 +89,10 @@ var managerRuntimeEpochCounter atomic.Uint64
 var errSessionClosed = errors.New("session closed")
 var errClockProtectionRejected = errors.New("clock protection rejected")
 
+type streamFrameHandler struct {
+	handle func(store.StreamFrame) bool
+}
+
 // Manager 是集群模块的核心编排器，管理所有对等节点连接、状态复制、
 // 时钟同步和网状路由。每个节点只有一个Manager实例。
 //
@@ -155,11 +159,11 @@ type Manager struct {
 	// clockStateTransitions 统计各状态转移的发生次数。
 	clockStateTransitions map[clockStateTransitionKey]uint64
 	// timeSyncer 是可选的自定义时间同步函数，替代默认实现。
-	timeSyncer func(*session) (timeSyncSample, error)
+	timeSyncer    func(*session) (timeSyncSample, error)
+	streamMu      sync.Mutex
+	streamEpoch   map[string]uint64
+	streamHandler atomic.Pointer[streamFrameHandler]
 	// transientHandler 处理投递到本节点的瞬态数据包。
-	streamMu         sync.Mutex
-	streamEpoch      map[string]uint64
-	streamHandler    func(store.StreamFrame) bool
 	transientHandler func(store.TransientPacket) bool
 	// consensusHandler 处理经 mesh transport 到达的共识消息；具体 Raft 实现由上层注入。
 	consensusHandler func(context.Context, int64, *mesh.ConsensusMessage) error
@@ -519,9 +523,11 @@ func (m *Manager) SetStreamHandler(handler func(store.StreamFrame) bool) {
 	if m == nil {
 		return
 	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.streamHandler = handler
+	if handler == nil {
+		m.streamHandler.Store(nil)
+		return
+	}
+	m.streamHandler.Store(&streamFrameHandler{handle: handler})
 }
 
 // RouteStreamFrame routes a logical stream frame through the mesh stream envelope.
@@ -539,10 +545,8 @@ func (m *Manager) RouteStreamFrame(ctx context.Context, frame store.StreamFrame)
 }
 
 func (m *Manager) deliverStreamLocal(frame store.StreamFrame) bool {
-	m.mu.Lock()
-	handler := m.streamHandler
-	m.mu.Unlock()
-	return handler != nil && handler(frame)
+	handler := m.streamHandler.Load()
+	return handler != nil && handler.handle(frame)
 }
 
 func (m *Manager) SetTransientHandler(handler func(store.TransientPacket) bool) {

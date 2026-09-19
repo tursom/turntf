@@ -9,6 +9,28 @@ import (
 	"time"
 )
 
+func TestRuntimeDeliversLegacyRelayStreamPacketWithoutDecodingPayload(t *testing.T) {
+	delivered := false
+	runtime := &Runtime{forwardedPacketHandler: func(_ context.Context, packet *ForwardedPacket) error {
+		delivered = packet.GetTransientPacket() != nil
+		return nil
+	}}
+	packet := &ForwardedPacket{
+		PacketId:        1,
+		SourceNodeId:    1,
+		TargetNodeId:    2,
+		TrafficClass:    TrafficPointToPointStream,
+		TtlHops:         DefaultTTLHops,
+		TransientPacket: &TransientPacket{Body: append([]byte(nil), pointToPointStreamMagic...)},
+	}
+	if err := runtime.handleLocalForwardedPacket(context.Background(), packet); err != nil {
+		t.Fatalf("deliver legacy relay stream packet: %v", err)
+	}
+	if !delivered {
+		t.Fatal("legacy relay stream packet did not reach transient handler")
+	}
+}
+
 type fakeConn struct {
 	kind       TransportKind
 	hint       string

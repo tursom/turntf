@@ -1,6 +1,7 @@
 package cluster
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"testing"
@@ -38,6 +39,42 @@ func TestNodeSessionLookupDoesNotQueryOtherPresenceNodes(t *testing.T) {
 	items, err = m.ResolveUserSessionsAtNode(context.Background(), user, testNodeID(99))
 	if err != nil || len(items) != 0 {
 		t.Fatalf("unknown node: %v %v", items, err)
+	}
+}
+
+func TestDedicatedStreamFrameRoutesAcrossMesh(t *testing.T) {
+	source, target := startMeshManagerPair(t, true)
+	waitForMeshRoute(t, source, target.cfg.NodeID, mesh.TrafficPointToPointStream)
+
+	delivered := make(chan store.StreamFrame, 1)
+	target.SetStreamHandler(func(frame store.StreamFrame) bool {
+		delivered <- frame
+		return true
+	})
+	streamID := []byte("stream-id-000001")
+	frame := store.StreamFrame{
+		StreamID:      streamID,
+		Kind:          3,
+		Epoch:         4,
+		Offset:        5,
+		Window:        6,
+		Payload:       []byte("dedicated-stream-payload"),
+		Sender:        store.UserKey{NodeID: source.cfg.NodeID, UserID: 101},
+		Recipient:     store.UserKey{NodeID: target.cfg.NodeID, UserID: 202},
+		SourceSession: store.SessionRef{ServingNodeID: source.cfg.NodeID, SessionID: "source-session"},
+		TargetSession: store.SessionRef{ServingNodeID: target.cfg.NodeID, SessionID: "target-session"},
+	}
+	if err := source.RouteStreamFrame(context.Background(), frame); err != nil {
+		t.Fatalf("route stream frame: %v", err)
+	}
+
+	select {
+	case got := <-delivered:
+		if !bytes.Equal(got.StreamID, frame.StreamID) || !bytes.Equal(got.Payload, frame.Payload) || got.Kind != frame.Kind || got.Epoch != frame.Epoch || got.Offset != frame.Offset || got.Window != frame.Window || got.Sender != frame.Sender || got.Recipient != frame.Recipient || got.SourceSession != frame.SourceSession || got.TargetSession != frame.TargetSession {
+			t.Fatalf("unexpected delivered stream frame: got=%+v want=%+v", got, frame)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for dedicated stream frame")
 	}
 }
 

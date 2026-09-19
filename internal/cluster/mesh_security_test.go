@@ -1,6 +1,7 @@
 package cluster
 
 import (
+	"bytes"
 	"errors"
 	"testing"
 
@@ -297,27 +298,64 @@ func TestMeshEnvelopeAuthenticatorVerifyRejectsMalformedHMACFrames(t *testing.T)
 	}
 }
 
+func TestMeshEnvelopeAuthenticatorReusesAppendedFrameBuffers(t *testing.T) {
+	authenticator := newMeshEnvelopeAuthenticator("mesh-secret")
+	envelope := &mesh.ClusterEnvelope{Body: &mesh.ClusterEnvelope_ForwardedPacket{
+		ForwardedPacket: &mesh.ForwardedPacket{
+			PacketId:     1,
+			SourceNodeId: 1,
+			TargetNodeId: 2,
+			TrafficClass: mesh.TrafficPointToPointStream,
+			TtlHops:      mesh.DefaultTTLHops,
+			Payload:      bytes.Repeat([]byte("s"), 4<<10),
+		},
+	}}
+	encoded, err := meshEnvelopeBytes(envelope)
+	if err != nil {
+		t.Fatalf("mesh envelope bytes: %v", err)
+	}
+	withCapacity := make([]byte, len(encoded), len(encoded)+34)
+	copy(withCapacity, encoded)
+	signed, err := authenticator.Sign(envelope, withCapacity)
+	if err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+	if &signed[0] != &withCapacity[0] {
+		t.Fatal("sign allocated despite sufficient trailer capacity")
+	}
+	stripped, signature, err := stripMeshEnvelopeHMAC(signed)
+	if err != nil {
+		t.Fatalf("strip hmac: %v", err)
+	}
+	if &stripped[0] != &signed[0] {
+		t.Fatal("appended hmac verification path copied the payload")
+	}
+	if len(signature) != 32 || !bytes.Equal(stripped, encoded) {
+		t.Fatalf("unexpected stripped frame: payload=%d signature=%d", len(stripped), len(signature))
+	}
+}
+
 func BenchmarkMeshEnvelopeAuthenticatorSignVerify(b *testing.B) {
 	authenticator := newMeshEnvelopeAuthenticator("mesh-secret")
 	if authenticator == nil {
 		b.Fatal("expected mesh authenticator")
 	}
-	envelope := &mesh.ClusterEnvelope{Body: &mesh.ClusterEnvelope_ConnectivityRumor{
-		ConnectivityRumor: &mesh.MeshConnectivityRumor{
-			ConnectivityRumor: &internalproto.NodeConnectivityRumor{
-				TargetNodeId:         81,
-				TargetRuntimeEpoch:   82,
-				ReporterNodeId:       83,
-				ReporterRuntimeEpoch: 84,
-				ObservedAtMs:         85,
-				Reason:               "bench",
-			},
+	envelope := &mesh.ClusterEnvelope{Body: &mesh.ClusterEnvelope_ForwardedPacket{
+		ForwardedPacket: &mesh.ForwardedPacket{
+			PacketId:     81,
+			SourceNodeId: 82,
+			TargetNodeId: 83,
+			TrafficClass: mesh.TrafficPointToPointStream,
+			TtlHops:      mesh.DefaultTTLHops,
+			Payload:      bytes.Repeat([]byte("s"), 4<<10),
 		},
 	}}
-	encoded, err := meshEnvelopeBytes(envelope)
+	base, err := meshEnvelopeBytes(envelope)
 	if err != nil {
 		b.Fatalf("mesh envelope bytes: %v", err)
 	}
+	encoded := make([]byte, len(base), len(base)+34)
+	copy(encoded, base)
 	signed, err := authenticator.Sign(envelope, encoded)
 	if err != nil {
 		b.Fatalf("sign envelope: %v", err)
@@ -327,6 +365,7 @@ func BenchmarkMeshEnvelopeAuthenticatorSignVerify(b *testing.B) {
 		b.Fatalf("unmarshal signed envelope: %v", err)
 	}
 
+	b.SetBytes(4 << 10)
 	b.Run("sign", func(b *testing.B) {
 		b.ReportAllocs()
 		for i := 0; i < b.N; i++ {

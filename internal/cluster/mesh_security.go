@@ -5,7 +5,9 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"hash"
 	"strings"
+	"sync"
 
 	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
@@ -24,7 +26,8 @@ const meshEnvelopeHMACFieldNumber = 14
 // 与传统信封签名不同，此实现使用protowire级别操作，
 // 在已序列化的字节流上附加/剥离HMAC字段，避免重新序列化。
 type meshEnvelopeAuthenticator struct {
-	secret []byte
+	secret  []byte
+	macPool sync.Pool
 }
 
 // newMeshEnvelopeAuthenticator 创建网格信封认证器。
@@ -34,7 +37,10 @@ func newMeshEnvelopeAuthenticator(secret string) *meshEnvelopeAuthenticator {
 	if trimmed == "" {
 		return nil
 	}
-	return &meshEnvelopeAuthenticator{secret: []byte(trimmed)}
+	key := []byte(trimmed)
+	authenticator := &meshEnvelopeAuthenticator{secret: key}
+	authenticator.macPool.New = func() any { return hmac.New(sha256.New, key) }
+	return authenticator
 }
 
 // Sign 对网格信封进行签名。encoded参数是已序列化（不含HMAC）的字节。
@@ -55,8 +61,12 @@ func (a *meshEnvelopeAuthenticator) Sign(envelope *mesh.ClusterEnvelope, encoded
 	if err != nil {
 		return nil, err
 	}
-	signed := make([]byte, len(encoded), len(encoded)+protowire.SizeTag(meshEnvelopeHMACFieldNumber)+protowire.SizeBytes(len(signature)))
-	copy(signed, encoded)
+	overhead := protowire.SizeTag(meshEnvelopeHMACFieldNumber) + protowire.SizeBytes(len(signature))
+	signed := encoded
+	if cap(signed)-len(signed) < overhead {
+		signed = make([]byte, len(encoded), len(encoded)+overhead)
+		copy(signed, encoded)
+	}
 	signed = protowire.AppendTag(signed, meshEnvelopeHMACFieldNumber, protowire.BytesType)
 	signed = protowire.AppendBytes(signed, signature)
 	return signed, nil
@@ -104,7 +114,9 @@ func (a *meshEnvelopeAuthenticator) signatureForPayload(payload []byte) ([]byte,
 	if a == nil {
 		return nil, errors.New("mesh authenticator cannot be nil")
 	}
-	mac := hmac.New(sha256.New, a.secret)
+	mac := a.macPool.Get().(hash.Hash)
+	mac.Reset()
+	defer a.macPool.Put(mac)
 	if _, err := mac.Write(payload); err != nil {
 		return nil, fmt.Errorf("write mesh envelope hmac: %w", err)
 	}
@@ -132,19 +144,20 @@ func stripMeshEnvelopeHMAC(raw []byte) ([]byte, []byte, error) {
 	if len(raw) == 0 {
 		return nil, nil, errors.New("mesh envelope raw bytes cannot be empty")
 	}
-	stripped := make([]byte, 0, len(raw))
 	var signature []byte
-	for len(raw) > 0 {
-		fieldNum, wireType, tagLen := protowire.ConsumeTag(raw)
+	hmacStart := -1
+	hmacEnd := -1
+	for offset := 0; offset < len(raw); {
+		field := raw[offset:]
+		fieldNum, wireType, tagLen := protowire.ConsumeTag(field)
 		if tagLen < 0 {
 			return nil, nil, fmt.Errorf("consume mesh envelope tag: %v", protowire.ParseError(tagLen))
 		}
-		fieldLen := protowire.ConsumeFieldValue(fieldNum, wireType, raw[tagLen:])
+		fieldLen := protowire.ConsumeFieldValue(fieldNum, wireType, field[tagLen:])
 		if fieldLen < 0 {
 			return nil, nil, fmt.Errorf("consume mesh envelope field %d: %v", fieldNum, protowire.ParseError(fieldLen))
 		}
 		totalLen := tagLen + fieldLen
-		fieldBytes := raw[:totalLen]
 		if fieldNum == meshEnvelopeHMACFieldNumber {
 			if signature != nil {
 				return nil, nil, errors.New("mesh envelope hmac cannot repeat")
@@ -152,21 +165,27 @@ func stripMeshEnvelopeHMAC(raw []byte) ([]byte, []byte, error) {
 			if wireType != protowire.BytesType {
 				return nil, nil, errors.New("mesh envelope hmac must use bytes wire type")
 			}
-			value, valueLen := protowire.ConsumeBytes(raw[tagLen:])
+			value, valueLen := protowire.ConsumeBytes(field[tagLen:])
 			if valueLen < 0 {
 				return nil, nil, fmt.Errorf("consume mesh envelope hmac: %v", protowire.ParseError(valueLen))
 			}
 			if len(value) == 0 {
 				return nil, nil, errors.New("mesh envelope hmac cannot be empty")
 			}
-			signature = append([]byte(nil), value...)
-		} else {
-			stripped = append(stripped, fieldBytes...)
+			signature = value
+			hmacStart = offset
+			hmacEnd = offset + totalLen
 		}
-		raw = raw[totalLen:]
+		offset += totalLen
 	}
 	if len(signature) == 0 {
 		return nil, nil, errors.New("mesh envelope hmac cannot be empty")
 	}
+	if hmacEnd == len(raw) {
+		return raw[:hmacStart], signature, nil
+	}
+	stripped := make([]byte, 0, len(raw)-(hmacEnd-hmacStart))
+	stripped = append(stripped, raw[:hmacStart]...)
+	stripped = append(stripped, raw[hmacEnd:]...)
 	return stripped, signature, nil
 }

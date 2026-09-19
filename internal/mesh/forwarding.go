@@ -102,18 +102,25 @@ type seenKey struct {
 
 // validateForwardedPacket 验证转发数据包的格式合法性：
 //   - 瞬时交互（TransientInteractive）必须携带 TransientPacket 且不能有 Payload。
-//   - 非瞬时交互必须携带 Payload 且不能有 TransientPacket。
+//   - 点对点流同时接受 dedicated Payload 和旧 Relay TransientPacket，两者必须二选一。
+//   - 其他流量必须携带 Payload 且不能有 TransientPacket。
 func validateForwardedPacket(packet *ForwardedPacket) error {
 	if packet == nil {
 		return fmt.Errorf("mesh: forwarded packet cannot be nil")
 	}
 	switch packet.TrafficClass {
-	case TrafficTransientInteractive, TrafficPointToPointStream:
+	case TrafficTransientInteractive:
 		if packet.GetTransientPacket() == nil {
 			return fmt.Errorf("mesh: transient forwarded packet must carry transient_packet")
 		}
 		if len(packet.GetPayload()) != 0 {
 			return fmt.Errorf("mesh: transient forwarded packet must not carry payload bytes")
+		}
+	case TrafficPointToPointStream:
+		hasPayload := len(packet.GetPayload()) != 0
+		hasTransient := packet.GetTransientPacket() != nil
+		if hasPayload == hasTransient {
+			return fmt.Errorf("mesh: stream forwarded packet must carry exactly one payload representation")
 		}
 	default:
 		if packet.GetTransientPacket() != nil {

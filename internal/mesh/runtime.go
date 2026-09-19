@@ -45,6 +45,11 @@ var (
 // （相同 protobuf 消息每次编码结果一致），便于测试和签名验证。
 var envelopeMarshalOptions = proto.MarshalOptions{Deterministic: true}
 
+// The authenticated cluster signer appends a one-byte field tag, a one-byte
+// length, and a SHA-256 HMAC. Reserving that tail avoids copying every encoded
+// envelope while remaining invisible to codecs and signers that do not use it.
+const envelopeSignatureCapacity = 34
+
 // EnvelopeCodec 接口定义了 ClusterEnvelope 消息的编解码器。
 //
 // 默认实现使用 Protobuf 序列化；测试可注入伪造编解码器以验证
@@ -144,7 +149,8 @@ type DialSeed struct {
 type protoCodec struct{}
 
 func (protoCodec) Encode(envelope *ClusterEnvelope) ([]byte, error) {
-	return envelopeMarshalOptions.Marshal(envelope)
+	encoded := make([]byte, 0, proto.Size(envelope)+envelopeSignatureCapacity)
+	return envelopeMarshalOptions.MarshalAppend(encoded, envelope)
 }
 
 func (protoCodec) Decode(data []byte) (*ClusterEnvelope, error) {
@@ -656,7 +662,13 @@ func (r *Runtime) RouteEnvelope(ctx context.Context, targetNodeID int64, envelop
 	if err != nil {
 		return err
 	}
-	return r.ForwardPacket(ctx, &ForwardedPacket{
+	if r.engine == nil {
+		return ErrRuntimeClosed
+	}
+	// This packet is created here and cannot be observed by the caller, so it
+	// can enter the engine directly. ForwardPacket keeps its defensive clone
+	// for externally supplied packets.
+	return r.engine.Forward(ctx, &ForwardedPacket{
 		PacketId:     r.packetID.Add(1),
 		SourceNodeId: r.localNodeID,
 		TargetNodeId: targetNodeID,
@@ -762,7 +774,7 @@ func (r *Runtime) handleLocalForwardedPacket(ctx context.Context, packet *Forwar
 	if packet == nil {
 		return nil
 	}
-	if packet.TrafficClass != TrafficTransientInteractive {
+	if packet.GetTransientPacket() == nil {
 		envelope, err := r.codec.Decode(packet.Payload)
 		if err != nil {
 			return err

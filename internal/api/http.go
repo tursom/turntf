@@ -241,6 +241,11 @@ func (h *HTTP) Close() error {
 
 // routes 注册所有 REST API 路由（使用 Go 1.22+ 模式匹配语法）。
 func (h *HTTP) routes() {
+	h.mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	})
 	h.mux.HandleFunc("POST /kv/databases", h.handleKVCreateDatabase)
 	h.mux.HandleFunc("GET /kv/{database}/keys/{key}", h.handleKVGet)
 	h.mux.HandleFunc("GET /kv/{database}/watch", h.handleKVWatch)

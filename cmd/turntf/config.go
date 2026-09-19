@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -685,7 +686,14 @@ func validateClusterFileConfig(c *cluster.Config) error {
 	}
 	validating := *c
 	if validating.NodeID == 0 {
-		validating.NodeID = 1
+		if validating.KVConsensus.Enabled && len(validating.KVConsensus.Voters) > 0 {
+			// The durable store identity is loaded after config validation. Use a
+			// voter only for structural validation; serve() replaces it with the
+			// persisted node ID before starting the manager.
+			validating.NodeID, _ = strconv.ParseInt(validating.KVConsensus.Voters[0], 10, 64)
+		} else {
+			validating.NodeID = 1
+		}
 	}
 	if err := validating.Validate(); err != nil {
 		return err

@@ -15,6 +15,8 @@
 
 core 将帧编码为 `MeshStreamFrame`，分类为 `TRAFFIC_POINT_TO_POINT_STREAM`，沿 mesh envelope forwarding path 转发。该消息使用 `stream_id`、`epoch`、`offset` 和目标 `SessionRef` 标识逻辑流；不填充 `TransientPacket`。目标节点的 registry 先过滤旧 epoch，再注入指定客户端会话。
 
+目标节点存在多条已建立的物理邻接时，direct stream fast path 只在 `Open` 首次选择邻接，并将 `(target, stream_id, epoch)` 固定到该连接；同 epoch 的 `Data`、`Ack` 和其他流帧不因 RTT/jitter 分数变化而换路。`Resume` 进入新 epoch 后才允许重新选择路径。固定邻接失效或发送失败时错误直接返回，由 TUN 发起 `Resume` 切换 epoch；当前 epoch 不回退到其他邻接。`Close`、runtime 关闭会清理 affinity，运行时同时设置固定容量上限，避免缺失 `Close` 时状态无界增长。未携带 `stream_id` 的兼容帧保持原有路由行为。
+
 ## TUN
 
 `turntf-tun` 的 `stream` 模式在发送 IP packet 前等待 `OpenAck`，发送窗口由累计 ACK 和 credit 控制。握手、发送或目标会话不可用时回到原有 Relay 模式；Relay 仍保持原有兼容行为。

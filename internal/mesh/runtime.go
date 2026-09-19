@@ -48,7 +48,21 @@ var envelopeMarshalOptions = proto.MarshalOptions{Deterministic: true}
 // The authenticated cluster signer appends a one-byte field tag, a one-byte
 // length, and a SHA-256 HMAC. Reserving that tail avoids copying every encoded
 // envelope while remaining invisible to codecs and signers that do not use it.
-const envelopeSignatureCapacity = 34
+const (
+	envelopeSignatureCapacity = 34
+
+	// The hard limit bounds memory when peers disappear without sending Close.
+	directStreamAffinityLimit = 64 * 1024
+)
+
+const (
+	streamFrameKindOpen uint32 = iota + 1
+	streamFrameKindOpenAck
+	streamFrameKindResume
+	streamFrameKindData
+	streamFrameKindAck
+	streamFrameKindClose
+)
 
 // EnvelopeCodec 接口定义了 ClusterEnvelope 消息的编解码器。
 //
@@ -289,6 +303,10 @@ type Runtime struct {
 	adjByConn  map[TransportConn]*Adjacency                  // 按连接对象索引的邻接表
 	adjByKey   map[adjacencyKey]map[TransportConn]*Adjacency // 按（节点ID+传输+提示）索引的邻接表
 	adjByRoute map[routeAdjacencyKey][]*Adjacency            // 按（节点ID+传输）索引的路由候选列表
+	// directStreamAffinity pins one logical stream epoch to one physical
+	// adjacency. It remains present after adjacency loss so the epoch fails
+	// instead of silently moving to another path.
+	directStreamAffinity map[directStreamAffinityKey]directStreamAffinityEntry
 
 	// ---- 生成号与拓扑 ----
 	generation        uint64                         // 本地当前生成号（每次拓扑变更递增）
@@ -317,6 +335,17 @@ type adjacencyKey struct {
 type routeAdjacencyKey struct {
 	nodeID    int64
 	transport TransportKind
+}
+
+type directStreamAffinityKey struct {
+	targetNodeID int64
+	streamID     string
+}
+
+type directStreamAffinityEntry struct {
+	epoch uint64
+	// A nil adjacency pins this epoch to the forwarding path selected by Open.
+	adj *Adjacency
 }
 
 // floodKey 用于记录已处理的拓扑更新洪水广播，防止拓扑更新在网络中
@@ -509,6 +538,7 @@ func NewRuntime(opts RuntimeOptions) (*Runtime, error) {
 		adjByConn:              make(map[TransportConn]*Adjacency),
 		adjByKey:               make(map[adjacencyKey]map[TransportConn]*Adjacency),
 		adjByRoute:             make(map[routeAdjacencyKey][]*Adjacency),
+		directStreamAffinity:   make(map[directStreamAffinityKey]directStreamAffinityEntry),
 		knownGeneration:        make(map[int64]uint64),
 		seenFlood:              make(map[floodKey]struct{}),
 		lastUpdate:             make(map[int64]*TopologyUpdate),
@@ -665,7 +695,21 @@ func (r *Runtime) RouteEnvelope(ctx context.Context, targetNodeID int64, envelop
 		return ErrRuntimeClosed
 	}
 	if trafficClass == TrafficPointToPointStream {
-		if adj := r.bestDirectAdjacency(targetNodeID); adj != nil {
+		frame := envelope.GetStreamFrame()
+		if frame != nil && len(frame.StreamId) == 16 && frame.Kind >= streamFrameKindOpen && frame.Kind <= streamFrameKindClose {
+			key := directStreamAffinityKey{targetNodeID: targetNodeID, streamID: string(frame.StreamId)}
+			if frame.Kind == streamFrameKindClose {
+				defer r.clearDirectStreamAffinity(key, frame.Epoch)
+			}
+			adj, err := r.directStreamAdjacency(key, frame)
+			if err != nil {
+				return err
+			}
+			if adj != nil {
+				return r.sendEnvelopeCtx(ctx, adj.Conn, envelope, r.helloTimeout)
+			}
+		} else if adj := r.bestDirectAdjacency(targetNodeID); adj != nil {
+			// Preserve the pre-affinity behavior for legacy or malformed frames.
 			return r.sendEnvelopeCtx(ctx, adj.Conn, envelope, r.helloTimeout)
 		}
 	}
@@ -782,6 +826,11 @@ func (r *Runtime) bestDirectAdjacency(targetNodeID int64) *Adjacency {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	return r.bestDirectAdjacencyLocked(targetNodeID)
+}
+
+// bestDirectAdjacencyLocked requires r.mu to be held.
+func (r *Runtime) bestDirectAdjacencyLocked(targetNodeID int64) *Adjacency {
 	var best *Adjacency
 	var bestScore int64
 	for key, candidates := range r.adjByRoute {
@@ -806,6 +855,52 @@ func (r *Runtime) bestDirectAdjacency(targetNodeID int64) *Adjacency {
 		}
 	}
 	return best
+}
+
+// directStreamAdjacency returns the adjacency pinned to this logical stream
+// epoch. Resume is the only frame allowed to replace an existing epoch.
+func (r *Runtime) directStreamAdjacency(key directStreamAffinityKey, frame *StreamFrame) (*Adjacency, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed {
+		return nil, ErrRuntimeClosed
+	}
+
+	entry, exists := r.directStreamAffinity[key]
+	if exists && frame.Kind == streamFrameKindResume && frame.Epoch > entry.epoch {
+		delete(r.directStreamAffinity, key)
+		exists = false
+	}
+	if exists {
+		if entry.epoch != frame.Epoch {
+			return nil, fmt.Errorf("mesh: direct stream path epoch %d does not match affinity epoch %d: %w", frame.Epoch, entry.epoch, ErrNoRoute)
+		}
+		if entry.adj == nil {
+			return nil, nil
+		}
+		entry.adj.mu.Lock()
+		established := entry.adj.established
+		entry.adj.mu.Unlock()
+		if !established {
+			return nil, fmt.Errorf("mesh: direct stream affinity is no longer established: %w", ErrNoRoute)
+		}
+		return entry.adj, nil
+	}
+
+	if len(r.directStreamAffinity) >= directStreamAffinityLimit {
+		return nil, fmt.Errorf("mesh: direct stream affinity capacity reached: %w", ErrNoRoute)
+	}
+	adj := r.bestDirectAdjacencyLocked(key.targetNodeID)
+	r.directStreamAffinity[key] = directStreamAffinityEntry{epoch: frame.Epoch, adj: adj}
+	return adj, nil
+}
+
+func (r *Runtime) clearDirectStreamAffinity(key directStreamAffinityKey, epoch uint64) {
+	r.mu.Lock()
+	if entry, ok := r.directStreamAffinity[key]; ok && entry.epoch == epoch {
+		delete(r.directStreamAffinity, key)
+	}
+	r.mu.Unlock()
 }
 
 // handleLocalForwardedPacket 是转发引擎传递到本节点数据包的处理入口。
@@ -952,6 +1047,7 @@ func (r *Runtime) Close() error {
 	}
 	r.closed = true
 	cancel := r.cancel
+	clear(r.directStreamAffinity)
 	conns := make([]TransportConn, 0, len(r.adjByConn))
 	for conn := range r.adjByConn {
 		conns = append(conns, conn)

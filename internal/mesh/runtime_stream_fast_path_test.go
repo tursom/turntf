@@ -9,15 +9,34 @@ import (
 )
 
 func testStreamEnvelope() *ClusterEnvelope {
+	return testStreamEnvelopeFor(streamFrameKindOpen, 1)
+}
+
+func testStreamEnvelopeFor(kind uint32, epoch uint64) *ClusterEnvelope {
 	return &ClusterEnvelope{Body: &ClusterEnvelope_StreamFrame{StreamFrame: &StreamFrame{
 		StreamId: []byte("0123456789abcdef"),
-		Epoch:    1,
+		Kind:     kind,
+		Epoch:    epoch,
 		Payload:  []byte("stream-payload"),
 	}}}
 }
 
+func setTestAdjacencyScore(adj *Adjacency, rtt, jitter float64) {
+	adj.mu.Lock()
+	adj.rttEWMA = rtt
+	adj.jitterEWMA = jitter
+	adj.mu.Unlock()
+}
+
 func registerTestAdjacency(runtime *Runtime, conn TransportConn, remoteNodeID int64, transport TransportKind) *Adjacency {
 	return runtime.registerAdjacency(conn, transport, &NodeHello{NodeId: remoteNodeID}, false)
+}
+
+func newDirectStreamTestRuntime(t testing.TB, adapters ...TransportAdapter) *Runtime {
+	t.Helper()
+	return newTestRuntime(t, 1, adapters[0], func(opts *RuntimeOptions) {
+		opts.Adapters = adapters
+	})
 }
 
 func receiveTestEnvelope(t testing.TB, conn TransportConn) *ClusterEnvelope {
@@ -70,6 +89,24 @@ func TestRuntimeRoutesDirectStreamAsBareEnvelope(t *testing.T) {
 	}
 }
 
+func TestRuntimeStreamWithoutIDUsesOriginalDirectPath(t *testing.T) {
+	runtime := newTestRuntime(t, 1, newFakeAdapter(TransportLibP2P))
+	connSource, connTarget := newFakeConnPair(TransportLibP2P, "source", "target")
+	registerTestAdjacency(runtime, connSource, 2, TransportLibP2P)
+	envelope := testStreamEnvelopeFor(streamFrameKindOpen, 1)
+	envelope.GetStreamFrame().StreamId = nil
+
+	if err := runtime.RouteEnvelope(context.Background(), 2, envelope); err != nil {
+		t.Fatalf("route stream without id: %v", err)
+	}
+	if wire := receiveTestEnvelope(t, connTarget); wire.GetStreamFrame() == nil || wire.GetForwardedPacket() != nil {
+		t.Fatalf("stream without id changed original direct path: %T", wire.Body)
+	}
+	if got := len(runtime.directStreamAffinity); got != 0 {
+		t.Fatalf("stream without id created %d affinities", got)
+	}
+}
+
 func TestRuntimeFallsBackForStreamWithoutEstablishedDirectAdjacency(t *testing.T) {
 	runtime := newTestRuntime(t, 1, newFakeAdapter(TransportLibP2P))
 	connToTransit, transitConn := newFakeConnPair(TransportLibP2P, "source", "transit")
@@ -97,6 +134,36 @@ func TestRuntimeFallsBackForStreamWithoutEstablishedDirectAdjacency(t *testing.T
 	inner, err := runtime.codec.Decode(packet.Payload)
 	if err != nil || inner.GetStreamFrame() == nil {
 		t.Fatalf("decode fallback stream payload: envelope=%v err=%v", inner, err)
+	}
+}
+
+func TestRuntimeKeepsForwardingAffinityWhenDirectAdjacencyAppears(t *testing.T) {
+	runtime := newTestRuntime(t, 1, newFakeAdapter(TransportLibP2P))
+	connToTransit, transitConn := newFakeConnPair(TransportLibP2P, "source", "transit")
+	registerTestAdjacency(runtime, connToTransit, 2, TransportLibP2P)
+	for _, nodeID := range []int64{1, 2, 3} {
+		applyRuntimeTestNode(runtime, nodeID, DefaultForwardingPolicy(1), TransportLibP2P)
+	}
+	applyRuntimeTestLink(runtime, 1, 2, 1, TransportLibP2P)
+	applyRuntimeTestLink(runtime, 2, 3, 1, TransportLibP2P)
+
+	if err := runtime.RouteEnvelope(context.Background(), 3, testStreamEnvelopeFor(streamFrameKindOpen, 1)); err != nil {
+		t.Fatalf("route forwarded open: %v", err)
+	}
+	_ = receiveTestEnvelope(t, transitConn)
+
+	directConn, _ := newFakeConnPair(TransportWebSocket, "source-direct", "target-direct")
+	directSends := 0
+	directConn.sendHook = func([]byte) error { directSends++; return nil }
+	registerTestAdjacency(runtime, directConn, 3, TransportWebSocket)
+	if err := runtime.RouteEnvelope(context.Background(), 3, testStreamEnvelopeFor(streamFrameKindData, 1)); err != nil {
+		t.Fatalf("route forwarded data: %v", err)
+	}
+	if directSends != 0 {
+		t.Fatalf("same epoch switched from forwarding to direct %d times", directSends)
+	}
+	if packet := receiveTestEnvelope(t, transitConn).GetForwardedPacket(); packet == nil {
+		t.Fatal("same epoch data did not remain on forwarding path")
 	}
 }
 
@@ -218,6 +285,143 @@ func TestRuntimeDirectStreamSendErrorDoesNotFallback(t *testing.T) {
 	}
 	if attempts != 1 {
 		t.Fatalf("expected exactly one send attempt, got %d", attempts)
+	}
+}
+
+func TestRuntimeDirectStreamAffinityIgnoresDynamicScoreChanges(t *testing.T) {
+	runtime := newDirectStreamTestRuntime(t, newFakeAdapter(TransportLibP2P), newFakeAdapter(TransportWebSocket))
+	primary, _ := newFakeConnPair(TransportLibP2P, "primary", "target-primary")
+	alternate, _ := newFakeConnPair(TransportWebSocket, "alternate", "target-alternate")
+	primaryAdj := registerTestAdjacency(runtime, primary, 2, TransportLibP2P)
+	alternateAdj := registerTestAdjacency(runtime, alternate, 2, TransportWebSocket)
+	setTestAdjacencyScore(primaryAdj, 5, 1)
+	setTestAdjacencyScore(alternateAdj, 50, 10)
+
+	primarySends := 0
+	alternateSends := 0
+	primary.sendHook = func([]byte) error { primarySends++; return nil }
+	alternate.sendHook = func([]byte) error { alternateSends++; return nil }
+
+	if err := runtime.RouteEnvelope(context.Background(), 2, testStreamEnvelopeFor(streamFrameKindOpen, 1)); err != nil {
+		t.Fatalf("route open: %v", err)
+	}
+	setTestAdjacencyScore(primaryAdj, 100, 20)
+	setTestAdjacencyScore(alternateAdj, 1, 0)
+	for _, kind := range []uint32{streamFrameKindData, streamFrameKindAck} {
+		if err := runtime.RouteEnvelope(context.Background(), 2, testStreamEnvelopeFor(kind, 1)); err != nil {
+			t.Fatalf("route kind %d: %v", kind, err)
+		}
+	}
+	if primarySends != 3 || alternateSends != 0 {
+		t.Fatalf("score change moved stream: primary=%d alternate=%d", primarySends, alternateSends)
+	}
+}
+
+func TestRuntimeDirectStreamResumeReplacesAffinity(t *testing.T) {
+	runtime := newDirectStreamTestRuntime(t, newFakeAdapter(TransportLibP2P), newFakeAdapter(TransportWebSocket))
+	primary, _ := newFakeConnPair(TransportLibP2P, "primary", "target-primary")
+	alternate, _ := newFakeConnPair(TransportWebSocket, "alternate", "target-alternate")
+	primaryAdj := registerTestAdjacency(runtime, primary, 2, TransportLibP2P)
+	alternateAdj := registerTestAdjacency(runtime, alternate, 2, TransportWebSocket)
+	setTestAdjacencyScore(primaryAdj, 5, 0)
+	setTestAdjacencyScore(alternateAdj, 50, 0)
+
+	primarySends := 0
+	alternateSends := 0
+	primary.sendHook = func([]byte) error { primarySends++; return nil }
+	alternate.sendHook = func([]byte) error { alternateSends++; return nil }
+	if err := runtime.RouteEnvelope(context.Background(), 2, testStreamEnvelopeFor(streamFrameKindOpen, 1)); err != nil {
+		t.Fatalf("route open: %v", err)
+	}
+
+	setTestAdjacencyScore(primaryAdj, 100, 0)
+	setTestAdjacencyScore(alternateAdj, 1, 0)
+	if err := runtime.RouteEnvelope(context.Background(), 2, testStreamEnvelopeFor(streamFrameKindResume, 2)); err != nil {
+		t.Fatalf("route resume: %v", err)
+	}
+	if err := runtime.RouteEnvelope(context.Background(), 2, testStreamEnvelopeFor(streamFrameKindData, 2)); err != nil {
+		t.Fatalf("route resumed data: %v", err)
+	}
+	if primarySends != 1 || alternateSends != 2 {
+		t.Fatalf("resume did not replace affinity: primary=%d alternate=%d", primarySends, alternateSends)
+	}
+}
+
+func TestRuntimeDirectStreamCloseAndRuntimeCloseClearAffinity(t *testing.T) {
+	runtime := newTestRuntime(t, 1, newFakeAdapter(TransportLibP2P))
+	conn, _ := newFakeConnPair(TransportLibP2P, "source", "target")
+	registerTestAdjacency(runtime, conn, 2, TransportLibP2P)
+	if err := runtime.RouteEnvelope(context.Background(), 2, testStreamEnvelopeFor(streamFrameKindOpen, 1)); err != nil {
+		t.Fatalf("route open: %v", err)
+	}
+	if got := len(runtime.directStreamAffinity); got != 1 {
+		t.Fatalf("affinity count after open = %d, want 1", got)
+	}
+	if err := runtime.RouteEnvelope(context.Background(), 2, testStreamEnvelopeFor(streamFrameKindClose, 1)); err != nil {
+		t.Fatalf("route close: %v", err)
+	}
+	if got := len(runtime.directStreamAffinity); got != 0 {
+		t.Fatalf("affinity count after close = %d, want 0", got)
+	}
+
+	if err := runtime.RouteEnvelope(context.Background(), 2, testStreamEnvelopeFor(streamFrameKindOpen, 2)); err != nil {
+		t.Fatalf("route second open: %v", err)
+	}
+	if err := runtime.Close(); err != nil {
+		t.Fatalf("close runtime: %v", err)
+	}
+	if got := len(runtime.directStreamAffinity); got != 0 {
+		t.Fatalf("affinity count after runtime close = %d, want 0", got)
+	}
+}
+
+func TestRuntimeDirectStreamAffinityFailureDoesNotSwitch(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		breakPath func(*Adjacency, *fakeConn, error)
+		wantErr   error
+	}{
+		{
+			name: "send error",
+			breakPath: func(_ *Adjacency, conn *fakeConn, wantErr error) {
+				conn.sendHook = func([]byte) error { return wantErr }
+			},
+			wantErr: errors.New("pinned send failed"),
+		},
+		{
+			name: "not established",
+			breakPath: func(adj *Adjacency, _ *fakeConn, _ error) {
+				adj.mu.Lock()
+				adj.established = false
+				adj.mu.Unlock()
+			},
+			wantErr: ErrNoRoute,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			runtime := newDirectStreamTestRuntime(t, newFakeAdapter(TransportLibP2P), newFakeAdapter(TransportWebSocket))
+			primary, _ := newFakeConnPair(TransportLibP2P, "primary", "target-primary")
+			alternate, _ := newFakeConnPair(TransportWebSocket, "alternate", "target-alternate")
+			primaryAdj := registerTestAdjacency(runtime, primary, 2, TransportLibP2P)
+			alternateAdj := registerTestAdjacency(runtime, alternate, 2, TransportWebSocket)
+			setTestAdjacencyScore(primaryAdj, 1, 0)
+			setTestAdjacencyScore(alternateAdj, 100, 0)
+			alternateSends := 0
+			alternate.sendHook = func([]byte) error { alternateSends++; return nil }
+			if err := runtime.RouteEnvelope(context.Background(), 2, testStreamEnvelopeFor(streamFrameKindOpen, 1)); err != nil {
+				t.Fatalf("route open: %v", err)
+			}
+
+			setTestAdjacencyScore(alternateAdj, 0, 0)
+			test.breakPath(primaryAdj, primary, test.wantErr)
+			err := runtime.RouteEnvelope(context.Background(), 2, testStreamEnvelopeFor(streamFrameKindData, 1))
+			if !errors.Is(err, test.wantErr) {
+				t.Fatalf("route data error = %v, want %v", err, test.wantErr)
+			}
+			if alternateSends != 0 {
+				t.Fatalf("failed affinity switched to alternate %d times", alternateSends)
+			}
+		})
 	}
 }
 

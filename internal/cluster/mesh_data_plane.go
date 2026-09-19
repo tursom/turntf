@@ -165,8 +165,8 @@ func (m *Manager) handleMeshStreamFrame(_ context.Context, _ *mesh.ForwardedPack
 	if frame == nil || len(frame.StreamId) != 16 || frame.Recipient == nil || frame.Sender == nil {
 		return errors.New("invalid mesh stream frame")
 	}
-	if frame.Recipient.NodeId != m.cfg.NodeID {
-		return fmt.Errorf("stream delivered to node %d for target %d", m.cfg.NodeID, frame.Recipient.NodeId)
+	if frame.TargetSession == nil || frame.TargetSession.ServingNodeId != m.cfg.NodeID {
+		return fmt.Errorf("stream delivered to node %d for serving node %d", m.cfg.NodeID, frame.GetTargetSession().GetServingNodeId())
 	}
 	key := string(frame.StreamId)
 	m.streamMu.Lock()

@@ -60,7 +60,7 @@ func TestDedicatedStreamFrameRoutesAcrossMesh(t *testing.T) {
 		Window:        6,
 		Payload:       []byte("dedicated-stream-payload"),
 		Sender:        store.UserKey{NodeID: source.cfg.NodeID, UserID: 101},
-		Recipient:     store.UserKey{NodeID: target.cfg.NodeID, UserID: 202},
+		Recipient:     store.UserKey{NodeID: target.cfg.NodeID + 1000, UserID: 202},
 		SourceSession: store.SessionRef{ServingNodeID: source.cfg.NodeID, SessionID: "source-session"},
 		TargetSession: store.SessionRef{ServingNodeID: target.cfg.NodeID, SessionID: "target-session"},
 	}

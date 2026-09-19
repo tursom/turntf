@@ -535,13 +535,17 @@ func (m *Manager) RouteStreamFrame(ctx context.Context, frame store.StreamFrame)
 	if m == nil || m.MeshRuntime() == nil {
 		return errors.New("mesh runtime is not attached")
 	}
-	if frame.Recipient.NodeID == m.cfg.NodeID {
+	if !frame.TargetSession.Valid() {
+		return errors.New("stream target session is required")
+	}
+	targetNodeID := frame.TargetSession.ServingNodeID
+	if targetNodeID == m.cfg.NodeID {
 		if !m.deliverStreamLocal(frame) {
 			return errors.New("stream target session unavailable")
 		}
 		return nil
 	}
-	return m.MeshRuntime().RouteEnvelope(ctx, frame.Recipient.NodeID, &mesh.ClusterEnvelope{Body: &mesh.ClusterEnvelope_StreamFrame{StreamFrame: &mesh.StreamFrame{StreamId: frame.StreamID, Kind: frame.Kind, Epoch: frame.Epoch, Offset: frame.Offset, Window: frame.Window, Payload: frame.Payload, Sender: &internalproto.ClusterUserRef{NodeId: frame.Sender.NodeID, UserId: frame.Sender.UserID}, Recipient: &internalproto.ClusterUserRef{NodeId: frame.Recipient.NodeID, UserId: frame.Recipient.UserID}, SourceSession: storeSessionRefToCluster(frame.SourceSession), TargetSession: storeSessionRefToCluster(frame.TargetSession)}}})
+	return m.MeshRuntime().RouteEnvelope(ctx, targetNodeID, &mesh.ClusterEnvelope{Body: &mesh.ClusterEnvelope_StreamFrame{StreamFrame: &mesh.StreamFrame{StreamId: frame.StreamID, Kind: frame.Kind, Epoch: frame.Epoch, Offset: frame.Offset, Window: frame.Window, Payload: frame.Payload, Sender: &internalproto.ClusterUserRef{NodeId: frame.Sender.NodeID, UserId: frame.Sender.UserID}, Recipient: &internalproto.ClusterUserRef{NodeId: frame.Recipient.NodeID, UserId: frame.Recipient.UserID}, SourceSession: storeSessionRefToCluster(frame.SourceSession), TargetSession: storeSessionRefToCluster(frame.TargetSession)}}})
 }
 
 func (m *Manager) deliverStreamLocal(frame store.StreamFrame) bool {

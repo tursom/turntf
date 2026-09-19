@@ -108,7 +108,7 @@ func validateForwardedPacket(packet *ForwardedPacket) error {
 		return fmt.Errorf("mesh: forwarded packet cannot be nil")
 	}
 	switch packet.TrafficClass {
-	case TrafficTransientInteractive:
+	case TrafficTransientInteractive, TrafficPointToPointStream:
 		if packet.GetTransientPacket() == nil {
 			return fmt.Errorf("mesh: transient forwarded packet must carry transient_packet")
 		}

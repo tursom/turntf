@@ -43,6 +43,8 @@ func meshTrafficClassLabel(class mesh.TrafficClass) string {
 		return "transient_interactive"
 	case mesh.TrafficReplicationStream:
 		return "replication_stream"
+	case mesh.TrafficPointToPointStream:
+		return "point_to_point_stream"
 	case mesh.TrafficSnapshotBulk:
 		return "snapshot_bulk"
 	default:
@@ -139,11 +141,15 @@ func (m *Manager) forwardMeshTransientPacket(ctx context.Context, packet store.T
 	if ttlHops == 0 {
 		ttlHops = mesh.DefaultTTLHops
 	}
+	trafficClass := mesh.TrafficTransientInteractive
+	if len(packet.Body) >= 4 && string(packet.Body[:4]) == "TTS\x01" {
+		trafficClass = mesh.TrafficPointToPointStream
+	}
 	return binding.ForwardPacket(ctx, &mesh.ForwardedPacket{
 		PacketId:        packet.PacketID,
 		SourceNodeId:    packet.SourceNodeID,
 		TargetNodeId:    packet.TargetNodeID,
-		TrafficClass:    mesh.TrafficTransientInteractive,
+		TrafficClass:    trafficClass,
 		TtlHops:         ttlHops,
 		TransientPacket: transientPacketProto(packet),
 	})

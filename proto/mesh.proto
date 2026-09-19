@@ -22,6 +22,7 @@ enum TrafficClass {
   TRAFFIC_REPLICATION_STREAM = 4;
   TRAFFIC_SNAPSHOT_BULK = 5;
   TRAFFIC_CONSENSUS = 6;
+  TRAFFIC_POINT_TO_POINT_STREAM = 7;
 }
 
 enum ForwardingDisposition {

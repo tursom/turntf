@@ -580,7 +580,7 @@ func (m *Manager) handleMeshForwardedPacket(ctx context.Context, packet *mesh.Fo
 	if m == nil || packet == nil {
 		return nil
 	}
-	if packet.TrafficClass != mesh.TrafficTransientInteractive {
+	if packet.TrafficClass != mesh.TrafficTransientInteractive && packet.TrafficClass != mesh.TrafficPointToPointStream {
 		return fmt.Errorf("unsupported non-transient forwarded packet traffic class %s", packet.TrafficClass.String())
 	}
 	transient, err := transientPacketFromProto(packet.GetTransientPacket(), packet)

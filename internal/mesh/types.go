@@ -168,6 +168,7 @@ const (
 	TrafficReplicationStream    = internalproto.TrafficClass_TRAFFIC_REPLICATION_STREAM    // 复制流数据。
 	TrafficSnapshotBulk         = internalproto.TrafficClass_TRAFFIC_SNAPSHOT_BULK         // 批量快照传输。
 	TrafficConsensus            = internalproto.TrafficClass_TRAFFIC_CONSENSUS             // 共识协议消息。
+	TrafficPointToPointStream   = internalproto.TrafficClass_TRAFFIC_POINT_TO_POINT_STREAM // 可恢复点对点字节流。
 )
 
 // ForwardingDisposition 常量。

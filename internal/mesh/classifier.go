@@ -1,5 +1,13 @@
 package mesh
 
+import "bytes"
+
+var pointToPointStreamMagic = []byte{'T', 'T', 'S', 1}
+
+func isPointToPointStreamPayload(payload []byte) bool {
+	return len(payload) >= len(pointToPointStreamMagic) && bytes.Equal(payload[:len(pointToPointStreamMagic)], pointToPointStreamMagic)
+}
+
 // DefaultTrafficClassifier 是 TrafficClassifier 接口的默认实现。
 // 它根据 ClusterEnvelope.Body 的具体类型（oneof）选择对应的流量分类，
 // 用于后续的 QoS 路径选择和代价计算。
@@ -32,7 +40,7 @@ func (DefaultTrafficClassifier) Classify(envelope *ClusterEnvelope) TrafficClass
 	if envelope == nil {
 		return TrafficClassUnspecified
 	}
-	switch envelope.Body.(type) {
+	switch body := envelope.Body.(type) {
 	case *ClusterEnvelope_NodeHello,
 		*ClusterEnvelope_TimeSyncRequest,
 		*ClusterEnvelope_TimeSyncResponse,
@@ -49,6 +57,9 @@ func (DefaultTrafficClassifier) Classify(envelope *ClusterEnvelope) TrafficClass
 		*ClusterEnvelope_QueryResponse:
 		return TrafficControlQuery
 	case *ClusterEnvelope_ForwardedPacket:
+		if body.ForwardedPacket != nil && body.ForwardedPacket.GetTransientPacket() != nil && isPointToPointStreamPayload(body.ForwardedPacket.GetTransientPacket().GetBody()) {
+			return TrafficPointToPointStream
+		}
 		return TrafficTransientInteractive
 	case *ClusterEnvelope_ReplicationBatch,
 		*ClusterEnvelope_PullRequest:

@@ -42,6 +42,7 @@ var trafficClassFactor = map[TrafficClass]int64{
 	TrafficReplicationStream:    40,
 	TrafficSnapshotBulk:         120,
 	TrafficConsensus:            1,
+	TrafficPointToPointStream:   20,
 }
 
 // DefaultForwardingPolicy 基于 NodeFeeWeight 生成默认转发策略。
@@ -64,6 +65,7 @@ func DefaultForwardingPolicy(nodeFeeWeight int64) *ForwardingPolicy {
 			{TrafficClass: TrafficReplicationStream, Disposition: DispositionAllow},
 			{TrafficClass: TrafficSnapshotBulk, Disposition: DispositionAllow},
 			{TrafficClass: TrafficConsensus, Disposition: DispositionAllow},
+			{TrafficClass: TrafficPointToPointStream, Disposition: DispositionAllow},
 		},
 	}
 	if nodeFeeWeight > 1 {
@@ -74,6 +76,7 @@ func DefaultForwardingPolicy(nodeFeeWeight int64) *ForwardingPolicy {
 			{TrafficClass: TrafficReplicationStream, Disposition: DispositionDeny},
 			{TrafficClass: TrafficSnapshotBulk, Disposition: DispositionDeny},
 			{TrafficClass: TrafficConsensus, Disposition: DispositionAllow},
+			{TrafficClass: TrafficPointToPointStream, Disposition: DispositionDiscourage},
 		}
 	}
 	return policy
@@ -116,6 +119,7 @@ func NormalizeForwardingPolicy(policy *ForwardingPolicy) *ForwardingPolicy {
 		TrafficReplicationStream,
 		TrafficSnapshotBulk,
 		TrafficConsensus,
+		TrafficPointToPointStream,
 	} {
 		if _, ok := seen[class]; ok {
 			continue
@@ -158,7 +162,7 @@ func DispositionForTraffic(policy *ForwardingPolicy, class TrafficClass) Forward
 // 限制桥接防止大流量跨传输造成拥塞和资源浪费。
 func BridgeAllowedForTrafficClass(class TrafficClass) bool {
 	switch class {
-	case TrafficControlCritical, TrafficControlQuery, TrafficTransientInteractive:
+	case TrafficControlCritical, TrafficControlQuery, TrafficTransientInteractive, TrafficPointToPointStream:
 		return true
 	default:
 		return false

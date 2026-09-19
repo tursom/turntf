@@ -33,6 +33,11 @@ func TestDefaultTrafficClassifier(t *testing.T) {
 			want: TrafficTransientInteractive,
 		},
 		{
+			name: "point to point stream",
+			env:  &ClusterEnvelope{Body: &ClusterEnvelope_ForwardedPacket{ForwardedPacket: &ForwardedPacket{TransientPacket: &TransientPacket{Body: []byte{'T', 'T', 'S', 1}}}}},
+			want: TrafficPointToPointStream,
+		},
+		{
 			name: "replication",
 			env: &ClusterEnvelope{Body: &ClusterEnvelope_ReplicationBatch{
 				ReplicationBatch: &ReplicationBatch{},

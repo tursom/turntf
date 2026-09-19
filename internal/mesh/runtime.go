@@ -762,7 +762,7 @@ func (r *Runtime) handleLocalForwardedPacket(ctx context.Context, packet *Forwar
 	if packet == nil {
 		return nil
 	}
-	if packet.TrafficClass != TrafficTransientInteractive {
+	if packet.TrafficClass != TrafficTransientInteractive && packet.TrafficClass != TrafficPointToPointStream {
 		envelope, err := r.codec.Decode(packet.Payload)
 		if err != nil {
 			return err
@@ -775,6 +775,7 @@ func (r *Runtime) handleLocalForwardedPacket(ctx context.Context, packet *Forwar
 		}
 		return nil
 	}
+	// Stream packets use the same opaque transient delivery callback as legacy packets.
 	if r.forwardedPacketHandler != nil {
 		return r.forwardedPacketHandler(ctx, packet)
 	}

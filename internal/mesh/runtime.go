@@ -709,7 +709,7 @@ func (r *Runtime) RouteEnvelope(ctx context.Context, targetNodeID int64, envelop
 				return r.sendEnvelopeCtx(ctx, adj.Conn, envelope, r.helloTimeout)
 			}
 		} else if adj := r.bestDirectAdjacency(targetNodeID); adj != nil {
-			// Preserve the pre-affinity behavior for legacy or malformed frames.
+			// Legacy stream envelopes have no affinity key; preserve compatibility.
 			return r.sendEnvelopeCtx(ctx, adj.Conn, envelope, r.helloTimeout)
 		}
 	}
@@ -795,6 +795,10 @@ func (r *Runtime) bestAdjacency(nextHopNodeID int64, transport TransportKind) *A
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	return r.bestAdjacencyLocked(nextHopNodeID, transport)
+}
+
+func (r *Runtime) bestAdjacencyLocked(nextHopNodeID int64, transport TransportKind) *Adjacency {
 	candidates := r.adjByRoute[routeAdjacencyKey{nodeID: nextHopNodeID, transport: transport}]
 	var best *Adjacency
 	var bestScore int64
@@ -860,6 +864,12 @@ func (r *Runtime) bestDirectAdjacencyLocked(targetNodeID int64) *Adjacency {
 // directStreamAdjacency returns the adjacency pinned to this logical stream
 // epoch. Resume is the only frame allowed to replace an existing epoch.
 func (r *Runtime) directStreamAdjacency(key directStreamAffinityKey, frame *StreamFrame) (*Adjacency, error) {
+	var decision RouteDecision
+	var directRoute bool
+	if r.planner != nil {
+		decision, directRoute = r.planner.Compute(r.store.Snapshot(), key.targetNodeID, TrafficPointToPointStream, TransportUnspecified)
+		directRoute = directRoute && decision.NextHopNodeID == key.targetNodeID
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.closed {
@@ -890,7 +900,14 @@ func (r *Runtime) directStreamAdjacency(key directStreamAffinityKey, frame *Stre
 	if len(r.directStreamAffinity) >= directStreamAffinityLimit {
 		return nil, fmt.Errorf("mesh: direct stream affinity capacity reached: %w", ErrNoRoute)
 	}
-	adj := r.bestDirectAdjacencyLocked(key.targetNodeID)
+	var adj *Adjacency
+	if directRoute {
+		adj = r.bestAdjacencyLocked(key.targetNodeID, decision.OutboundTransport)
+	} else {
+		// A directly registered adjacency may precede its topology snapshot
+		// during startup. Preserve the established direct path in that window.
+		adj = r.bestDirectAdjacencyLocked(key.targetNodeID)
+	}
 	r.directStreamAffinity[key] = directStreamAffinityEntry{epoch: frame.Epoch, adj: adj}
 	return adj, nil
 }

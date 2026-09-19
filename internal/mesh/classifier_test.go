@@ -38,6 +38,11 @@ func TestDefaultTrafficClassifier(t *testing.T) {
 			want: TrafficPointToPointStream,
 		},
 		{
+			name: "dedicated stream envelope",
+			env:  &ClusterEnvelope{Body: &ClusterEnvelope_StreamFrame{StreamFrame: &StreamFrame{StreamId: make([]byte, 16), Epoch: 1}}},
+			want: TrafficPointToPointStream,
+		},
+		{
 			name: "replication",
 			env: &ClusterEnvelope{Body: &ClusterEnvelope_ReplicationBatch{
 				ReplicationBatch: &ReplicationBatch{},

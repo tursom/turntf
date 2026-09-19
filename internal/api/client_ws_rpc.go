@@ -13,7 +13,39 @@ import (
 	"github.com/tursom/turntf/internal/store"
 )
 
-// handleSendMessage 处理客户端发送消息请求，同时支持持久化消息和即时消息（transient）。
+// handleStreamFrame routes a logical frame through the dedicated stream path.
+func (s *clientWSSession) handleStreamFrame(ctx context.Context, req *internalproto.StreamFrameRequest) error {
+	if req == nil || req.Target == nil || len(req.StreamId) != 16 {
+		return s.writeError("invalid_request", "invalid stream frame", reqIDStream(req))
+	}
+	if req.Target.NodeId <= 0 || req.Target.UserId <= 0 || len(req.Payload) > 128<<10 {
+		return s.writeError("invalid_request", "invalid stream target or payload", req.RequestId)
+	}
+	target := store.UserKey{NodeID: req.Target.NodeId, UserID: req.Target.UserId}
+	if err := s.http.authorizer.CreateMessage(ctx, actorFromPrincipal(s.principal), target); err != nil {
+		return s.writeStoreOrRequestError(req.RequestId, err)
+	}
+	frame := store.StreamFrame{StreamID: append([]byte(nil), req.StreamId...), Kind: req.Kind, Epoch: req.Epoch, Offset: req.Offset, Window: req.Window, Payload: append([]byte(nil), req.Payload...), Sender: s.principal.User.Key(), Recipient: target, SourceSession: s.sessionRef, TargetSession: streamTargetSession(req.TargetSession)}
+	if err := s.http.service.DispatchStreamFrame(ctx, frame); err != nil {
+		return s.writeStoreOrRequestError(req.RequestId, err)
+	}
+	return nil
+}
+
+func reqIDStream(req *internalproto.StreamFrameRequest) uint64 {
+	if req == nil {
+		return 0
+	}
+	return req.RequestId
+}
+
+func streamTargetSession(ref *internalproto.SessionRef) store.SessionRef {
+	if ref == nil {
+		return store.SessionRef{}
+	}
+	return store.SessionRef{ServingNodeID: ref.ServingNodeId, SessionID: ref.SessionId}
+}
+
 // 即时消息通过 TransientPacketRouter 跨节点投递；持久化消息写入 store 并发布事件。
 func (s *clientWSSession) handleSendMessage(ctx context.Context, req *internalproto.SendMessageRequest) error {
 	if req == nil {

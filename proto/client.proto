@@ -32,6 +32,7 @@ message ClientEnvelope {
     DeleteUserMetadataRequest delete_user_metadata = 21;
     ScanUserMetadataRequest scan_user_metadata = 22;
     ListUsersRequest list_users = 23;
+    StreamFrameRequest stream_frame = 26;
   }
 }
 
@@ -65,9 +66,33 @@ message ServerEnvelope {
     DeleteUserMetadataResponse delete_user_metadata_response = 23;
     ScanUserMetadataResponse scan_user_metadata_response = 24;
     ListUsersResponse list_users_response = 25;
+    StreamFramePushed stream_frame = 26;
   }
 }
 
+message StreamFrameRequest {
+  uint64 request_id = 1;
+  UserRef target = 2;
+  SessionRef target_session = 3;
+  bytes stream_id = 4;
+  uint32 kind = 5;
+  uint64 epoch = 6;
+  uint64 offset = 7;
+  uint64 window = 8;
+  bytes payload = 9;
+}
+
+message StreamFramePushed {
+  UserRef sender = 1;
+  UserRef recipient = 2;
+  SessionRef source_session = 3;
+  bytes stream_id = 4;
+  uint32 kind = 5;
+  uint64 epoch = 6;
+  uint64 offset = 7;
+  uint64 window = 8;
+  bytes payload = 9;
+}
 message LoginRequest {
   reserved "node_id", "user_id";
 

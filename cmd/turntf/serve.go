@@ -111,7 +111,9 @@ func serveRuntime(ctx context.Context, configPath string, logOutput io.Writer) e
 	defer httpAPI.Close()
 	if manager != nil {
 		manager.SetTransientHandler(httpAPI.ReceiveTransientPacket)
+		manager.SetStreamHandler(httpAPI.ReceiveStreamFrame)
 		manager.SetLoggedInUsersProvider(httpAPI.ListLoggedInUsers)
+		svc.SetStreamFrameRouter(manager)
 	}
 	var zeroMQListener *cluster.ZeroMQMuxListener
 	if cfg.Services.ZeroMQ.Enabled && cfg.Services.ZeroMQ.BindURL != "" {

@@ -24,9 +24,18 @@ type TransientPacketRouter interface {
 	RouteTransientPacket(context.Context, store.TransientPacket) error
 }
 
-// TransientPacketReceiver 即时包接收接口。当本地收到来自其他节点的即时包时，通过此接口投递给匹配的客户端会话。
 type TransientPacketReceiver interface {
 	ReceiveTransientPacket(store.TransientPacket) bool
+}
+
+// StreamFrameRouter 路由不会进入 TransientPacket 的逻辑流帧。
+type StreamFrameRouter interface {
+	RouteStreamFrame(context.Context, store.StreamFrame) error
+}
+
+// StreamFrameReceiver 将逻辑流帧交付给本地客户端会话。
+type StreamFrameReceiver interface {
+	ReceiveStreamFrame(store.StreamFrame) bool
 }
 
 // LoggedInUserProvider 提供本地已登录用户列表。
@@ -98,6 +107,7 @@ type Service struct {
 	eventSink       EventSink
 	writeGate       WriteGate
 	transientRouter TransientPacketRouter
+	streamRouter    StreamFrameRouter
 	localUsers      LoggedInUserProvider
 	remoteUsers     LoggedInUserQuerier
 	sessionRegistry OnlineSessionRegistry
@@ -106,8 +116,10 @@ type Service struct {
 	kvService       KVService
 	transientRecvMu sync.RWMutex
 	transientRecv   TransientPacketReceiver // 当前活跃的即时包接收器（通常是 HTTP 层）
-	nextTransientID atomic.Uint64           // 即时包 ID 自增计数器
-	blacklistHits   atomic.Uint64           // 黑名单命中次数统计
+	streamRecvMu    sync.RWMutex
+	streamRecv      StreamFrameReceiver
+	nextTransientID atomic.Uint64 // 即时包 ID 自增计数器
+	blacklistHits   atomic.Uint64 // 黑名单命中次数统计
 }
 
 // New 创建 Service 实例。eventSink 同时作为可选接口的来源：
@@ -151,6 +163,7 @@ func New(st *store.Store, eventSink EventSink) *Service {
 		eventSink:       eventSink,
 		writeGate:       writeGate,
 		transientRouter: transientRouter,
+		streamRouter:    nil,
 		remoteUsers:     remoteUsers,
 		sessionRegistry: sessionRegistry,
 		presence:        presence,
@@ -278,7 +291,24 @@ func (s *Service) SetTransientPacketReceiver(receiver TransientPacketReceiver) {
 	s.transientRecv = receiver
 }
 
-// publishEvents 发布事件列表中所有有效的事件（EventID > 0）到集群。
+// SetStreamFrameRouter 设置逻辑流路由器。
+func (s *Service) SetStreamFrameRouter(router StreamFrameRouter) { s.streamRouter = router }
+
+// SetStreamFrameReceiver 设置逻辑流本地接收器。
+func (s *Service) SetStreamFrameReceiver(receiver StreamFrameReceiver) {
+	s.streamRecvMu.Lock()
+	defer s.streamRecvMu.Unlock()
+	s.streamRecv = receiver
+}
+
+// DispatchStreamFrame routes a logical stream frame through the dedicated path.
+func (s *Service) DispatchStreamFrame(ctx context.Context, frame store.StreamFrame) error {
+	if s == nil || s.streamRouter == nil {
+		return fmt.Errorf("stream router is not configured")
+	}
+	return s.streamRouter.RouteStreamFrame(ctx, frame)
+}
+
 func (s *Service) publishEvents(events []store.Event) {
 	if s == nil || s.eventSink == nil {
 		return

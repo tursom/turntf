@@ -59,6 +59,7 @@ message ClusterEnvelope {
     MeshPresenceUpdate presence_update = 16;
     MeshConnectivityRumor connectivity_rumor = 17;
     MeshConsensusMessage consensus_message = 18;
+    MeshStreamFrame stream_frame = 19;
   }
   bytes hmac = 14;
 }
@@ -184,6 +185,19 @@ message MeshPresenceUpdate {
 
 // MeshConsensusMessage 承载共识层的原始 raft message。payload 由 consensus
 // 子系统编码，mesh 只负责认证、路由和可靠传输，不绑定具体 raft 实现。
+message MeshStreamFrame {
+  bytes stream_id = 1;
+  uint32 kind = 2;
+  uint64 epoch = 3;
+  uint64 offset = 4;
+  uint64 window = 5;
+  bytes payload = 6;
+  notifier.cluster.v1.ClusterUserRef sender = 7;
+  notifier.cluster.v1.ClusterUserRef recipient = 8;
+  notifier.cluster.v1.ClusterSessionRef target_session = 9;
+  uint32 ttl_hops = 10;
+}
+
 message MeshConsensusMessage {
   // group_id 标识逻辑共识组；当前 KV 使用单个集群级 group。
   string group_id = 1;

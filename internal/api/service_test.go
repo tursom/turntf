@@ -51,6 +51,25 @@ func (s *routingSink) ResolveUserSessions(context.Context, store.UserKey) ([]sto
 	return s.sessions, nil
 }
 
+type recordingStreamRouter struct{ frames []store.StreamFrame }
+
+func (r *recordingStreamRouter) RouteStreamFrame(_ context.Context, frame store.StreamFrame) error {
+	r.frames = append(r.frames, frame)
+	return nil
+}
+
+func TestServiceRoutesDedicatedStreamFrame(t *testing.T) {
+	router := &recordingStreamRouter{}
+	svc := New(nil, nil)
+	svc.SetStreamFrameRouter(router)
+	want := store.StreamFrame{StreamID: []byte("stream-id"), Kind: 4, Epoch: 2, Offset: 8, Window: 64, Payload: []byte("data")}
+	if err := svc.DispatchStreamFrame(context.Background(), want); err != nil {
+		t.Fatal(err)
+	}
+	if len(router.frames) != 1 || string(router.frames[0].Payload) != "data" || router.frames[0].Epoch != 2 {
+		t.Fatalf("unexpected stream frame: %+v", router.frames)
+	}
+}
 func TestServicePublishesOnlySuccessfulWrites(t *testing.T) {
 	t.Parallel()
 

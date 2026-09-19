@@ -259,7 +259,18 @@ func (s *clientWSSession) pushPacket(packet store.TransientPacket) error {
 	})
 }
 
-// markSeen 标记消息为已见（用于去重，避免重复推送已收到的消息）。
+// pushStreamFrame writes a dedicated stream envelope; it never creates a transient packet.
+func (s *clientWSSession) pushStreamFrame(frame store.StreamFrame) error {
+	return s.writeEnvelope(&internalproto.ServerEnvelope{Body: &internalproto.ServerEnvelope_StreamFrame{
+		StreamFrame: &internalproto.StreamFramePushed{
+			Sender:        &internalproto.UserRef{NodeId: frame.Sender.NodeID, UserId: frame.Sender.UserID},
+			Recipient:     &internalproto.UserRef{NodeId: frame.Recipient.NodeID, UserId: frame.Recipient.UserID},
+			SourceSession: &internalproto.SessionRef{ServingNodeId: frame.SourceSession.ServingNodeID, SessionId: frame.SourceSession.SessionID},
+			StreamId:      append([]byte(nil), frame.StreamID...), Kind: frame.Kind, Epoch: frame.Epoch, Offset: frame.Offset, Window: frame.Window, Payload: append([]byte(nil), frame.Payload...),
+		},
+	}})
+}
+
 func (s *clientWSSession) markSeen(nodeID, seq int64) {
 	if nodeID <= 0 || seq <= 0 {
 		return

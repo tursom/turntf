@@ -157,6 +157,9 @@ type Manager struct {
 	// timeSyncer 是可选的自定义时间同步函数，替代默认实现。
 	timeSyncer func(*session) (timeSyncSample, error)
 	// transientHandler 处理投递到本节点的瞬态数据包。
+	streamMu         sync.Mutex
+	streamEpoch      map[string]uint64
+	streamHandler    func(store.StreamFrame) bool
 	transientHandler func(store.TransientPacket) bool
 	// consensusHandler 处理经 mesh transport 到达的共识消息；具体 Raft 实现由上层注入。
 	consensusHandler func(context.Context, int64, *mesh.ConsensusMessage) error
@@ -511,7 +514,37 @@ func (m *Manager) AdvertisePath() string {
 	return m.cfg.AdvertisePath
 }
 
-// SetTransientHandler 设置瞬态数据包的本地投递处理器。
+// SetStreamHandler 设置逻辑流的本地投递处理器。
+func (m *Manager) SetStreamHandler(handler func(store.StreamFrame) bool) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.streamHandler = handler
+}
+
+// RouteStreamFrame routes a logical stream frame through the mesh stream envelope.
+func (m *Manager) RouteStreamFrame(ctx context.Context, frame store.StreamFrame) error {
+	if m == nil || m.MeshRuntime() == nil {
+		return errors.New("mesh runtime is not attached")
+	}
+	if frame.Recipient.NodeID == m.cfg.NodeID {
+		if !m.deliverStreamLocal(frame) {
+			return errors.New("stream target session unavailable")
+		}
+		return nil
+	}
+	return m.MeshRuntime().RouteEnvelope(ctx, frame.Recipient.NodeID, &mesh.ClusterEnvelope{Body: &mesh.ClusterEnvelope_StreamFrame{StreamFrame: &mesh.StreamFrame{StreamId: frame.StreamID, Kind: frame.Kind, Epoch: frame.Epoch, Offset: frame.Offset, Window: frame.Window, Payload: frame.Payload, Sender: &internalproto.ClusterUserRef{NodeId: frame.Sender.NodeID, UserId: frame.Sender.UserID}, Recipient: &internalproto.ClusterUserRef{NodeId: frame.Recipient.NodeID, UserId: frame.Recipient.UserID}, TargetSession: storeSessionRefToCluster(frame.TargetSession)}}})
+}
+
+func (m *Manager) deliverStreamLocal(frame store.StreamFrame) bool {
+	m.mu.Lock()
+	handler := m.streamHandler
+	m.mu.Unlock()
+	return handler != nil && handler(frame)
+}
+
 func (m *Manager) SetTransientHandler(handler func(store.TransientPacket) bool) {
 	if m == nil {
 		return

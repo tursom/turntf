@@ -61,6 +61,10 @@ func (s *clientWSSession) readLoop(ctx context.Context) (loopErr error) {
 			}
 		}
 		switch body := envelope.Body.(type) {
+		case *internalproto.ClientEnvelope_StreamFrame:
+			if err := s.handleStreamFrame(ctx, body.StreamFrame); err != nil {
+				return err
+			}
 		case *internalproto.ClientEnvelope_SendMessage:
 			if s.realtimeOnly && body.SendMessage.GetDeliveryKind() != internalproto.ClientDeliveryKind_CLIENT_DELIVERY_KIND_TRANSIENT {
 				if err := s.writeError("invalid_request", "realtime stream only supports transient send_message", requestIDForClientEnvelopeBody(body)); err != nil {

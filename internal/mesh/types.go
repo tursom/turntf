@@ -67,6 +67,9 @@ type ClusterEnvelope_ConnectivityRumor = internalproto.ClusterEnvelope_Connectiv
 // ClusterEnvelope_ConsensusMessage 包装共识消息载荷。
 type ClusterEnvelope_ConsensusMessage = internalproto.ClusterEnvelope_ConsensusMessage
 
+// ClusterEnvelope_StreamFrame 包装点对点逻辑流帧。
+type ClusterEnvelope_StreamFrame = internalproto.ClusterEnvelope_StreamFrame
+
 // ---------------- 独立消息类型别名 ----------------
 
 // NodeHello 是连接建立时每个节点发送的第一个消息，包含节点身份、协议版本、传输能力和转发策略。
@@ -128,6 +131,9 @@ type MeshPresenceUpdate = internalproto.MeshPresenceUpdate
 
 // MeshConnectivityRumor 传播节点间的连通性信息。
 type MeshConnectivityRumor = internalproto.MeshConnectivityRumor
+
+// StreamFrame 是 core 专用的点对点逻辑流帧。
+type StreamFrame = internalproto.MeshStreamFrame
 
 // ConsensusMessage 是共识层原始消息的传输包装，不绑定具体共识实现。
 type ConsensusMessage = internalproto.MeshConsensusMessage

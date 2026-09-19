@@ -160,7 +160,37 @@ func (m *Manager) handleMeshQueryEnvelope(ctx context.Context, packet *mesh.Forw
 	}
 }
 
-// handleMeshEnvelope 是网格信封的中央分发器。
+// handleMeshStreamFrame delivers a dedicated stream frame to the local stream registry.
+func (m *Manager) handleMeshStreamFrame(_ context.Context, _ *mesh.ForwardedPacket, frame *mesh.StreamFrame) error {
+	if frame == nil || len(frame.StreamId) != 16 || frame.Recipient == nil || frame.Sender == nil {
+		return errors.New("invalid mesh stream frame")
+	}
+	if frame.Recipient.NodeId != m.cfg.NodeID {
+		return fmt.Errorf("stream delivered to node %d for target %d", m.cfg.NodeID, frame.Recipient.NodeId)
+	}
+	key := string(frame.StreamId)
+	m.streamMu.Lock()
+	if previous := m.streamEpoch[key]; frame.Epoch < previous {
+		m.streamMu.Unlock()
+		return nil
+	}
+	if m.streamEpoch == nil {
+		m.streamEpoch = make(map[string]uint64)
+	}
+	if frame.Epoch > m.streamEpoch[key] {
+		m.streamEpoch[key] = frame.Epoch
+	}
+	m.streamMu.Unlock()
+	return nilIfFalse(m.deliverStreamLocal(store.StreamFrame{StreamID: append([]byte(nil), frame.StreamId...), Kind: frame.Kind, Epoch: frame.Epoch, Offset: frame.Offset, Window: frame.Window, Payload: append([]byte(nil), frame.Payload...), Sender: store.UserKey{NodeID: frame.Sender.NodeId, UserID: frame.Sender.UserId}, Recipient: store.UserKey{NodeID: frame.Recipient.NodeId, UserID: frame.Recipient.UserId}, TargetSession: clusterSessionRefToStore(frame.TargetSession)}))
+}
+
+func nilIfFalse(ok bool) error {
+	if ok {
+		return nil
+	}
+	return errors.New("stream target session unavailable")
+}
+
 // 根据信封的oneof类型将请求路由到对应的处理函数。
 // 支持的9种信封类型：查询、复制批次、拉取请求、复制确认、
 // 快照清单、快照分块、成员资格更新、在线状态更新、连接性传闻。
@@ -187,6 +217,11 @@ func (m *Manager) handleMeshEnvelope(ctx context.Context, packet *mesh.Forwarded
 		return m.handleMeshPresenceUpdateEnvelope(packet, body.PresenceUpdate)
 	case *mesh.ClusterEnvelope_ConnectivityRumor:
 		return m.handleMeshConnectivityRumorEnvelope(packet, body.ConnectivityRumor)
+	case *mesh.ClusterEnvelope_StreamFrame:
+		if body.StreamFrame == nil {
+			return fmt.Errorf("mesh stream frame cannot be empty")
+		}
+		return m.handleMeshStreamFrame(ctx, packet, body.StreamFrame)
 	case *mesh.ClusterEnvelope_ConsensusMessage:
 		return m.handleMeshConsensusMessage(ctx, packet, body.ConsensusMessage)
 	default:

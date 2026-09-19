@@ -211,6 +211,8 @@ func NewHTTP(service *Service, opts ...HTTPOptions) *HTTP {
 	}
 	if service != nil {
 		service.SetTransientPacketReceiver(h)
+		service.SetStreamFrameReceiver(h)
+		service.SetStreamFrameRouter(h)
 		service.SetLoggedInUserProvider(h)
 		h.unsubscribeSubscriptionChanges = service.subscribeSubscriptionChanges(h.persistentSessions.ApplySubscriptionChanges)
 	}
@@ -1661,7 +1663,35 @@ func (h *HTTP) ReceiveTransientPacket(packet store.TransientPacket) bool {
 	return delivered
 }
 
-// ListLocalUserSessions 返回指定用户在本节点的所有活跃客户端会话。
+// RouteStreamFrame handles a stream locally when no mesh manager is configured.
+func (h *HTTP) RouteStreamFrame(_ context.Context, frame store.StreamFrame) error {
+	if frame.Recipient.NodeID != h.nodeID {
+		return fmt.Errorf("stream target node %d is not local", frame.Recipient.NodeID)
+	}
+	if !h.ReceiveStreamFrame(frame) {
+		return fmt.Errorf("stream target session unavailable")
+	}
+	return nil
+}
+
+func (h *HTTP) ReceiveStreamFrame(frame store.StreamFrame) bool {
+	shard := h.sessionShard(frame.Recipient)
+	if shard == nil {
+		return false
+	}
+	shard.mu.RLock()
+	bucket := shard.sessions[frame.Recipient]
+	var sess *clientWSSession
+	if bucket != nil && frame.TargetSession.Valid() {
+		sess = bucket.bySessionID[frame.TargetSession.SessionID]
+	}
+	shard.mu.RUnlock()
+	if sess == nil {
+		return false
+	}
+	return sess.pushStreamFrame(frame) == nil
+}
+
 func (h *HTTP) ListLocalUserSessions(_ context.Context, key store.UserKey) ([]store.OnlineSession, error) {
 	if h == nil {
 		return nil, nil

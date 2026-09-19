@@ -56,6 +56,8 @@ func (DefaultTrafficClassifier) Classify(envelope *ClusterEnvelope) TrafficClass
 	case *ClusterEnvelope_QueryRequest,
 		*ClusterEnvelope_QueryResponse:
 		return TrafficControlQuery
+	case *ClusterEnvelope_StreamFrame:
+		return TrafficPointToPointStream
 	case *ClusterEnvelope_ForwardedPacket:
 		if body.ForwardedPacket != nil && body.ForwardedPacket.GetTransientPacket() != nil && isPointToPointStreamPayload(body.ForwardedPacket.GetTransientPacket().GetBody()) {
 			return TrafficPointToPointStream

@@ -85,15 +85,17 @@ type WriteGate interface {
 }
 
 type KVService interface {
-	KVCreateDatabase(context.Context, string, string) (kv.Result, error)
-	KVGet(context.Context, string, string, string) (kv.Entry, uint64, error)
-	KVList(context.Context, string, string, string) (map[string]kv.Entry, uint64, error)
-	KVPut(context.Context, string, string, string, []byte) (kv.Result, error)
-	KVDelete(context.Context, string, string, string) (kv.Result, error)
-	KVTxn(context.Context, string, string, []kv.Compare, []kv.Put, []string) (kv.Result, error)
-	KVGrant(context.Context, string, string, string, kv.Permission) (kv.Result, error)
-	KVRevoke(context.Context, string, string, string) (kv.Result, error)
-	KVWatch(string, string, string) (kv.Watch, error)
+	KVCreateDatabase(context.Context, kv.Principal, string) (kv.Result, error)
+	KVDatabases(context.Context, kv.Principal, string) ([]kv.DatabaseInfo, uint64, error)
+	KVAccess(context.Context, kv.Principal, string) (kv.DatabaseAccess, uint64, error)
+	KVGet(context.Context, kv.Principal, string, string) (kv.Entry, uint64, error)
+	KVList(context.Context, kv.Principal, string, string) (map[string]kv.Entry, uint64, error)
+	KVPut(context.Context, kv.Principal, string, string, []byte) (kv.Result, error)
+	KVDelete(context.Context, kv.Principal, string, string) (kv.Result, error)
+	KVTxn(context.Context, kv.Principal, string, []kv.Compare, []kv.Put, []string) (kv.Result, error)
+	KVGrant(context.Context, kv.Principal, string, string, kv.Permission) (kv.Result, error)
+	KVRevoke(context.Context, kv.Principal, string, string) (kv.Result, error)
+	KVWatch(kv.Principal, string, string) (kv.Watch, error)
 }
 
 //   - 写入门控（WriteGate）：阻止非主节点写入

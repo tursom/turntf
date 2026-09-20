@@ -248,6 +248,8 @@ func (h *HTTP) routes() {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
+	h.mux.HandleFunc("GET /kv/databases", h.handleKVDatabases)
+	h.mux.HandleFunc("GET /kv/{database}/acl", h.handleKVAccess)
 	h.mux.HandleFunc("POST /kv/databases", h.handleKVCreateDatabase)
 	h.mux.HandleFunc("GET /kv/{database}/keys/{key...}", h.handleKVGet)
 	h.mux.HandleFunc("GET /kv/{database}/list", h.handleKVList)

@@ -149,12 +149,13 @@ func TestEngineForwardsPacket(t *testing.T) {
 	engine := NewEngine(1, store.Snapshot, NewPlanner(1), sender, nil, nil)
 
 	err := engine.Forward(context.Background(), &ForwardedPacket{
-		PacketId:     1,
-		SourceNodeId: 1,
-		TargetNodeId: 3,
-		TrafficClass: TrafficControlCritical,
-		TtlHops:      3,
-		Payload:      []byte("control"),
+		PacketId:           1,
+		SourceNodeId:       1,
+		SourceRuntimeEpoch: 77,
+		TargetNodeId:       3,
+		TrafficClass:       TrafficControlCritical,
+		TtlHops:            3,
+		Payload:            []byte("control"),
 	})
 	if err != nil {
 		t.Fatalf("forward packet: %v", err)
@@ -162,8 +163,8 @@ func TestEngineForwardsPacket(t *testing.T) {
 	if sender.nextHop != 2 || sender.transport != TransportLibP2P {
 		t.Fatalf("unexpected send target: next=%d transport=%v", sender.nextHop, sender.transport)
 	}
-	if sender.packet == nil || sender.packet.TtlHops != 2 || sender.packet.LastHopNodeId != 1 {
-		t.Fatalf("unexpected forwarded packet: %+v", sender.packet)
+	if sender.packet == nil || sender.packet.TtlHops != 2 || sender.packet.LastHopNodeId != 1 || sender.packet.SourceRuntimeEpoch != 77 {
+		t.Fatalf("unexpected forwarded packet identity or ttl: %+v", sender.packet)
 	}
 }
 
@@ -276,7 +277,7 @@ func TestEngineRejectsImmediateLoop(t *testing.T) {
 	}
 }
 
-func TestEngineRejectsDuplicatePacket(t *testing.T) {
+func TestEnginePacketIdentityIncludesSourceRuntimeEpoch(t *testing.T) {
 	t.Parallel()
 
 	store := NewMemoryTopologyStore()
@@ -288,17 +289,20 @@ func TestEngineRejectsDuplicatePacket(t *testing.T) {
 			{Transport: TransportLibP2P, OutboundEnabled: true, InboundEnabled: true},
 		},
 	})
+	delivered := 0
 	engine := NewEngine(1, store.Snapshot, NewPlanner(1), &recordingSender{}, func(context.Context, *ForwardedPacket) error {
+		delivered++
 		return nil
 	}, nil)
 	packet := &ForwardedPacket{
-		PacketId:         7,
-		SourceNodeId:     2,
-		TargetNodeId:     1,
-		TrafficClass:     TrafficControlCritical,
-		IngressTransport: TransportLibP2P,
-		TtlHops:          3,
-		Payload:          []byte("control"),
+		PacketId:           7,
+		SourceNodeId:       2,
+		SourceRuntimeEpoch: 100,
+		TargetNodeId:       1,
+		TrafficClass:       TrafficControlCritical,
+		IngressTransport:   TransportLibP2P,
+		TtlHops:            3,
+		Payload:            []byte("control"),
 	}
 
 	if err := engine.HandleInbound(context.Background(), packet); err != nil {
@@ -306,6 +310,14 @@ func TestEngineRejectsDuplicatePacket(t *testing.T) {
 	}
 	if err := engine.HandleInbound(context.Background(), packet); !errors.Is(err, ErrDuplicatePacket) {
 		t.Fatalf("unexpected duplicate error: %v", err)
+	}
+	restartedPacket := cloneForwardedPacket(packet)
+	restartedPacket.SourceRuntimeEpoch = 200
+	if err := engine.HandleInbound(context.Background(), restartedPacket); err != nil {
+		t.Fatalf("same packet id from restarted source was rejected: %v", err)
+	}
+	if delivered != 2 {
+		t.Fatalf("unexpected delivery count across runtime epochs: %d", delivered)
 	}
 }
 

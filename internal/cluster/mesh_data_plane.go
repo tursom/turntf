@@ -154,7 +154,7 @@ func (m *Manager) handleMeshQueryEnvelope(ctx context.Context, packet *mesh.Forw
 		if body.QueryResponse == nil {
 			return errors.New("mesh query response body cannot be empty")
 		}
-		return m.handleMeshQueryResponse(ctx, body.QueryResponse)
+		return m.handleMeshQueryResponse(ctx, packet, body.QueryResponse)
 	default:
 		return fmt.Errorf("unsupported mesh query envelope %T", envelope.Body)
 	}
@@ -460,13 +460,13 @@ func (m *Manager) handleMeshQueryRequest(ctx context.Context, packet *mesh.Forwa
 }
 
 // handleMeshQueryResponse 分派网格查询响应到对应的处理函数。
-func (m *Manager) handleMeshQueryResponse(ctx context.Context, query *mesh.QueryResponse) error {
+func (m *Manager) handleMeshQueryResponse(ctx context.Context, packet *mesh.ForwardedPacket, query *mesh.QueryResponse) error {
 	if query == nil {
 		return errors.New("mesh query response cannot be empty")
 	}
 	switch query.Kind {
 	case meshQueryResolveUserSessionsResponseKind:
-		return m.handleMeshResolveUserSessionsResponse(ctx, query)
+		return m.handleMeshResolveUserSessionsResponse(ctx, packet, query)
 	default:
 		return fmt.Errorf("unsupported mesh query response kind %q", query.Kind)
 	}
@@ -493,6 +493,14 @@ func (m *Manager) handleMeshResolveUserSessionsRequest(ctx context.Context, pack
 	if req.TargetNodeId != m.cfg.NodeID {
 		return fmt.Errorf("mesh query delivered to node %d for target %d", m.cfg.NodeID, req.TargetNodeId)
 	}
+	m.logDebug("query_resolve_user_sessions_request_received").
+		Uint64("query_request_id", req.RequestId).
+		Uint64("packet_id", packet.GetPacketId()).
+		Uint64("source_runtime_epoch", packet.GetSourceRuntimeEpoch()).
+		Int64("source_node_id", packet.GetSourceNodeId()).
+		Int64("target_node_id", packet.GetTargetNodeId()).
+		Uint32("ttl_hops", packet.GetTtlHops()).
+		Msg("received resolve user sessions request")
 	response := &internalproto.QueryResolveUserSessionsResponse{
 		RequestId:     req.RequestId,
 		TargetNodeId:  req.TargetNodeId,
@@ -517,12 +525,21 @@ func (m *Manager) handleMeshResolveUserSessionsRequest(ctx context.Context, pack
 			TransientCapable: session.TransientCapable,
 		})
 	}
-	return m.routeMeshResolveUserSessionsResponse(ctx, response)
+	err := m.routeMeshResolveUserSessionsResponse(ctx, response)
+	if err == nil {
+		m.logDebug("query_resolve_user_sessions_response_queued").
+			Uint64("query_request_id", response.RequestId).
+			Int64("origin_node_id", response.OriginNodeId).
+			Int64("target_node_id", response.TargetNodeId).
+			Int32("remaining_hops", response.RemainingHops).
+			Msg("queued resolve user sessions response")
+	}
+	return err
 }
 
 // handleMeshResolveUserSessionsResponse 处理解析用户会话的网格查询响应。
 // 如果目标不是本地发起的查询则继续路由。
-func (m *Manager) handleMeshResolveUserSessionsResponse(ctx context.Context, query *mesh.QueryResponse) error {
+func (m *Manager) handleMeshResolveUserSessionsResponse(ctx context.Context, packet *mesh.ForwardedPacket, query *mesh.QueryResponse) error {
 	_ = ctx
 	resp := &internalproto.QueryResolveUserSessionsResponse{}
 	if err := proto.Unmarshal(query.Payload, resp); err != nil {
@@ -531,6 +548,14 @@ func (m *Manager) handleMeshResolveUserSessionsResponse(ctx context.Context, que
 	if resp.RequestId == 0 || resp.OriginNodeId <= 0 || resp.TargetNodeId <= 0 {
 		return errors.New("query resolve user sessions response is invalid")
 	}
+	m.logDebug("query_resolve_user_sessions_response_received").
+		Uint64("query_request_id", resp.RequestId).
+		Uint64("packet_id", packet.GetPacketId()).
+		Uint64("source_runtime_epoch", packet.GetSourceRuntimeEpoch()).
+		Int64("source_node_id", packet.GetSourceNodeId()).
+		Int64("target_node_id", packet.GetTargetNodeId()).
+		Uint32("ttl_hops", packet.GetTtlHops()).
+		Msg("received resolve user sessions response")
 	if resp.OriginNodeId != m.cfg.NodeID {
 		return m.routeMeshResolveUserSessionsResponse(context.Background(), resp)
 	}
@@ -540,6 +565,11 @@ func (m *Manager) handleMeshResolveUserSessionsResponse(ctx context.Context, que
 			Int64("origin_node_id", resp.OriginNodeId).
 			Int64("target_node_id", resp.TargetNodeId).
 			Msg("ignoring late resolve user sessions response without pending origin query")
+	} else {
+		m.logDebug("query_resolve_user_sessions_response_matched").
+			Uint64("query_request_id", resp.RequestId).
+			Int64("target_node_id", resp.TargetNodeId).
+			Msg("matched resolve user sessions response to pending query")
 	}
 	return nil
 }

@@ -126,6 +126,10 @@ message MeshForwardedPacket {
   bytes payload = 8;
   string trace_id = 9;
   notifier.cluster.v1.TransientPacket transient_packet = 10;
+  // source_runtime_epoch scopes packet_id to one source process lifetime.
+  // Zero is reserved for legacy senders whose packet identity is only
+  // (source_node_id, packet_id).
+  uint64 source_runtime_epoch = 11;
 }
 
 message MeshReplicationBatch {

@@ -296,6 +296,10 @@ func (m *Manager) resolveUserSessionsAtNode(ctx context.Context, nodeID int64, u
 		}
 		return nil, fmt.Errorf("%w: node %d is not reachable", app.ErrServiceUnavailable, nodeID)
 	}
+	m.logDebug("session_lookup_request_routed").
+		Uint64("query_request_id", requestID).
+		Int64("target_node_id", nodeID).
+		Msg("routed resolve user sessions request")
 
 	timeoutCtx := ctx
 

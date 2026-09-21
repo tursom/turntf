@@ -71,6 +71,129 @@ func TestManagerPresencePropagationAndResolveUserSessionsUsesMeshMultiHop(t *tes
 	}
 }
 
+func TestManagerResolveUserSessionsRecoversAfterTargetManagerRestart(t *testing.T) {
+	stA := newReplicationTestStore(t, "session-restart-a", 1)
+	cfgA := Config{
+		NodeID:            testNodeID(1),
+		AdvertisePath:     websocketPath,
+		ClusterSecret:     "secret",
+		MessageWindowSize: store.DefaultMessageWindowSize,
+		MaxClockSkewMs:    DefaultMaxClockSkewMs,
+		DiscoveryDisabled: true,
+	}
+	mgrA, err := NewManager(cfgA, stA)
+	if err != nil {
+		t.Fatalf("new manager A: %v", err)
+	}
+	serverA := newClusterHTTPTestServer(t, mgrA.Handler())
+	if err := mgrA.Start(context.Background()); err != nil {
+		t.Fatalf("start manager A: %v", err)
+	}
+	t.Cleanup(func() { _ = mgrA.Close() })
+
+	stRelay := newReplicationTestStore(t, "session-restart-relay", 2)
+	mgrRelay, err := NewManager(Config{
+		NodeID:            testNodeID(2),
+		AdvertisePath:     websocketPath,
+		ClusterSecret:     "secret",
+		MessageWindowSize: store.DefaultMessageWindowSize,
+		MaxClockSkewMs:    DefaultMaxClockSkewMs,
+		DiscoveryDisabled: true,
+		Peers: []Peer{{
+			URL: websocketURL(serverA.URL) + websocketPath,
+		}},
+	}, stRelay)
+	if err != nil {
+		t.Fatalf("new relay manager: %v", err)
+	}
+	serverRelay := newClusterHTTPTestServer(t, mgrRelay.Handler())
+	if err := mgrRelay.Start(context.Background()); err != nil {
+		t.Fatalf("start relay manager: %v", err)
+	}
+	t.Cleanup(func() { _ = mgrRelay.Close() })
+
+	startB := func(name string) (*Manager, func()) {
+		t.Helper()
+		stB := newReplicationTestStore(t, name, 3)
+		mgrB, newErr := NewManager(Config{
+			NodeID:            testNodeID(3),
+			AdvertisePath:     websocketPath,
+			ClusterSecret:     "secret",
+			MessageWindowSize: store.DefaultMessageWindowSize,
+			MaxClockSkewMs:    DefaultMaxClockSkewMs,
+			DiscoveryDisabled: true,
+			Peers: []Peer{{
+				URL: websocketURL(serverRelay.URL) + websocketPath,
+			}},
+		}, stB)
+		if newErr != nil {
+			t.Fatalf("new manager B: %v", newErr)
+		}
+		serverB := newClusterHTTPTestServer(t, mgrB.Handler())
+		if newErr = mgrB.Start(context.Background()); newErr != nil {
+			t.Fatalf("start manager B: %v", newErr)
+		}
+		closeB := func() {
+			_ = mgrB.Close()
+			serverB.Close()
+		}
+		t.Cleanup(closeB)
+		return mgrB, closeB
+	}
+
+	user := store.UserKey{NodeID: testNodeID(3), UserID: 4201}
+	oldRef := store.SessionRef{ServingNodeID: testNodeID(3), SessionID: "before-restart"}
+	mgrB1, closeB1 := startB("session-restart-b1")
+	waitForMeshRoute(t, mgrA, mgrB1.cfg.NodeID, mesh.TrafficControlQuery)
+	waitForMeshRoute(t, mgrB1, mgrA.cfg.NodeID, mesh.TrafficControlQuery)
+	mgrB1.RegisterLocalSession(store.OnlineSession{
+		User: user, SessionRef: oldRef, Transport: "ws", TransientCapable: true,
+	}, app.LoggedInUserSummary{NodeID: user.NodeID, UserID: user.UserID, Username: "restart-user"})
+	waitFor(t, 5*time.Second, func() bool {
+		mgrA.mu.Lock()
+		defer mgrA.mu.Unlock()
+		return mgrA.onlinePresenceEpochs[mgrB1.cfg.NodeID] == mgrB1.localRuntimeEpoch
+	})
+	oldSessions, err := mgrA.ResolveUserSessions(context.Background(), user)
+	if err != nil || len(oldSessions) != 1 || oldSessions[0].SessionRef != oldRef {
+		t.Fatalf("resolve before restart: sessions=%+v err=%v", oldSessions, err)
+	}
+	oldEpoch := mgrB1.localRuntimeEpoch
+	closeB1()
+
+	mgrB2, _ := startB("session-restart-b2")
+	if mgrB2.localRuntimeEpoch <= oldEpoch {
+		t.Fatalf("manager restart did not advance runtime epoch: old=%d new=%d", oldEpoch, mgrB2.localRuntimeEpoch)
+	}
+	waitForMeshRoute(t, mgrA, mgrB2.cfg.NodeID, mesh.TrafficControlQuery)
+	waitForMeshRoute(t, mgrB2, mgrA.cfg.NodeID, mesh.TrafficControlQuery)
+	newRef := store.SessionRef{ServingNodeID: testNodeID(3), SessionID: "after-restart"}
+	mgrB2.RegisterLocalSession(store.OnlineSession{
+		User: user, SessionRef: newRef, Transport: "ws", TransientCapable: true,
+	}, app.LoggedInUserSummary{NodeID: user.NodeID, UserID: user.UserID, Username: "restart-user"})
+	waitFor(t, 5*time.Second, func() bool {
+		mgrA.mu.Lock()
+		defer mgrA.mu.Unlock()
+		return mgrA.onlinePresenceEpochs[mgrB2.cfg.NodeID] == mgrB2.localRuntimeEpoch
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	newSessions, err := mgrA.ResolveUserSessions(ctx, user)
+	if err != nil {
+		t.Fatalf("resolve after restart: %v", err)
+	}
+	if len(newSessions) != 1 || newSessions[0].SessionRef != newRef {
+		t.Fatalf("unexpected sessions after restart: %+v", newSessions)
+	}
+	mgrA.mu.Lock()
+	pending := len(mgrA.pendingResolveSessions)
+	mgrA.mu.Unlock()
+	if pending != 0 {
+		t.Fatalf("pending resolve queries leaked after restart recovery: %d", pending)
+	}
+}
+
 func TestManagerAuthoritativeShardRepairsMissedPresenceDeltaWithinOneRotation(t *testing.T) {
 	mgrA, _, mgrC := startLinearMeshManagers(t)
 	user := store.UserKey{NodeID: testNodeID(3), UserID: 4098}

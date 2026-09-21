@@ -94,10 +94,12 @@ type Engine struct {
 	now func() time.Time
 }
 
-// seenKey 是去重表的键，由源节点 ID 和数据包 ID 组成。
+// seenKey 是去重表的键。runtime epoch 防止同一节点重启后从头分配的
+// packet ID 与上一进程生命周期的包碰撞；零值保留旧协议的去重语义。
 type seenKey struct {
-	sourceNodeID int64  // 数据包的源节点。
-	packetID     uint64 // 数据包的唯一标识符。
+	sourceNodeID       int64  // 数据包的源节点。
+	sourceRuntimeEpoch uint64 // 数据包源进程的运行时纪元。
+	packetID           uint64 // 数据包在该运行时纪元内的唯一标识符。
 }
 
 // validateForwardedPacket 验证转发数据包的格式合法性：
@@ -361,7 +363,7 @@ func (e *Engine) markSeen(packet *ForwardedPacket) bool {
 		e.sweepSeenLocked(now)
 		e.nextSeenSweepAt = now.Add(e.seenSweepInterval)
 	}
-	key := seenKey{sourceNodeID: packet.SourceNodeId, packetID: packet.PacketId}
+	key := seenKey{sourceNodeID: packet.SourceNodeId, sourceRuntimeEpoch: packet.SourceRuntimeEpoch, packetID: packet.PacketId}
 	if _, ok := e.seen[key]; ok {
 		return false
 	}
@@ -377,7 +379,7 @@ func (e *Engine) unmarkSeen(packet *ForwardedPacket) {
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	delete(e.seen, seenKey{sourceNodeID: packet.SourceNodeId, packetID: packet.PacketId})
+	delete(e.seen, seenKey{sourceNodeID: packet.SourceNodeId, sourceRuntimeEpoch: packet.SourceRuntimeEpoch, packetID: packet.PacketId})
 }
 
 // cloneForwardedPacket 深度复制 ForwardedPacket。
@@ -388,16 +390,17 @@ func cloneForwardedPacket(packet *ForwardedPacket) *ForwardedPacket {
 		return nil
 	}
 	return &ForwardedPacket{
-		PacketId:         packet.PacketId,
-		SourceNodeId:     packet.SourceNodeId,
-		TargetNodeId:     packet.TargetNodeId,
-		TrafficClass:     packet.TrafficClass,
-		LastHopNodeId:    packet.LastHopNodeId,
-		IngressTransport: packet.IngressTransport,
-		TtlHops:          packet.TtlHops,
-		Payload:          packet.Payload,
-		TraceId:          packet.TraceId,
-		TransientPacket:  packet.TransientPacket,
+		PacketId:           packet.PacketId,
+		SourceNodeId:       packet.SourceNodeId,
+		TargetNodeId:       packet.TargetNodeId,
+		TrafficClass:       packet.TrafficClass,
+		LastHopNodeId:      packet.LastHopNodeId,
+		IngressTransport:   packet.IngressTransport,
+		TtlHops:            packet.TtlHops,
+		Payload:            packet.Payload,
+		TraceId:            packet.TraceId,
+		TransientPacket:    packet.TransientPacket,
+		SourceRuntimeEpoch: packet.SourceRuntimeEpoch,
 	}
 }
 

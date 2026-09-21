@@ -724,12 +724,13 @@ func (r *Runtime) RouteEnvelope(ctx context.Context, targetNodeID int64, envelop
 	// can enter the engine directly. ForwardPacket keeps its defensive clone
 	// for externally supplied packets.
 	return r.engine.Forward(ctx, &ForwardedPacket{
-		PacketId:     r.packetID.Add(1),
-		SourceNodeId: r.localNodeID,
-		TargetNodeId: targetNodeID,
-		TrafficClass: trafficClass,
-		TtlHops:      DefaultTTLHops,
-		Payload:      payload,
+		PacketId:           r.packetID.Add(1),
+		SourceNodeId:       r.localNodeID,
+		SourceRuntimeEpoch: r.localRuntimeEpoch,
+		TargetNodeId:       targetNodeID,
+		TrafficClass:       trafficClass,
+		TtlHops:            DefaultTTLHops,
+		Payload:            payload,
 	})
 }
 
@@ -751,6 +752,9 @@ func (r *Runtime) ForwardPacket(ctx context.Context, packet *ForwardedPacket) er
 	next := cloneForwardedPacket(packet)
 	if next.SourceNodeId == 0 {
 		next.SourceNodeId = r.localNodeID
+	}
+	if next.SourceNodeId == r.localNodeID && next.SourceRuntimeEpoch == 0 {
+		next.SourceRuntimeEpoch = r.localRuntimeEpoch
 	}
 	if next.PacketId == 0 {
 		next.PacketId = r.packetID.Add(1)

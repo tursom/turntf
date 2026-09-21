@@ -97,6 +97,31 @@ func TestTopologyFloodCoalescesPendingVersions(t *testing.T) {
 	}
 }
 
+func TestTopologyFloodCoalescesByRuntimeEpochBeforeGeneration(t *testing.T) {
+	r := newTestRuntime(t, 1, newFakeAdapter(TransportWebSocket))
+	defer r.Close()
+	a, _ := newFakeConnPair(TransportWebSocket, "a", "b")
+	slow := &stalledTopologyConn{TransportConn: a, entered: make(chan struct{}, 1), release: make(chan struct{})}
+	defer close(slow.release)
+	adj := r.registerAdjacency(slow, TransportWebSocket, &NodeHello{NodeId: 3}, false)
+	r.queueTopologyFlood(slow, &TopologyUpdate{OriginNodeId: 2, RuntimeEpoch: 100, Generation: 1})
+	select {
+	case <-slow.entered:
+	case <-time.After(time.Second):
+		t.Fatal("writer not started")
+	}
+
+	r.queueTopologyFlood(slow, &TopologyUpdate{OriginNodeId: 2, RuntimeEpoch: 100, Generation: 500})
+	r.queueTopologyFlood(slow, &TopologyUpdate{OriginNodeId: 2, RuntimeEpoch: 200, Generation: 1})
+	r.queueTopologyFlood(slow, &TopologyUpdate{OriginNodeId: 2, RuntimeEpoch: 100, Generation: 900})
+	r.mu.Lock()
+	pending := adj.pendingTopology[2]
+	r.mu.Unlock()
+	if pending == nil || pending.RuntimeEpoch != 200 || pending.Generation != 1 {
+		t.Fatalf("pending flood regressed to old runtime: %+v", pending)
+	}
+}
+
 func TestTopologyFloodStopsWithRuntime(t *testing.T) {
 	r := newTestRuntime(t, 1, newFakeAdapter(TransportWebSocket))
 	r.ctx, r.cancel = context.WithCancel(context.Background())

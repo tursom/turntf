@@ -794,10 +794,10 @@ func TestRuntimeSeenFloodKeepsOnlyLatestGenerationPerOrigin(t *testing.T) {
 	if len(runtime.seenFlood) != 1 {
 		t.Fatalf("expected one seen flood entry for local origin, got %d", len(runtime.seenFlood))
 	}
-	if _, ok := runtime.seenFlood[floodKey{origin: 1, generation: firstGeneration}]; ok {
+	if _, ok := runtime.seenFlood[floodKey{origin: 1, runtimeEpoch: runtime.localRuntimeEpoch, generation: firstGeneration}]; ok {
 		t.Fatalf("old local generation %d should have been evicted", firstGeneration)
 	}
-	if _, ok := runtime.seenFlood[floodKey{origin: 1, generation: secondGeneration}]; ok {
+	if _, ok := runtime.seenFlood[floodKey{origin: 1, runtimeEpoch: runtime.localRuntimeEpoch, generation: secondGeneration}]; ok {
 		t.Fatalf("previous local generation %d should have been evicted", secondGeneration)
 	}
 }

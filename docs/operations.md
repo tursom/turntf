@@ -93,7 +93,7 @@ sqlite3 ./data/turntf.db ".backup './backup/turntf-$(date +%Y%m%d%H%M%S).db'"
 - `enabled`、`forwarding_enabled`、`bridge_enabled` 和 `node_fee_weight` 表示本节点是否启用 mesh、是否允许 transit、是否允许跨 transport bridge，以及当前费用权重。
 - `transport_capabilities` 暴露本节点每种 transport 的入站、出站、native relay 能力和广播端点。
 - `traffic_rules` 暴露每类流量的准入策略，例如 `control_critical`、`control_query`、`transient_interactive`、`replication_stream` 和 `snapshot_bulk`。
-- `topology_generation` 表示当前拓扑版本；路由排查时应确认多个节点看到的 generation 是否持续前进。
+- `topology_generation` 表示当前运行时纪元内的拓扑版本；拓扑公告实际按 `(runtime_epoch, generation)` 判新旧，节点重启后新 epoch 必须优先于旧 epoch 的更高 generation。路由排查时应确认多个节点看到的 generation 是否持续前进，并结合节点重启记录检查 epoch 是否切换。
 - `routes` 按目的节点和流量类别列出当前 next hop、出站 transport、path class、估算成本以及是否可达。
 - `metrics` 是 `/metrics` 中 mesh 指标的 JSON 快照，便于无需 Prometheus 时快速定位路由行为。
 
@@ -135,7 +135,7 @@ sqlite3 ./data/turntf.db ".backup './backup/turntf-$(date +%Y%m%d%H%M%S).db'"
 - `forwarded_bytes_total{node_id,traffic_class,path_class}`：当前节点实际转发的 payload 字节数。复制流和快照流异常增长时，应结合 `path_class` 判断本节点是否误走高费用或 bridge 路径。
 - `routing_decision_cost{node_id,traffic_class}`：最近一次该流量类别的路由估算成本，用于解释当前路径为何被选中。
 - `routing_no_path_total{node_id,traffic_class}`：mesh 无可用路径次数。持续增长时优先查看 `/ops/status.mesh.routes` 中对应目的节点和流量类别的 `reachable`、traffic rule、bridge 开关和 topology generation。
-- `topology_generation{node_id}`：当前 mesh 拓扑 generation。多个节点长期不前进或差异过大时，优先排查连接和 topology flooding。
+- `topology_generation{node_id}`：当前 mesh 拓扑 generation。多个节点长期不前进或差异过大时，优先排查连接、节点 runtime epoch 和 topology flooding。
 - `node_fee_weight{node_id}`：本节点费用权重。高费用 transit 默认会拒绝复制流和快照流，只允许控制面在必要时通过。
 - `bridge_forward_total{node_id,traffic_class}`：当前节点实际执行跨 transport bridge 的转发次数。复制流和快照流默认不应增长；如果控制面 bridge 增长，说明本节点正在跨协议转发。
 

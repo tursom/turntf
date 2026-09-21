@@ -16,7 +16,7 @@ func (r *Runtime) queueTopologyFlood(conn TransportConn, update *TopologyUpdate)
 	if adj.pendingTopology == nil {
 		adj.pendingTopology = make(map[int64]*TopologyUpdate)
 	}
-	if old := adj.pendingTopology[update.OriginNodeId]; old == nil || old.Generation < update.Generation {
+	if old := adj.pendingTopology[update.OriginNodeId]; topologyUpdateNewer(update, old) {
 		adj.pendingTopology[update.OriginNodeId] = update
 	}
 	if adj.topologySending {

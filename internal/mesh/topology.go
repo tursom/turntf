@@ -51,23 +51,25 @@ type storeNode struct {
 }
 
 // MemoryTopologyStore 是 TopologyStore 的内存实现。
-// 它对输入进行标准化，按世代号去重，原子性地重建快照。
+// 它对输入进行标准化，按运行时纪元和世代号去重，原子性地重建快照。
 type MemoryTopologyStore struct {
-	mu         sync.RWMutex
-	nodes      map[int64]*storeNode
-	links      map[linkKey]LinkState
-	generation map[int64]uint64
-	updates    map[int64]*TopologyUpdate
-	snapshot   TopologySnapshot
+	mu           sync.RWMutex
+	nodes        map[int64]*storeNode
+	links        map[linkKey]LinkState
+	runtimeEpoch map[int64]uint64
+	generation   map[int64]uint64
+	updates      map[int64]*TopologyUpdate
+	snapshot     TopologySnapshot
 }
 
 // NewMemoryTopologyStore 创建一个新的空 MemoryTopologyStore。
 func NewMemoryTopologyStore() *MemoryTopologyStore {
 	return &MemoryTopologyStore{
-		nodes:      make(map[int64]*storeNode),
-		links:      make(map[linkKey]LinkState),
-		generation: make(map[int64]uint64),
-		updates:    make(map[int64]*TopologyUpdate),
+		nodes:        make(map[int64]*storeNode),
+		links:        make(map[linkKey]LinkState),
+		runtimeEpoch: make(map[int64]uint64),
+		generation:   make(map[int64]uint64),
+		updates:      make(map[int64]*TopologyUpdate),
 	}
 }
 
@@ -100,17 +102,20 @@ func (s *MemoryTopologyStore) ApplyTopologyUpdate(update *TopologyUpdate) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	// 世代守卫：拒绝低于当前世代的更新；相同世代的更新通过指纹判断是否重复。
+	// 版本守卫：新运行时纪元优先于旧纪元；同一纪元内 generation 单调递增。
+	currentEpoch := s.runtimeEpoch[normalized.OriginNodeId]
 	currentGeneration := s.generation[normalized.OriginNodeId]
-	if normalized.Generation < currentGeneration {
+	comparison := compareTopologyVersion(normalized.RuntimeEpoch, normalized.Generation, currentEpoch, currentGeneration)
+	if comparison < 0 {
 		return
 	}
-	if normalized.Generation == currentGeneration && currentGeneration != 0 {
+	if comparison == 0 && (currentEpoch != 0 || currentGeneration != 0) {
 		if TopologyUpdatesEqual(normalized, s.updates[normalized.OriginNodeId]) {
 			return
 		}
 		return
 	}
+	s.runtimeEpoch[normalized.OriginNodeId] = normalized.RuntimeEpoch
 	s.generation[normalized.OriginNodeId] = normalized.Generation
 	s.updates[normalized.OriginNodeId] = NormalizeTopologyUpdate(normalized)
 	node := s.ensureNodeLocked(normalized.OriginNodeId)
@@ -160,8 +165,8 @@ func (s *MemoryTopologyStore) rebuildSnapshotLocked() {
 		return
 	}
 	snapshot := TopologySnapshot{
-		Nodes:         make(map[int64]NodeState, len(s.nodes)),
-		Links:         make([]LinkState, 0, len(s.links)),
+		Nodes: make(map[int64]NodeState, len(s.nodes)),
+		Links: make([]LinkState, 0, len(s.links)),
 		// outgoingLinks 索引提供对 (node, transport) 邻居的 O(1) 查找。
 		outgoingLinks: make(map[topologyAdjacencyKey][]LinkState, len(s.links)),
 	}

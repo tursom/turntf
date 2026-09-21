@@ -99,6 +99,10 @@ message MeshTopologyUpdate {
   repeated MeshLinkAdvertisement links = 3;
   MeshForwardingPolicy forwarding_policy = 4;
   repeated MeshTransportCapability transports = 5;
+  // runtime_epoch scopes generation to one process lifetime. A newer epoch
+  // supersedes every advertisement from an older process, even when its
+  // generation is lower after a restart or storage recovery.
+  uint64 runtime_epoch = 6;
 }
 
 message MeshLinkAdvertisement {

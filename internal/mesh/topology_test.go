@@ -93,6 +93,41 @@ func TestTopologyStoreApplyTopologyUpdateIgnoresStaleGeneration(t *testing.T) {
 	}
 }
 
+func TestTopologyStoreNewRuntimeEpochSupersedesHigherOldGeneration(t *testing.T) {
+	t.Parallel()
+
+	store := NewMemoryTopologyStore()
+	store.ApplyTopologyUpdate(&TopologyUpdate{
+		OriginNodeId: 9,
+		RuntimeEpoch: 100,
+		Generation:   500,
+		Links: []*LinkAdvertisement{
+			{FromNodeId: 9, ToNodeId: 1, Transport: TransportWebSocket, PathClass: PathClassDirect, Established: true},
+		},
+	})
+	store.ApplyTopologyUpdate(&TopologyUpdate{
+		OriginNodeId: 9,
+		RuntimeEpoch: 200,
+		Generation:   1,
+		Links: []*LinkAdvertisement{
+			{FromNodeId: 9, ToNodeId: 2, Transport: TransportWebSocket, PathClass: PathClassDirect, Established: true},
+		},
+	})
+	store.ApplyTopologyUpdate(&TopologyUpdate{
+		OriginNodeId: 9,
+		RuntimeEpoch: 100,
+		Generation:   900,
+		Links: []*LinkAdvertisement{
+			{FromNodeId: 9, ToNodeId: 3, Transport: TransportWebSocket, PathClass: PathClassDirect, Established: true},
+		},
+	})
+
+	snapshot := store.Snapshot()
+	if len(snapshot.Links) != 1 || snapshot.Links[0].ToNodeID != 2 {
+		t.Fatalf("new runtime topology was not preserved: %+v", snapshot.Links)
+	}
+}
+
 func TestTopologyStoreRejectsNonOriginLinks(t *testing.T) {
 	t.Parallel()
 

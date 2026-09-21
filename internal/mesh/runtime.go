@@ -310,6 +310,7 @@ type Runtime struct {
 
 	// ---- 生成号与拓扑 ----
 	generation        uint64                         // 本地当前生成号（每次拓扑变更递增）
+	knownRuntimeEpoch map[int64]uint64               // 每个节点已接受的运行时纪元
 	knownGeneration   map[int64]uint64               // 已知的远程节点生成号（用于去重和版本判断）
 	seenFlood         map[floodKey]struct{}          // 已处理的洪水更新记录（防止循环转发）
 	lastUpdate        map[int64]*TopologyUpdate      // 每个远程节点最后接收到的拓扑更新（用于对新邻接节点重放）
@@ -349,10 +350,11 @@ type directStreamAffinityEntry struct {
 }
 
 // floodKey 用于记录已处理的拓扑更新洪水广播，防止拓扑更新在网络中
-// 无限循环转发。每个唯一的（来源节点ID + 生成号）对只处理一次。
+// 无限循环转发。每个唯一的（来源节点ID + 运行时纪元 + 生成号）只处理一次。
 type floodKey struct {
-	origin     int64
-	generation uint64
+	origin       int64
+	runtimeEpoch uint64
+	generation   uint64
 }
 
 // dialSeedKey 是主动拨号种子的唯一键，由传输类型和端点地址组成。
@@ -540,6 +542,7 @@ func NewRuntime(opts RuntimeOptions) (*Runtime, error) {
 		adjByRoute:             make(map[routeAdjacencyKey][]*Adjacency),
 		directStreamAffinity:   make(map[directStreamAffinityKey]directStreamAffinityEntry),
 		knownGeneration:        make(map[int64]uint64),
+		knownRuntimeEpoch:      make(map[int64]uint64),
 		seenFlood:              make(map[floodKey]struct{}),
 		lastUpdate:             make(map[int64]*TopologyUpdate),
 		dialSeeds:              dialSeeds,
@@ -1674,11 +1677,14 @@ func (r *Runtime) publishTopology(ctx context.Context, force bool) {
 	r.store.ApplyTopologyUpdate(update)
 
 	r.mu.Lock()
-	if old := r.knownGeneration[update.OriginNodeId]; old != 0 && old != update.Generation {
-		delete(r.seenFlood, floodKey{origin: update.OriginNodeId, generation: old})
+	oldEpoch := r.knownRuntimeEpoch[update.OriginNodeId]
+	oldGeneration := r.knownGeneration[update.OriginNodeId]
+	if oldEpoch != update.RuntimeEpoch || oldGeneration != update.Generation {
+		delete(r.seenFlood, floodKey{origin: update.OriginNodeId, runtimeEpoch: oldEpoch, generation: oldGeneration})
 	}
+	r.knownRuntimeEpoch[update.OriginNodeId] = update.RuntimeEpoch
 	r.knownGeneration[update.OriginNodeId] = update.Generation
-	r.seenFlood[floodKey{origin: update.OriginNodeId, generation: update.Generation}] = struct{}{}
+	r.seenFlood[floodKey{origin: update.OriginNodeId, runtimeEpoch: update.RuntimeEpoch, generation: update.Generation}] = struct{}{}
 	r.lastUpdate[update.OriginNodeId] = update
 	targets := make([]TransportConn, 0, len(r.adjByConn))
 	for conn := range r.adjByConn {
@@ -1738,6 +1744,7 @@ func (r *Runtime) buildLocalTopologyUpdate() *TopologyUpdate {
 	return &TopologyUpdate{
 		OriginNodeId:     r.localNodeID,
 		Generation:       gen,
+		RuntimeEpoch:     r.localRuntimeEpoch,
 		Links:            links,
 		ForwardingPolicy: ClonePolicy(r.policy),
 		Transports:       caps,
@@ -1807,8 +1814,8 @@ func remoteHintSuggestsRelay(hint string) bool {
 // 处理逻辑（洪水广播协议）：
 //  1. 通过 NormalizeTopologyUpdate 标准化更新（去除无效链接、排序等）。
 //  2. 如果更新来源是本节点自己，忽略（已本地处理过）。
-//  3. 使用 floodKey（来源节点 ID + 生成号）去重：已处理过的更新忽略。
-//  4. 仅接受比已知生成号更新的版本，防止旧版本覆盖新版本。
+//  3. 使用 floodKey（来源节点 ID + 运行时纪元 + 生成号）去重。
+//  4. 先比较运行时纪元，再比较同一纪元内生成号，防止旧进程覆盖新进程。
 //  5. 记录处理过的更新，防止循环。
 //  6. 将更新应用到本地拓扑存储。
 //  7. 将更新广播给除入站连接之外的所有其他邻接节点（洪水扩散）。
@@ -1820,26 +1827,24 @@ func (r *Runtime) handleTopologyUpdate(ctx context.Context, ingress *Adjacency, 
 	if update.OriginNodeId == r.localNodeID {
 		return
 	}
-	key := floodKey{origin: update.OriginNodeId, generation: update.Generation}
+	key := floodKey{origin: update.OriginNodeId, runtimeEpoch: update.RuntimeEpoch, generation: update.Generation}
 	r.mu.Lock()
 	if _, seen := r.seenFlood[key]; seen {
 		r.mu.Unlock()
 		return
 	}
-	known := r.knownGeneration[update.OriginNodeId]
-	// 仅接受比已接受的生成号严格更新的版本，防止陈旧更新进入，
-	// 即使调用者注入非内存存储也是如此。
-	if update.Generation < known {
+	knownEpoch := r.knownRuntimeEpoch[update.OriginNodeId]
+	knownGeneration := r.knownGeneration[update.OriginNodeId]
+	// 仅接受严格更新的 (runtime epoch, generation)，防止旧进程的高
+	// generation 在节点重启后覆盖新进程公告。
+	if compareTopologyVersion(update.RuntimeEpoch, update.Generation, knownEpoch, knownGeneration) <= 0 {
 		r.mu.Unlock()
 		return
 	}
-	if update.Generation == known {
-		r.mu.Unlock()
-		return
+	if knownEpoch != 0 || knownGeneration != 0 {
+		delete(r.seenFlood, floodKey{origin: update.OriginNodeId, runtimeEpoch: knownEpoch, generation: knownGeneration})
 	}
-	if known != 0 {
-		delete(r.seenFlood, floodKey{origin: update.OriginNodeId, generation: known})
-	}
+	r.knownRuntimeEpoch[update.OriginNodeId] = update.RuntimeEpoch
 	r.knownGeneration[update.OriginNodeId] = update.Generation
 	r.seenFlood[key] = struct{}{}
 	r.lastUpdate[update.OriginNodeId] = update

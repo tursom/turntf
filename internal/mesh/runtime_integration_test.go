@@ -49,6 +49,80 @@ func TestRuntimeThreeNodeConvergence(t *testing.T) {
 	}
 }
 
+func TestRuntimeRouteRecoversAfterPeerRestartsWithLowerGeneration(t *testing.T) {
+	adapterA := newFakeAdapter(TransportWebSocket)
+	adapterB1 := newFakeAdapter(TransportWebSocket)
+	runtimeA := newTestRuntime(t, 1, adapterA, func(opts *RuntimeOptions) {
+		opts.LocalRuntimeEpoch = 100
+	})
+	runtimeB1 := newTestRuntime(t, 2, adapterB1, func(opts *RuntimeOptions) {
+		opts.LocalRuntimeEpoch = 200
+		opts.Now = func() time.Time { return time.UnixMilli(10_000) }
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := runtimeA.Start(ctx); err != nil {
+		t.Fatalf("start A: %v", err)
+	}
+	defer runtimeA.Close()
+	if err := runtimeB1.Start(ctx); err != nil {
+		t.Fatalf("start B1: %v", err)
+	}
+
+	connA1, connB1 := newFakeConnPair(TransportWebSocket, "A", "B1")
+	adapterA.accept <- connA1
+	adapterB1.accept <- connB1
+	waitForAdjacency(t, runtimeA, 1, time.Second)
+	versionAtA := func() (uint64, uint64) {
+		runtimeA.mu.Lock()
+		defer runtimeA.mu.Unlock()
+		return runtimeA.knownRuntimeEpoch[2], runtimeA.knownGeneration[2]
+	}
+	waitFor(t, time.Second, func() bool {
+		epoch, generation := versionAtA()
+		return epoch == 200 && generation >= 10_000
+	})
+	_, oldGeneration := versionAtA()
+
+	if err := runtimeB1.Close(); err != nil {
+		t.Fatalf("close B1: %v", err)
+	}
+	waitFor(t, time.Second, func() bool { return len(runtimeA.Adjacencies()) == 0 })
+
+	adapterB2 := newFakeAdapter(TransportWebSocket)
+	runtimeB2 := newTestRuntime(t, 2, adapterB2, func(opts *RuntimeOptions) {
+		opts.LocalRuntimeEpoch = 300
+		opts.Now = func() time.Time { return time.UnixMilli(1_000) }
+	})
+	if err := runtimeB2.Start(ctx); err != nil {
+		t.Fatalf("start B2: %v", err)
+	}
+	defer runtimeB2.Close()
+	connA2, connB2 := newFakeConnPair(TransportWebSocket, "A", "B2")
+	adapterA.accept <- connA2
+	adapterB2.accept <- connB2
+	waitForAdjacency(t, runtimeA, 1, time.Second)
+	waitFor(t, time.Second, func() bool {
+		epoch, generation := versionAtA()
+		return epoch == 300 && generation < oldGeneration
+	})
+
+	planner := NewPlanner(1)
+	if _, ok := planner.Compute(runtimeA.store.Snapshot(), 2, TrafficControlQuery, TransportUnspecified); !ok {
+		t.Fatal("A did not recover route to restarted B")
+	}
+	runtimeA.handleTopologyUpdate(context.Background(), nil, &TopologyUpdate{
+		OriginNodeId: 2,
+		RuntimeEpoch: 200,
+		Generation:   oldGeneration + 1,
+	})
+	epoch, generation := versionAtA()
+	if epoch != 300 {
+		t.Fatalf("old runtime update replaced new epoch: epoch=%d generation=%d", epoch, generation)
+	}
+}
+
 func TestRuntimeRoutesQueryEnvelopeAcrossTransit(t *testing.T) {
 	t.Parallel()
 	adapterA := newFakeAdapter(TransportLibP2P)

@@ -24,10 +24,40 @@ func NormalizeTopologyUpdate(update *TopologyUpdate) *TopologyUpdate {
 	return &TopologyUpdate{
 		OriginNodeId:     update.OriginNodeId,
 		Generation:       update.Generation,
+		RuntimeEpoch:     update.RuntimeEpoch,
 		ForwardingPolicy: NormalizeForwardingPolicy(ClonePolicy(update.ForwardingPolicy)),
 		Transports:       normalizeTopologyCapabilities(update.Transports),
 		Links:            normalizeTopologyLinks(update.OriginNodeId, update.Links),
 	}
+}
+
+// compareTopologyVersion compares process lifetime first and generation
+// second. Runtime epochs are generated monotonically by the cluster manager;
+// epoch zero remains the legacy namespace for older advertisements.
+func compareTopologyVersion(epoch, generation, currentEpoch, currentGeneration uint64) int {
+	if epoch < currentEpoch {
+		return -1
+	}
+	if epoch > currentEpoch {
+		return 1
+	}
+	if generation < currentGeneration {
+		return -1
+	}
+	if generation > currentGeneration {
+		return 1
+	}
+	return 0
+}
+
+func topologyUpdateNewer(update, current *TopologyUpdate) bool {
+	if update == nil {
+		return false
+	}
+	if current == nil {
+		return true
+	}
+	return compareTopologyVersion(update.RuntimeEpoch, update.Generation, current.RuntimeEpoch, current.Generation) > 0
 }
 
 // TopologyUpdatesEqual 通过确定性的 protobuf 指纹比较两个拓扑更新是否语义相等。

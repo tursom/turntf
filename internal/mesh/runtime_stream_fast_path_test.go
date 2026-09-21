@@ -347,6 +347,94 @@ func TestRuntimeDirectStreamResumeReplacesAffinity(t *testing.T) {
 	}
 }
 
+func TestRuntimeDirectStreamResumeAckAdvancesReverseAffinity(t *testing.T) {
+	runtimeA := newDirectStreamTestRuntime(t, newFakeAdapter(TransportLibP2P), newFakeAdapter(TransportWebSocket))
+	adapterBPrimary := newFakeAdapter(TransportLibP2P)
+	adapterBAlternate := newFakeAdapter(TransportWebSocket)
+	runtimeB := newTestRuntime(t, 2, adapterBPrimary, func(opts *RuntimeOptions) {
+		opts.Adapters = []TransportAdapter{adapterBPrimary, adapterBAlternate}
+	})
+	primaryA, primaryB := newFakeConnPair(TransportLibP2P, "A-primary", "B-primary")
+	alternateA, alternateB := newFakeConnPair(TransportWebSocket, "A-alternate", "B-alternate")
+	primaryAdjA := registerTestAdjacency(runtimeA, primaryA, 2, TransportLibP2P)
+	primaryAdjB := registerTestAdjacency(runtimeB, primaryB, 1, TransportLibP2P)
+	alternateAdjA := registerTestAdjacency(runtimeA, alternateA, 2, TransportWebSocket)
+	alternateAdjB := registerTestAdjacency(runtimeB, alternateB, 1, TransportWebSocket)
+	for _, adj := range []*Adjacency{primaryAdjA, primaryAdjB} {
+		setTestAdjacencyScore(adj, 1, 0)
+	}
+	for _, adj := range []*Adjacency{alternateAdjA, alternateAdjB} {
+		setTestAdjacencyScore(adj, 100, 0)
+	}
+
+	ctx := context.Background()
+	if err := runtimeA.RouteEnvelope(ctx, 2, testStreamEnvelopeFor(streamFrameKindOpen, 1)); err != nil {
+		t.Fatalf("route open A to B: %v", err)
+	}
+	runtimeB.dispatchEnvelope(ctx, primaryAdjB, receiveTestEnvelope(t, primaryB))
+	if err := runtimeB.RouteEnvelope(ctx, 1, testStreamEnvelopeFor(streamFrameKindAck, 1)); err != nil {
+		t.Fatalf("route initial ack B to A: %v", err)
+	}
+	runtimeA.dispatchEnvelope(ctx, primaryAdjA, receiveTestEnvelope(t, primaryA))
+	if err := runtimeA.RouteEnvelope(ctx, 2, testStreamEnvelopeFor(streamFrameKindData, 1)); err != nil {
+		t.Fatalf("route initial data A to B: %v", err)
+	}
+	runtimeB.dispatchEnvelope(ctx, primaryAdjB, receiveTestEnvelope(t, primaryB))
+
+	for _, adj := range []*Adjacency{primaryAdjA, primaryAdjB} {
+		setTestAdjacencyScore(adj, 100, 0)
+	}
+	for _, adj := range []*Adjacency{alternateAdjA, alternateAdjB} {
+		setTestAdjacencyScore(adj, 1, 0)
+	}
+	if err := runtimeA.RouteEnvelope(ctx, 2, testStreamEnvelopeFor(streamFrameKindResume, 2)); err != nil {
+		t.Fatalf("route resume A to B: %v", err)
+	}
+	runtimeB.dispatchEnvelope(ctx, alternateAdjB, receiveTestEnvelope(t, alternateB))
+	if err := runtimeB.RouteEnvelope(ctx, 1, testStreamEnvelopeFor(streamFrameKindAck, 2)); err != nil {
+		t.Fatalf("route resume ack B to A: %v", err)
+	}
+	runtimeA.dispatchEnvelope(ctx, alternateAdjA, receiveTestEnvelope(t, alternateA))
+
+	key := directStreamAffinityKey{targetNodeID: 1, streamID: "0123456789abcdef"}
+	entry := runtimeB.directStreamAffinity[key]
+	if entry.epoch != 2 || entry.adj != alternateAdjB {
+		t.Fatalf("resume ack affinity = {epoch:%d adj:%p}, want epoch 2 adj %p", entry.epoch, entry.adj, alternateAdjB)
+	}
+
+	for _, test := range []struct {
+		name  string
+		kind  uint32
+		epoch uint64
+	}{
+		{name: "higher open", kind: streamFrameKindOpen, epoch: 3},
+		{name: "higher open ack", kind: streamFrameKindOpenAck, epoch: 3},
+		{name: "higher data", kind: streamFrameKindData, epoch: 3},
+		{name: "higher close", kind: streamFrameKindClose, epoch: 3},
+		{name: "stale ack", kind: streamFrameKindAck, epoch: 1},
+		{name: "stale data", kind: streamFrameKindData, epoch: 1},
+		{name: "stale close", kind: streamFrameKindClose, epoch: 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := runtimeB.RouteEnvelope(ctx, 1, testStreamEnvelopeFor(test.kind, test.epoch))
+			if !errors.Is(err, ErrNoRoute) {
+				t.Fatalf("route kind %d epoch %d error = %v, want ErrNoRoute", test.kind, test.epoch, err)
+			}
+			entry := runtimeB.directStreamAffinity[key]
+			if entry.epoch != 2 || entry.adj != alternateAdjB {
+				t.Fatalf("affinity changed to {epoch:%d adj:%p}, want epoch 2 adj %p", entry.epoch, entry.adj, alternateAdjB)
+			}
+		})
+	}
+
+	if err := runtimeB.RouteEnvelope(ctx, 1, testStreamEnvelopeFor(streamFrameKindData, 2)); err != nil {
+		t.Fatalf("route data on advanced affinity: %v", err)
+	}
+	if got := receiveTestEnvelope(t, alternateA).GetStreamFrame(); got == nil || got.Kind != streamFrameKindData || got.Epoch != 2 {
+		t.Fatalf("advanced affinity delivered unexpected frame: %+v", got)
+	}
+}
+
 func TestRuntimeDirectStreamCloseAndRuntimeCloseClearAffinity(t *testing.T) {
 	runtime := newTestRuntime(t, 1, newFakeAdapter(TransportLibP2P))
 	conn, _ := newFakeConnPair(TransportLibP2P, "source", "target")

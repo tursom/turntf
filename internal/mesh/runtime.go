@@ -869,7 +869,8 @@ func (r *Runtime) bestDirectAdjacencyLocked(targetNodeID int64) *Adjacency {
 }
 
 // directStreamAdjacency returns the adjacency pinned to this logical stream
-// epoch. Resume is the only frame allowed to replace an existing epoch.
+// epoch. Resume and its Ack response may advance an existing affinity; all
+// other frames must match the pinned epoch exactly.
 func (r *Runtime) directStreamAdjacency(key directStreamAffinityKey, frame *StreamFrame) (*Adjacency, error) {
 	var decision RouteDecision
 	var directRoute bool
@@ -884,7 +885,8 @@ func (r *Runtime) directStreamAdjacency(key directStreamAffinityKey, frame *Stre
 	}
 
 	entry, exists := r.directStreamAffinity[key]
-	if exists && frame.Kind == streamFrameKindResume && frame.Epoch > entry.epoch {
+	canAdvanceEpoch := frame.Kind == streamFrameKindResume || frame.Kind == streamFrameKindAck
+	if exists && canAdvanceEpoch && frame.Epoch > entry.epoch {
 		delete(r.directStreamAffinity, key)
 		exists = false
 	}

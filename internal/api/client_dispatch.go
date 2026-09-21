@@ -51,11 +51,10 @@ func (s *clientWSSession) readLoop(ctx context.Context) (loopErr error) {
 		}
 		req := envelope.GetSendMessage()
 		concurrentSend := s.realtimeOnly && req.GetDeliveryKind() == internalproto.ClientDeliveryKind_CLIENT_DELIVERY_KIND_TRANSIENT && req.GetTargetSession() != nil
-		concurrentStream := s.realtimeOnly && envelope.GetStreamFrame() != nil
 		concurrentLookup := s.realtimeOnly && envelope.GetResolveUserSessions() != nil
-		// Read-only discovery and dedicated stream frames may overlap DATA, but
-		// all other RPCs remain barriers that drain in-flight realtime work.
-		if !concurrentSend && !concurrentStream && !concurrentLookup && sends != nil {
+		// Read-only discovery may overlap DATA, but all other RPCs remain
+		// barriers that drain both kinds before observing or changing state.
+		if !concurrentSend && !concurrentLookup && sends != nil {
 			sends.pending.Wait()
 			if err := ctx.Err(); err != nil {
 				return err
@@ -63,16 +62,6 @@ func (s *clientWSSession) readLoop(ctx context.Context) (loopErr error) {
 		}
 		switch body := envelope.Body.(type) {
 		case *internalproto.ClientEnvelope_StreamFrame:
-			if concurrentStream {
-				if sends == nil {
-					sends = newRealtimeSendGroup(ctx, s)
-					ctx = sends.ctx
-				}
-				if err := sends.submitStreamFrame(body.StreamFrame); err != nil {
-					return err
-				}
-				continue
-			}
 			if err := s.handleStreamFrame(ctx, body.StreamFrame); err != nil {
 				return err
 			}

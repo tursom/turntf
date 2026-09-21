@@ -37,17 +37,12 @@ func (g *realtimeSendGroup) submit(req *internalproto.SendMessageRequest) error 
 	return g.submitWork(func(ctx context.Context) error { return g.session.handleSendMessage(ctx, req) })
 }
 
-func (g *realtimeSendGroup) submitStreamFrame(req *internalproto.StreamFrameRequest) error {
-	return g.submitWork(func(ctx context.Context) error { return g.session.handleStreamFrame(ctx, req) })
-}
-
 func (g *realtimeSendGroup) submitLookup(req *internalproto.ResolveUserSessionsRequest) error {
 	return g.submitWork(func(ctx context.Context) error { return g.session.handleResolveUserSessions(ctx, req) })
 }
 
-// DATA, dedicated stream frames, and read-only session discovery share the
-// same admission limit. This avoids cross-relay ordering barriers without an
-// unbounded work queue.
+// DATA and read-only session discovery share the same admission limit. This
+// avoids cross-relay ordering barriers without an unbounded work queue.
 func (g *realtimeSendGroup) submitWork(handle func(context.Context) error) error {
 	select {
 	case g.slots <- struct{}{}:

@@ -101,13 +101,13 @@ func TestRequestIDForStreamFrame(t *testing.T) {
 }
 
 type blockingStreamFrameRouter struct {
-	entered chan struct{}
+	entered chan uint64
 	release chan struct{}
 }
 
-func (r *blockingStreamFrameRouter) RouteStreamFrame(ctx context.Context, _ store.StreamFrame) error {
+func (r *blockingStreamFrameRouter) RouteStreamFrame(ctx context.Context, frame store.StreamFrame) error {
 	select {
-	case r.entered <- struct{}{}:
+	case r.entered <- frame.Offset:
 	case <-ctx.Done():
 		return ctx.Err()
 	}
@@ -119,12 +119,12 @@ func (r *blockingStreamFrameRouter) RouteStreamFrame(ctx context.Context, _ stor
 	}
 }
 
-func TestRealtimeStreamFrameResultsAreDispatchedConcurrently(t *testing.T) {
-	const requestCount = 32
+func TestRealtimeStreamFramesPreserveConnectionOrder(t *testing.T) {
+	const requestCount = 2
 	s, conn, _ := realtimeFixture(t, true)
 	router := &blockingStreamFrameRouter{
-		entered: make(chan struct{}, requestCount),
-		release: make(chan struct{}),
+		entered: make(chan uint64, requestCount),
+		release: make(chan struct{}, requestCount),
 	}
 	s.http.service.SetStreamFrameRouter(router)
 
@@ -145,8 +145,10 @@ func TestRealtimeStreamFrameResultsAreDispatchedConcurrently(t *testing.T) {
 	}()
 
 	for id := uint64(1); id <= requestCount; id++ {
+		request := testStreamFrameRequest(s, id)
+		request.Offset = id
 		envelope := &internalproto.ClientEnvelope{Body: &internalproto.ClientEnvelope_StreamFrame{
-			StreamFrame: testStreamFrameRequest(s, id),
+			StreamFrame: request,
 		}}
 		data, err := gproto.Marshal(envelope)
 		if err != nil {
@@ -154,29 +156,39 @@ func TestRealtimeStreamFrameResultsAreDispatchedConcurrently(t *testing.T) {
 		}
 		conn.in <- data
 	}
-	for range requestCount {
-		select {
-		case <-router.entered:
-		case <-time.After(time.Second):
-			t.Fatal("stream frame dispatch remained serialized")
+	select {
+	case offset := <-router.entered:
+		if offset != 1 {
+			t.Fatalf("first routed offset = %d, want 1", offset)
 		}
+	case <-time.After(time.Second):
+		t.Fatal("first stream frame was not routed")
 	}
-	close(router.release)
+	select {
+	case offset := <-router.entered:
+		t.Fatalf("second stream frame overtook blocked first frame: offset=%d", offset)
+	case <-time.After(50 * time.Millisecond):
+	}
+	router.release <- struct{}{}
+	select {
+	case offset := <-router.entered:
+		if offset != 2 {
+			t.Fatalf("second routed offset = %d, want 2", offset)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("second stream frame was not routed after first completed")
+	}
+	router.release <- struct{}{}
 
-	seen := make(map[uint64]struct{}, requestCount)
-	for range requestCount {
+	for want := uint64(1); want <= requestCount; want++ {
 		select {
 		case result := <-conn.out:
 			requestID := result.GetStreamFrameResult().GetRequestId()
-			if requestID == 0 {
-				t.Fatalf("unexpected stream frame result: %T", result.Body)
+			if requestID != want {
+				t.Fatalf("result request ID = %d, want %d", requestID, want)
 			}
-			seen[requestID] = struct{}{}
 		case <-time.After(2 * time.Second):
 			t.Fatal("timed out waiting for stream frame result")
 		}
-	}
-	if len(seen) != requestCount {
-		t.Fatalf("unique result request IDs = %d, want %d", len(seen), requestCount)
 	}
 }

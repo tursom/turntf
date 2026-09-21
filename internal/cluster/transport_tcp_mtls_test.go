@@ -333,7 +333,7 @@ func TestTCPMTLSHandshakeTimeoutAndClose(t *testing.T) {
 func startTCPTestRuntime(t *testing.T, id int64, adapters []mesh.TransportAdapter, seeds []mesh.DialSeed, handler mesh.LocalForwardedPacketHandler) *mesh.Runtime {
 	t.Helper()
 	auth := newMeshEnvelopeAuthenticator("tcp-test-secret")
-	r, err := mesh.NewRuntime(mesh.RuntimeOptions{LocalNodeID: id, Adapters: adapters, DialSeeds: seeds, Signer: auth, Verifier: auth, HelloTimeout: time.Second, DialRetryInterval: 50 * time.Millisecond, PingInterval: 100 * time.Millisecond, ForwardedPacketHandler: handler})
+	r, err := mesh.NewRuntime(mesh.RuntimeOptions{LocalNodeID: id, Adapters: adapters, DialSeeds: seeds, Signer: auth, Verifier: auth, HelloTimeout: time.Second, DialRetryInterval: 50 * time.Millisecond, PingInterval: 100 * time.Millisecond, LivenessTimeout: 300 * time.Millisecond, ForwardedPacketHandler: handler})
 	if err != nil {
 		t.Fatal(err)
 	}

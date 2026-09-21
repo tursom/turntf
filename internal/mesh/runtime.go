@@ -242,6 +242,9 @@ type RuntimeOptions struct {
 	DialRetryInterval time.Duration
 	// PingInterval 心跳/链路测量间隔，默认 2 秒。
 	PingInterval time.Duration
+	// LivenessTimeout 是等待匹配链路探测响应的最长时间，默认 30 秒。
+	// 它独立于测量频率，避免短时写队列拥塞被误判为半开连接。
+	LivenessTimeout time.Duration
 	// TopologyPublishPeriod 拓扑公告定期发布周期间隔，默认 30 秒。
 	TopologyPublishPeriod time.Duration
 	// Now 时间获取函数，用于测试时注入固定时间。
@@ -283,6 +286,7 @@ type Runtime struct {
 	helloTimeout          time.Duration    // 握手超时时间
 	dialRetryInterval     time.Duration    // 拨号失败后的重试间隔
 	pingInterval          time.Duration    // 心跳探测间隔
+	livenessTimeout       time.Duration    // 探测响应超时，超过后关闭半开邻接
 	topologyPublishPeriod time.Duration    // 拓扑公告定期发布周期
 	now                   func() time.Time // 时间获取函数（可注入）
 
@@ -479,6 +483,10 @@ func NewRuntime(opts RuntimeOptions) (*Runtime, error) {
 	if pingInterval <= 0 {
 		pingInterval = 2 * time.Second
 	}
+	livenessTimeout := opts.LivenessTimeout
+	if livenessTimeout <= 0 {
+		livenessTimeout = 30 * time.Second
+	}
 	publishPeriod := opts.TopologyPublishPeriod
 	if publishPeriod <= 0 {
 		publishPeriod = 30 * time.Second
@@ -533,6 +541,7 @@ func NewRuntime(opts RuntimeOptions) (*Runtime, error) {
 		helloTimeout:           helloTimeout,
 		dialRetryInterval:      dialRetryInterval,
 		pingInterval:           pingInterval,
+		livenessTimeout:        livenessTimeout,
 		topologyPublishPeriod:  publishPeriod,
 		now:                    now,
 		adapters:               opts.Adapters,
@@ -1937,7 +1946,7 @@ func (r *Runtime) sendPing(ctx context.Context, adj *Adjacency) {
 	adj.mu.Lock()
 	// 一次只保留一个探测。其他业务帧不能替代匹配的 TimeSyncResponse。
 	if len(adj.inflightPings) > 0 {
-		if time.Since(adj.pingStarted) < 3*r.pingInterval {
+		if time.Since(adj.pingStarted) < r.livenessTimeout {
 			adj.mu.Unlock()
 			return
 		}

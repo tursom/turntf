@@ -8,11 +8,26 @@ import (
 	"time"
 )
 
+func TestDefaultLivenessTimeoutIsIndependentFromPingInterval(t *testing.T) {
+	r, err := NewRuntime(RuntimeOptions{
+		LocalNodeID:  1,
+		Adapters:     []TransportAdapter{newFakeAdapter(TransportWebSocket)},
+		PingInterval: time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	if r.livenessTimeout != 30*time.Second {
+		t.Fatalf("default liveness timeout = %v, want 30s", r.livenessTimeout)
+	}
+}
+
 func TestPingFailureClosesAllTransports(t *testing.T) {
 	for _, kind := range []TransportKind{TransportWebSocket, TransportLibP2P, TransportZeroMQ, TransportTCPMTLS} {
 		t.Run(kind.String(), func(t *testing.T) {
 			t.Run("timeout", func(t *testing.T) {
-				r, err := NewRuntime(RuntimeOptions{LocalNodeID: 1, Adapters: []TransportAdapter{newFakeAdapter(kind)}, PingInterval: 10 * time.Millisecond})
+				r, err := NewRuntime(RuntimeOptions{LocalNodeID: 1, Adapters: []TransportAdapter{newFakeAdapter(kind)}, PingInterval: 10 * time.Millisecond, LivenessTimeout: 30 * time.Millisecond})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -30,7 +45,7 @@ func TestPingFailureClosesAllTransports(t *testing.T) {
 					t.Fatal("unmatched response cleared probe")
 				}
 				adj.mu.Lock()
-				adj.pingStarted = time.Now().Add(-4 * r.pingInterval)
+				adj.pingStarted = time.Now().Add(-2 * r.livenessTimeout)
 				adj.mu.Unlock()
 				r.sendPing(context.Background(), adj)
 				select {
@@ -91,6 +106,7 @@ func TestWebSocketHalfOpenAdjacencyClosesAndReconnects(t *testing.T) {
 	adapterB1 := newFakeAdapter(TransportWebSocket)
 	runtimeA := newTestRuntime(t, 1, adapterA, func(opts *RuntimeOptions) {
 		opts.PingInterval = 5 * time.Millisecond
+		opts.LivenessTimeout = 25 * time.Millisecond
 	})
 	runtimeB1 := newTestRuntime(t, 2, adapterB1)
 

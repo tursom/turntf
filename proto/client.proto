@@ -67,7 +67,12 @@ message ServerEnvelope {
     ScanUserMetadataResponse scan_user_metadata_response = 24;
     ListUsersResponse list_users_response = 25;
     StreamFramePushed stream_frame = 26;
+    StreamFrameResult stream_frame_result = 27;
   }
+}
+
+message StreamFrameResult {
+  uint64 request_id = 1;
 }
 
 message StreamFrameRequest {

@@ -1671,7 +1671,7 @@ func (h *HTTP) RouteStreamFrame(_ context.Context, frame store.StreamFrame) erro
 		return fmt.Errorf("stream target node %d is not local", frame.Recipient.NodeID)
 	}
 	if !h.ReceiveStreamFrame(frame) {
-		return fmt.Errorf("stream target session unavailable")
+		return store.ErrStreamSessionUnavailable
 	}
 	return nil
 }

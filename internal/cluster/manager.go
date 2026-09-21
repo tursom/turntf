@@ -3,6 +3,7 @@ package cluster
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"sync"
 	"sync/atomic"
@@ -533,7 +534,7 @@ func (m *Manager) SetStreamHandler(handler func(store.StreamFrame) bool) {
 // RouteStreamFrame routes a logical stream frame through the mesh stream envelope.
 func (m *Manager) RouteStreamFrame(ctx context.Context, frame store.StreamFrame) error {
 	if m == nil || m.MeshRuntime() == nil {
-		return errors.New("mesh runtime is not attached")
+		return fmt.Errorf("%w: mesh runtime is not attached", app.ErrServiceUnavailable)
 	}
 	if !frame.TargetSession.Valid() {
 		return errors.New("stream target session is required")
@@ -541,7 +542,7 @@ func (m *Manager) RouteStreamFrame(ctx context.Context, frame store.StreamFrame)
 	targetNodeID := frame.TargetSession.ServingNodeID
 	if targetNodeID == m.cfg.NodeID {
 		if !m.deliverStreamLocal(frame) {
-			return errors.New("stream target session unavailable")
+			return store.ErrStreamSessionUnavailable
 		}
 		return nil
 	}

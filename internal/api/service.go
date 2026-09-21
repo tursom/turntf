@@ -306,7 +306,7 @@ func (s *Service) SetStreamFrameReceiver(receiver StreamFrameReceiver) {
 // DispatchStreamFrame routes a logical stream frame through the dedicated path.
 func (s *Service) DispatchStreamFrame(ctx context.Context, frame store.StreamFrame) error {
 	if s == nil || s.streamRouter == nil {
-		return fmt.Errorf("stream router is not configured")
+		return fmt.Errorf("%w: stream router is not configured", app.ErrServiceUnavailable)
 	}
 	return s.streamRouter.RouteStreamFrame(ctx, frame)
 }

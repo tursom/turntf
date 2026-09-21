@@ -188,7 +188,7 @@ func nilIfFalse(ok bool) error {
 	if ok {
 		return nil
 	}
-	return errors.New("stream target session unavailable")
+	return store.ErrStreamSessionUnavailable
 }
 
 // 根据信封的oneof类型将请求路由到对应的处理函数。

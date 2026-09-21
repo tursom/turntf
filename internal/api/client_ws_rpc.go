@@ -29,7 +29,14 @@ func (s *clientWSSession) handleStreamFrame(ctx context.Context, req *internalpr
 	if err := s.http.service.DispatchStreamFrame(ctx, frame); err != nil {
 		return s.writeStoreOrRequestError(req.RequestId, err)
 	}
-	return nil
+	if req.RequestId == 0 {
+		return nil
+	}
+	return s.writeEnvelope(&internalproto.ServerEnvelope{
+		Body: &internalproto.ServerEnvelope_StreamFrameResult{
+			StreamFrameResult: &internalproto.StreamFrameResult{RequestId: req.RequestId},
+		},
+	})
 }
 
 func reqIDStream(req *internalproto.StreamFrameRequest) uint64 {
@@ -1069,6 +1076,7 @@ func clientProtoLoggedInUser(user loggedInUserResponse) *internalproto.LoggedInU
 
 // writeStoreOrRequestError 将 store 或 app 层错误映射为客户端可理解的错误码和消息：
 //   - ErrClockNotSynchronized / ErrServiceUnavailable → "service_unavailable"
+//   - ErrStreamSessionUnavailable → "stream_session_unavailable"
 //   - ErrBlockedByBlacklist / ErrForbidden → "forbidden"
 //   - ErrInvalidInput → "invalid_request"
 //   - ErrNotFound → "not_found"
@@ -1084,6 +1092,9 @@ func (s *clientWSSession) writeStoreOrRequestError(requestID uint64, err error) 
 	case errors.Is(err, app.ErrServiceUnavailable):
 		code = "service_unavailable"
 		message = err.Error()
+	case errors.Is(err, store.ErrStreamSessionUnavailable):
+		code = "stream_session_unavailable"
+		message = store.ErrStreamSessionUnavailable.Error()
 	case errors.Is(err, store.ErrBlockedByBlacklist):
 		code = "forbidden"
 		message = "forbidden"

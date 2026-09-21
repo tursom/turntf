@@ -1,5 +1,10 @@
 package store
 
+import "errors"
+
+// ErrStreamSessionUnavailable means the target stream session cannot accept the frame.
+var ErrStreamSessionUnavailable = errors.New("stream target session unavailable")
+
 // StreamFrame is a logical point-to-point stream frame. It is deliberately
 // separate from TransientPacket: stream delivery is ordered, resumable, and
 // governed by epoch/offset rather than packet acceptance.

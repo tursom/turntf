@@ -1942,11 +1942,9 @@ func (r *Runtime) sendPing(ctx context.Context, adj *Adjacency) {
 			return
 		}
 		clear(adj.inflightPings)
-		if adj.Transport == TransportTCPMTLS {
-			adj.mu.Unlock()
-			_ = adj.Conn.Close() // 唤醒阻塞 Receive，走统一邻接丢失与拓扑回退流程。
-			return
-		}
+		adj.mu.Unlock()
+		_ = adj.Conn.Close() // 唤醒阻塞 Receive，走统一邻接丢失与拓扑回退流程。
+		return
 	}
 	adj.pingStarted = time.Now()
 	adj.inflightPings[id] = time.Unix(0, now*int64(time.Millisecond))
@@ -1961,9 +1959,7 @@ func (r *Runtime) sendPing(ctx context.Context, adj *Adjacency) {
 		adj.mu.Lock()
 		delete(adj.inflightPings, id)
 		adj.mu.Unlock()
-		if adj.Transport == TransportTCPMTLS {
-			_ = adj.Conn.Close()
-		}
+		_ = adj.Conn.Close()
 	}
 }
 

@@ -114,6 +114,7 @@ const (
 
 	schemaMetaNodeIDKey                 = "node_id"
 	schemaMetaMeshTopologyGenerationKey = "mesh_topology_generation"
+	schemaMetaMeshRuntimeEpochKey       = "mesh_runtime_epoch"
 )
 
 // disabledPasswordHash 是禁用密码登录的标记值。

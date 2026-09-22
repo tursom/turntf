@@ -62,3 +62,55 @@ ON CONFLICT(key) DO UPDATE SET value = excluded.value
 	}
 	return nil
 }
+
+// ReserveMeshRuntimeEpoch atomically reserves a process incarnation greater
+// than both candidate and the last value persisted by an earlier process.
+// Epochs are limited to signed 64-bit values because SQLite INTEGER arithmetic
+// is signed; exhaustion or malformed persisted metadata fails without mutation.
+func (s *Store) ReserveMeshRuntimeEpoch(ctx context.Context, candidate uint64) (uint64, error) {
+	const maxEpoch = uint64(^uint64(0) >> 1)
+	if candidate == 0 {
+		candidate = 1
+	}
+	if candidate > maxEpoch {
+		return 0, fmt.Errorf("mesh runtime epoch candidate %d exceeds signed storage range", candidate)
+	}
+	if s == nil || s.db == nil {
+		return candidate, nil
+	}
+	var raw string
+	err := s.db.QueryRowContext(ctx, `
+INSERT INTO schema_meta(key, value)
+VALUES(?, ?)
+ON CONFLICT(key) DO UPDATE SET value = CASE
+    WHEN CAST(schema_meta.value AS INTEGER) >= CAST(excluded.value AS INTEGER)
+    THEN CAST(schema_meta.value AS INTEGER) + 1
+    ELSE excluded.value
+END
+WHERE schema_meta.value <> ''
+  AND schema_meta.value NOT GLOB '*[^0-9]*'
+  AND (
+      length(schema_meta.value) < 19
+      OR (length(schema_meta.value) = 19 AND schema_meta.value <= '9223372036854775807')
+  )
+  AND NOT (
+      CAST(schema_meta.value AS INTEGER) = 9223372036854775807
+      AND CAST(schema_meta.value AS INTEGER) >= CAST(excluded.value AS INTEGER)
+  )
+RETURNING value
+`, schemaMetaMeshRuntimeEpochKey, strconv.FormatUint(candidate, 10)).Scan(&raw)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return 0, fmt.Errorf("reserve mesh runtime epoch: persisted value is invalid or exhausted")
+		}
+		return 0, fmt.Errorf("reserve mesh runtime epoch: %w", err)
+	}
+	epoch, err := strconv.ParseUint(strings.TrimSpace(raw), 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("parse reserved mesh runtime epoch %q: %w", raw, err)
+	}
+	if epoch == 0 || epoch > maxEpoch {
+		return 0, fmt.Errorf("reserved mesh runtime epoch %d is outside signed storage range", epoch)
+	}
+	return epoch, nil
+}

@@ -39,6 +39,28 @@ func clusterUserMessagesPath(nodeID, userID int64) string {
 	return clusterUserPath(nodeID, userID) + "/messages"
 }
 
+func TestNewManagerReservesRuntimeEpochPastPersistedFutureValue(t *testing.T) {
+	st := newReplicationTestStore(t, "runtime-epoch-rollback", 1)
+	const persisted = uint64(4_000_000_000_000_000_000)
+	if epoch, err := st.ReserveMeshRuntimeEpoch(context.Background(), persisted); err != nil || epoch != persisted {
+		t.Fatalf("seed runtime epoch: epoch=%d err=%v", epoch, err)
+	}
+	mgr, err := NewManager(Config{
+		NodeID:            testNodeID(1),
+		AdvertisePath:     websocketPath,
+		ClusterSecret:     "secret",
+		MessageWindowSize: store.DefaultMessageWindowSize,
+		MaxClockSkewMs:    DefaultMaxClockSkewMs,
+		DiscoveryDisabled: true,
+	}, st)
+	if err != nil {
+		t.Fatalf("new manager: %v", err)
+	}
+	if mgr.localRuntimeEpoch != persisted+1 {
+		t.Fatalf("runtime epoch = %d, want %d", mgr.localRuntimeEpoch, persisted+1)
+	}
+}
+
 func TestActivateSessionPrefersExpectedDirection(t *testing.T) {
 	t.Parallel()
 

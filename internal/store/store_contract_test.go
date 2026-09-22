@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 )
 
@@ -198,6 +199,88 @@ func TestMeshTopologyGenerationRoundTripsAcrossEngines(t *testing.T) {
 	}
 	if err := nilStore.StoreMeshTopologyGeneration(context.Background(), 42); err != nil {
 		t.Fatalf("nil store write should be safe: %v", err)
+	}
+}
+
+func TestMeshRuntimeEpochReservationIsMonotonicAcrossEngines(t *testing.T) {
+	t.Parallel()
+
+	forEachStoreEngine(t, "mesh-runtime-epoch", func(t *testing.T, st *Store) {
+		ctx := context.Background()
+		first, err := st.ReserveMeshRuntimeEpoch(ctx, 200)
+		if err != nil || first != 200 {
+			t.Fatalf("reserve first epoch: epoch=%d err=%v", first, err)
+		}
+		rolledBack, err := st.ReserveMeshRuntimeEpoch(ctx, 150)
+		if err != nil || rolledBack != 201 {
+			t.Fatalf("reserve after clock rollback: epoch=%d err=%v", rolledBack, err)
+		}
+		forward, err := st.ReserveMeshRuntimeEpoch(ctx, 300)
+		if err != nil || forward != 300 {
+			t.Fatalf("reserve forward epoch: epoch=%d err=%v", forward, err)
+		}
+
+		const workers = 8
+		results := make(chan uint64, workers)
+		errs := make(chan error, workers)
+		var wg sync.WaitGroup
+		for range workers {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				epoch, reserveErr := st.ReserveMeshRuntimeEpoch(ctx, 400)
+				results <- epoch
+				errs <- reserveErr
+			}()
+		}
+		wg.Wait()
+		close(results)
+		close(errs)
+		for reserveErr := range errs {
+			if reserveErr != nil {
+				t.Fatalf("concurrent reservation: %v", reserveErr)
+			}
+		}
+		seen := make(map[uint64]struct{}, workers)
+		for epoch := range results {
+			seen[epoch] = struct{}{}
+		}
+		for epoch := uint64(400); epoch < 400+workers; epoch++ {
+			if _, ok := seen[epoch]; !ok {
+				t.Fatalf("concurrent reservations = %v, missing %d", seen, epoch)
+			}
+		}
+
+		const maxEpoch = uint64(^uint64(0) >> 1)
+		if _, err := st.ReserveMeshRuntimeEpoch(ctx, maxEpoch+1); err == nil {
+			t.Fatal("out-of-range candidate was accepted")
+		}
+		if _, err := st.db.ExecContext(ctx, `UPDATE schema_meta SET value = ? WHERE key = ?`,
+			"9223372036854775807", schemaMetaMeshRuntimeEpochKey); err != nil {
+			t.Fatalf("seed exhausted epoch: %v", err)
+		}
+		if _, err := st.ReserveMeshRuntimeEpoch(ctx, 1); err == nil {
+			t.Fatal("exhausted persisted epoch was incremented")
+		}
+		var raw string
+		if err := st.db.QueryRowContext(ctx, `SELECT value FROM schema_meta WHERE key = ?`, schemaMetaMeshRuntimeEpochKey).Scan(&raw); err != nil || raw != "9223372036854775807" {
+			t.Fatalf("exhausted epoch was mutated: value=%q err=%v", raw, err)
+		}
+
+		if _, err := st.db.ExecContext(ctx, `UPDATE schema_meta SET value = 'invalid' WHERE key = ?`, schemaMetaMeshRuntimeEpochKey); err != nil {
+			t.Fatalf("seed invalid epoch: %v", err)
+		}
+		if _, err := st.ReserveMeshRuntimeEpoch(ctx, 1); err == nil {
+			t.Fatal("invalid persisted epoch was accepted")
+		}
+		if err := st.db.QueryRowContext(ctx, `SELECT value FROM schema_meta WHERE key = ?`, schemaMetaMeshRuntimeEpochKey).Scan(&raw); err != nil || raw != "invalid" {
+			t.Fatalf("invalid epoch was mutated: value=%q err=%v", raw, err)
+		}
+	})
+
+	var nilStore *Store
+	if epoch, err := nilStore.ReserveMeshRuntimeEpoch(context.Background(), 42); err != nil || epoch != 42 {
+		t.Fatalf("nil store reservation should use candidate: epoch=%d err=%v", epoch, err)
 	}
 }
 

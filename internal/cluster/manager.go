@@ -454,6 +454,10 @@ func NewManager(cfg Config, st *store.Store) (*Manager, error) {
 	if st != nil && st.Clock() != nil {
 		clockRef = st.Clock()
 	}
+	localRuntimeEpoch, err := reserveManagerRuntimeEpoch(st, time.Now().UTC())
+	if err != nil {
+		return nil, fmt.Errorf("reserve mesh runtime epoch: %w", err)
+	}
 
 	mgr := &Manager{
 		cfg:                        cfg,
@@ -480,7 +484,7 @@ func NewManager(cfg Config, st *store.Store) (*Manager, error) {
 		presenceWake:               make(chan struct{}, 1),
 		onlinePresenceByUser:       make(map[store.UserKey]map[int64]store.OnlineNodePresence),
 		onlinePresenceUsersByShard: make(map[onlinePresenceShardKey]map[store.UserKey]struct{}),
-		localRuntimeEpoch:          nextManagerRuntimeEpoch(time.Now().UTC()),
+		localRuntimeEpoch:          localRuntimeEpoch,
 		remoteRuntimeEpochs:        make(map[int64]uint64),
 		directAdjacencyCounts:      make(map[int64]int),
 		onlinePresenceGenerations:  make(map[onlinePresenceShardKey]uint64),
@@ -612,21 +616,36 @@ func (m *Manager) AllowWrite(context.Context) error {
 	return app.ErrClockNotSynchronized
 }
 
-// nextManagerRuntimeEpoch 使用CAS循环生成唯一且单调的运行时纪元。
-// 初始值基于当前纳秒时间戳，保证跨重启唯一。
-func nextManagerRuntimeEpoch(now time.Time) uint64 {
-	base := uint64(now.UnixNano())
-	if base == 0 {
-		base = 1
+// reserveManagerRuntimeEpoch persists the process incarnation before any mesh
+// hello or topology update can expose it to peers.
+func reserveManagerRuntimeEpoch(st *store.Store, now time.Time) (uint64, error) {
+	candidate, err := nextManagerRuntimeEpoch(now)
+	if err != nil {
+		return 0, err
+	}
+	return st.ReserveMeshRuntimeEpoch(context.Background(), candidate)
+}
+
+// nextManagerRuntimeEpoch returns a process-local monotonic wall-clock candidate.
+// Store reservation makes it monotonic across process restarts.
+func nextManagerRuntimeEpoch(now time.Time) (uint64, error) {
+	const maxEpoch = uint64(^uint64(0) >> 1)
+	unixNano := now.UnixNano()
+	base := uint64(1)
+	if unixNano > 0 {
+		base = uint64(unixNano)
 	}
 	for {
 		prev := managerRuntimeEpochCounter.Load()
+		if prev >= maxEpoch {
+			return 0, fmt.Errorf("mesh runtime epoch exhausted")
+		}
 		next := base
 		if next <= prev {
 			next = prev + 1
 		}
 		if managerRuntimeEpochCounter.CompareAndSwap(prev, next) {
-			return next
+			return next, nil
 		}
 	}
 }

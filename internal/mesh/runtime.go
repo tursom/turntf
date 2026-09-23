@@ -322,8 +322,10 @@ type Runtime struct {
 	dialSeeds         map[dialSeedKey]*dialSeedEntry // 主动拨号种子（按传输+端点索引）
 
 	// ---- 计数器 ----
-	pingID   atomic.Uint64 // 心跳探测请求 ID 生成器（原子递增）
-	packetID atomic.Uint64 // 转发数据包 ID 生成器（原子递增）
+	pingID        atomic.Uint64 // 心跳探测请求 ID 生成器（原子递增）
+	packetID      atomic.Uint64 // 转发数据包 ID 生成器（原子递增）
+	qualityDirty  atomic.Bool   // 成本变化由拓扑发布循环合并处理
+	qualitySignal chan struct{} // 容量为1，避免热路径等待广播
 }
 
 // adjacencyKey 是邻接关系在三元组（节点ID、传输类型、连接提示）下的唯一键。
@@ -402,8 +404,10 @@ type Adjacency struct {
 	jitterEWMA    float64              // 抖动的指数加权移动平均值（毫秒）
 	samples       int                  // 已采集的测量样本数
 	established   bool                 // 连接是否已成功建立
+	sendFailures  uint8                // 连续发送失败数，惩罚有上限
 	inflightPings map[uint64]time.Time // 正在途中的 Ping 请求（最多一个）
 	pingStarted   time.Time            // 本地单调时钟，用于应答期限，不受 HLC/墙钟调整影响
+	probeDegraded bool                 // 未响应探测已触发一次拓扑降权公告
 }
 
 // NewRuntime 根据配置选项构造一个 Runtime 实例。
@@ -556,6 +560,7 @@ func NewRuntime(opts RuntimeOptions) (*Runtime, error) {
 		lastUpdate:             make(map[int64]*TopologyUpdate),
 		dialSeeds:              dialSeeds,
 		generation:             initialGeneration,
+		qualitySignal:          make(chan struct{}, 1),
 	}
 	if runtime.localRuntimeEpoch == 0 {
 		runtime.localRuntimeEpoch = uint64(now().UnixNano())
@@ -800,6 +805,23 @@ func (r *Runtime) SendPacket(ctx context.Context, nextHopNodeID int64, transport
 	return r.sendEnvelopeCtx(ctx, adj.Conn, envelope, r.helloTimeout)
 }
 
+// adjacencyCostLocked 与公告使用同一个成本：RTT、近期抖动以及临时故障惩罚。
+// 调用方持有 adj.mu；探测的单调时间来自 time.Now 而非可回拨的墙钟。
+func (r *Runtime) adjacencyCostLocked(adj *Adjacency, now time.Time) int64 {
+	cost := int64(adj.rttEWMA + adj.jitterEWMA)
+	if adj.sendFailures >= 2 {
+		failures := int64(adj.sendFailures - 1)
+		if failures > 3 {
+			failures = 3
+		}
+		cost += failures * 100
+	}
+	if len(adj.inflightPings) > 0 && !adj.pingStarted.IsZero() && now.Sub(adj.pingStarted) >= 3*r.pingInterval {
+		cost += 200
+	}
+	return clampNonNegative(cost)
+}
+
 // bestAdjacency 从路由索引中选出到达指定下一跳节点的最优邻接关系。
 //
 // 选择策略：在已建立的（established）邻接候选中，选择 RTT_EWMA + Jitter_EWMA
@@ -818,13 +840,14 @@ func (r *Runtime) bestAdjacencyLocked(nextHopNodeID int64, transport TransportKi
 	candidates := r.adjByRoute[routeAdjacencyKey{nodeID: nextHopNodeID, transport: transport}]
 	var best *Adjacency
 	var bestScore int64
+	now := time.Now()
 	for _, adj := range candidates {
 		if adj == nil {
 			continue
 		}
 		adj.mu.Lock()
 		established := adj.established
-		score := int64(adj.rttEWMA + adj.jitterEWMA)
+		score := r.adjacencyCostLocked(adj, now) + int64(adj.jitterEWMA)
 		adj.mu.Unlock()
 		if !established {
 			continue
@@ -853,6 +876,7 @@ func (r *Runtime) bestDirectAdjacency(targetNodeID int64) *Adjacency {
 func (r *Runtime) bestDirectAdjacencyLocked(targetNodeID int64) *Adjacency {
 	var best *Adjacency
 	var bestScore int64
+	now := time.Now()
 	for key, candidates := range r.adjByRoute {
 		if key.nodeID != targetNodeID {
 			continue
@@ -863,12 +887,16 @@ func (r *Runtime) bestDirectAdjacencyLocked(targetNodeID int64) *Adjacency {
 			}
 			adj.mu.Lock()
 			established := adj.established
-			score := int64(adj.rttEWMA + adj.jitterEWMA)
+			score := r.adjacencyCostLocked(adj, now) + int64(adj.jitterEWMA)
 			adj.mu.Unlock()
 			if !established {
 				continue
 			}
-			if best == nil || score < bestScore {
+			// Startup/legacy direct streams have no planner decision yet; keep
+			// the same TCP-first policy as routes with a topology snapshot.
+			preferTCP := best != nil && adj.Transport == TransportTCPMTLS && best.Transport != TransportTCPMTLS
+			samePriority := best != nil && (adj.Transport == TransportTCPMTLS) == (best.Transport == TransportTCPMTLS)
+			if best == nil || preferTCP || (samePriority && score < bestScore) {
 				best = adj
 				bestScore = score
 			}
@@ -1307,10 +1335,52 @@ func (r *Runtime) sendEnvelopeCtx(ctx context.Context, conn TransportConn, envel
 	}
 	sendCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+	var sendErr error
 	if sender, ok := conn.(ownedEnvelopeSender); ok {
-		return sender.SendOwned(sendCtx, signed)
+		sendErr = sender.SendOwned(sendCtx, signed)
+	} else {
+		sendErr = conn.Send(sendCtx, signed)
 	}
-	return conn.Send(sendCtx, signed)
+	if (envelope.GetStreamFrame() != nil || envelope.GetForwardedPacket() != nil) && ctx.Err() == nil && !errors.Is(sendErr, context.Canceled) {
+		r.recordAdjacencySend(conn, sendErr)
+	}
+	return sendErr
+}
+
+func (r *Runtime) recordAdjacencySend(conn TransportConn, sendErr error) {
+	r.mu.Lock()
+	adj := r.adjByConn[conn]
+	if adj == nil || r.closed {
+		r.mu.Unlock()
+		return
+	}
+	adj.mu.Lock()
+	previous := adj.sendFailures
+	if sendErr == nil {
+		adj.sendFailures = 0
+	} else if adj.sendFailures < 4 {
+		adj.sendFailures++
+	}
+	changed := previous != adj.sendFailures && (previous >= 2 || adj.sendFailures >= 2)
+	adj.mu.Unlock()
+	r.mu.Unlock()
+	if changed {
+		r.scheduleQualityPublish()
+	}
+}
+
+func (r *Runtime) scheduleQualityPublish() {
+	r.qualityDirty.Store(true)
+	select {
+	case r.qualitySignal <- struct{}{}:
+	default:
+	}
+}
+
+func (r *Runtime) publishQualityIfChanged(ctx context.Context) {
+	if r.qualityDirty.Swap(false) {
+		r.publishLocalTopology(ctx)
+	}
 }
 
 // readHello 从连接中读取一条消息，解码为 ClusterEnvelope，
@@ -1487,6 +1557,7 @@ func (r *Runtime) onAdjacencyLost(adj *Adjacency) {
 	adj.established = false
 	clear(adj.inflightPings)
 	adj.pingStarted = time.Time{}
+	adj.probeDegraded = false
 	adj.mu.Unlock()
 	if ctx == nil {
 		return
@@ -1640,6 +1711,8 @@ func (r *Runtime) topologyPublishLoop(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
+		case <-r.qualitySignal:
+			r.publishQualityIfChanged(ctx)
 		case <-ticker.C:
 			r.publishLocalTopology(ctx)
 		}
@@ -1770,7 +1843,7 @@ func (r *Runtime) buildLocalTopologyUpdate() *TopologyUpdate {
 // 使用当前的 RTT 和 Jitter 值作为链路成本指标。
 func (r *Runtime) buildLinkAdvertisementLocked(adj *Adjacency, established bool) *LinkAdvertisement {
 	adj.mu.Lock()
-	cost := int64(adj.rttEWMA)
+	cost := r.adjacencyCostLocked(adj, time.Now())
 	jitter := int64(adj.jitterEWMA)
 	adj.mu.Unlock()
 	return &LinkAdvertisement{
@@ -1946,8 +2019,16 @@ func (r *Runtime) sendPing(ctx context.Context, adj *Adjacency) {
 	adj.mu.Lock()
 	// 一次只保留一个探测。其他业务帧不能替代匹配的 TimeSyncResponse。
 	if len(adj.inflightPings) > 0 {
-		if time.Since(adj.pingStarted) < r.livenessTimeout {
+		elapsed := time.Since(adj.pingStarted)
+		if elapsed < r.livenessTimeout {
+			degraded := elapsed >= 3*r.pingInterval && !adj.probeDegraded
+			if degraded {
+				adj.probeDegraded = true
+			}
 			adj.mu.Unlock()
+			if degraded {
+				r.scheduleQualityPublish()
+			}
 			return
 		}
 		clear(adj.inflightPings)
@@ -1956,6 +2037,7 @@ func (r *Runtime) sendPing(ctx context.Context, adj *Adjacency) {
 		return
 	}
 	adj.pingStarted = time.Now()
+	adj.probeDegraded = false
 	adj.inflightPings[id] = time.Unix(0, now*int64(time.Millisecond))
 	adj.mu.Unlock()
 	envelope := &ClusterEnvelope{
@@ -2002,9 +2084,6 @@ func (r *Runtime) handleTimeSyncResponse(adj *Adjacency, resp *TimeSyncResponse)
 	clientReceiveMs := receivedAt.UnixMilli()
 	adj.mu.Lock()
 	start, ok := adj.inflightPings[resp.RequestId]
-	if ok {
-		delete(adj.inflightPings, resp.RequestId)
-	}
 	adj.mu.Unlock()
 	if !ok {
 		return
@@ -2025,7 +2104,15 @@ func (r *Runtime) handleTimeSyncResponse(adj *Adjacency, resp *TimeSyncResponse)
 		return
 	}
 	adj.mu.Lock()
-	prevCost := int64(adj.rttEWMA)
+	if _, ok := adj.inflightPings[resp.RequestId]; !ok {
+		adj.mu.Unlock()
+		return
+	}
+	prevCost := r.adjacencyCostLocked(adj, time.Now()) + int64(adj.jitterEWMA)
+	wasDegraded := adj.probeDegraded
+	delete(adj.inflightPings, resp.RequestId)
+	adj.probeDegraded = false
+	adj.pingStarted = time.Time{}
 	const alpha = 0.2
 	if adj.samples == 0 {
 		adj.rttEWMA = float64(rtt)
@@ -2039,7 +2126,7 @@ func (r *Runtime) handleTimeSyncResponse(adj *Adjacency, resp *TimeSyncResponse)
 		adj.rttEWMA = (1-alpha)*adj.rttEWMA + alpha*float64(rtt)
 	}
 	adj.samples++
-	newCost := int64(adj.rttEWMA)
+	newCost := r.adjacencyCostLocked(adj, time.Now()) + int64(adj.jitterEWMA)
 	jitter := int64(adj.jitterEWMA)
 	adj.mu.Unlock()
 
@@ -2058,8 +2145,8 @@ func (r *Runtime) handleTimeSyncResponse(adj *Adjacency, resp *TimeSyncResponse)
 		})
 	}
 
-	if linkCostChangedMeaningfully(prevCost, newCost) {
-		r.bumpGenerationAndPublish(r.runtimeContext())
+	if wasDegraded || linkCostChangedMeaningfully(prevCost, newCost) {
+		r.scheduleQualityPublish()
 	}
 }
 

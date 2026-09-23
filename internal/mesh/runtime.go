@@ -745,7 +745,25 @@ func (r *Runtime) RouteEnvelope(ctx context.Context, targetNodeID int64, envelop
 		TrafficClass:       trafficClass,
 		TtlHops:            DefaultTTLHops,
 		Payload:            payload,
+		TraceIds:           traceIDsForEnvelope(envelope),
 	})
+}
+
+func traceIDsForEnvelope(envelope *ClusterEnvelope) []string {
+	batch := envelope.GetReplicationBatch()
+	if batch == nil || batch.GetEventBatch() == nil {
+		return nil
+	}
+	var ids []string
+	for _, event := range batch.GetEventBatch().GetEvents() {
+		if id := event.GetMessageCreated().GetTraceId(); id != "" {
+			ids = append(ids, id)
+			if len(ids) >= 128 {
+				break
+			}
+		}
+	}
+	return ids
 }
 
 // ForwardPacket 将一个预构造的数据包送入转发引擎。

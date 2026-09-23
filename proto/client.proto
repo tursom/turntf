@@ -130,6 +130,7 @@ message SendMessageRequest {
   ClientDeliveryMode delivery_mode = 5;
   ClientMessageSyncMode sync_mode = 6;
   SessionRef target_session = 7;
+  bool trace_requested = 8;
 }
 
 message SendMessageResponse {
@@ -140,6 +141,7 @@ message SendMessageResponse {
     Message message = 2;
     TransientAccepted transient_accepted = 3;
   }
+  string trace_id = 4;
 }
 
 message MessagePushed {

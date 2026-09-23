@@ -10,6 +10,7 @@ import (
 
 	internalproto "github.com/tursom/turntf/internal/proto"
 	"github.com/tursom/turntf/internal/store"
+	"github.com/tursom/turntf/internal/trace"
 )
 
 // broadcastEvent 直接广播单个事件到所有活跃会话（绕过批处理器）。
@@ -305,9 +306,21 @@ func (m *Manager) handleEventBatch(sess *session, envelope *internalproto.Envelo
 	sess.noteRemoteOriginEvent(originNodeID, uint64(lastEventID))
 
 	// 逐一应用事件到存储
+	tracePath := "live"
+	if batch.GetPullRequestId() > 0 {
+		tracePath = "pull"
+	}
 	for _, event := range events {
 		if err := m.store.ApplyReplicatedEvent(context.Background(), event); err != nil {
 			return err
+		}
+		message := event.GetMessageCreated()
+		if message != nil && trace.ValidID(message.GetTraceId()) {
+			recipient := message.GetRecipient()
+			m.traceStore.Add(trace.Event{TraceID: message.GetTraceId(), Kind: "persistent", Stage: "replica_event_accepted", Path: tracePath,
+				NodeID: m.cfg.NodeID, SourceNodeID: event.GetOriginNodeId(), PeerNodeID: sess.peerID,
+				TargetNodeID: m.cfg.NodeID, MessageNodeID: message.GetNodeId(), MessageSeq: message.GetSeq(), EventID: event.GetEventId(),
+				RecipientNodeID: recipient.GetNodeId(), RecipientUserID: recipient.GetUserId()})
 		}
 	}
 
@@ -328,6 +341,14 @@ func (m *Manager) handleEventBatch(sess *session, envelope *internalproto.Envelo
 			return err
 		}
 		ackedEventID = uint64(cursor.AppliedEventID)
+	}
+	for _, event := range events {
+		message := event.GetMessageCreated()
+		if message != nil && trace.ValidID(message.GetTraceId()) && event.GetEventId() > 0 && uint64(event.GetEventId()) <= ackedEventID {
+			m.traceStore.Add(trace.Event{TraceID: message.GetTraceId(), Kind: "persistent", Stage: "origin_cursor_confirmed", Path: tracePath,
+				NodeID: m.cfg.NodeID, SourceNodeID: event.GetOriginNodeId(), PeerNodeID: sess.peerID,
+				TargetNodeID: m.cfg.NodeID, MessageNodeID: message.GetNodeId(), MessageSeq: message.GetSeq(), EventID: event.GetEventId()})
+		}
 	}
 
 	// 发送Ack确认

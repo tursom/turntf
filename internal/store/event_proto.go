@@ -101,6 +101,7 @@ func messageCreatedProtoFromMessage(message Message) *internalproto.MessageCreat
 		Sender:       &internalproto.ClusterUserRef{NodeId: message.Sender.NodeID, UserId: message.Sender.UserID},
 		Body:         message.Body,
 		CreatedAtHlc: message.CreatedAt.String(),
+		TraceId:      message.TraceID,
 	}
 }
 

@@ -168,6 +168,7 @@ message MessageCreatedEvent {
   ClusterUserRef sender = 5;
   bytes body = 6;
   string created_at_hlc = 8;
+  string trace_id = 9;
 }
 
 // UserAttachmentUpsertedEvent 表示用户附件被创建或更新。

@@ -12,6 +12,7 @@ import (
 	"github.com/tursom/turntf/internal/kv"
 	"github.com/tursom/turntf/internal/permission"
 	"github.com/tursom/turntf/internal/store"
+	"github.com/tursom/turntf/internal/trace"
 )
 
 // EventSink 事件发布接口。Service 通过它将用户创建/更新/删除、消息创建等事件发布到集群中的其他节点。
@@ -116,6 +117,7 @@ type Service struct {
 	presence        OnlinePresenceResolver
 	sessions        OnlineSessionResolver
 	kvService       KVService
+	traceStore      *trace.Store
 	transientRecvMu sync.RWMutex
 	transientRecv   TransientPacketReceiver // 当前活跃的即时包接收器（通常是 HTTP 层）
 	streamRecvMu    sync.RWMutex
@@ -160,6 +162,10 @@ func New(st *store.Store, eventSink EventSink) *Service {
 	if service, ok := eventSink.(KVService); ok {
 		kvService = service
 	}
+	traceStore := trace.NewStore()
+	if provider, ok := eventSink.(interface{ TraceStore() *trace.Store }); ok && provider.TraceStore() != nil {
+		traceStore = provider.TraceStore()
+	}
 	return &Service{
 		store:           st,
 		eventSink:       eventSink,
@@ -171,8 +177,17 @@ func New(st *store.Store, eventSink EventSink) *Service {
 		presence:        presence,
 		sessions:        sessions,
 		kvService:       kvService,
+		traceStore:      traceStore,
 		transientRecv:   nil,
 	}
+}
+
+// TraceEvents returns local observations only. Remote nodes must be queried separately.
+func (s *Service) TraceEvents(id string) []trace.Event {
+	if s == nil {
+		return nil
+	}
+	return s.traceStore.Get(id)
 }
 
 // CreateUser 创建用户。等价于 CreateUserAs(ctx, params, nil)，不指定创建者。
@@ -276,9 +291,21 @@ func (s *Service) CreateMessage(ctx context.Context, params store.CreateMessageP
 	if err := s.allowWrite(ctx); err != nil {
 		return store.Message{}, store.Event{}, err
 	}
+	if params.TraceRequested {
+		id, err := trace.NewID()
+		if err != nil {
+			return store.Message{}, store.Event{}, err
+		}
+		params.TraceID = id
+	}
 	message, event, err := s.store.CreateMessage(ctx, params)
 	if errors.Is(err, store.ErrBlockedByBlacklist) {
 		s.recordBlacklistHit()
+	}
+	if event.EventID > 0 && trace.ValidID(message.TraceID) {
+		s.traceStore.Add(trace.Event{TraceID: message.TraceID, Kind: "persistent", Stage: "stored", NodeID: message.NodeID,
+			MessageNodeID: message.NodeID, MessageSeq: message.Seq, EventID: event.EventID, TargetNodeID: message.Recipient.NodeID,
+			RecipientNodeID: message.Recipient.NodeID, RecipientUserID: message.Recipient.UserID})
 	}
 	if err == nil {
 		s.eventSink.Publish(event)
@@ -363,6 +390,11 @@ func (s *Service) DispatchTransientPacket(ctx context.Context, recipient store.U
 // DispatchTransientPacketTo 发送一条即时消息到指定的目标会话。
 // 如果 targetSession 有效，消息直接路由到该会话；否则根据在线状态广播到该用户的所有在线节点。
 func (s *Service) DispatchTransientPacketTo(ctx context.Context, recipient store.UserKey, sender store.UserKey, body []byte, mode store.DeliveryMode, targetSession store.SessionRef) (store.TransientPacket, error) {
+	return s.DispatchTransientPacketToTraced(ctx, recipient, sender, body, mode, targetSession, false)
+}
+
+// DispatchTransientPacketToTraced records a bounded diagnostic trace only when requested.
+func (s *Service) DispatchTransientPacketToTraced(ctx context.Context, recipient store.UserKey, sender store.UserKey, body []byte, mode store.DeliveryMode, targetSession store.SessionRef, traceRequested bool) (store.TransientPacket, error) {
 	if err := s.allowWrite(ctx); err != nil {
 		return store.TransientPacket{}, err
 	}
@@ -387,6 +419,13 @@ func (s *Service) DispatchTransientPacketTo(ctx context.Context, recipient store
 		s.recordBlacklistHit()
 		return store.TransientPacket{}, store.ErrBlockedByBlacklist
 	}
+	traceID := ""
+	if traceRequested {
+		traceID, err = trace.NewID()
+		if err != nil {
+			return store.TransientPacket{}, err
+		}
+	}
 	if targetSession.Valid() {
 		if s.sessions != nil {
 			var sessions []store.OnlineSession
@@ -404,9 +443,11 @@ func (s *Service) DispatchTransientPacketTo(ctx context.Context, recipient store
 			}
 		}
 		packet := s.newTransientPacket(recipient, sender, body, mode, targetSession.ServingNodeID, targetSession)
+		packet.TraceID = traceID
 		if err := s.dispatchTransientPackets(ctx, []store.TransientPacket{packet}); err != nil {
 			return store.TransientPacket{}, err
 		}
+		s.recordTransientAccepted(packet)
 		return packet, nil
 	}
 
@@ -434,7 +475,9 @@ func (s *Service) DispatchTransientPacketTo(ctx context.Context, recipient store
 		if targetNodeID <= 0 {
 			continue
 		}
-		packets = append(packets, s.newTransientPacket(recipient, sender, body, mode, targetNodeID, store.SessionRef{}))
+		packet := s.newTransientPacket(recipient, sender, body, mode, targetNodeID, store.SessionRef{})
+		packet.TraceID = traceID
+		packets = append(packets, packet)
 	}
 	if len(packets) == 0 {
 		return store.TransientPacket{}, store.ErrNotFound
@@ -442,7 +485,17 @@ func (s *Service) DispatchTransientPacketTo(ctx context.Context, recipient store
 	if err := s.dispatchTransientPackets(ctx, packets); err != nil {
 		return store.TransientPacket{}, err
 	}
+	for _, packet := range packets {
+		s.recordTransientAccepted(packet)
+	}
 	return packets[0], nil
+}
+
+func (s *Service) recordTransientAccepted(packet store.TransientPacket) {
+	if trace.ValidID(packet.TraceID) {
+		s.traceStore.Add(trace.Event{TraceID: packet.TraceID, Kind: "transient", Stage: "accepted", NodeID: packet.SourceNodeID,
+			SourceNodeID: packet.SourceNodeID, TargetNodeID: packet.TargetNodeID, PacketID: packet.PacketID})
+	}
 }
 
 // deliverTransientPacket 将即时包投递给本地接收器（如果设置了的话）。
@@ -505,7 +558,15 @@ func (s *Service) newTransientPacket(recipient store.UserKey, sender store.UserK
 func (s *Service) dispatchTransientPackets(ctx context.Context, packets []store.TransientPacket) error {
 	for _, packet := range packets {
 		if packet.TargetNodeID == s.store.NodeID() {
-			s.deliverTransientPacket(packet)
+			stage := "session_queued"
+			if !s.deliverTransientPacket(packet) {
+				stage = "delivery_missed"
+			}
+			if trace.ValidID(packet.TraceID) {
+				s.traceStore.Add(trace.Event{TraceID: packet.TraceID, Kind: "transient", Stage: stage,
+					NodeID: packet.TargetNodeID, SourceNodeID: packet.SourceNodeID, TargetNodeID: packet.TargetNodeID,
+					PacketID: packet.PacketID})
+			}
 			continue
 		}
 		if s.transientRouter == nil {

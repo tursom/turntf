@@ -8,6 +8,7 @@ import (
 
 	"github.com/tursom/turntf/internal/mesh"
 	"github.com/tursom/turntf/internal/store"
+	"github.com/tursom/turntf/internal/trace"
 )
 
 // meshMetricSample 是网格转发的单个指标样本。
@@ -147,6 +148,7 @@ func (m *Manager) forwardMeshTransientPacket(ctx context.Context, packet store.T
 	}
 	return binding.ForwardPacket(ctx, &mesh.ForwardedPacket{
 		PacketId:        packet.PacketID,
+		TraceId:         packet.TraceID,
 		SourceNodeId:    packet.SourceNodeID,
 		TargetNodeId:    packet.TargetNodeID,
 		TrafficClass:    trafficClass,
@@ -213,6 +215,10 @@ func (m *Manager) observeMeshForwarding(observation mesh.ForwardingObservation) 
 	if m == nil {
 		return
 	}
+	m.recordTraceObservation(observation)
+	if observation.Stage == "received" || observation.Stage == "attempt_failed" {
+		return
+	}
 	if observation.DropReason != "" {
 		m.logInfo("mesh_packet_dropped").
 			Str("reason", observation.DropReason).
@@ -240,6 +246,32 @@ func (m *Manager) observeMeshForwarding(observation mesh.ForwardingObservation) 
 		return
 	}
 	m.recordMeshForwarded(observation.TrafficClass, observation.PathClass, observation.PayloadBytes, observation.EstimatedCost)
+}
+
+func (m *Manager) recordTraceObservation(observation mesh.ForwardingObservation) {
+	ids := append([]string{observation.TraceID}, observation.TraceIDs...)
+	if len(ids) > 32 {
+		ids = ids[:32]
+	}
+	peer := observation.NextHopNodeID
+	if observation.Stage == "received" {
+		peer = observation.LastHopNodeID
+	}
+	for _, id := range ids {
+		if !trace.ValidID(id) {
+			continue
+		}
+		kind := "persistent"
+		if observation.TrafficClass == mesh.TrafficTransientInteractive {
+			kind = "transient"
+		}
+		m.traceStore.Add(trace.Event{TraceID: id, Kind: kind, Stage: observation.Stage, NodeID: m.cfg.NodeID,
+			SourceNodeID: observation.SourceNodeID, SourceRuntimeEpoch: observation.SourceRuntimeEpoch,
+			TargetNodeID: observation.TargetNodeID, PeerNodeID: peer, PacketID: observation.PacketID,
+			Transport: meshTransportLabel(observation.OutboundTransport), PathClass: meshPathClassLabel(observation.PathClass),
+			EstimatedCost: observation.EstimatedCost, DurationMs: observation.DurationMs,
+			TopologyGeneration: observation.TopologyGeneration, Reason: observation.DropReason})
+	}
 }
 
 // recordMeshNoPath 记录一次无路径的网格路由尝试。

@@ -310,6 +310,7 @@ func (b *pebbleStoreBackend) processLocalMessageBatch(requests []pebbleLocalMess
 			Sender:    request.params.Sender,
 			Body:      append([]byte(nil), request.params.Body...),
 			CreatedAt: now,
+			TraceID:   request.params.TraceID,
 		}
 		reservation.next++
 

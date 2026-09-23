@@ -50,6 +50,13 @@ type ForwardingObservation struct {
 	PacketID           uint64
 	DropReason         string
 	RemainingHops      uint32
+	TraceID            string
+	TraceIDs           []string
+	LocalNodeID        int64
+	SourceRuntimeEpoch uint64
+	OutboundTransport  TransportKind
+	Stage              string
+	DurationMs         int64
 }
 
 // ForwardingObserver 接收每次转发决策的指标记录。
@@ -203,7 +210,9 @@ func (e *Engine) HandleInbound(ctx context.Context, packet *ForwardedPacket) err
 		e.observer(ForwardingObservation{TrafficClass: packet.TrafficClass,
 			SourceNodeID: packet.SourceNodeId, TargetNodeID: packet.TargetNodeId,
 			LastHopNodeID: packet.LastHopNodeId, PacketID: packet.PacketId,
-			RemainingHops: packet.TtlHops, DropReason: reason})
+			RemainingHops: packet.TtlHops, DropReason: reason,
+			TraceID: packet.TraceId, TraceIDs: packet.TraceIds, LocalNodeID: e.localNodeID,
+			SourceRuntimeEpoch: packet.SourceRuntimeEpoch, Stage: "dropped"})
 	}
 	return err
 }
@@ -237,6 +246,12 @@ func (e *Engine) forward(ctx context.Context, packet *ForwardedPacket, ingress T
 	}
 	if packet.TtlHops == 0 {
 		packet.TtlHops = DefaultTTLHops
+	}
+	if !outbound && e.observer != nil && (packet.TraceId != "" || len(packet.TraceIds) > 0) {
+		e.observer(ForwardingObservation{Stage: "received", TrafficClass: packet.TrafficClass,
+			TraceID: packet.TraceId, TraceIDs: packet.TraceIds, LocalNodeID: e.localNodeID,
+			SourceNodeID: packet.SourceNodeId, SourceRuntimeEpoch: packet.SourceRuntimeEpoch,
+			TargetNodeID: packet.TargetNodeId, LastHopNodeID: packet.LastHopNodeId, PacketID: packet.PacketId})
 	}
 
 	// 入站数据包立即标记为已见，防止重复处理。
@@ -314,6 +329,7 @@ func (e *Engine) forward(ctx context.Context, packet *ForwardedPacket, ingress T
 	}
 
 	// 发送到下一跳。
+	started := time.Now()
 	if err := e.sender.SendPacket(ctx, decision.NextHopNodeID, decision.OutboundTransport, next); err != nil {
 		// 发送失败时回滚去重标记，允许后续重试。
 		if outbound && seenMarked {
@@ -322,9 +338,16 @@ func (e *Engine) forward(ctx context.Context, packet *ForwardedPacket, ingress T
 		if errors.Is(err, ErrNoRoute) {
 			e.observeNoPath(packet, snapshot.TopologyGeneration)
 		}
+		if e.observer != nil && (packet.TraceId != "" || len(packet.TraceIds) > 0) {
+			e.observer(ForwardingObservation{Stage: "attempt_failed", DropReason: "send_failed", TrafficClass: packet.TrafficClass,
+				TraceID: packet.TraceId, TraceIDs: packet.TraceIds, LocalNodeID: e.localNodeID,
+				SourceNodeID: packet.SourceNodeId, SourceRuntimeEpoch: packet.SourceRuntimeEpoch,
+				TargetNodeID: packet.TargetNodeId, PacketID: packet.PacketId, NextHopNodeID: decision.NextHopNodeID,
+				OutboundTransport: decision.OutboundTransport, TopologyGeneration: decision.TopologyGeneration})
+		}
 		return err
 	}
-	e.observeForward(packet, ingress, decision, loopAvoided)
+	e.observeForward(packet, ingress, decision, loopAvoided, time.Since(started))
 	return nil
 }
 
@@ -399,6 +422,7 @@ func cloneForwardedPacket(packet *ForwardedPacket) *ForwardedPacket {
 		TtlHops:            packet.TtlHops,
 		Payload:            packet.Payload,
 		TraceId:            packet.TraceId,
+		TraceIds:           append([]string(nil), packet.TraceIds...),
 		TransientPacket:    packet.TransientPacket,
 		SourceRuntimeEpoch: packet.SourceRuntimeEpoch,
 	}
@@ -417,7 +441,7 @@ func (e *Engine) sweepSeenLocked(now time.Time) {
 
 // observeForward 构造转发成功的观察指标并通知 observer。
 // 其中 PathClass 根据入站/出站传输比较和决策信息动态判定。
-func (e *Engine) observeForward(packet *ForwardedPacket, ingress TransportKind, decision RouteDecision, loopAvoided bool) {
+func (e *Engine) observeForward(packet *ForwardedPacket, ingress TransportKind, decision RouteDecision, loopAvoided bool, duration time.Duration) {
 	if e == nil || e.observer == nil || packet == nil {
 		return
 	}
@@ -428,6 +452,17 @@ func (e *Engine) observeForward(packet *ForwardedPacket, ingress TransportKind, 
 		PayloadBytes:       forwardedPacketPayloadBytes(packet),
 		TargetNodeID:       packet.TargetNodeId,
 		TopologyGeneration: decision.TopologyGeneration,
+		TraceID:            packet.TraceId,
+		TraceIDs:           packet.TraceIds,
+		LocalNodeID:        e.localNodeID,
+		SourceNodeID:       packet.SourceNodeId,
+		SourceRuntimeEpoch: packet.SourceRuntimeEpoch,
+		LastHopNodeID:      packet.LastHopNodeId,
+		NextHopNodeID:      decision.NextHopNodeID,
+		PacketID:           packet.PacketId,
+		OutboundTransport:  decision.OutboundTransport,
+		Stage:              "forwarded",
+		DurationMs:         duration.Milliseconds(),
 	}
 	if loopAvoided {
 		observation.LoopAvoided = true
@@ -450,6 +485,13 @@ func (e *Engine) observeNoPath(packet *ForwardedPacket, generation uint64) {
 		TargetNodeID:       packet.TargetNodeId,
 		TopologyGeneration: generation,
 		NoPath:             true,
+		TraceID:            packet.TraceId,
+		TraceIDs:           packet.TraceIds,
+		LocalNodeID:        e.localNodeID,
+		SourceNodeID:       packet.SourceNodeId,
+		SourceRuntimeEpoch: packet.SourceRuntimeEpoch,
+		PacketID:           packet.PacketId,
+		Stage:              "no_path",
 	})
 }
 

@@ -246,5 +246,6 @@ func messageFromClientPushEvent(event store.Event) (store.Message, bool, error) 
 		Sender:    store.UserKey{NodeID: body.Sender.NodeId, UserID: body.Sender.UserId},
 		Body:      append([]byte(nil), body.Body...),
 		CreatedAt: createdAt,
+		TraceID:   body.TraceId,
 	}, true, nil
 }

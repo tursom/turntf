@@ -27,6 +27,7 @@ peer 自动发现的协议、状态机和排查细节见 [peer 自动发现专�
 - `GET /cluster/nodes`：已登录接口，返回当前节点视角下已连接的集群节点列表，包含 `node_id`、`is_local`、`configured_url` 和 peer 来源 `source`。发现 peer 会把发现到的 URL 放在兼容字段 `configured_url` 中。
 - `GET /cluster/nodes/{node_id}/logged-in-users`：已登录接口，查询某个节点当前客户端长连接已登录用户列表，返回 `target_node_id`、`count` 和 `items[]`；每项包含 `node_id`、`user_id`、`username`、`login_name`。
 - `GET /ops/status`：管理员接口，返回本节点 `write_gate_ready`、`clock_state/clock_reason/last_trusted_clock_sync`、事件/裁剪/待重放 projection 统计、自动发现状态、mesh 路由状态，以及每个 peer 的 transport、session_direction、remote message window、clock/snapshot/replication 细节。
+- `GET /ops/traces/{trace_id}`：管理员接口，返回**本节点**对一条显式追踪消息的短期观测事件；返回 `trace_id` 和 `events[]`，没有本地记录时返回空数组。它不会查询其他节点，必须按同一 ID 分别读取每个节点后才能合成跨节点视图。
 - `GET /metrics`：管理员接口，返回 Prometheus text exposition 格式指标，包含写闸门、clock state、pending projection、自动发现、复制、snapshot 与 mesh 转发/路由/bridge 观测。
 - `GET /events?after=0&limit=100`：管理员接口，用于调试当前节点本地 `event_log`。
 
@@ -96,6 +97,14 @@ sqlite3 ./data/turntf.db ".backup './backup/turntf-$(date +%Y%m%d%H%M%S).db'"
 - `topology_generation` 表示当前运行时纪元内的拓扑版本；拓扑公告实际按 `(runtime_epoch, generation)` 判新旧，节点重启后新 epoch 必须优先于旧 epoch 的更高 generation。路由排查时应确认多个节点看到的 generation 是否持续前进，并结合节点重启记录检查 epoch 是否切换。
 - `routes` 按目的节点和流量类别列出当前 next hop、出站 transport、path class、估算成本以及是否可达。
 - `metrics` 是 `/metrics` 中 mesh 指标的 JSON 快照，便于无需 Prometheus 时快速定位路由行为。
+
+### 消息轨迹
+
+仅当发送请求带 `trace_requested=true` 时记录：HTTP `POST /nodes/{node_id}/users/{user_id}/messages`、客户端 WebSocket `SendMessageRequest` 均支持。成功响应带 `trace_id`（32 位十六进制随机值）；普通消息没有追踪 ID，默认不采样，也不修改投递顺序或持久化语义。持久消息创建事件包含该 ID，瞬时消息使用 mesh 包现有 `trace_id`；复制批次包含多条追踪消息时，外层 mesh 包携带多个 ID。
+
+每个节点只保留最近 10 分钟、最多 512 条轨迹且每条最多 128 个事件，进程重启或淘汰后无法回溯。事件只包含节点、目的节点、peer、消息游标、事件 ID、包 ID、传输、路由版本、估算成本、发送入队耗时、阶段与时间，不保存正文或会话凭据。管理员可以按同一 ID 查询每个节点；缺少记录意味着未观测到、过期、被淘汰或节点未升级，**不能**据此断定包未经过该节点。跨节点时间戳仅用于参考，精确耗时应看同一节点测得的局部指标。
+
+瞬时消息的 `accepted` 只表示入口接受；`forwarded` 表示交给下一跳传输，`retry_queued` / `retry_expired` 与 `attempt_failed` 用于排查重新寻路和丢弃；目标节点 `session_queued` 只表示服务端向客户端连接写入成功，非用户已读。持久消息的 `stored` 是本节点消息创建事件已提交；`replica_event_accepted` 包括重复事件且消息投影可能延后；`origin_cursor_confirmed` 是目标节点对 origin 的复制进度，非客户端收取；`client_write_succeeded` 只代表服务端写入客户端连接。保留窗口之外的补拉、快照修复和登录补发可能无法形成完整轨迹，界面应标注信息缺口，不能把当前 `/ops/status.mesh.routes` 伪装成消息发送当时的实际路径。
 
 ## 核心指标
 

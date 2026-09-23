@@ -319,6 +319,7 @@ ClientEnvelope {
 - `delivery_mode`：只允许用于瞬时包；可选 `CLIENT_DELIVERY_MODE_BEST_EFFORT` 或 `CLIENT_DELIVERY_MODE_ROUTE_RETRY`。
 - `sync_mode`：只允许用于持久化消息；可选 `CLIENT_MESSAGE_SYNC_MODE_FORCE_SYNC`、`CLIENT_MESSAGE_SYNC_MODE_NO_SYNC`。当前在 Pebble 后端上会影响消息写入同步策略；SQLite 后端接受该字段，但不会提供额外同步语义。
 - `target_session`：只允许用于瞬时包；必须是先前登录或 `resolve_user_sessions` 返回的有效 `session_ref`。
+- `trace_requested`：可选，仅在显式诊断时设置；成功响应的 `trace_id` 可供管理员在 10 分钟内查询各节点 `/ops/traces/{trace_id}`。普通发送不采集轨迹，追踪数据不包含正文。
 
 权限规则与 HTTP 写消息接口一致：
 

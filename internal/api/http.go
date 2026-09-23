@@ -21,6 +21,7 @@ import (
 	"github.com/tursom/turntf/internal/auth"
 	"github.com/tursom/turntf/internal/permission"
 	"github.com/tursom/turntf/internal/store"
+	"github.com/tursom/turntf/internal/trace"
 )
 
 // clientSessionShardCount 会话分片数量（必须是 2 的幂），用于减少并发竞争。
@@ -99,10 +100,11 @@ type updateUserRequest struct {
 }
 
 type createMessageRequest struct {
-	Body         []byte `json:"body"`
-	DeliveryKind string `json:"delivery_kind,omitempty"`
-	DeliveryMode string `json:"delivery_mode,omitempty"`
-	SyncMode     string `json:"sync_mode,omitempty"`
+	Body           []byte `json:"body"`
+	DeliveryKind   string `json:"delivery_kind,omitempty"`
+	DeliveryMode   string `json:"delivery_mode,omitempty"`
+	SyncMode       string `json:"sync_mode,omitempty"`
+	TraceRequested bool   `json:"trace_requested,omitempty"`
 }
 
 type subscriptionRequest struct {
@@ -286,6 +288,7 @@ func (h *HTTP) routes() {
 	h.mux.HandleFunc("GET /cluster/nodes", h.handleClusterNodes)
 	h.mux.HandleFunc("GET /cluster/nodes/{node_id}/logged-in-users", h.handleNodeLoggedInUsers)
 	h.mux.HandleFunc("GET /ops/status", h.handleOpsStatus)
+	h.mux.HandleFunc("GET /ops/traces/{trace_id}", h.handleOpsTrace)
 	h.mux.HandleFunc("GET /metrics", h.handleMetrics)
 }
 
@@ -660,7 +663,7 @@ func (h *HTTP) handleCreateMessage(w http.ResponseWriter, r *http.Request) {
 			writeStoreError(w, err)
 			return
 		}
-		packet, err := h.service.DispatchTransientPacket(r.Context(), key, sender, req.Body, mode)
+		packet, err := h.service.DispatchTransientPacketToTraced(r.Context(), key, sender, req.Body, mode, store.SessionRef{}, req.TraceRequested)
 		if err != nil {
 			writeStoreError(w, err)
 			return
@@ -683,6 +686,7 @@ func (h *HTTP) handleCreateMessage(w http.ResponseWriter, r *http.Request) {
 		Sender:                sender,
 		Body:                  req.Body,
 		PebbleMessageSyncMode: syncMode,
+		TraceRequested:        req.TraceRequested,
 	})
 	if err != nil {
 		writeStoreError(w, err)
@@ -1250,6 +1254,28 @@ func (h *HTTP) handleOpsStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, status)
 }
 
+func (h *HTTP) handleOpsTrace(w http.ResponseWriter, r *http.Request) {
+	principal, ok := h.requireAuthenticated(w, r)
+	if !ok {
+		return
+	}
+	if err := h.authorizer.ReadOpsStatus(actorFromPrincipal(principal)); err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	id := r.PathValue("trace_id")
+	if !trace.ValidID(id) {
+		writeError(w, http.StatusBadRequest, "invalid trace id")
+		return
+	}
+	events := h.service.TraceEvents(id)
+	if events == nil {
+		events = []trace.Event{}
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, map[string]any{"trace_id": id, "events": events})
+}
+
 func (h *HTTP) handleClusterNodes(w http.ResponseWriter, r *http.Request) {
 	principal, ok := h.requireAuthenticated(w, r)
 	if !ok {
@@ -1330,6 +1356,7 @@ type messageResponse struct {
 	Sender    store.UserKey `json:"sender"`
 	Body      []byte        `json:"body"`
 	CreatedAt string        `json:"created_at"`
+	TraceID   string        `json:"trace_id,omitempty"`
 }
 
 type transientPacketResponse struct {
@@ -1339,6 +1366,7 @@ type transientPacketResponse struct {
 	TargetNodeID int64         `json:"target_node_id"`
 	Recipient    store.UserKey `json:"recipient"`
 	DeliveryMode string        `json:"delivery_mode"`
+	TraceID      string        `json:"trace_id,omitempty"`
 }
 
 type attachmentResponse struct {
@@ -1426,6 +1454,7 @@ func messageResponseFromStore(message store.Message) messageResponse {
 		Sender:    message.Sender,
 		Body:      message.Body,
 		CreatedAt: message.CreatedAt.String(),
+		TraceID:   message.TraceID,
 	}
 }
 
@@ -1437,6 +1466,7 @@ func transientPacketAcceptedResponse(packet store.TransientPacket) transientPack
 		TargetNodeID: packet.TargetNodeID,
 		Recipient:    packet.Recipient,
 		DeliveryMode: string(packet.DeliveryMode),
+		TraceID:      packet.TraceID,
 	}
 }
 

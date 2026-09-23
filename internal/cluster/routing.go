@@ -8,6 +8,7 @@ import (
 	"github.com/tursom/turntf/internal/mesh"
 	internalproto "github.com/tursom/turntf/internal/proto"
 	"github.com/tursom/turntf/internal/store"
+	"github.com/tursom/turntf/internal/trace"
 )
 
 // queueTransientPacket 将瞬时数据包放入重试队列，等待投递或重试。
@@ -28,6 +29,7 @@ func (m *Manager) queueTransientPacket(packet store.TransientPacket) {
 		item.nextAttempt = current.nextAttempt
 	}
 	m.retryQueue[key] = item
+	m.recordTransientRetry(packet, "retry_queued", "")
 	addPacketLogFields(m.logInfo("transient_packet_queued"), packet).
 		Int("attempt", item.attempts).
 		Msg("queued transient packet for retry")
@@ -68,6 +70,7 @@ func (m *Manager) retryTransientPackets() {
 				Str("reason", reason).
 				Msg("dropping transient packet from retry queue")
 			delete(m.retryQueue, key)
+			m.recordTransientRetry(item.packet, "retry_expired", reason)
 			continue
 		}
 		if item.nextAttempt.After(now) {
@@ -87,18 +90,28 @@ func (m *Manager) retryTransientPackets() {
 	}
 }
 
+func (m *Manager) recordTransientRetry(packet store.TransientPacket, stage, reason string) {
+	if !trace.ValidID(packet.TraceID) {
+		return
+	}
+	m.traceStore.Add(trace.Event{TraceID: packet.TraceID, Kind: "transient", Stage: stage, Reason: reason,
+		NodeID: m.cfg.NodeID, SourceNodeID: packet.SourceNodeID, TargetNodeID: packet.TargetNodeID, PacketID: packet.PacketID})
+}
+
 // deliverTransientLocal 将瞬时数据包投递给本节点的瞬态处理器。
 func (m *Manager) deliverTransientLocal(packet store.TransientPacket) bool {
 	m.mu.Lock()
 	handler := m.transientHandler
 	m.mu.Unlock()
 	if handler == nil {
+		m.recordTransientDelivery(packet, false)
 		addPacketLogFields(m.logWarn("transient_packet_dropped", nil), packet).
 			Str("reason", "no_local_handler").
 			Msg("dropping transient packet without local handler")
 		return false
 	}
 	delivered := handler(packet)
+	m.recordTransientDelivery(packet, delivered)
 	event := m.logInfo("transient_packet_delivered")
 	if !delivered {
 		event = m.logWarn("transient_packet_delivery_missed", nil)
@@ -107,6 +120,18 @@ func (m *Manager) deliverTransientLocal(packet store.TransientPacket) bool {
 		Bool("delivered", delivered).
 		Msg("processed local transient packet")
 	return delivered
+}
+
+func (m *Manager) recordTransientDelivery(packet store.TransientPacket, delivered bool) {
+	if !trace.ValidID(packet.TraceID) {
+		return
+	}
+	stage := "session_queued"
+	if !delivered {
+		stage = "delivery_missed"
+	}
+	m.traceStore.Add(trace.Event{TraceID: packet.TraceID, Kind: "transient", Stage: stage, NodeID: m.cfg.NodeID,
+		SourceNodeID: packet.SourceNodeID, TargetNodeID: packet.TargetNodeID, PacketID: packet.PacketID})
 }
 
 // ensurePeerLocked 确保peers映射中存在指定对等节点的peerState。
@@ -170,6 +195,7 @@ func transientPacketFromProto(packet *internalproto.TransientPacket, forwarded *
 	transient.SourceNodeID = forwarded.GetSourceNodeId()
 	transient.TargetNodeID = forwarded.GetTargetNodeId()
 	transient.TTLHops = int32(forwarded.GetTtlHops())
+	transient.TraceID = forwarded.GetTraceId()
 	return transient, nil
 }
 

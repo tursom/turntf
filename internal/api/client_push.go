@@ -10,11 +10,14 @@ import (
 	"github.com/tursom/turntf/internal/permission"
 	internalproto "github.com/tursom/turntf/internal/proto"
 	"github.com/tursom/turntf/internal/store"
+	"github.com/tursom/turntf/internal/trace"
 )
 
 type encodedPersistentMessage struct {
-	cursor  clientMessageCursor
-	payload []byte
+	cursor    clientMessageCursor
+	payload   []byte
+	traceID   string
+	recipient store.UserKey
 }
 
 type initialPersistentMessageEncoder struct {
@@ -225,8 +228,10 @@ func encodePersistentMessage(message store.Message) (*encodedPersistentMessage, 
 		return nil, err
 	}
 	return &encodedPersistentMessage{
-		cursor:  clientMessageCursor{nodeID: message.NodeID, seq: message.Seq},
-		payload: payload,
+		cursor:    clientMessageCursor{nodeID: message.NodeID, seq: message.Seq},
+		payload:   payload,
+		traceID:   message.TraceID,
+		recipient: message.Recipient,
 	}, nil
 }
 
@@ -237,7 +242,17 @@ func (s *clientWSSession) pushEncodedPersistentMessage(message *encodedPersisten
 	if !s.markMessageSeenIfNew(message.cursor) {
 		return nil
 	}
-	return s.writeEncodedEnvelope(message.payload)
+	err := s.writeEncodedEnvelope(message.payload)
+	if trace.ValidID(message.traceID) {
+		stage := "client_write_succeeded"
+		if err != nil {
+			stage = "client_write_failed"
+		}
+		s.http.service.traceStore.Add(trace.Event{TraceID: message.traceID, Kind: "persistent", Stage: stage,
+			NodeID: s.http.nodeID, MessageNodeID: message.cursor.nodeID, MessageSeq: message.cursor.seq,
+			RecipientNodeID: message.recipient.NodeID, RecipientUserID: message.recipient.UserID})
+	}
+	return err
 }
 
 func (s *clientWSSession) markMessageSeenIfNew(cursor clientMessageCursor) bool {

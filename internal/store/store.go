@@ -235,6 +235,7 @@ type Message struct {
 	Body      []byte          `json:"body"`
 	CreatedAt clock.Timestamp `json:"created_at"`
 	Session   []byte          `json:"-"`
+	TraceID   string          `json:"-"`
 }
 
 // UserKey 返回消息的接收者 UserKey。
@@ -363,6 +364,8 @@ type CreateMessageParams struct {
 	Sender                UserKey
 	Body                  []byte
 	PebbleMessageSyncMode PebbleMessageSyncMode
+	TraceID               string
+	TraceRequested        bool
 }
 
 // SessionRef 是 WebSocket 会话的引用，由 serving_node_id 和 session_id 唯一标识。
@@ -414,6 +417,7 @@ type TransientPacket struct {
 	TTLHops       int32        `json:"ttl_hops"`
 	RouteRetryTTL int64        `json:"route_retry_ttl_ms,omitempty"`
 	TargetSession SessionRef   `json:"target_session,omitempty"`
+	TraceID       string       `json:"-"`
 }
 
 // NormalizeDeliveryMode 校验并标准化 DeliveryMode 字符串，无效值时返回错误。

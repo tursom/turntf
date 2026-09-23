@@ -17,6 +17,7 @@ import (
 	"github.com/tursom/turntf/internal/mesh"
 	internalproto "github.com/tursom/turntf/internal/proto"
 	"github.com/tursom/turntf/internal/store"
+	"github.com/tursom/turntf/internal/trace"
 )
 
 // 集群操作的常量和超时设置。
@@ -105,9 +106,10 @@ type streamFrameHandler struct {
 //   - 事件复制：将存储事件广播到所有已连接对等节点
 //   - 网状路由：通过覆盖网络路由报文，支持多种流量类别
 type Manager struct {
-	cfg   Config
-	store *store.Store
-	clock *clock.Clock
+	cfg        Config
+	store      *store.Store
+	clock      *clock.Clock
+	traceStore *trace.Store
 
 	// mux 是HTTP路由复用器，用于注册WebSocket升级端点。
 	mux *http.ServeMux
@@ -463,6 +465,7 @@ func NewManager(cfg Config, st *store.Store) (*Manager, error) {
 		cfg:                        cfg,
 		store:                      st,
 		clock:                      clockRef,
+		traceStore:                 trace.NewStore(),
 		websocket:                  newWebSocketTransport(),
 		dialers:                    make(map[string]Dialer, 2),
 		mux:                        http.NewServeMux(),
@@ -511,6 +514,14 @@ func NewManager(cfg Config, st *store.Store) (*Manager, error) {
 	}
 	mgr.mux.HandleFunc("GET "+cfg.AdvertisePath, mgr.handleWebSocket)
 	return mgr, nil
+}
+
+// TraceStore returns the local, bounded diagnostic store shared with the API.
+func (m *Manager) TraceStore() *trace.Store {
+	if m == nil {
+		return nil
+	}
+	return m.traceStore
 }
 
 // Handler 返回集群的HTTP处理器，用于注册到外部HTTP服务器。

@@ -85,7 +85,7 @@ func (s *clientWSSession) handleSendMessage(ctx context.Context, req *internalpr
 		if err != nil {
 			return s.writeStoreOrRequestError(req.RequestId, err)
 		}
-		packet, err := s.http.service.DispatchTransientPacketTo(ctx, target, sender, req.Body, mode, targetSession)
+		packet, err := s.http.service.DispatchTransientPacketToTraced(ctx, target, sender, req.Body, mode, targetSession, req.TraceRequested)
 		if err != nil {
 			return s.writeStoreOrRequestError(req.RequestId, err)
 		}
@@ -93,6 +93,7 @@ func (s *clientWSSession) handleSendMessage(ctx context.Context, req *internalpr
 			Body: &internalproto.ServerEnvelope_SendMessageResponse{
 				SendMessageResponse: &internalproto.SendMessageResponse{
 					RequestId: req.RequestId,
+					TraceId:   packet.TraceID,
 					Body: &internalproto.SendMessageResponse_TransientAccepted{
 						TransientAccepted: clientProtoTransientAccepted(packet),
 					},
@@ -118,6 +119,7 @@ func (s *clientWSSession) handleSendMessage(ctx context.Context, req *internalpr
 		Sender:                sender,
 		Body:                  req.Body,
 		PebbleMessageSyncMode: syncMode,
+		TraceRequested:        req.TraceRequested,
 	})
 	if err == nil && message.NodeID > 0 && message.Seq > 0 {
 		s.seen[clientMessageCursor{nodeID: message.NodeID, seq: message.Seq}] = struct{}{}
@@ -130,6 +132,7 @@ func (s *clientWSSession) handleSendMessage(ctx context.Context, req *internalpr
 		Body: &internalproto.ServerEnvelope_SendMessageResponse{
 			SendMessageResponse: &internalproto.SendMessageResponse{
 				RequestId: req.RequestId,
+				TraceId:   message.TraceID,
 				Body: &internalproto.SendMessageResponse_Message{
 					Message: clientProtoMessage(message),
 				},

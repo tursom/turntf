@@ -130,6 +130,8 @@ message MeshForwardedPacket {
   // Zero is reserved for legacy senders whose packet identity is only
   // (source_node_id, packet_id).
   uint64 source_runtime_epoch = 11;
+  // A replication batch may contain multiple independently traced messages.
+  repeated string trace_ids = 12;
 }
 
 message MeshReplicationBatch {

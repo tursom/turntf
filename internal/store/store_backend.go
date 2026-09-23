@@ -261,6 +261,7 @@ func (b *sqliteStoreBackend) createMessageEventTx(ctx context.Context, s *Store,
 		Sender:    params.Sender,
 		Body:      append([]byte(nil), params.Body...),
 		CreatedAt: now,
+		TraceID:   params.TraceID,
 	}
 
 	event, err := s.insertEvent(ctx, tx, Event{

@@ -71,6 +71,8 @@ type HTTP struct {
 	dispatcherCancel               context.CancelFunc // 持久化分发器取消函数
 	unsubscribeSubscriptionChanges func()
 	closeOnce                      sync.Once // 确保 Close 只执行一次
+	probeMu                        sync.Mutex
+	lastProbe                      time.Time
 }
 
 // HTTPOptions 配置 HTTP 服务的可选参数。
@@ -105,6 +107,10 @@ type createMessageRequest struct {
 	DeliveryMode   string `json:"delivery_mode,omitempty"`
 	SyncMode       string `json:"sync_mode,omitempty"`
 	TraceRequested bool   `json:"trace_requested,omitempty"`
+}
+
+type routeProbeRequest struct {
+	TargetNodeID int64 `json:"target_node_id"`
 }
 
 type subscriptionRequest struct {
@@ -289,6 +295,7 @@ func (h *HTTP) routes() {
 	h.mux.HandleFunc("GET /cluster/nodes/{node_id}/logged-in-users", h.handleNodeLoggedInUsers)
 	h.mux.HandleFunc("GET /ops/status", h.handleOpsStatus)
 	h.mux.HandleFunc("GET /ops/traces/{trace_id}", h.handleOpsTrace)
+	h.mux.HandleFunc("POST /ops/probes", h.handleOpsProbe)
 	h.mux.HandleFunc("GET /metrics", h.handleMetrics)
 }
 
@@ -1274,6 +1281,49 @@ func (h *HTTP) handleOpsTrace(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, map[string]any{"trace_id": id, "events": events})
+}
+
+func (h *HTTP) handleOpsProbe(w http.ResponseWriter, r *http.Request) {
+	principal, ok := h.requireAuthenticated(w, r)
+	if !ok {
+		return
+	}
+	if err := h.authorizer.ReadOpsStatus(actorFromPrincipal(principal)); err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 256)
+	var req routeProbeRequest
+	if err := decodeJSON(r, &req); err != nil || req.TargetNodeID <= 0 {
+		writeError(w, http.StatusBadRequest, "invalid probe target")
+		return
+	}
+	h.probeMu.Lock()
+	now := time.Now()
+	if !h.lastProbe.IsZero() && now.Sub(h.lastProbe) < time.Second {
+		h.probeMu.Unlock()
+		writeError(w, http.StatusTooManyRequests, "probe rate limit exceeded")
+		return
+	}
+	h.lastProbe = now
+	h.probeMu.Unlock()
+
+	ctx, cancel := context.WithTimeout(r.Context(), 4*time.Second)
+	defer cancel()
+	id, err := h.service.ProbeRoute(ctx, req.TargetNodeID)
+	if err != nil && !trace.ValidID(id) {
+		writeStoreError(w, err)
+		return
+	}
+	status := "dispatched"
+	code := http.StatusAccepted
+	if err != nil {
+		status = "failed"
+		code = http.StatusOK
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, code, map[string]any{"trace_id": id, "source_node_id": h.nodeID,
+		"target_node_id": req.TargetNodeID, "status": status})
 }
 
 func (h *HTTP) handleClusterNodes(w http.ResponseWriter, r *http.Request) {

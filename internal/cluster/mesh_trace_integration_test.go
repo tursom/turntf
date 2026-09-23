@@ -2,6 +2,7 @@ package cluster
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -84,5 +85,57 @@ func TestMeshPersistentTraceInReplicationBatch(t *testing.T) {
 		if entry.Stage == "replica_event_accepted" && (entry.EventID != created.EventID || entry.MessageSeq != message.Seq) {
 			t.Fatalf("wrong replication correlation: %+v", entry)
 		}
+	}
+}
+
+func TestMeshRouteProbeAcrossThreeNodesWithoutBusinessDelivery(t *testing.T) {
+	mgrA, mgrB, mgrC := startLinearMeshManagers(t)
+	waitForMeshRoute(t, mgrA, testNodeID(3), mesh.TrafficTransientInteractive)
+	delivered := make(chan store.TransientPacket, 1)
+	mgrC.SetTransientHandler(func(packet store.TransientPacket) bool {
+		delivered <- packet
+		return true
+	})
+	id, err := mgrA.ProbeRoute(context.Background(), testNodeID(3))
+	if err != nil || !trace.ValidID(id) {
+		t.Fatalf("probe failed: id=%q err=%v", id, err)
+	}
+	waitFor(t, 5*time.Second, func() bool {
+		return hasTraceStage(mgrA.traceStore.Get(id), "forwarded") &&
+			hasTraceStage(mgrB.traceStore.Get(id), "received") &&
+			hasTraceStage(mgrB.traceStore.Get(id), "forwarded") &&
+			hasTraceStage(mgrC.traceStore.Get(id), "probe_reached")
+	})
+	for _, mgr := range []*Manager{mgrA, mgrB, mgrC} {
+		for _, entry := range mgr.traceStore.Get(id) {
+			if entry.Kind != "probe" || entry.Stage == "session_queued" {
+				t.Fatalf("probe entered business delivery: %+v", entry)
+			}
+		}
+	}
+	select {
+	case packet := <-delivered:
+		t.Fatalf("probe delivered to business handler: %+v", packet)
+	default:
+	}
+
+	directID, err := mgrA.ProbeRoute(context.Background(), testNodeID(2))
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 5*time.Second, func() bool {
+		return hasTraceStage(mgrB.traceStore.Get(directID), "probe_reached")
+	})
+}
+
+func TestMeshRouteProbeNoPathPreservesPartialTrace(t *testing.T) {
+	mgrA, _, _ := startLinearMeshManagers(t)
+	id, err := mgrA.ProbeRoute(context.Background(), testNodeID(99))
+	if !errors.Is(err, mesh.ErrNoRoute) || !trace.ValidID(id) {
+		t.Fatalf("expected no route with queryable trace: id=%q err=%v", id, err)
+	}
+	events := mgrA.traceStore.Get(id)
+	if !hasTraceStage(events, "probe_started") || !hasTraceStage(events, "probe_failed") || hasTraceStage(events, "probe_reached") {
+		t.Fatalf("unexpected failed probe observations: %+v", events)
 	}
 }

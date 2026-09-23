@@ -52,6 +52,7 @@ type ForwardingObservation struct {
 	RemainingHops      uint32
 	TraceID            string
 	TraceIDs           []string
+	RouteProbe         bool
 	LocalNodeID        int64
 	SourceRuntimeEpoch uint64
 	OutboundTransport  TransportKind
@@ -139,6 +140,14 @@ func validateForwardedPacket(packet *ForwardedPacket) error {
 			return fmt.Errorf("mesh: non-transient forwarded packet must carry payload bytes")
 		}
 	}
+	if packet.GetRouteProbe() {
+		probe := packet.GetTransientPacket()
+		if packet.TrafficClass != TrafficTransientInteractive || probe == nil || len(probe.GetBody()) != 0 ||
+			probe.GetRecipient() != nil || probe.GetSender() != nil || probe.GetTargetSession() != nil ||
+			packet.GetTraceId() == "" || len(packet.GetTraceIds()) != 0 {
+			return fmt.Errorf("mesh: invalid route probe")
+		}
+	}
 	return nil
 }
 
@@ -207,7 +216,7 @@ func (e *Engine) HandleInbound(ctx context.Context, packet *ForwardedPacket) err
 		case errors.Is(err, ErrNoRoute):
 			reason = "no_route"
 		}
-		e.observer(ForwardingObservation{TrafficClass: packet.TrafficClass,
+		e.observer(ForwardingObservation{TrafficClass: packet.TrafficClass, RouteProbe: packet.RouteProbe,
 			SourceNodeID: packet.SourceNodeId, TargetNodeID: packet.TargetNodeId,
 			LastHopNodeID: packet.LastHopNodeId, PacketID: packet.PacketId,
 			RemainingHops: packet.TtlHops, DropReason: reason,
@@ -248,7 +257,7 @@ func (e *Engine) forward(ctx context.Context, packet *ForwardedPacket, ingress T
 		packet.TtlHops = DefaultTTLHops
 	}
 	if !outbound && e.observer != nil && (packet.TraceId != "" || len(packet.TraceIds) > 0) {
-		e.observer(ForwardingObservation{Stage: "received", TrafficClass: packet.TrafficClass,
+		e.observer(ForwardingObservation{Stage: "received", RouteProbe: packet.RouteProbe, TrafficClass: packet.TrafficClass,
 			TraceID: packet.TraceId, TraceIDs: packet.TraceIds, LocalNodeID: e.localNodeID,
 			SourceNodeID: packet.SourceNodeId, SourceRuntimeEpoch: packet.SourceRuntimeEpoch,
 			TargetNodeID: packet.TargetNodeId, LastHopNodeID: packet.LastHopNodeId, PacketID: packet.PacketId})
@@ -339,7 +348,7 @@ func (e *Engine) forward(ctx context.Context, packet *ForwardedPacket, ingress T
 			e.observeNoPath(packet, snapshot.TopologyGeneration)
 		}
 		if e.observer != nil && (packet.TraceId != "" || len(packet.TraceIds) > 0) {
-			e.observer(ForwardingObservation{Stage: "attempt_failed", DropReason: "send_failed", TrafficClass: packet.TrafficClass,
+			e.observer(ForwardingObservation{Stage: "attempt_failed", RouteProbe: packet.RouteProbe, DropReason: "send_failed", TrafficClass: packet.TrafficClass,
 				TraceID: packet.TraceId, TraceIDs: packet.TraceIds, LocalNodeID: e.localNodeID,
 				SourceNodeID: packet.SourceNodeId, SourceRuntimeEpoch: packet.SourceRuntimeEpoch,
 				TargetNodeID: packet.TargetNodeId, PacketID: packet.PacketId, NextHopNodeID: decision.NextHopNodeID,
@@ -423,6 +432,7 @@ func cloneForwardedPacket(packet *ForwardedPacket) *ForwardedPacket {
 		Payload:            packet.Payload,
 		TraceId:            packet.TraceId,
 		TraceIds:           append([]string(nil), packet.TraceIds...),
+		RouteProbe:         packet.RouteProbe,
 		TransientPacket:    packet.TransientPacket,
 		SourceRuntimeEpoch: packet.SourceRuntimeEpoch,
 	}
@@ -462,6 +472,7 @@ func (e *Engine) observeForward(packet *ForwardedPacket, ingress TransportKind, 
 		PacketID:           packet.PacketId,
 		OutboundTransport:  decision.OutboundTransport,
 		Stage:              "forwarded",
+		RouteProbe:         packet.RouteProbe,
 		DurationMs:         duration.Milliseconds(),
 	}
 	if loopAvoided {
@@ -485,6 +496,7 @@ func (e *Engine) observeNoPath(packet *ForwardedPacket, generation uint64) {
 		TargetNodeID:       packet.TargetNodeId,
 		TopologyGeneration: generation,
 		NoPath:             true,
+		RouteProbe:         packet.RouteProbe,
 		TraceID:            packet.TraceId,
 		TraceIDs:           packet.TraceIds,
 		LocalNodeID:        e.localNodeID,

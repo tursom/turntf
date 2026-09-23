@@ -27,7 +27,8 @@ peer 自动发现的协议、状态机和排查细节见 [peer 自动发现专�
 - `GET /cluster/nodes`：已登录接口，返回当前节点视角下已连接的集群节点列表，包含 `node_id`、`is_local`、`configured_url` 和 peer 来源 `source`。发现 peer 会把发现到的 URL 放在兼容字段 `configured_url` 中。
 - `GET /cluster/nodes/{node_id}/logged-in-users`：已登录接口，查询某个节点当前客户端长连接已登录用户列表，返回 `target_node_id`、`count` 和 `items[]`；每项包含 `node_id`、`user_id`、`username`、`login_name`。
 - `GET /ops/status`：管理员接口，返回本节点 `write_gate_ready`、`clock_state/clock_reason/last_trusted_clock_sync`、事件/裁剪/待重放 projection 统计、自动发现状态、mesh 路由状态，以及每个 peer 的 transport、session_direction、remote message window、clock/snapshot/replication 细节。
-- `GET /ops/traces/{trace_id}`：管理员接口，返回**本节点**对一条显式追踪消息的短期观测事件；返回 `trace_id` 和 `events[]`，没有本地记录时返回空数组。它不会查询其他节点，必须按同一 ID 分别读取每个节点后才能合成跨节点视图。
+- `GET /ops/traces/{trace_id}`：管理员接口，返回**本节点**对一条显式追踪消息或探测包的短期观测事件；返回 `trace_id` 和 `events[]`，没有本地记录时返回空数组。它不会查询其他节点，必须按同一 ID 分别读取每个节点后才能合成跨节点视图。
+- `POST /ops/probes`：管理员接口，请求体仅包含 `{"target_node_id":123}`；按瞬时交互类流量向目标节点发送一条无正文、无收件人的诊断包，不产生业务消息。返回源/目标节点 ID、`trace_id` 与 `status=dispatched|failed`，`dispatched` 只表示已交给转发引擎；应查询目标节点的 `probe_reached` 才能确认抵达。本节点最多每秒发起一次。
 - `GET /metrics`：管理员接口，返回 Prometheus text exposition 格式指标，包含写闸门、clock state、pending projection、自动发现、复制、snapshot 与 mesh 转发/路由/bridge 观测。
 - `GET /events?after=0&limit=100`：管理员接口，用于调试当前节点本地 `event_log`。
 
@@ -99,6 +100,8 @@ sqlite3 ./data/turntf.db ".backup './backup/turntf-$(date +%Y%m%d%H%M%S).db'"
 - `metrics` 是 `/metrics` 中 mesh 指标的 JSON 快照，便于无需 Prometheus 时快速定位路由行为。
 
 ### 消息轨迹
+
+管理员从 Web 拓扑页选择可信源和目标节点后发起一次瞬时交互类探测，页面自动查询各节点对该探测包的逐跳观测；不需要向实际用户发送消息。这只反映探测当时的瞬时交互路由，不代表持久复制流量或之后消息的固定路径。目标 `probe_reached` 才是本次到达的证据；只有发送端和下一跳记录匹配的同一包，才可标记该跳两端均已观测。
 
 仅当发送请求带 `trace_requested=true` 时记录：HTTP `POST /nodes/{node_id}/users/{user_id}/messages`、客户端 WebSocket `SendMessageRequest` 均支持。成功响应带 `trace_id`（32 位十六进制随机值）；普通消息没有追踪 ID，默认不采样，也不修改投递顺序或持久化语义。持久消息创建事件包含该 ID，瞬时消息使用 mesh 包现有 `trace_id`；复制批次包含多条追踪消息时，外层 mesh 包携带多个 ID。
 

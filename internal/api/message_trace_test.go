@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"testing"
+	"time"
 
 	internalproto "github.com/tursom/turntf/internal/proto"
 	"github.com/tursom/turntf/internal/store"
@@ -109,4 +110,53 @@ func TestWebSocketSendReturnsTraceID(t *testing.T) {
 	if events := testAPI.http.service.TraceEvents(response.GetTraceId()); len(events) == 0 || events[0].Stage != "stored" {
 		t.Fatalf("traced websocket message not recorded: %+v", events)
 	}
+}
+
+type testProbeSink struct {
+	calls  int
+	target int64
+}
+
+func (*testProbeSink) Publish(store.Event) {}
+func (sink *testProbeSink) ProbeRoute(_ context.Context, target int64) (string, error) {
+	sink.calls++
+	sink.target = target
+	return "aabbccddeeff00112233445566778899", nil
+}
+
+func TestOpsProbeRequiresAdminAndBoundsRequests(t *testing.T) {
+	sink := &testProbeSink{}
+	testAPI := newAuthenticatedTestAPIWithSink(t, sink)
+	key := store.UserKey{NodeID: testNodeID(1), UserID: store.BootstrapAdminUserID}
+	adminToken := loginToken(t, testAPI.handler, key, "root-password")
+	user := createUserAs(t, testAPI.handler, adminToken, "probe-reader", "reader-password", store.RoleUser)
+	userToken := loginToken(t, testAPI.handler, user, "reader-password")
+	target := testNodeID(2)
+	body := map[string]any{"target_node_id": target}
+	path := "/ops/probes"
+	doJSONWithHeaders(t, testAPI.handler, http.MethodPost, path, body, nil, http.StatusUnauthorized)
+	doJSONWithHeaders(t, testAPI.handler, http.MethodPost, path, body,
+		map[string]string{"Authorization": "Bearer " + userToken}, http.StatusForbidden)
+	doJSONWithHeaders(t, testAPI.handler, http.MethodPost, path, map[string]any{"target_node_id": 0},
+		map[string]string{"Authorization": "Bearer " + adminToken}, http.StatusBadRequest)
+	var response struct {
+		TraceID      string `json:"trace_id"`
+		SourceNodeID int64  `json:"source_node_id"`
+		Status       string `json:"status"`
+	}
+	mustJSON(t, doJSONWithHeaders(t, testAPI.handler, http.MethodPost, path, body,
+		map[string]string{"Authorization": "Bearer " + adminToken}, http.StatusAccepted), &response)
+	if !trace.ValidID(response.TraceID) || response.SourceNodeID != key.NodeID || response.Status != "dispatched" || sink.calls != 1 || sink.target != target {
+		t.Fatalf("unexpected probe response: %+v sink=%+v", response, sink)
+	}
+	doJSONWithHeaders(t, testAPI.handler, http.MethodPost, path, body,
+		map[string]string{"Authorization": "Bearer " + adminToken}, http.StatusTooManyRequests)
+	if sink.calls != 1 {
+		t.Fatal("rate-limited request started another probe")
+	}
+	testAPI.http.probeMu.Lock()
+	testAPI.http.lastProbe = time.Now().Add(-2 * time.Second)
+	testAPI.http.probeMu.Unlock()
+	doJSONWithHeaders(t, testAPI.handler, http.MethodPost, path, map[string]any{"target_node_id": target, "body": "not allowed"},
+		map[string]string{"Authorization": "Bearer " + adminToken}, http.StatusBadRequest)
 }

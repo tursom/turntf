@@ -262,7 +262,9 @@ func (m *Manager) recordTraceObservation(observation mesh.ForwardingObservation)
 			continue
 		}
 		kind := "persistent"
-		if observation.TrafficClass == mesh.TrafficTransientInteractive {
+		if observation.RouteProbe {
+			kind = "probe"
+		} else if observation.TrafficClass == mesh.TrafficTransientInteractive {
 			kind = "transient"
 		}
 		m.traceStore.Add(trace.Event{TraceID: id, Kind: kind, Stage: observation.Stage, NodeID: m.cfg.NodeID,

@@ -132,6 +132,8 @@ message MeshForwardedPacket {
   uint64 source_runtime_epoch = 11;
   // A replication batch may contain multiple independently traced messages.
   repeated string trace_ids = 12;
+  // Diagnostic-only transient packet: no recipient, sender or business body.
+  bool route_probe = 13;
 }
 
 message MeshReplicationBatch {

@@ -524,6 +524,37 @@ func (m *Manager) TraceStore() *trace.Store {
 	return m.traceStore
 }
 
+// ProbeRoute sends one diagnostic packet through the transient mesh path without a user recipient.
+func (m *Manager) ProbeRoute(ctx context.Context, targetNodeID int64) (string, error) {
+	if m == nil || targetNodeID <= 0 {
+		return "", fmt.Errorf("%w: invalid probe target", store.ErrInvalidInput)
+	}
+	binding := m.MeshRuntime()
+	if binding == nil {
+		return "", fmt.Errorf("%w: mesh runtime is not attached", app.ErrServiceUnavailable)
+	}
+	id, err := trace.NewID()
+	if err != nil {
+		return "", err
+	}
+	m.traceStore.Add(trace.Event{TraceID: id, Kind: "probe", Stage: "probe_started", NodeID: m.cfg.NodeID,
+		SourceNodeID: m.cfg.NodeID, TargetNodeID: targetNodeID})
+	err = binding.ForwardPacket(ctx, &mesh.ForwardedPacket{
+		TraceId: id, RouteProbe: true, SourceNodeId: m.cfg.NodeID, TargetNodeId: targetNodeID,
+		TrafficClass: mesh.TrafficTransientInteractive, TtlHops: mesh.DefaultTTLHops,
+		TransientPacket: &internalproto.TransientPacket{},
+	})
+	if err != nil {
+		reason := "forward_failed"
+		if errors.Is(err, mesh.ErrNoRoute) {
+			reason = "no_route"
+		}
+		m.traceStore.Add(trace.Event{TraceID: id, Kind: "probe", Stage: "probe_failed", NodeID: m.cfg.NodeID,
+			SourceNodeID: m.cfg.NodeID, TargetNodeID: targetNodeID, Reason: reason})
+	}
+	return id, err
+}
+
 // Handler 返回集群的HTTP处理器，用于注册到外部HTTP服务器。
 func (m *Manager) Handler() http.Handler {
 	return m.mux

@@ -29,6 +29,11 @@ type TransientPacketReceiver interface {
 	ReceiveTransientPacket(store.TransientPacket) bool
 }
 
+// ProbeRouter sends a diagnostic mesh packet without creating a business message.
+type ProbeRouter interface {
+	ProbeRoute(context.Context, int64) (string, error)
+}
+
 // StreamFrameRouter 路由不会进入 TransientPacket 的逻辑流帧。
 type StreamFrameRouter interface {
 	RouteStreamFrame(context.Context, store.StreamFrame) error
@@ -110,6 +115,7 @@ type Service struct {
 	eventSink       EventSink
 	writeGate       WriteGate
 	transientRouter TransientPacketRouter
+	probeRouter     ProbeRouter
 	streamRouter    StreamFrameRouter
 	localUsers      LoggedInUserProvider
 	remoteUsers     LoggedInUserQuerier
@@ -142,6 +148,10 @@ func New(st *store.Store, eventSink EventSink) *Service {
 	if router, ok := eventSink.(TransientPacketRouter); ok {
 		transientRouter = router
 	}
+	var probeRouter ProbeRouter
+	if router, ok := eventSink.(ProbeRouter); ok {
+		probeRouter = router
+	}
 	var remoteUsers LoggedInUserQuerier
 	if querier, ok := eventSink.(LoggedInUserQuerier); ok {
 		remoteUsers = querier
@@ -171,6 +181,7 @@ func New(st *store.Store, eventSink EventSink) *Service {
 		eventSink:       eventSink,
 		writeGate:       writeGate,
 		transientRouter: transientRouter,
+		probeRouter:     probeRouter,
 		streamRouter:    nil,
 		remoteUsers:     remoteUsers,
 		sessionRegistry: sessionRegistry,
@@ -180,6 +191,14 @@ func New(st *store.Store, eventSink EventSink) *Service {
 		traceStore:      traceStore,
 		transientRecv:   nil,
 	}
+}
+
+// ProbeRoute initiates one diagnostic attempt. The returned ID remains queryable on a routing error.
+func (s *Service) ProbeRoute(ctx context.Context, targetNodeID int64) (string, error) {
+	if s == nil || s.probeRouter == nil {
+		return "", fmt.Errorf("%w: mesh probe is unavailable", app.ErrServiceUnavailable)
+	}
+	return s.probeRouter.ProbeRoute(ctx, targetNodeID)
 }
 
 // TraceEvents returns local observations only. Remote nodes must be queried separately.

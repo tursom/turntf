@@ -3,6 +3,8 @@ package mesh
 import (
 	"context"
 	"testing"
+
+	internalproto "github.com/tursom/turntf/internal/proto"
 )
 
 func TestTracedPacketKeepsIdentityAndRecordsObservedHop(t *testing.T) {
@@ -40,5 +42,28 @@ func TestTracedPacketKeepsIdentityAndRecordsObservedHop(t *testing.T) {
 	packet.TraceId = ""
 	if err := engine.Forward(context.Background(), packet); err == nil {
 		t.Fatal("duplicate packet accepted")
+	}
+}
+
+func TestRouteProbeRejectsBusinessPayloadAndPreservesMarker(t *testing.T) {
+	probe := &ForwardedPacket{PacketId: 9, SourceNodeId: 1, TargetNodeId: 2, TtlHops: 4,
+		TrafficClass: TrafficTransientInteractive, TraceId: "aabbccddeeff00112233445566778899",
+		RouteProbe: true, TransientPacket: &TransientPacket{}}
+	if err := validateForwardedPacket(probe); err != nil {
+		t.Fatal(err)
+	}
+	if clone := cloneForwardedPacket(probe); !clone.GetRouteProbe() {
+		t.Fatal("route probe marker lost during forwarding clone")
+	}
+	for _, invalid := range []*ForwardedPacket{
+		{TrafficClass: TrafficTransientInteractive, TraceId: probe.TraceId, RouteProbe: true,
+			TransientPacket: &TransientPacket{Body: []byte("business")}},
+		{TrafficClass: TrafficTransientInteractive, TraceId: probe.TraceId, RouteProbe: true,
+			TransientPacket: &TransientPacket{Recipient: &internalproto.ClusterUserRef{NodeId: 2, UserId: 1}}},
+		{TrafficClass: TrafficControlQuery, TraceId: probe.TraceId, RouteProbe: true, Payload: []byte("query")},
+	} {
+		if err := validateForwardedPacket(invalid); err == nil {
+			t.Fatalf("business or control packet accepted as a probe: %+v", invalid)
+		}
 	}
 }

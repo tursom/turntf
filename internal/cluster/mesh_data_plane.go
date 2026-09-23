@@ -11,6 +11,7 @@ import (
 	"github.com/tursom/turntf/internal/mesh"
 	internalproto "github.com/tursom/turntf/internal/proto"
 	"github.com/tursom/turntf/internal/store"
+	"github.com/tursom/turntf/internal/trace"
 )
 
 // 网格查询类型常量。
@@ -647,6 +648,15 @@ func (m *Manager) handleMeshForwardedPacket(ctx context.Context, packet *mesh.Fo
 	}
 	if packet.TrafficClass != mesh.TrafficTransientInteractive && packet.TrafficClass != mesh.TrafficPointToPointStream {
 		return fmt.Errorf("unsupported non-transient forwarded packet traffic class %s", packet.TrafficClass.String())
+	}
+	if packet.GetRouteProbe() {
+		if packet.GetTargetNodeId() != m.cfg.NodeID || !trace.ValidID(packet.GetTraceId()) {
+			return fmt.Errorf("mesh route probe delivered to the wrong node or missing trace id")
+		}
+		m.traceStore.Add(trace.Event{TraceID: packet.GetTraceId(), Kind: "probe", Stage: "probe_reached",
+			NodeID: m.cfg.NodeID, SourceNodeID: packet.GetSourceNodeId(), TargetNodeID: packet.GetTargetNodeId(),
+			PacketID: packet.GetPacketId(), SourceRuntimeEpoch: packet.GetSourceRuntimeEpoch()})
+		return nil
 	}
 	transient, err := transientPacketFromProto(packet.GetTransientPacket(), packet)
 	if err != nil {

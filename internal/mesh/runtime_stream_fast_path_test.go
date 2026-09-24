@@ -101,8 +101,16 @@ func TestRuntimeRoutesDirectStreamAsBareEnvelope(t *testing.T) {
 
 func TestRuntimeRoutesConsensusDirectAsBareEnvelope(t *testing.T) {
 	runtime := newTestRuntime(t, 1, newFakeAdapter(TransportLibP2P))
+	target := newTestRuntime(t, 2, newFakeAdapter(TransportLibP2P))
 	connSource, connTarget := newFakeConnPair(TransportLibP2P, "source", "target")
 	registerTestAdjacency(runtime, connSource, 2, TransportLibP2P)
+	targetAdj := registerTestAdjacency(target, connTarget, 1, TransportLibP2P)
+	var gotPacket *ForwardedPacket
+	var gotEnvelope *ClusterEnvelope
+	target.envelopeHandler = func(_ context.Context, packet *ForwardedPacket, envelope *ClusterEnvelope) error {
+		gotPacket, gotEnvelope = packet, envelope
+		return nil
+	}
 
 	want := testConsensusEnvelope()
 	if err := runtime.RouteEnvelope(context.Background(), 2, want); err != nil {
@@ -116,6 +124,12 @@ func TestRuntimeRoutesConsensusDirectAsBareEnvelope(t *testing.T) {
 	if got.GetGroupId() != "test-kv" || got.GetSourceNodeId() != 1 || got.GetTargetNodeId() != 2 ||
 		got.GetMessageId() != 7 || string(got.GetPayload()) != "consensus-payload" {
 		t.Fatalf("direct consensus payload changed: %+v", got)
+	}
+	target.dispatchEnvelope(context.Background(), targetAdj, wireEnvelope)
+	if gotEnvelope != wireEnvelope || gotPacket == nil || gotPacket.SourceNodeId != 1 ||
+		gotPacket.TargetNodeId != 2 || gotPacket.TrafficClass != TrafficConsensus ||
+		gotPacket.LastHopNodeId != 1 || gotPacket.IngressTransport != TransportLibP2P {
+		t.Fatalf("direct consensus did not reach handler: packet=%+v envelope=%p", gotPacket, gotEnvelope)
 	}
 }
 

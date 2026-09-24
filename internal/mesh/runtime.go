@@ -1672,7 +1672,7 @@ func (r *Runtime) removeAdjacencyFromRouteIndexLocked(adj *Adjacency) {
 //   - TimeSyncResponse: 时间同步响应处理（更新链路 RTT/Jitter 测量值）
 //   - TopologyUpdate: 拓扑更新处理（洪水广播扩散）
 //   - ForwardedPacket: 转发数据包处理（送入转发引擎 HandleInbound）
-//   - StreamFrame: 已验证的直连点对点流帧（直接送入 EnvelopeHandler）
+//   - StreamFrame, ConsensusMessage: 已验证的直连信封（直接送入 EnvelopeHandler）
 func (r *Runtime) dispatchEnvelope(ctx context.Context, adj *Adjacency, envelope *ClusterEnvelope) {
 	switch body := envelope.Body.(type) {
 	case *ClusterEnvelope_TimeSyncRequest:
@@ -1704,6 +1704,17 @@ func (r *Runtime) dispatchEnvelope(ctx context.Context, adj *Adjacency, envelope
 			SourceNodeId:     adj.RemoteNodeID,
 			TargetNodeId:     r.localNodeID,
 			TrafficClass:     TrafficPointToPointStream,
+			LastHopNodeId:    adj.RemoteNodeID,
+			IngressTransport: adj.Transport,
+		}, envelope)
+	case *ClusterEnvelope_ConsensusMessage:
+		if body.ConsensusMessage == nil || adj == nil || r.envelopeHandler == nil {
+			return
+		}
+		_ = r.envelopeHandler(ctx, &ForwardedPacket{
+			SourceNodeId:     adj.RemoteNodeID,
+			TargetNodeId:     r.localNodeID,
+			TrafficClass:     TrafficConsensus,
 			LastHopNodeId:    adj.RemoteNodeID,
 			IngressTransport: adj.Transport,
 		}, envelope)

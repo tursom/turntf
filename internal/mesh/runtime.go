@@ -733,7 +733,8 @@ func (r *Runtime) RouteEnvelope(ctx context.Context, targetNodeID int64, envelop
 		// Raft messages should use an already established direct adjacency when
 		// available. Sending them through the forwarding graph during adjacency
 		// convergence can expose consensus to transient stale routes or loops.
-		if adj := r.bestDirectAdjacency(targetNodeID); adj != nil {
+		// Legacy peers silently ignore bare consensus envelopes.
+		if adj := r.bestDirectAdjacency(targetNodeID); adj != nil && adj.Hello.GetDirectConsensusSupported() {
 			return r.sendEnvelopeCtx(ctx, adj.Conn, envelope, r.helloTimeout)
 		}
 	}
@@ -1452,11 +1453,12 @@ func (r *Runtime) localHello(kind TransportKind) *NodeHello {
 		ordered = append(ordered, capability)
 	}
 	return &NodeHello{
-		NodeId:           r.localNodeID,
-		ProtocolVersion:  ProtocolVersion,
-		Transports:       ordered,
-		ForwardingPolicy: ClonePolicy(r.policy),
-		RuntimeEpoch:     r.localRuntimeEpoch,
+		NodeId:                   r.localNodeID,
+		ProtocolVersion:          ProtocolVersion,
+		Transports:               ordered,
+		ForwardingPolicy:         ClonePolicy(r.policy),
+		RuntimeEpoch:             r.localRuntimeEpoch,
+		DirectConsensusSupported: true,
 	}
 }
 

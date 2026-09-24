@@ -64,6 +64,13 @@ func receiveTestEnvelope(t testing.TB, conn TransportConn) *ClusterEnvelope {
 	return envelope
 }
 
+func TestRuntimeAdvertisesDirectConsensusSupport(t *testing.T) {
+	runtime := newTestRuntime(t, 1, newFakeAdapter(TransportLibP2P))
+	if !runtime.localHello(TransportLibP2P).GetDirectConsensusSupported() {
+		t.Fatal("new runtime did not advertise direct consensus support")
+	}
+}
+
 func TestRuntimeRoutesDirectStreamAsBareEnvelope(t *testing.T) {
 	source := newTestRuntime(t, 1, newFakeAdapter(TransportLibP2P))
 	target := newTestRuntime(t, 2, newFakeAdapter(TransportLibP2P))
@@ -103,7 +110,7 @@ func TestRuntimeRoutesConsensusDirectAsBareEnvelope(t *testing.T) {
 	runtime := newTestRuntime(t, 1, newFakeAdapter(TransportLibP2P))
 	target := newTestRuntime(t, 2, newFakeAdapter(TransportLibP2P))
 	connSource, connTarget := newFakeConnPair(TransportLibP2P, "source", "target")
-	registerTestAdjacency(runtime, connSource, 2, TransportLibP2P)
+	runtime.registerAdjacency(connSource, TransportLibP2P, &NodeHello{NodeId: 2, DirectConsensusSupported: true}, false)
 	targetAdj := registerTestAdjacency(target, connTarget, 1, TransportLibP2P)
 	var gotPacket *ForwardedPacket
 	var gotEnvelope *ClusterEnvelope
@@ -130,6 +137,29 @@ func TestRuntimeRoutesConsensusDirectAsBareEnvelope(t *testing.T) {
 		gotPacket.TargetNodeId != 2 || gotPacket.TrafficClass != TrafficConsensus ||
 		gotPacket.LastHopNodeId != 1 || gotPacket.IngressTransport != TransportLibP2P {
 		t.Fatalf("direct consensus did not reach handler: packet=%+v envelope=%p", gotPacket, gotEnvelope)
+	}
+}
+
+func TestRuntimeRoutesConsensusToLegacyDirectPeerAsForwardedPacket(t *testing.T) {
+	runtime := newTestRuntime(t, 1, newFakeAdapter(TransportLibP2P))
+	connSource, connTarget := newFakeConnPair(TransportLibP2P, "source", "legacy-target")
+	registerTestAdjacency(runtime, connSource, 2, TransportLibP2P)
+	for _, nodeID := range []int64{1, 2} {
+		applyRuntimeTestNode(runtime, nodeID, DefaultForwardingPolicy(1), TransportLibP2P)
+	}
+	applyRuntimeTestLink(runtime, 1, 2, 1, TransportLibP2P)
+
+	if err := runtime.RouteEnvelope(context.Background(), 2, testConsensusEnvelope()); err != nil {
+		t.Fatalf("route consensus to legacy peer: %v", err)
+	}
+	wire := receiveTestEnvelope(t, connTarget)
+	packet := wire.GetForwardedPacket()
+	if packet == nil || packet.GetTrafficClass() != TrafficConsensus {
+		t.Fatalf("legacy peer received unsupported bare consensus: %T", wire.Body)
+	}
+	inner, err := runtime.codec.Decode(packet.GetPayload())
+	if err != nil || inner.GetConsensusMessage() == nil {
+		t.Fatalf("decode legacy consensus payload: envelope=%v err=%v", inner, err)
 	}
 }
 

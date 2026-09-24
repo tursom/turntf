@@ -70,6 +70,8 @@ message MeshNodeHello {
   repeated MeshTransportCapability transports = 3;
   MeshForwardingPolicy forwarding_policy = 4;
   uint64 runtime_epoch = 5;
+  // Older peers omit this field and must receive consensus via ForwardedPacket.
+  bool direct_consensus_supported = 6;
 }
 
 message MeshTransportCapability {

@@ -729,6 +729,13 @@ func (r *Runtime) RouteEnvelope(ctx context.Context, targetNodeID int64, envelop
 			// Legacy stream envelopes have no affinity key; preserve compatibility.
 			return r.sendEnvelopeCtx(ctx, adj.Conn, envelope, r.helloTimeout)
 		}
+	} else if trafficClass == TrafficConsensus {
+		// Raft messages should use an already established direct adjacency when
+		// available. Sending them through the forwarding graph during adjacency
+		// convergence can expose consensus to transient stale routes or loops.
+		if adj := r.bestDirectAdjacency(targetNodeID); adj != nil {
+			return r.sendEnvelopeCtx(ctx, adj.Conn, envelope, r.helloTimeout)
+		}
 	}
 	payload, err := r.codec.Encode(envelope)
 	if err != nil {

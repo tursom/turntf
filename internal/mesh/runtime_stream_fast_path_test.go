@@ -21,6 +21,16 @@ func testStreamEnvelopeFor(kind uint32, epoch uint64) *ClusterEnvelope {
 	}}}
 }
 
+func testConsensusEnvelope() *ClusterEnvelope {
+	return &ClusterEnvelope{Body: &ClusterEnvelope_ConsensusMessage{ConsensusMessage: &ConsensusMessage{
+		GroupId:      "test-kv",
+		SourceNodeId: 1,
+		TargetNodeId: 2,
+		MessageId:    7,
+		Payload:      []byte("consensus-payload"),
+	}}}
+}
+
 func setTestAdjacencyScore(adj *Adjacency, rtt, jitter float64) {
 	adj.mu.Lock()
 	adj.rttEWMA = rtt
@@ -86,6 +96,50 @@ func TestRuntimeRoutesDirectStreamAsBareEnvelope(t *testing.T) {
 		gotPacket.TrafficClass != TrafficPointToPointStream || gotPacket.LastHopNodeId != 1 ||
 		gotPacket.IngressTransport != TransportLibP2P {
 		t.Fatalf("unexpected direct stream metadata: %+v", gotPacket)
+	}
+}
+
+func TestRuntimeRoutesConsensusDirectAsBareEnvelope(t *testing.T) {
+	runtime := newTestRuntime(t, 1, newFakeAdapter(TransportLibP2P))
+	connSource, connTarget := newFakeConnPair(TransportLibP2P, "source", "target")
+	registerTestAdjacency(runtime, connSource, 2, TransportLibP2P)
+
+	want := testConsensusEnvelope()
+	if err := runtime.RouteEnvelope(context.Background(), 2, want); err != nil {
+		t.Fatalf("route direct consensus: %v", err)
+	}
+	wireEnvelope := receiveTestEnvelope(t, connTarget)
+	if wireEnvelope.GetConsensusMessage() == nil || wireEnvelope.GetForwardedPacket() != nil {
+		t.Fatalf("direct consensus used unexpected wire envelope: %T", wireEnvelope.Body)
+	}
+	got := wireEnvelope.GetConsensusMessage()
+	if got.GetGroupId() != "test-kv" || got.GetSourceNodeId() != 1 || got.GetTargetNodeId() != 2 ||
+		got.GetMessageId() != 7 || string(got.GetPayload()) != "consensus-payload" {
+		t.Fatalf("direct consensus payload changed: %+v", got)
+	}
+}
+
+func TestRuntimeRoutesConsensusAcrossTransitWithoutDirectAdjacency(t *testing.T) {
+	runtime := newTestRuntime(t, 1, newFakeAdapter(TransportLibP2P))
+	connToTransit, transitConn := newFakeConnPair(TransportLibP2P, "source", "transit")
+	registerTestAdjacency(runtime, connToTransit, 2, TransportLibP2P)
+	for _, nodeID := range []int64{1, 2, 3} {
+		applyRuntimeTestNode(runtime, nodeID, DefaultForwardingPolicy(1), TransportLibP2P)
+	}
+	applyRuntimeTestLink(runtime, 1, 2, 1, TransportLibP2P)
+	applyRuntimeTestLink(runtime, 2, 3, 1, TransportLibP2P)
+
+	if err := runtime.RouteEnvelope(context.Background(), 3, testConsensusEnvelope()); err != nil {
+		t.Fatalf("route consensus fallback: %v", err)
+	}
+	wireEnvelope := receiveTestEnvelope(t, transitConn)
+	packet := wireEnvelope.GetForwardedPacket()
+	if packet == nil || packet.GetTrafficClass() != TrafficConsensus {
+		t.Fatalf("consensus fallback did not use consensus forwarded packet: %T", wireEnvelope.Body)
+	}
+	inner, err := runtime.codec.Decode(packet.GetPayload())
+	if err != nil || inner.GetConsensusMessage() == nil {
+		t.Fatalf("decode consensus fallback payload: envelope=%v err=%v", inner, err)
 	}
 }
 

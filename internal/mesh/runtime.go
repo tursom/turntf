@@ -730,12 +730,19 @@ func (r *Runtime) RouteEnvelope(ctx context.Context, targetNodeID int64, envelop
 			return r.sendEnvelopeCtx(ctx, adj.Conn, envelope, r.helloTimeout)
 		}
 	} else if trafficClass == TrafficConsensus {
-		// Raft messages should use an already established direct adjacency when
-		// available. Sending them through the forwarding graph during adjacency
-		// convergence can expose consensus to transient stale routes or loops.
-		// Legacy peers silently ignore bare consensus envelopes.
+		// Direct paths avoid stale forwarding routes during convergence. A WSS
+		// adjacency may be slower than the planned transit path (for example,
+		// through a CDN), so use it directly only when the planner selects it or
+		// has no route yet. Legacy peers silently ignore bare consensus envelopes.
 		if adj := r.bestDirectAdjacency(targetNodeID); adj != nil && adj.Hello.GetDirectConsensusSupported() {
-			return r.sendEnvelopeCtx(ctx, adj.Conn, envelope, r.helloTimeout)
+			if adj.Transport != TransportWebSocket {
+				return r.sendEnvelopeCtx(ctx, adj.Conn, envelope, r.helloTimeout)
+			}
+			decision, routed := r.DescribeRoute(targetNodeID, TrafficConsensus)
+			if !routed ||
+				(decision.NextHopNodeID == targetNodeID && decision.OutboundTransport == adj.Transport) {
+				return r.sendEnvelopeCtx(ctx, adj.Conn, envelope, r.helloTimeout)
+			}
 		}
 	}
 	payload, err := r.codec.Encode(envelope)

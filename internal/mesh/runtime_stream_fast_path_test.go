@@ -163,6 +163,106 @@ func TestRuntimeRoutesConsensusToLegacyDirectPeerAsForwardedPacket(t *testing.T)
 	}
 }
 
+func TestRuntimeRoutesConsensusThroughCheaperTransitThanDirectWebSocket(t *testing.T) {
+	runtime := newTestRuntime(t, 1, newFakeAdapter(TransportWebSocket))
+	direct, directPeer := newFakeConnPair(TransportWebSocket, "source-direct", "target-direct")
+	runtime.registerAdjacency(direct, TransportWebSocket, &NodeHello{NodeId: 3, DirectConsensusSupported: true}, false)
+	transit, transitPeer := newFakeConnPair(TransportWebSocket, "source-transit", "transit")
+	registerTestAdjacency(runtime, transit, 2, TransportWebSocket)
+	for _, nodeID := range []int64{1, 2, 3} {
+		applyRuntimeTestNode(runtime, nodeID, DefaultForwardingPolicy(1), TransportWebSocket)
+	}
+	applyConsensusTestLinks(runtime, 1,
+		&LinkAdvertisement{FromNodeId: 1, ToNodeId: 3, Transport: TransportWebSocket, PathClass: PathClassDirect, CostMs: 500, Established: true},
+		&LinkAdvertisement{FromNodeId: 1, ToNodeId: 2, Transport: TransportWebSocket, PathClass: PathClassDirect, CostMs: 1, Established: true})
+	applyRuntimeTestLink(runtime, 2, 3, 1, TransportWebSocket)
+	if decision, ok := runtime.DescribeRoute(3, TrafficConsensus); !ok || decision.NextHopNodeID != 2 {
+		t.Fatalf("consensus planner did not select transit: decision=%+v reachable=%t", decision, ok)
+	}
+
+	if err := runtime.RouteEnvelope(context.Background(), 3, testConsensusEnvelope()); err != nil {
+		t.Fatalf("route consensus via transit: %v", err)
+	}
+	if packet := receiveTestEnvelope(t, transitPeer).GetForwardedPacket(); packet == nil || packet.GetTrafficClass() != TrafficConsensus {
+		t.Fatalf("transit did not receive forwarded consensus: %+v", packet)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if _, err := directPeer.Receive(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("slow direct WSS received consensus: %v", err)
+	}
+}
+
+func TestRuntimeRoutesConsensusDirectOnPlannedWebSocket(t *testing.T) {
+	runtime := newTestRuntime(t, 1, newFakeAdapter(TransportWebSocket))
+	direct, target := newFakeConnPair(TransportWebSocket, "source", "target")
+	runtime.registerAdjacency(direct, TransportWebSocket, &NodeHello{NodeId: 2, DirectConsensusSupported: true}, false)
+	for _, nodeID := range []int64{1, 2} {
+		applyRuntimeTestNode(runtime, nodeID, DefaultForwardingPolicy(1), TransportWebSocket)
+	}
+	applyRuntimeTestLink(runtime, 1, 2, 1, TransportWebSocket)
+
+	if err := runtime.RouteEnvelope(context.Background(), 2, testConsensusEnvelope()); err != nil {
+		t.Fatalf("route consensus direct WSS: %v", err)
+	}
+	if wire := receiveTestEnvelope(t, target); wire.GetConsensusMessage() == nil || wire.GetForwardedPacket() != nil {
+		t.Fatalf("planned direct WSS used unexpected envelope: %T", wire.Body)
+	}
+}
+
+func TestRuntimeRoutesConsensusDirectWebSocketBeforeTopologyConverges(t *testing.T) {
+	runtime := newTestRuntime(t, 1, newFakeAdapter(TransportWebSocket))
+	direct, target := newFakeConnPair(TransportWebSocket, "source", "target")
+	runtime.registerAdjacency(direct, TransportWebSocket, &NodeHello{NodeId: 2, DirectConsensusSupported: true}, false)
+
+	if err := runtime.RouteEnvelope(context.Background(), 2, testConsensusEnvelope()); err != nil {
+		t.Fatalf("route consensus before topology update: %v", err)
+	}
+	if wire := receiveTestEnvelope(t, target); wire.GetConsensusMessage() == nil || wire.GetForwardedPacket() != nil {
+		t.Fatalf("direct WSS before convergence used unexpected envelope: %T", wire.Body)
+	}
+}
+
+func TestRuntimeRoutesConsensusDirectTCPDespiteCheaperTransit(t *testing.T) {
+	runtime := newDirectStreamTestRuntime(t, newFakeAdapter(TransportWebSocket), newFakeAdapter(TransportTCPMTLS))
+	direct, target := newFakeConnPair(TransportTCPMTLS, "source-direct", "target-direct")
+	runtime.registerAdjacency(direct, TransportTCPMTLS, &NodeHello{NodeId: 3, DirectConsensusSupported: true}, false)
+	transit, _ := newFakeConnPair(TransportWebSocket, "source-transit", "transit")
+	registerTestAdjacency(runtime, transit, 2, TransportWebSocket)
+	for _, nodeID := range []int64{1, 2, 3} {
+		applyRuntimeTestNode(runtime, nodeID, DefaultForwardingPolicy(1), TransportWebSocket, TransportTCPMTLS)
+	}
+	applyConsensusTestLinks(runtime, 1,
+		&LinkAdvertisement{FromNodeId: 1, ToNodeId: 3, Transport: TransportTCPMTLS, PathClass: PathClassDirect, CostMs: 500, Established: true},
+		&LinkAdvertisement{FromNodeId: 1, ToNodeId: 2, Transport: TransportWebSocket, PathClass: PathClassDirect, CostMs: 1, Established: true})
+	applyRuntimeTestLink(runtime, 2, 3, 1, TransportWebSocket)
+
+	if err := runtime.RouteEnvelope(context.Background(), 3, testConsensusEnvelope()); err != nil {
+		t.Fatalf("route consensus direct TCP: %v", err)
+	}
+	if wire := receiveTestEnvelope(t, target); wire.GetConsensusMessage() == nil || wire.GetForwardedPacket() != nil {
+		t.Fatalf("direct TCP used unexpected envelope: %T", wire.Body)
+	}
+}
+
+func applyConsensusTestLinks(runtime *Runtime, origin int64, links ...*LinkAdvertisement) {
+	var transports []*TransportCapability
+	seen := make(map[TransportKind]bool)
+	for _, link := range links {
+		if !seen[link.Transport] {
+			transports = append(transports, &TransportCapability{Transport: link.Transport, InboundEnabled: true, OutboundEnabled: true})
+			seen[link.Transport] = true
+		}
+	}
+	runtime.store.ApplyTopologyUpdate(&TopologyUpdate{
+		OriginNodeId:     origin,
+		Generation:       1,
+		ForwardingPolicy: DefaultForwardingPolicy(1),
+		Transports:       transports,
+		Links:            links,
+	})
+}
+
 func TestRuntimeRoutesConsensusAcrossTransitWithoutDirectAdjacency(t *testing.T) {
 	runtime := newTestRuntime(t, 1, newFakeAdapter(TransportLibP2P))
 	connToTransit, transitConn := newFakeConnPair(TransportLibP2P, "source", "transit")

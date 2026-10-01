@@ -233,3 +233,72 @@ func TestRuntimeDirectStreamScoreKeepsFailurePenalty(t *testing.T) {
 	h.send(testStreamFrame(streamFrameKindOpen, 1, 0, ""))
 	h.wantLast(true, "open avoids failing path despite lower min RTT")
 }
+
+// probeAdjacency runs one real ping/pong through sendPing and
+// handleTimeSyncResponse with the given RTT and bytes moved meanwhile.
+func probeAdjacency(t *testing.T, r *Runtime, adj *Adjacency, rtt time.Duration, moved uint64) {
+	t.Helper()
+	r.sendPing(context.Background(), adj)
+	adj.mu.Lock()
+	var id uint64
+	for pending := range adj.inflightPings {
+		id = pending
+	}
+	start := time.UnixMilli(time.Now().Add(-rtt).UnixMilli())
+	adj.inflightPings[id] = start
+	adj.mu.Unlock()
+	if id == 0 {
+		t.Fatal("ping was not recorded")
+	}
+	adj.activity.Add(moved)
+	r.handleTimeSyncResponse(adj, &TimeSyncResponse{RequestId: id, ClientSendTimeMs: start.UnixMilli(), ServerReceiveTimeMs: start.UnixMilli() + 1, ServerSendTimeMs: start.UnixMilli() + 1})
+}
+
+func spikeRate(adj *Adjacency) float64 {
+	adj.mu.Lock()
+	defer adj.mu.Unlock()
+	return adj.spikeEWMA
+}
+
+func TestRuntimeIdleProbeSpikesTrackLossButIgnoreOwnLoad(t *testing.T) {
+	h := newReselectHarness(t)
+	setTestMinRTT(h.primary, 150)
+
+	probeAdjacency(t, h.runtime, h.primary, 160*time.Millisecond, 0)
+	if got := spikeRate(h.primary); got != 0 {
+		t.Fatalf("near-minimum idle probe counted as spike: %v", got)
+	}
+	// A slow probe while the adjacency carried bulk data measures its own
+	// queue, not the path, and must not count as loss.
+	probeAdjacency(t, h.runtime, h.primary, 600*time.Millisecond, 1<<20)
+	if got := spikeRate(h.primary); got != 0 {
+		t.Fatalf("busy probe counted as spike: %v", got)
+	}
+	probeAdjacency(t, h.runtime, h.primary, 600*time.Millisecond, 0)
+	if got := spikeRate(h.primary); got < 0.099 || got > 0.101 {
+		t.Fatalf("idle slow probe spike rate = %v, want 0.1", got)
+	}
+}
+
+func TestRuntimeDirectStreamAvoidsLossyLowLatencyPath(t *testing.T) {
+	for _, test := range []struct {
+		name          string
+		spike         float64
+		wantAlternate bool
+	}{
+		{name: "lossy direct", spike: 0.3, wantAlternate: true},
+		{name: "clean direct", spike: 0.02, wantAlternate: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			h := newReselectHarness(t)
+			// primary: 150ms but losing packets; alternate: slower 200ms CDN.
+			setTestMinRTT(h.primary, 150)
+			setTestMinRTT(h.alternate, 200)
+			h.primary.mu.Lock()
+			h.primary.spikeEWMA = test.spike
+			h.primary.mu.Unlock()
+			h.send(testStreamFrame(streamFrameKindOpen, 1, 0, ""))
+			h.wantLast(test.wantAlternate, "open")
+		})
+	}
+}

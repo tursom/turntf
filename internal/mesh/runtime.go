@@ -64,6 +64,16 @@ const (
 	// adjacency rises with its own traffic and would push streams onto idle
 	// but slower paths; the windowed minimum reflects the path itself.
 	adjacencyMinRTTWindow = 2 * time.Minute
+
+	// A ping counts as an idle path sample when the adjacency moved at most
+	// this many bytes while it was in flight; busy samples mostly measure the
+	// adjacency's own queue rather than the path.
+	adjacencyIdleProbeBytes = 64 << 10
+	// Idle pings slower than the minimum RTT by max(50ms, minRTT/2) are
+	// spikes, typically TCP retransmissions after packet loss. Their EWMA
+	// rate (alpha 0.1) adds up to this penalty to the stream path score.
+	adjacencySpikeFloorMillis   = 50
+	adjacencySpikePenaltyMillis = 500
 )
 
 const (
@@ -437,6 +447,28 @@ type Adjacency struct {
 	minRTTPrev     float64   // 上一窗口最小 RTT（毫秒）
 	minRTTPrevOK   bool      // 上一窗口是否紧邻当前窗口且有样本
 	minRTTCurStart time.Time // 当前窗口起点（本地单调时钟）；零值表示无样本
+
+	activity     atomic.Uint64 // 收发的 stream/转发与读取字节累计，用于判断探测期间是否空闲
+	pingActivity uint64        // 当前探测发出时的 activity 快照
+	spikeEWMA    float64       // 空闲探测中 RTT 尖峰（多为丢包重传）比例的 EWMA
+}
+
+// observeIdleProbeLocked requires adj.mu and a minimum RTT that already
+// includes this sample.
+func (adj *Adjacency) observeIdleProbeLocked(rtt float64) {
+	base, ok := adj.minRTTLocked()
+	if !ok {
+		return
+	}
+	threshold := base / 2
+	if threshold < adjacencySpikeFloorMillis {
+		threshold = adjacencySpikeFloorMillis
+	}
+	spike := 0.0
+	if rtt > base+threshold {
+		spike = 1
+	}
+	adj.spikeEWMA = 0.9*adj.spikeEWMA + 0.1*spike
 }
 
 // observeMinRTTLocked requires adj.mu.
@@ -920,7 +952,8 @@ func (r *Runtime) adjacencyPenaltyLocked(adj *Adjacency, now time.Time) int64 {
 // The caller holds adj.mu.
 func (r *Runtime) directStreamScoreLocked(adj *Adjacency, now time.Time) int64 {
 	if base, ok := adj.minRTTLocked(); ok {
-		return clampNonNegative(int64(base) + r.adjacencyPenaltyLocked(adj, now))
+		loss := int64(adj.spikeEWMA * adjacencySpikePenaltyMillis)
+		return clampNonNegative(int64(base) + loss + r.adjacencyPenaltyLocked(adj, now))
 	}
 	return r.adjacencyCostLocked(adj, now) + int64(adj.jitterEWMA)
 }
@@ -1573,17 +1606,24 @@ func (r *Runtime) sendEnvelopeCtx(ctx context.Context, conn TransportConn, envel
 		sendErr = conn.Send(sendCtx, signed)
 	}
 	if (envelope.GetStreamFrame() != nil || envelope.GetForwardedPacket() != nil) && ctx.Err() == nil && !errors.Is(sendErr, context.Canceled) {
-		r.recordAdjacencySend(conn, sendErr)
+		r.recordAdjacencySendBytes(conn, len(signed), sendErr)
 	}
 	return sendErr
 }
 
 func (r *Runtime) recordAdjacencySend(conn TransportConn, sendErr error) {
+	r.recordAdjacencySendBytes(conn, 0, sendErr)
+}
+
+func (r *Runtime) recordAdjacencySendBytes(conn TransportConn, n int, sendErr error) {
 	r.mu.Lock()
 	adj := r.adjByConn[conn]
 	if adj == nil || r.closed {
 		r.mu.Unlock()
 		return
+	}
+	if sendErr == nil && n > 0 {
+		adj.activity.Add(uint64(n))
 	}
 	adj.mu.Lock()
 	previous := adj.sendFailures
@@ -1837,6 +1877,7 @@ func (r *Runtime) readLoop(ctx context.Context, adj *Adjacency) {
 		if err != nil {
 			return
 		}
+		adj.activity.Add(uint64(len(data)))
 		envelope, err := r.codec.Decode(data)
 		if err != nil {
 			return
@@ -2282,6 +2323,7 @@ func (r *Runtime) sendPing(ctx context.Context, adj *Adjacency) {
 	}
 	adj.pingStarted = time.Now()
 	adj.probeDegraded = false
+	adj.pingActivity = adj.activity.Load()
 	adj.inflightPings[id] = time.Unix(0, now*int64(time.Millisecond))
 	adj.mu.Unlock()
 	envelope := &ClusterEnvelope{
@@ -2371,6 +2413,9 @@ func (r *Runtime) handleTimeSyncResponse(adj *Adjacency, resp *TimeSyncResponse)
 	}
 	adj.samples++
 	adj.observeMinRTTLocked(float64(rtt), time.Now())
+	if adj.activity.Load()-adj.pingActivity <= adjacencyIdleProbeBytes {
+		adj.observeIdleProbeLocked(float64(rtt))
+	}
 	newCost := r.adjacencyCostLocked(adj, time.Now()) + int64(adj.jitterEWMA)
 	jitter := int64(adj.jitterEWMA)
 	adj.mu.Unlock()

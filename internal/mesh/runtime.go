@@ -58,6 +58,12 @@ const (
 	// cheaper by this margin (or a fifth of the current cost, if larger), so
 	// RTT/jitter noise does not bounce a stream between similar paths.
 	directStreamReselectMarginMillis = 25
+
+	// Stream paths are ranked by the minimum RTT over one to two windows.
+	// Pings share the connection with bulk data, so the EWMA of a loaded
+	// adjacency rises with its own traffic and would push streams onto idle
+	// but slower paths; the windowed minimum reflects the path itself.
+	adjacencyMinRTTWindow = 2 * time.Minute
 )
 
 const (
@@ -426,6 +432,36 @@ type Adjacency struct {
 	inflightPings map[uint64]time.Time // 正在途中的 Ping 请求（最多一个）
 	pingStarted   time.Time            // 本地单调时钟，用于应答期限，不受 HLC/墙钟调整影响
 	probeDegraded bool                 // 未响应探测已触发一次拓扑降权公告
+
+	minRTTCur      float64   // 当前窗口最小 RTT（毫秒）
+	minRTTPrev     float64   // 上一窗口最小 RTT（毫秒）
+	minRTTPrevOK   bool      // 上一窗口是否紧邻当前窗口且有样本
+	minRTTCurStart time.Time // 当前窗口起点（本地单调时钟）；零值表示无样本
+}
+
+// observeMinRTTLocked requires adj.mu.
+func (adj *Adjacency) observeMinRTTLocked(rtt float64, now time.Time) {
+	if adj.minRTTCurStart.IsZero() || now.Sub(adj.minRTTCurStart) >= adjacencyMinRTTWindow {
+		adj.minRTTPrevOK = !adj.minRTTCurStart.IsZero() && now.Sub(adj.minRTTCurStart) < 2*adjacencyMinRTTWindow
+		adj.minRTTPrev = adj.minRTTCur
+		adj.minRTTCur = rtt
+		adj.minRTTCurStart = now
+		return
+	}
+	if rtt < adj.minRTTCur {
+		adj.minRTTCur = rtt
+	}
+}
+
+// minRTTLocked requires adj.mu.
+func (adj *Adjacency) minRTTLocked() (float64, bool) {
+	if adj.minRTTCurStart.IsZero() {
+		return 0, false
+	}
+	if adj.minRTTPrevOK && adj.minRTTPrev < adj.minRTTCur {
+		return adj.minRTTPrev, true
+	}
+	return adj.minRTTCur, true
 }
 
 // NewRuntime 根据配置选项构造一个 Runtime 实例。
@@ -859,7 +895,13 @@ func (r *Runtime) SendPacket(ctx context.Context, nextHopNodeID int64, transport
 // adjacencyCostLocked 与公告使用同一个成本：RTT、近期抖动以及临时故障惩罚。
 // 调用方持有 adj.mu；探测的单调时间来自 time.Now 而非可回拨的墙钟。
 func (r *Runtime) adjacencyCostLocked(adj *Adjacency, now time.Time) int64 {
-	cost := int64(adj.rttEWMA + adj.jitterEWMA)
+	return clampNonNegative(int64(adj.rttEWMA+adj.jitterEWMA) + r.adjacencyPenaltyLocked(adj, now))
+}
+
+// adjacencyPenaltyLocked is the transient-failure part of the adjacency cost.
+// The caller holds adj.mu.
+func (r *Runtime) adjacencyPenaltyLocked(adj *Adjacency, now time.Time) int64 {
+	var cost int64
 	if adj.sendFailures >= 2 {
 		failures := int64(adj.sendFailures - 1)
 		if failures > 3 {
@@ -870,7 +912,51 @@ func (r *Runtime) adjacencyCostLocked(adj *Adjacency, now time.Time) int64 {
 	if len(adj.inflightPings) > 0 && !adj.pingStarted.IsZero() && now.Sub(adj.pingStarted) >= 3*r.pingInterval {
 		cost += 200
 	}
-	return clampNonNegative(cost)
+	return cost
+}
+
+// directStreamScoreLocked ranks adjacencies for stream pins: windowed minimum
+// RTT plus failure penalties, or the regular score before any RTT sample.
+// The caller holds adj.mu.
+func (r *Runtime) directStreamScoreLocked(adj *Adjacency, now time.Time) int64 {
+	if base, ok := adj.minRTTLocked(); ok {
+		return clampNonNegative(int64(base) + r.adjacencyPenaltyLocked(adj, now))
+	}
+	return r.adjacencyCostLocked(adj, now) + int64(adj.jitterEWMA)
+}
+
+// bestDirectStreamAdjacencyLocked requires r.mu. With a transport it ranks
+// only that transport; otherwise TCP adjacencies keep their priority, like
+// bestDirectAdjacencyLocked.
+func (r *Runtime) bestDirectStreamAdjacencyLocked(targetNodeID int64, transport TransportKind) *Adjacency {
+	var best *Adjacency
+	var bestScore int64
+	now := time.Now()
+	for key, candidates := range r.adjByRoute {
+		if key.nodeID != targetNodeID || (transport != TransportUnspecified && key.transport != transport) {
+			continue
+		}
+		for _, adj := range candidates {
+			if adj == nil {
+				continue
+			}
+			adj.mu.Lock()
+			established := adj.established
+			score := r.directStreamScoreLocked(adj, now)
+			adj.mu.Unlock()
+			if !established {
+				continue
+			}
+			anyTransport := transport == TransportUnspecified
+			preferTCP := anyTransport && best != nil && adj.Transport == TransportTCPMTLS && best.Transport != TransportTCPMTLS
+			samePriority := best != nil && (!anyTransport || (adj.Transport == TransportTCPMTLS) == (best.Transport == TransportTCPMTLS))
+			if best == nil || preferTCP || (samePriority && score < bestScore) {
+				best = adj
+				bestScore = score
+			}
+		}
+	}
+	return best
 }
 
 // bestAdjacency 从路由索引中选出到达指定下一跳节点的最优邻接关系。
@@ -1018,11 +1104,14 @@ func (r *Runtime) directStreamAdjacency(key directStreamAffinityKey, frame *Stre
 // stream on the forwarding path.
 func (r *Runtime) selectDirectStreamAdjacencyLocked(targetNodeID int64, decision RouteDecision, directRoute bool) *Adjacency {
 	if directRoute {
-		return r.bestAdjacencyLocked(targetNodeID, decision.OutboundTransport)
+		if decision.OutboundTransport == TransportUnspecified {
+			return nil
+		}
+		return r.bestDirectStreamAdjacencyLocked(targetNodeID, decision.OutboundTransport)
 	}
 	// A directly registered adjacency may precede its topology snapshot
 	// during startup. Preserve the established direct path in that window.
-	return r.bestDirectAdjacencyLocked(targetNodeID)
+	return r.bestDirectStreamAdjacencyLocked(targetNodeID, TransportUnspecified)
 }
 
 // directStreamMayReselect reports whether a frame of this kind may start on a
@@ -1045,10 +1134,10 @@ func (r *Runtime) cheaperDirectStreamAdjacencyLocked(current *Adjacency, targetN
 	}
 	now := time.Now()
 	current.mu.Lock()
-	currentScore := r.adjacencyCostLocked(current, now) + int64(current.jitterEWMA)
+	currentScore := r.directStreamScoreLocked(current, now)
 	current.mu.Unlock()
 	candidate.mu.Lock()
-	candidateScore := r.adjacencyCostLocked(candidate, now) + int64(candidate.jitterEWMA)
+	candidateScore := r.directStreamScoreLocked(candidate, now)
 	candidate.mu.Unlock()
 	margin := int64(directStreamReselectMarginMillis)
 	if currentScore/5 > margin {
@@ -2281,6 +2370,7 @@ func (r *Runtime) handleTimeSyncResponse(adj *Adjacency, resp *TimeSyncResponse)
 		adj.rttEWMA = (1-alpha)*adj.rttEWMA + alpha*float64(rtt)
 	}
 	adj.samples++
+	adj.observeMinRTTLocked(float64(rtt), time.Now())
 	newCost := r.adjacencyCostLocked(adj, time.Now()) + int64(adj.jitterEWMA)
 	jitter := int64(adj.jitterEWMA)
 	adj.mu.Unlock()

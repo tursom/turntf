@@ -486,7 +486,7 @@ func TestRuntimeDirectStreamSendErrorDoesNotFallback(t *testing.T) {
 	}
 }
 
-func TestRuntimeDirectStreamAffinityIgnoresDynamicScoreChanges(t *testing.T) {
+func TestRuntimeDirectStreamAffinityIgnoresScoreChangesWhileUnacknowledged(t *testing.T) {
 	runtime := newDirectStreamTestRuntime(t, newFakeAdapter(TransportLibP2P), newFakeAdapter(TransportWebSocket))
 	primary, _ := newFakeConnPair(TransportLibP2P, "primary", "target-primary")
 	alternate, _ := newFakeConnPair(TransportWebSocket, "alternate", "target-alternate")

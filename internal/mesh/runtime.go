@@ -53,6 +53,27 @@ const (
 
 	// The hard limit bounds memory when peers disappear without sending Close.
 	directStreamAffinityLimit = 64 * 1024
+
+	// A quiescent stream moves to another adjacency only when that path is
+	// cheaper by this margin (or a fifth of the current cost, if larger), so
+	// RTT/jitter noise does not bounce a stream between similar paths.
+	directStreamReselectMarginMillis = 25
+
+	// Stream paths are ranked by the minimum RTT over one to two windows.
+	// Pings share the connection with bulk data, so the EWMA of a loaded
+	// adjacency rises with its own traffic and would push streams onto idle
+	// but slower paths; the windowed minimum reflects the path itself.
+	adjacencyMinRTTWindow = 2 * time.Minute
+
+	// A ping counts as an idle path sample when the adjacency moved at most
+	// this many bytes while it was in flight; busy samples mostly measure the
+	// adjacency's own queue rather than the path.
+	adjacencyIdleProbeBytes = 64 << 10
+	// Idle pings slower than the minimum RTT by max(50ms, minRTT/2) are
+	// spikes, typically TCP retransmissions after packet loss. Their EWMA
+	// rate (alpha 0.1) adds up to this penalty to the stream path score.
+	adjacencySpikeFloorMillis   = 50
+	adjacencySpikePenaltyMillis = 500
 )
 
 const (
@@ -312,14 +333,7 @@ type Runtime struct {
 	// instead of silently moving to another path. A healthy pin may move to a
 	// cheaper adjacency only while every ordered frame it carried has been
 	// acknowledged by the remote endpoint, so no frame can overtake another.
-	directStreamAffinity map[directStreamAffinityKey]*directStreamAffinityEntry
-	// streamProbeAt limits goodput probes of alternative adjacencies per
-	// target node; see stream_path.go.
-	streamProbeAt map[int64]time.Time
-	// pathClock and streamDrainTimeout are injectable for tests.
-	pathClock          func() time.Time
-	streamDrainTimeout time.Duration
-	streamPathStats    streamPathCounters
+	directStreamAffinity map[directStreamAffinityKey]directStreamAffinityEntry
 
 	// ---- 生成号与拓扑 ----
 	generation        uint64                         // 本地当前生成号（每次拓扑变更递增）
@@ -356,6 +370,23 @@ type routeAdjacencyKey struct {
 type directStreamAffinityKey struct {
 	targetNodeID int64
 	streamID     string
+}
+
+type directStreamAffinityEntry struct {
+	epoch uint64
+	// A nil adjacency pins this epoch to the forwarding path selected by Open.
+	adj *Adjacency
+	// Ordered frames this node sent for the epoch and the remote endpoint's
+	// acknowledgements of them. Only Open, Resume and Data need ordering;
+	// OpenAck and cumulative Ack tolerate reordering.
+	awaitOpenAck bool
+	awaitResume  bool
+	sentEnd      uint64
+	ackedEnd     uint64
+}
+
+func (e directStreamAffinityEntry) quiescent() bool {
+	return !e.awaitOpenAck && !e.awaitResume && e.ackedEnd >= e.sentEnd
 }
 
 // floodKey 用于记录已处理的拓扑更新洪水广播，防止拓扑更新在网络中
@@ -412,12 +443,57 @@ type Adjacency struct {
 	pingStarted   time.Time            // 本地单调时钟，用于应答期限，不受 HLC/墙钟调整影响
 	probeDegraded bool                 // 未响应探测已触发一次拓扑降权公告
 
-	// 实测 stream 投递速率（字节/秒）的窗口最大值，见 stream_path.go。
-	goodputCur      float64
-	goodputPrev     float64
-	goodputPrevOK   bool
-	goodputCurStart time.Time
-	goodputLast     time.Time
+	minRTTCur      float64   // 当前窗口最小 RTT（毫秒）
+	minRTTPrev     float64   // 上一窗口最小 RTT（毫秒）
+	minRTTPrevOK   bool      // 上一窗口是否紧邻当前窗口且有样本
+	minRTTCurStart time.Time // 当前窗口起点（本地单调时钟）；零值表示无样本
+
+	activity     atomic.Uint64 // 收发的 stream/转发与读取字节累计，用于判断探测期间是否空闲
+	pingActivity uint64        // 当前探测发出时的 activity 快照
+	spikeEWMA    float64       // 空闲探测中 RTT 尖峰（多为丢包重传）比例的 EWMA
+}
+
+// observeIdleProbeLocked requires adj.mu and a minimum RTT that already
+// includes this sample.
+func (adj *Adjacency) observeIdleProbeLocked(rtt float64) {
+	base, ok := adj.minRTTLocked()
+	if !ok {
+		return
+	}
+	threshold := base / 2
+	if threshold < adjacencySpikeFloorMillis {
+		threshold = adjacencySpikeFloorMillis
+	}
+	spike := 0.0
+	if rtt > base+threshold {
+		spike = 1
+	}
+	adj.spikeEWMA = 0.9*adj.spikeEWMA + 0.1*spike
+}
+
+// observeMinRTTLocked requires adj.mu.
+func (adj *Adjacency) observeMinRTTLocked(rtt float64, now time.Time) {
+	if adj.minRTTCurStart.IsZero() || now.Sub(adj.minRTTCurStart) >= adjacencyMinRTTWindow {
+		adj.minRTTPrevOK = !adj.minRTTCurStart.IsZero() && now.Sub(adj.minRTTCurStart) < 2*adjacencyMinRTTWindow
+		adj.minRTTPrev = adj.minRTTCur
+		adj.minRTTCur = rtt
+		adj.minRTTCurStart = now
+		return
+	}
+	if rtt < adj.minRTTCur {
+		adj.minRTTCur = rtt
+	}
+}
+
+// minRTTLocked requires adj.mu.
+func (adj *Adjacency) minRTTLocked() (float64, bool) {
+	if adj.minRTTCurStart.IsZero() {
+		return 0, false
+	}
+	if adj.minRTTPrevOK && adj.minRTTPrev < adj.minRTTCur {
+		return adj.minRTTPrev, true
+	}
+	return adj.minRTTCur, true
 }
 
 // NewRuntime 根据配置选项构造一个 Runtime 实例。
@@ -563,10 +639,7 @@ func NewRuntime(opts RuntimeOptions) (*Runtime, error) {
 		adjByConn:              make(map[TransportConn]*Adjacency),
 		adjByKey:               make(map[adjacencyKey]map[TransportConn]*Adjacency),
 		adjByRoute:             make(map[routeAdjacencyKey][]*Adjacency),
-		directStreamAffinity:   make(map[directStreamAffinityKey]*directStreamAffinityEntry),
-		streamProbeAt:          make(map[int64]time.Time),
-		pathClock:              time.Now,
-		streamDrainTimeout:     streamDrainTimeout,
+		directStreamAffinity:   make(map[directStreamAffinityKey]directStreamAffinityEntry),
 		knownGeneration:        make(map[int64]uint64),
 		knownRuntimeEpoch:      make(map[int64]uint64),
 		seenFlood:              make(map[floodKey]struct{}),
@@ -731,14 +804,9 @@ func (r *Runtime) RouteEnvelope(ctx context.Context, targetNodeID int64, envelop
 			if frame.Kind == streamFrameKindClose {
 				defer r.clearDirectStreamAffinity(key, frame.Epoch)
 			}
-			adj, queued, err := r.directStreamAdjacency(key, frame, envelope)
+			adj, err := r.directStreamAdjacency(key, frame)
 			if err != nil {
 				return err
-			}
-			if queued {
-				// Held while the stream drains its previous path; the flusher
-				// sends it in order. See stream_path.go.
-				return nil
 			}
 			if adj != nil {
 				return r.sendEnvelopeCtx(ctx, adj.Conn, envelope, r.helloTimeout)
@@ -859,7 +927,13 @@ func (r *Runtime) SendPacket(ctx context.Context, nextHopNodeID int64, transport
 // adjacencyCostLocked 与公告使用同一个成本：RTT、近期抖动以及临时故障惩罚。
 // 调用方持有 adj.mu；探测的单调时间来自 time.Now 而非可回拨的墙钟。
 func (r *Runtime) adjacencyCostLocked(adj *Adjacency, now time.Time) int64 {
-	cost := int64(adj.rttEWMA + adj.jitterEWMA)
+	return clampNonNegative(int64(adj.rttEWMA+adj.jitterEWMA) + r.adjacencyPenaltyLocked(adj, now))
+}
+
+// adjacencyPenaltyLocked is the transient-failure part of the adjacency cost.
+// The caller holds adj.mu.
+func (r *Runtime) adjacencyPenaltyLocked(adj *Adjacency, now time.Time) int64 {
+	var cost int64
 	if adj.sendFailures >= 2 {
 		failures := int64(adj.sendFailures - 1)
 		if failures > 3 {
@@ -870,7 +944,52 @@ func (r *Runtime) adjacencyCostLocked(adj *Adjacency, now time.Time) int64 {
 	if len(adj.inflightPings) > 0 && !adj.pingStarted.IsZero() && now.Sub(adj.pingStarted) >= 3*r.pingInterval {
 		cost += 200
 	}
-	return clampNonNegative(cost)
+	return cost
+}
+
+// directStreamScoreLocked ranks adjacencies for stream pins: windowed minimum
+// RTT plus failure penalties, or the regular score before any RTT sample.
+// The caller holds adj.mu.
+func (r *Runtime) directStreamScoreLocked(adj *Adjacency, now time.Time) int64 {
+	if base, ok := adj.minRTTLocked(); ok {
+		loss := int64(adj.spikeEWMA * adjacencySpikePenaltyMillis)
+		return clampNonNegative(int64(base) + loss + r.adjacencyPenaltyLocked(adj, now))
+	}
+	return r.adjacencyCostLocked(adj, now) + int64(adj.jitterEWMA)
+}
+
+// bestDirectStreamAdjacencyLocked requires r.mu. With a transport it ranks
+// only that transport; otherwise TCP adjacencies keep their priority, like
+// bestDirectAdjacencyLocked.
+func (r *Runtime) bestDirectStreamAdjacencyLocked(targetNodeID int64, transport TransportKind) *Adjacency {
+	var best *Adjacency
+	var bestScore int64
+	now := time.Now()
+	for key, candidates := range r.adjByRoute {
+		if key.nodeID != targetNodeID || (transport != TransportUnspecified && key.transport != transport) {
+			continue
+		}
+		for _, adj := range candidates {
+			if adj == nil {
+				continue
+			}
+			adj.mu.Lock()
+			established := adj.established
+			score := r.directStreamScoreLocked(adj, now)
+			adj.mu.Unlock()
+			if !established {
+				continue
+			}
+			anyTransport := transport == TransportUnspecified
+			preferTCP := anyTransport && best != nil && adj.Transport == TransportTCPMTLS && best.Transport != TransportTCPMTLS
+			samePriority := best != nil && (!anyTransport || (adj.Transport == TransportTCPMTLS) == (best.Transport == TransportTCPMTLS))
+			if best == nil || preferTCP || (samePriority && score < bestScore) {
+				best = adj
+				bestScore = score
+			}
+		}
+	}
+	return best
 }
 
 // bestAdjacency 从路由索引中选出到达指定下一跳节点的最优邻接关系。
@@ -954,6 +1073,158 @@ func (r *Runtime) bestDirectAdjacencyLocked(targetNodeID int64) *Adjacency {
 		}
 	}
 	return best
+}
+
+// directStreamAdjacency returns the adjacency pinned to this logical stream
+// epoch. Resume and its Ack response may advance an existing affinity; all
+// other frames must match the pinned epoch exactly.
+func (r *Runtime) directStreamAdjacency(key directStreamAffinityKey, frame *StreamFrame) (*Adjacency, error) {
+	var decision RouteDecision
+	var directRoute bool
+	if r.planner != nil {
+		decision, directRoute = r.planner.Compute(r.store.Snapshot(), key.targetNodeID, TrafficPointToPointStream, TransportUnspecified)
+		directRoute = directRoute && decision.NextHopNodeID == key.targetNodeID
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed {
+		return nil, ErrRuntimeClosed
+	}
+
+	entry, exists := r.directStreamAffinity[key]
+	canAdvanceEpoch := frame.Kind == streamFrameKindResume || frame.Kind == streamFrameKindAck
+	if exists && canAdvanceEpoch && frame.Epoch > entry.epoch {
+		delete(r.directStreamAffinity, key)
+		exists = false
+	}
+	if exists {
+		if entry.epoch != frame.Epoch {
+			return nil, fmt.Errorf("mesh: direct stream path epoch %d does not match affinity epoch %d: %w", frame.Epoch, entry.epoch, ErrNoRoute)
+		}
+		if entry.adj != nil {
+			entry.adj.mu.Lock()
+			established := entry.adj.established
+			entry.adj.mu.Unlock()
+			if !established {
+				return nil, fmt.Errorf("mesh: direct stream affinity is no longer established: %w", ErrNoRoute)
+			}
+		}
+		if r.directStreamMayReselect(frame.Kind) && entry.quiescent() {
+			if better := r.cheaperDirectStreamAdjacencyLocked(entry.adj, key.targetNodeID, decision, directRoute); better != nil {
+				entry.adj = better
+			}
+		}
+		recordDirectStreamSend(&entry, frame)
+		r.directStreamAffinity[key] = entry
+		return entry.adj, nil
+	}
+
+	if len(r.directStreamAffinity) >= directStreamAffinityLimit {
+		return nil, fmt.Errorf("mesh: direct stream affinity capacity reached: %w", ErrNoRoute)
+	}
+	entry = directStreamAffinityEntry{epoch: frame.Epoch, adj: r.selectDirectStreamAdjacencyLocked(key.targetNodeID, decision, directRoute)}
+	if frame.Kind == streamFrameKindResume {
+		// Data after Resume restarts at the resumed offset; earlier bytes are
+		// either acknowledged or retransmitted in this epoch.
+		entry.sentEnd, entry.ackedEnd = frame.Offset, frame.Offset
+	}
+	recordDirectStreamSend(&entry, frame)
+	r.directStreamAffinity[key] = entry
+	return entry.adj, nil
+}
+
+// selectDirectStreamAdjacencyLocked requires r.mu. A nil result keeps the
+// stream on the forwarding path.
+func (r *Runtime) selectDirectStreamAdjacencyLocked(targetNodeID int64, decision RouteDecision, directRoute bool) *Adjacency {
+	if directRoute {
+		if decision.OutboundTransport == TransportUnspecified {
+			return nil
+		}
+		return r.bestDirectStreamAdjacencyLocked(targetNodeID, decision.OutboundTransport)
+	}
+	// A directly registered adjacency may precede its topology snapshot
+	// during startup. Preserve the established direct path in that window.
+	return r.bestDirectStreamAdjacencyLocked(targetNodeID, TransportUnspecified)
+}
+
+// directStreamMayReselect reports whether a frame of this kind may start on a
+// new adjacency once the epoch is quiescent. Open and Resume define the pin;
+// Close keeps it so the terminal frame follows the last data path.
+func (r *Runtime) directStreamMayReselect(kind uint32) bool {
+	return kind == streamFrameKindData || kind == streamFrameKindAck || kind == streamFrameKindOpenAck
+}
+
+// cheaperDirectStreamAdjacencyLocked requires r.mu. It returns a different
+// established direct adjacency only when it clearly beats the current pin; a
+// forwarding pin moves to any direct adjacency the planner now selects.
+func (r *Runtime) cheaperDirectStreamAdjacencyLocked(current *Adjacency, targetNodeID int64, decision RouteDecision, directRoute bool) *Adjacency {
+	candidate := r.selectDirectStreamAdjacencyLocked(targetNodeID, decision, directRoute)
+	if candidate == nil || candidate == current {
+		return nil
+	}
+	if current == nil {
+		return candidate
+	}
+	now := time.Now()
+	current.mu.Lock()
+	currentScore := r.directStreamScoreLocked(current, now)
+	current.mu.Unlock()
+	candidate.mu.Lock()
+	candidateScore := r.directStreamScoreLocked(candidate, now)
+	candidate.mu.Unlock()
+	margin := int64(directStreamReselectMarginMillis)
+	if currentScore/5 > margin {
+		margin = currentScore / 5
+	}
+	if candidateScore+margin >= currentScore {
+		return nil
+	}
+	return candidate
+}
+
+func recordDirectStreamSend(entry *directStreamAffinityEntry, frame *StreamFrame) {
+	switch frame.Kind {
+	case streamFrameKindOpen:
+		entry.awaitOpenAck = true
+	case streamFrameKindResume:
+		entry.awaitResume = true
+	case streamFrameKindData:
+		if end := frame.Offset + uint64(len(frame.Payload)); end > entry.sentEnd {
+			entry.sentEnd = end
+		}
+	}
+}
+
+// observeInboundStreamFrame records the remote endpoint's acknowledgements of
+// frames this node sent, which makes the stream eligible for reselection.
+func (r *Runtime) observeInboundStreamFrame(sourceNodeID int64, frame *StreamFrame) {
+	if frame == nil || len(frame.StreamId) != 16 || (frame.Kind != streamFrameKindOpenAck && frame.Kind != streamFrameKindAck) {
+		return
+	}
+	key := directStreamAffinityKey{targetNodeID: sourceNodeID, streamID: string(frame.StreamId)}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	entry, ok := r.directStreamAffinity[key]
+	if !ok || entry.epoch != frame.Epoch {
+		return
+	}
+	if frame.Kind == streamFrameKindOpenAck {
+		entry.awaitOpenAck = false
+	} else {
+		entry.awaitResume = false
+		if frame.Offset > entry.ackedEnd {
+			entry.ackedEnd = frame.Offset
+		}
+	}
+	r.directStreamAffinity[key] = entry
+}
+
+func (r *Runtime) clearDirectStreamAffinity(key directStreamAffinityKey, epoch uint64) {
+	r.mu.Lock()
+	if entry, ok := r.directStreamAffinity[key]; ok && entry.epoch == epoch {
+		delete(r.directStreamAffinity, key)
+	}
+	r.mu.Unlock()
 }
 
 // handleLocalForwardedPacket 是转发引擎传递到本节点数据包的处理入口。
@@ -1130,9 +1401,8 @@ func (r *Runtime) Adjacencies() []AdjacencySnapshot {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	out := make([]AdjacencySnapshot, 0, len(r.adjByConn))
-	now := r.pathClock()
 	for _, adj := range r.adjByConn {
-		out = append(out, adj.snapshot(now))
+		out = append(out, adj.snapshot())
 	}
 	return out
 }
@@ -1148,20 +1418,12 @@ type AdjacencySnapshot struct {
 	JitterMs     int64         // 当前抖动估计值（毫秒）
 	Samples      int           // 已采集的测量样本数
 	Established  bool          // 是否已建立
-	// GoodputBps 是 stream 实测投递速率（字节/秒）；GoodputAge 为最近样本距今，无样本时为负。
-	GoodputBps float64
-	GoodputAge time.Duration
 }
 
 // snapshot 创建 Adjacency 状态的一份快照副本（带锁保护）。
-func (a *Adjacency) snapshot(now time.Time) AdjacencySnapshot {
+func (a *Adjacency) snapshot() AdjacencySnapshot {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	goodput, age := a.goodputCur, time.Duration(-1)
-	if !a.goodputLast.IsZero() {
-		goodput, _ = a.goodputWithinLocked(now, time.Duration(1<<62))
-		age = now.Sub(a.goodputLast)
-	}
 	return AdjacencySnapshot{
 		RemoteNodeID: a.RemoteNodeID,
 		Transport:    a.Transport,
@@ -1171,8 +1433,6 @@ func (a *Adjacency) snapshot(now time.Time) AdjacencySnapshot {
 		JitterMs:     int64(a.jitterEWMA),
 		Samples:      a.samples,
 		Established:  a.established,
-		GoodputBps:   goodput,
-		GoodputAge:   age,
 	}
 }
 
@@ -1346,17 +1606,24 @@ func (r *Runtime) sendEnvelopeCtx(ctx context.Context, conn TransportConn, envel
 		sendErr = conn.Send(sendCtx, signed)
 	}
 	if (envelope.GetStreamFrame() != nil || envelope.GetForwardedPacket() != nil) && ctx.Err() == nil && !errors.Is(sendErr, context.Canceled) {
-		r.recordAdjacencySend(conn, sendErr)
+		r.recordAdjacencySendBytes(conn, len(signed), sendErr)
 	}
 	return sendErr
 }
 
 func (r *Runtime) recordAdjacencySend(conn TransportConn, sendErr error) {
+	r.recordAdjacencySendBytes(conn, 0, sendErr)
+}
+
+func (r *Runtime) recordAdjacencySendBytes(conn TransportConn, n int, sendErr error) {
 	r.mu.Lock()
 	adj := r.adjByConn[conn]
 	if adj == nil || r.closed {
 		r.mu.Unlock()
 		return
+	}
+	if sendErr == nil && n > 0 {
+		adj.activity.Add(uint64(n))
 	}
 	adj.mu.Lock()
 	previous := adj.sendFailures
@@ -1610,6 +1877,7 @@ func (r *Runtime) readLoop(ctx context.Context, adj *Adjacency) {
 		if err != nil {
 			return
 		}
+		adj.activity.Add(uint64(len(data)))
 		envelope, err := r.codec.Decode(data)
 		if err != nil {
 			return
@@ -2055,6 +2323,7 @@ func (r *Runtime) sendPing(ctx context.Context, adj *Adjacency) {
 	}
 	adj.pingStarted = time.Now()
 	adj.probeDegraded = false
+	adj.pingActivity = adj.activity.Load()
 	adj.inflightPings[id] = time.Unix(0, now*int64(time.Millisecond))
 	adj.mu.Unlock()
 	envelope := &ClusterEnvelope{
@@ -2143,6 +2412,10 @@ func (r *Runtime) handleTimeSyncResponse(adj *Adjacency, resp *TimeSyncResponse)
 		adj.rttEWMA = (1-alpha)*adj.rttEWMA + alpha*float64(rtt)
 	}
 	adj.samples++
+	adj.observeMinRTTLocked(float64(rtt), time.Now())
+	if adj.activity.Load()-adj.pingActivity <= adjacencyIdleProbeBytes {
+		adj.observeIdleProbeLocked(float64(rtt))
+	}
 	newCost := r.adjacencyCostLocked(adj, time.Now()) + int64(adj.jitterEWMA)
 	jitter := int64(adj.jitterEWMA)
 	adj.mu.Unlock()

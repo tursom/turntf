@@ -3,6 +3,7 @@ package mesh
 import (
 	"context"
 	"testing"
+	"time"
 )
 
 const testReselectStreamID = "0123456789abcdef"
@@ -170,4 +171,134 @@ func TestRuntimeDirectStreamCloseKeepsLastPath(t *testing.T) {
 	h.scores(100, 1)
 	h.send(testStreamFrame(streamFrameKindClose, 1, 0, ""))
 	h.wantLast(false, "close")
+}
+
+func setTestMinRTT(adj *Adjacency, minRTT float64) {
+	adj.mu.Lock()
+	adj.observeMinRTTLocked(minRTT, time.Now())
+	adj.mu.Unlock()
+}
+
+func TestAdjacencyMinRTTWindow(t *testing.T) {
+	adj := &Adjacency{}
+	start := time.Now()
+	if _, ok := adj.minRTTLocked(); ok {
+		t.Fatal("min RTT reported before any sample")
+	}
+	adj.observeMinRTTLocked(150, start)
+	adj.observeMinRTTLocked(400, start.Add(time.Second))
+	if got, _ := adj.minRTTLocked(); got != 150 {
+		t.Fatalf("min within window = %v, want 150", got)
+	}
+	// The previous window still bounds the estimate during the next window.
+	adj.observeMinRTTLocked(500, start.Add(adjacencyMinRTTWindow))
+	if got, _ := adj.minRTTLocked(); got != 150 {
+		t.Fatalf("min across adjacent windows = %v, want 150", got)
+	}
+	// Two windows later the old minimum expires.
+	adj.observeMinRTTLocked(450, start.Add(2*adjacencyMinRTTWindow))
+	if got, _ := adj.minRTTLocked(); got != 450 {
+		t.Fatalf("min after expiry = %v, want 450", got)
+	}
+	// A gap longer than a window does not resurrect a stale minimum.
+	adj.observeMinRTTLocked(600, start.Add(5*adjacencyMinRTTWindow))
+	if got, _ := adj.minRTTLocked(); got != 600 {
+		t.Fatalf("min after idle gap = %v, want 600", got)
+	}
+}
+
+func TestRuntimeDirectStreamPrefersBasePathOverLoadedRTT(t *testing.T) {
+	h := newReselectHarness(t)
+	// primary carries bulk traffic: its pings queue behind data (EWMA 400ms)
+	// but its path delay is 140ms; the idle alternate is a slower 200ms path.
+	h.scores(400, 210)
+	setTestMinRTT(h.primary, 140)
+	setTestMinRTT(h.alternate, 200)
+	h.send(testStreamFrame(streamFrameKindOpen, 1, 0, ""))
+	h.wantLast(false, "open")
+	h.inbound(testStreamFrame(streamFrameKindOpenAck, 1, 0, ""))
+	h.send(testStreamFrame(streamFrameKindData, 1, 0, "first"))
+	h.inbound(testStreamFrame(streamFrameKindAck, 1, 5, ""))
+	h.send(testStreamFrame(streamFrameKindData, 1, 5, "second"))
+	h.wantLast(false, "quiescent data on loaded but shorter path")
+}
+
+func TestRuntimeDirectStreamScoreKeepsFailurePenalty(t *testing.T) {
+	h := newReselectHarness(t)
+	setTestMinRTT(h.primary, 140)
+	setTestMinRTT(h.alternate, 200)
+	h.primary.mu.Lock()
+	h.primary.sendFailures = 4
+	h.primary.mu.Unlock()
+	h.send(testStreamFrame(streamFrameKindOpen, 1, 0, ""))
+	h.wantLast(true, "open avoids failing path despite lower min RTT")
+}
+
+// probeAdjacency runs one real ping/pong through sendPing and
+// handleTimeSyncResponse with the given RTT and bytes moved meanwhile.
+func probeAdjacency(t *testing.T, r *Runtime, adj *Adjacency, rtt time.Duration, moved uint64) {
+	t.Helper()
+	r.sendPing(context.Background(), adj)
+	adj.mu.Lock()
+	var id uint64
+	for pending := range adj.inflightPings {
+		id = pending
+	}
+	start := time.UnixMilli(time.Now().Add(-rtt).UnixMilli())
+	adj.inflightPings[id] = start
+	adj.mu.Unlock()
+	if id == 0 {
+		t.Fatal("ping was not recorded")
+	}
+	adj.activity.Add(moved)
+	r.handleTimeSyncResponse(adj, &TimeSyncResponse{RequestId: id, ClientSendTimeMs: start.UnixMilli(), ServerReceiveTimeMs: start.UnixMilli() + 1, ServerSendTimeMs: start.UnixMilli() + 1})
+}
+
+func spikeRate(adj *Adjacency) float64 {
+	adj.mu.Lock()
+	defer adj.mu.Unlock()
+	return adj.spikeEWMA
+}
+
+func TestRuntimeIdleProbeSpikesTrackLossButIgnoreOwnLoad(t *testing.T) {
+	h := newReselectHarness(t)
+	setTestMinRTT(h.primary, 150)
+
+	probeAdjacency(t, h.runtime, h.primary, 160*time.Millisecond, 0)
+	if got := spikeRate(h.primary); got != 0 {
+		t.Fatalf("near-minimum idle probe counted as spike: %v", got)
+	}
+	// A slow probe while the adjacency carried bulk data measures its own
+	// queue, not the path, and must not count as loss.
+	probeAdjacency(t, h.runtime, h.primary, 600*time.Millisecond, 1<<20)
+	if got := spikeRate(h.primary); got != 0 {
+		t.Fatalf("busy probe counted as spike: %v", got)
+	}
+	probeAdjacency(t, h.runtime, h.primary, 600*time.Millisecond, 0)
+	if got := spikeRate(h.primary); got < 0.099 || got > 0.101 {
+		t.Fatalf("idle slow probe spike rate = %v, want 0.1", got)
+	}
+}
+
+func TestRuntimeDirectStreamAvoidsLossyLowLatencyPath(t *testing.T) {
+	for _, test := range []struct {
+		name          string
+		spike         float64
+		wantAlternate bool
+	}{
+		{name: "lossy direct", spike: 0.3, wantAlternate: true},
+		{name: "clean direct", spike: 0.02, wantAlternate: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			h := newReselectHarness(t)
+			// primary: 150ms but losing packets; alternate: slower 200ms CDN.
+			setTestMinRTT(h.primary, 150)
+			setTestMinRTT(h.alternate, 200)
+			h.primary.mu.Lock()
+			h.primary.spikeEWMA = test.spike
+			h.primary.mu.Unlock()
+			h.send(testStreamFrame(streamFrameKindOpen, 1, 0, ""))
+			h.wantLast(test.wantAlternate, "open")
+		})
+	}
 }

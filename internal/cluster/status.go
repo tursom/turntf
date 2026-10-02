@@ -251,28 +251,6 @@ func (m *Manager) meshStatusSnapshot() app.ClusterMeshStatus {
 			}
 		}
 	}
-	stats := runtime.StreamPathStats()
-	status.StreamPaths = app.ClusterMeshStreamPathStatus{DrainsStarted: stats.DrainsStarted, DrainsCompleted: stats.DrainsCompleted, DrainsAborted: stats.DrainsAborted, Probes: stats.Probes, QuiescentMoves: stats.QuiescentMoves}
-	for _, adj := range runtime.Adjacencies() {
-		if !adj.Established {
-			continue
-		}
-		age := int64(-1)
-		if adj.GoodputAge >= 0 {
-			age = adj.GoodputAge.Milliseconds()
-		}
-		status.StreamPaths.Adjacencies = append(status.StreamPaths.Adjacencies, app.ClusterMeshStreamPathAdjacency{NodeID: adj.RemoteNodeID, Transport: meshTransportLabel(adj.Transport), Inbound: adj.Inbound, RemoteHint: adj.RemoteHint, RTTMs: adj.RTTMs, JitterMs: adj.JitterMs, GoodputBps: adj.GoodputBps, GoodputAgeMs: age})
-	}
-	sort.Slice(status.StreamPaths.Adjacencies, func(i, j int) bool {
-		a, b := status.StreamPaths.Adjacencies[i], status.StreamPaths.Adjacencies[j]
-		if a.NodeID != b.NodeID {
-			return a.NodeID < b.NodeID
-		}
-		if a.Transport != b.Transport {
-			return a.Transport < b.Transport
-		}
-		return a.RemoteHint < b.RemoteHint
-	})
 	for _, capability := range runtime.LocalCapabilities() {
 		if capability == nil {
 			continue

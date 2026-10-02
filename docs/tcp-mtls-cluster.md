@@ -8,13 +8,14 @@
 
 | 节点 | 原生 TCP+mTLS | WSS | TCP 允许节点 |
 | --- | --- | --- | --- |
-| kiwi | 启用，主用 | 热备用 | cc、kr 的 node_id |
-| cc | 启用，主用 | 热备用 | kiwi、kr 的 node_id |
-| kr | 启用，主用 | 热备用 | kiwi、cc 的 node_id |
-| home | 禁用 | 唯一集群传输 | 无 |
+| kiwi | 启用，主用 | 热备用 | cc、kr、home 的 node_id |
+| cc | 启用，主用 | 热备用 | kiwi、kr、home 的 node_id |
+| kr | 启用，主用 | 热备用 | kiwi、cc、home 的 node_id |
+| home | 仅入站（`inbound_only`），由 kiwi/cc/kr 拨入，主用 | 热备用 | kiwi、cc、kr 的 node_id |
 | cn | 禁用 | 唯一集群传输 | 无 |
 
-home/cn 同时保持 ZeroMQ、libp2p 关闭，静态 peers 只使用 `wss://`。即使 kiwi/cc/kr 将 TCP 地址传播到 home/cn，也不会触发 TCP 拨号。WSS 的 HTTPS 证书验证沿用现有 WebSocket 实现，不会因原生 TCP 启用而降级；生产备用地址必须使用 WSS，而不是明文 WS。
+home 位于国内宽带，主动向境外发起原生 TLS 易被识别封禁，因此只对外监听、从不拨出；kiwi/cc/kr 的静态 peers 增加 home 的 `tcp+tls://` 地址。home 的 9443 只放行三台海外节点的公网来源。
+home/cn 同时保持 ZeroMQ、libp2p 关闭，静态 peers 只使用 `wss://`。即使 kiwi/cc/kr 将 TCP 地址传播到 home/cn，也不会触发 TCP 拨号（home 由 `inbound_only` 保证，cn 由禁用保证）。WSS 的 HTTPS 证书验证沿用现有 WebSocket 实现，不会因原生 TCP 启用而降级；生产备用地址必须使用 WSS，而不是明文 WS。
 
 ## 配置
 

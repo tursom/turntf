@@ -50,7 +50,7 @@ func (h *reselectHarness) send(frame *StreamFrame) {
 }
 
 func (h *reselectHarness) inbound(frame *StreamFrame) {
-	h.runtime.observeInboundStreamFrame(2, frame)
+	h.runtime.observeInboundStreamFrame(2, nil, frame)
 }
 
 func (h *reselectHarness) wantLast(alternate bool, context string) {

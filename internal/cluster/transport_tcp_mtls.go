@@ -32,8 +32,10 @@ type TCPMTLSConfig struct {
 	CertFile            string   `toml:"cert_file"`
 	KeyFile             string   `toml:"key_file"`
 	AllowedNodeIDs      []int64  `toml:"allowed_node_ids"`
-	HandshakeTimeoutMs  int64    `toml:"handshake_timeout_ms"`
-	MaxFrameBytes       int      `toml:"max_frame_bytes"`
+	// InboundOnly 只接受白名单节点拨入，本节点从不发起 TCP 连接；已建立的入站邻接仍可双向收发。
+	InboundOnly        bool  `toml:"inbound_only"`
+	HandshakeTimeoutMs int64 `toml:"handshake_timeout_ms"`
+	MaxFrameBytes      int   `toml:"max_frame_bytes"`
 }
 
 func (c TCPMTLSConfig) withDefaults() TCPMTLSConfig {
@@ -82,6 +84,9 @@ func (c TCPMTLSConfig) validate() error {
 		if _, _, err := net.SplitHostPort(c.ListenAddr); err != nil {
 			return fmt.Errorf("tcp mTLS listen_addr: %w", err)
 		}
+	}
+	if c.ListenAddr == "" && c.InboundOnly {
+		return fmt.Errorf("tcp mTLS inbound_only requires listen_addr")
 	}
 	if c.ListenAddr == "" && len(c.AdvertisedEndpoints) > 0 {
 		return fmt.Errorf("tcp mTLS advertised endpoints require a listener")
@@ -318,6 +323,9 @@ func (a *TCPMTLSMeshTransportAdapter) Dial(ctx context.Context, endpoint string)
 	}
 	if !a.allowed(id) {
 		return nil, fmt.Errorf("tcp mTLS target node ID is not allowed")
+	}
+	if a.cfg.InboundOnly {
+		return nil, fmt.Errorf("tcp mTLS outbound dial disabled by inbound_only")
 	}
 	a.mu.Lock()
 	if a.closed || a.ctx == nil || a.ctx.Err() != nil {

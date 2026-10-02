@@ -88,6 +88,85 @@ func TestTCPMTLSManagerDiscoversUpgradeFromWSS(t *testing.T) {
 	}
 }
 
+func TestTCPMTLSInboundOnlyAcceptsButNeverDials(t *testing.T) {
+	ca := newTCPTestCA(t)
+	cfgA := ca.config(t, testNodeID(1), nil)
+	cfgB := ca.config(t, testNodeID(2), nil)
+	ids := []int64{testNodeID(1), testNodeID(2)}
+	cfgA.TCPMTLS.AllowedNodeIDs = ids
+	cfgB.TCPMTLS.AllowedNodeIDs = ids
+	reserve := func() string {
+		l, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		addr := l.Addr().String()
+		_ = l.Close()
+		return addr
+	}
+	addrA, addrB := reserve(), reserve()
+	endpointA := fmt.Sprintf("tcp+tls://%s/%d", addrA, cfgA.NodeID)
+	endpointB := fmt.Sprintf("tcp+tls://%s/%d", addrB, cfgB.NodeID)
+	cfgA.TCPMTLS.ListenAddr = addrA
+	cfgA.TCPMTLS.AdvertisedEndpoints = []string{endpointA}
+	cfgB.TCPMTLS.ListenAddr = addrB
+	cfgB.TCPMTLS.AdvertisedEndpoints = []string{endpointB}
+	cfgB.TCPMTLS.InboundOnly = true
+
+	bad := cfgB
+	bad.Peers = []Peer{{URL: endpointA}}
+	if _, err := NewManager(bad, newReplicationTestStore(t, "tcp-inbound-only-bad", 2)); err == nil || !strings.Contains(err.Error(), "inbound_only") {
+		t.Fatalf("inbound-only static TCP peer accepted: %v", err)
+	}
+	noListen := cfgB.TCPMTLS
+	noListen.ListenAddr = ""
+	noListen.AdvertisedEndpoints = nil
+	if err := noListen.withDefaults().validate(); err == nil || !strings.Contains(err.Error(), "inbound_only requires listen_addr") {
+		t.Fatalf("inbound-only without listener accepted: %v", err)
+	}
+
+	b, err := NewManager(cfgB, newReplicationTestStore(t, "tcp-inbound-only-b", 2))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = b.Close() })
+	if err := b.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	cfgA.Peers = []Peer{{URL: endpointB}}
+	a, err := NewManager(cfgA, newReplicationTestStore(t, "tcp-inbound-only-a", 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = a.Close() })
+	if err := a.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	// 入站专用节点收到对端 TCP 广告后也不得生成拨号种子。
+	if err := b.observePeerAdvertisement(cfgA.NodeID, &internalproto.PeerAdvertisement{NodeId: cfgA.NodeID, Url: endpointA, Generation: 1}); err != nil {
+		t.Fatal(err)
+	}
+	b.reconcileDiscoveredDialers()
+	if b.canDialPeerURL(endpointA) {
+		t.Fatal("inbound-only node may dial TCP endpoint")
+	}
+	for _, seed := range b.collectDialSeeds() {
+		if seed.Transport == mesh.TransportTCPMTLS {
+			t.Fatalf("inbound-only node produced TCP dial seed %+v", seed)
+		}
+	}
+	if _, err := b.MeshRuntime().tcp.Dial(context.Background(), endpointA); err == nil || !strings.Contains(err.Error(), "inbound_only") {
+		t.Fatalf("inbound-only adapter dialed: %v", err)
+	}
+	waitForMeshRouteDecision(t, a, cfgB.NodeID, mesh.TrafficControlQuery, cfgB.NodeID, mesh.TransportTCPMTLS)
+	// 入站邻接同样承载本节点发往对端的流量。
+	waitForMeshRouteDecision(t, b, cfgA.NodeID, mesh.TrafficControlQuery, cfgA.NodeID, mesh.TransportTCPMTLS)
+	status := b.meshStatusSnapshot()
+	if status.TCPMTLS.DialAttempts != 0 || status.TCPMTLS.ActiveAdjacencies < 1 {
+		t.Fatalf("inbound-only TCP observability: %+v", status.TCPMTLS)
+	}
+}
+
 func TestTCPMTLSStartupFailureClosesRuntimeWithSeeds(t *testing.T) {
 	ca := newTCPTestCA(t)
 	cfg := ca.config(t, 1, nil)

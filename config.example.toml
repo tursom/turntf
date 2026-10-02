@@ -11,6 +11,8 @@ ca_file = ""
 cert_file = ""
 key_file = ""
 allowed_node_ids = []
+# 仅接受白名单节点拨入，本节点不发起 TCP 连接；需要 listen_addr。
+inbound_only = false
 handshake_timeout_ms = 5000
 max_frame_bytes = 8388608
 

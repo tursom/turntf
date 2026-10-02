@@ -63,6 +63,7 @@ url = "wss://kr.example.net/internal/cluster/ws"
 
 字段约束：
 
+- `inbound_only = true` 为仅入站：只监听并接受白名单节点拨入，本节点从不发起 TCP 连接，静态 `tcp+tls://` peer 会导致配置校验失败，收到的 TCP 广告不会生成拨号种子，适配器拨号入口同样拒绝，`dial_attempts` 保持 0。必须配置 `listen_addr`。已建立的入站邻接与普通 TCP 邻接一样双向承载流量并参与 TCP 优先选路。适用于不宜主动向外发起原生 TLS 连接、但可以对外开放端口的节点（如国内宽带的 home）。
 - `listen_addr` 留空为仅出站；不允许同时填写广告地址。绑定 `:0` 适合测试，但不会自动生成可供生产发现的端点。
 - `advertised_endpoints` 必须使用 `tcp+tls://host:port/nodeID`，包括明确的非零端口与规范十进制正整数节点 ID；支持 DNS、IPv4、方括号 IPv6。禁止用户信息、查询、fragment、通配主机以及编码身份路径。
 - 同一节点可以配置多个不同 TCP 地址和 WSS 地址。重复的相同规范化 URL 仍被拒绝。

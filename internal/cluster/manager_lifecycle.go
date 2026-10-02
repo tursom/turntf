@@ -51,7 +51,7 @@ func (m *Manager) transportForPeerURL(peerURL string) (string, error) {
 func (m *Manager) canDialPeerURL(peerURL string) bool {
 	switch transportForPeerURL(peerURL) {
 	case transportTCPMTLS:
-		if m == nil || !m.cfg.TCPMTLS.Enabled {
+		if m == nil || !m.cfg.TCPMTLS.Enabled || m.cfg.TCPMTLS.InboundOnly {
 			return false
 		}
 		_, id, err := parseTCPMTLSEndpoint(peerURL)

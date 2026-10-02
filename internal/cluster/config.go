@@ -301,6 +301,9 @@ func (c *Config) Validate() error {
 			if !c.TCPMTLS.Enabled {
 				return fmt.Errorf("tcp mTLS peer requires services.tcp_mtls.enabled")
 			}
+			if c.TCPMTLS.InboundOnly {
+				return fmt.Errorf("tcp mTLS peer is not allowed with services.tcp_mtls.inbound_only")
+			}
 			_, target, _ := parseTCPMTLSEndpoint(normalizedURL)
 			allowed := false
 			for _, id := range c.TCPMTLS.AllowedNodeIDs {

@@ -53,11 +53,6 @@ const (
 
 	// The hard limit bounds memory when peers disappear without sending Close.
 	directStreamAffinityLimit = 64 * 1024
-
-	// A quiescent stream moves to another adjacency only when that path is
-	// cheaper by this margin (or a fifth of the current cost, if larger), so
-	// RTT/jitter noise does not bounce a stream between similar paths.
-	directStreamReselectMarginMillis = 25
 )
 
 const (
@@ -317,7 +312,13 @@ type Runtime struct {
 	// instead of silently moving to another path. A healthy pin may move to a
 	// cheaper adjacency only while every ordered frame it carried has been
 	// acknowledged by the remote endpoint, so no frame can overtake another.
-	directStreamAffinity map[directStreamAffinityKey]directStreamAffinityEntry
+	directStreamAffinity map[directStreamAffinityKey]*directStreamAffinityEntry
+	// streamProbeAt limits goodput probes of alternative adjacencies per
+	// target node; see stream_path.go.
+	streamProbeAt map[int64]time.Time
+	// pathClock and streamDrainTimeout are injectable for tests.
+	pathClock          func() time.Time
+	streamDrainTimeout time.Duration
 
 	// ---- 生成号与拓扑 ----
 	generation        uint64                         // 本地当前生成号（每次拓扑变更递增）
@@ -354,23 +355,6 @@ type routeAdjacencyKey struct {
 type directStreamAffinityKey struct {
 	targetNodeID int64
 	streamID     string
-}
-
-type directStreamAffinityEntry struct {
-	epoch uint64
-	// A nil adjacency pins this epoch to the forwarding path selected by Open.
-	adj *Adjacency
-	// Ordered frames this node sent for the epoch and the remote endpoint's
-	// acknowledgements of them. Only Open, Resume and Data need ordering;
-	// OpenAck and cumulative Ack tolerate reordering.
-	awaitOpenAck bool
-	awaitResume  bool
-	sentEnd      uint64
-	ackedEnd     uint64
-}
-
-func (e directStreamAffinityEntry) quiescent() bool {
-	return !e.awaitOpenAck && !e.awaitResume && e.ackedEnd >= e.sentEnd
 }
 
 // floodKey 用于记录已处理的拓扑更新洪水广播，防止拓扑更新在网络中
@@ -426,6 +410,13 @@ type Adjacency struct {
 	inflightPings map[uint64]time.Time // 正在途中的 Ping 请求（最多一个）
 	pingStarted   time.Time            // 本地单调时钟，用于应答期限，不受 HLC/墙钟调整影响
 	probeDegraded bool                 // 未响应探测已触发一次拓扑降权公告
+
+	// 实测 stream 投递速率（字节/秒）的窗口最大值，见 stream_path.go。
+	goodputCur      float64
+	goodputPrev     float64
+	goodputPrevOK   bool
+	goodputCurStart time.Time
+	goodputLast     time.Time
 }
 
 // NewRuntime 根据配置选项构造一个 Runtime 实例。
@@ -571,7 +562,10 @@ func NewRuntime(opts RuntimeOptions) (*Runtime, error) {
 		adjByConn:              make(map[TransportConn]*Adjacency),
 		adjByKey:               make(map[adjacencyKey]map[TransportConn]*Adjacency),
 		adjByRoute:             make(map[routeAdjacencyKey][]*Adjacency),
-		directStreamAffinity:   make(map[directStreamAffinityKey]directStreamAffinityEntry),
+		directStreamAffinity:   make(map[directStreamAffinityKey]*directStreamAffinityEntry),
+		streamProbeAt:          make(map[int64]time.Time),
+		pathClock:              time.Now,
+		streamDrainTimeout:     streamDrainTimeout,
 		knownGeneration:        make(map[int64]uint64),
 		knownRuntimeEpoch:      make(map[int64]uint64),
 		seenFlood:              make(map[floodKey]struct{}),
@@ -736,9 +730,14 @@ func (r *Runtime) RouteEnvelope(ctx context.Context, targetNodeID int64, envelop
 			if frame.Kind == streamFrameKindClose {
 				defer r.clearDirectStreamAffinity(key, frame.Epoch)
 			}
-			adj, err := r.directStreamAdjacency(key, frame)
+			adj, queued, err := r.directStreamAdjacency(key, frame, envelope)
 			if err != nil {
 				return err
+			}
+			if queued {
+				// Held while the stream drains its previous path; the flusher
+				// sends it in order. See stream_path.go.
+				return nil
 			}
 			if adj != nil {
 				return r.sendEnvelopeCtx(ctx, adj.Conn, envelope, r.helloTimeout)
@@ -954,155 +953,6 @@ func (r *Runtime) bestDirectAdjacencyLocked(targetNodeID int64) *Adjacency {
 		}
 	}
 	return best
-}
-
-// directStreamAdjacency returns the adjacency pinned to this logical stream
-// epoch. Resume and its Ack response may advance an existing affinity; all
-// other frames must match the pinned epoch exactly.
-func (r *Runtime) directStreamAdjacency(key directStreamAffinityKey, frame *StreamFrame) (*Adjacency, error) {
-	var decision RouteDecision
-	var directRoute bool
-	if r.planner != nil {
-		decision, directRoute = r.planner.Compute(r.store.Snapshot(), key.targetNodeID, TrafficPointToPointStream, TransportUnspecified)
-		directRoute = directRoute && decision.NextHopNodeID == key.targetNodeID
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.closed {
-		return nil, ErrRuntimeClosed
-	}
-
-	entry, exists := r.directStreamAffinity[key]
-	canAdvanceEpoch := frame.Kind == streamFrameKindResume || frame.Kind == streamFrameKindAck
-	if exists && canAdvanceEpoch && frame.Epoch > entry.epoch {
-		delete(r.directStreamAffinity, key)
-		exists = false
-	}
-	if exists {
-		if entry.epoch != frame.Epoch {
-			return nil, fmt.Errorf("mesh: direct stream path epoch %d does not match affinity epoch %d: %w", frame.Epoch, entry.epoch, ErrNoRoute)
-		}
-		if entry.adj != nil {
-			entry.adj.mu.Lock()
-			established := entry.adj.established
-			entry.adj.mu.Unlock()
-			if !established {
-				return nil, fmt.Errorf("mesh: direct stream affinity is no longer established: %w", ErrNoRoute)
-			}
-		}
-		if r.directStreamMayReselect(frame.Kind) && entry.quiescent() {
-			if better := r.cheaperDirectStreamAdjacencyLocked(entry.adj, key.targetNodeID, decision, directRoute); better != nil {
-				entry.adj = better
-			}
-		}
-		recordDirectStreamSend(&entry, frame)
-		r.directStreamAffinity[key] = entry
-		return entry.adj, nil
-	}
-
-	if len(r.directStreamAffinity) >= directStreamAffinityLimit {
-		return nil, fmt.Errorf("mesh: direct stream affinity capacity reached: %w", ErrNoRoute)
-	}
-	entry = directStreamAffinityEntry{epoch: frame.Epoch, adj: r.selectDirectStreamAdjacencyLocked(key.targetNodeID, decision, directRoute)}
-	if frame.Kind == streamFrameKindResume {
-		// Data after Resume restarts at the resumed offset; earlier bytes are
-		// either acknowledged or retransmitted in this epoch.
-		entry.sentEnd, entry.ackedEnd = frame.Offset, frame.Offset
-	}
-	recordDirectStreamSend(&entry, frame)
-	r.directStreamAffinity[key] = entry
-	return entry.adj, nil
-}
-
-// selectDirectStreamAdjacencyLocked requires r.mu. A nil result keeps the
-// stream on the forwarding path.
-func (r *Runtime) selectDirectStreamAdjacencyLocked(targetNodeID int64, decision RouteDecision, directRoute bool) *Adjacency {
-	if directRoute {
-		return r.bestAdjacencyLocked(targetNodeID, decision.OutboundTransport)
-	}
-	// A directly registered adjacency may precede its topology snapshot
-	// during startup. Preserve the established direct path in that window.
-	return r.bestDirectAdjacencyLocked(targetNodeID)
-}
-
-// directStreamMayReselect reports whether a frame of this kind may start on a
-// new adjacency once the epoch is quiescent. Open and Resume define the pin;
-// Close keeps it so the terminal frame follows the last data path.
-func (r *Runtime) directStreamMayReselect(kind uint32) bool {
-	return kind == streamFrameKindData || kind == streamFrameKindAck || kind == streamFrameKindOpenAck
-}
-
-// cheaperDirectStreamAdjacencyLocked requires r.mu. It returns a different
-// established direct adjacency only when it clearly beats the current pin; a
-// forwarding pin moves to any direct adjacency the planner now selects.
-func (r *Runtime) cheaperDirectStreamAdjacencyLocked(current *Adjacency, targetNodeID int64, decision RouteDecision, directRoute bool) *Adjacency {
-	candidate := r.selectDirectStreamAdjacencyLocked(targetNodeID, decision, directRoute)
-	if candidate == nil || candidate == current {
-		return nil
-	}
-	if current == nil {
-		return candidate
-	}
-	now := time.Now()
-	current.mu.Lock()
-	currentScore := r.adjacencyCostLocked(current, now) + int64(current.jitterEWMA)
-	current.mu.Unlock()
-	candidate.mu.Lock()
-	candidateScore := r.adjacencyCostLocked(candidate, now) + int64(candidate.jitterEWMA)
-	candidate.mu.Unlock()
-	margin := int64(directStreamReselectMarginMillis)
-	if currentScore/5 > margin {
-		margin = currentScore / 5
-	}
-	if candidateScore+margin >= currentScore {
-		return nil
-	}
-	return candidate
-}
-
-func recordDirectStreamSend(entry *directStreamAffinityEntry, frame *StreamFrame) {
-	switch frame.Kind {
-	case streamFrameKindOpen:
-		entry.awaitOpenAck = true
-	case streamFrameKindResume:
-		entry.awaitResume = true
-	case streamFrameKindData:
-		if end := frame.Offset + uint64(len(frame.Payload)); end > entry.sentEnd {
-			entry.sentEnd = end
-		}
-	}
-}
-
-// observeInboundStreamFrame records the remote endpoint's acknowledgements of
-// frames this node sent, which makes the stream eligible for reselection.
-func (r *Runtime) observeInboundStreamFrame(sourceNodeID int64, frame *StreamFrame) {
-	if frame == nil || len(frame.StreamId) != 16 || (frame.Kind != streamFrameKindOpenAck && frame.Kind != streamFrameKindAck) {
-		return
-	}
-	key := directStreamAffinityKey{targetNodeID: sourceNodeID, streamID: string(frame.StreamId)}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	entry, ok := r.directStreamAffinity[key]
-	if !ok || entry.epoch != frame.Epoch {
-		return
-	}
-	if frame.Kind == streamFrameKindOpenAck {
-		entry.awaitOpenAck = false
-	} else {
-		entry.awaitResume = false
-		if frame.Offset > entry.ackedEnd {
-			entry.ackedEnd = frame.Offset
-		}
-	}
-	r.directStreamAffinity[key] = entry
-}
-
-func (r *Runtime) clearDirectStreamAffinity(key directStreamAffinityKey, epoch uint64) {
-	r.mu.Lock()
-	if entry, ok := r.directStreamAffinity[key]; ok && entry.epoch == epoch {
-		delete(r.directStreamAffinity, key)
-	}
-	r.mu.Unlock()
 }
 
 // handleLocalForwardedPacket 是转发引擎传递到本节点数据包的处理入口。

@@ -15,7 +15,19 @@
 
 core 将帧编码为 `MeshStreamFrame`，分类为 `TRAFFIC_POINT_TO_POINT_STREAM`，沿 mesh envelope forwarding path 转发。该消息使用 `stream_id`、`epoch`、`offset` 和目标 `SessionRef` 标识逻辑流；不填充 `TransientPacket`。目标节点的 registry 先过滤旧 epoch，再注入指定客户端会话。
 
-目标节点存在多条已建立的物理邻接时，direct stream fast path 在 `Open` 首次选择邻接，并将 `(target, stream_id, epoch)` 固定到该连接。接收端会丢弃乱序 `Data`，因此只有当本节点在该 epoch 发出的有序帧全部被对端确认后（`Open` 已收到 `OpenAck`、`Resume` 已收到同 epoch 的 `Ack`、累计 `Ack` 覆盖已发 `Data` 末尾），下一帧 `Data`、`Ack` 或 `OpenAck` 才会按与 `Open` 相同的规则重新选择邻接；仍有未确认数据时不换路。新邻接的 RTT+jitter 成本需比当前低至少 25ms 或当前成本的 1/5（取较大者）才会切换，避免在相近路径间抖动。本节点作为接收端只发送可乱序的累计 `Ack`，每帧都可按该规则选路。转发路径上的 affinity 在静止后也可切到规划器选中的直连邻接。`Close` 沿用当前邻接。`Resume` 进入新 epoch 时总是重新选择路径。固定邻接失效或发送失败时错误直接返回，由 TUN 发起 `Resume` 切换 epoch；当前 epoch 不回退到其他邻接。`Close`、runtime 关闭会清理 affinity，运行时同时设置固定容量上限，避免缺失 `Close` 时状态无界增长。未携带 `stream_id` 的兼容帧保持原有路由行为。
+目标节点存在多条已建立的物理邻接时，direct stream fast path 将 `(target, stream_id, epoch)` 固定到一个邻接。接收端会丢弃乱序 `Data`，因此换路必须保证顺序：
+
+- 本节点在该 epoch 发出的有序帧全部被对端确认后（`Open` 已收到 `OpenAck`、`Resume` 已收到同 epoch 的 `Ack`、累计 `Ack` 覆盖已发 `Data` 末尾），下一帧 `Data`、`Ack` 或 `OpenAck` 可以直接改走其他邻接。
+- 仍有未确认 `Data` 时，换路先排空：后续 `Data`（及 `Close`）暂存在本节点，等旧邻接上已发数据全部被确认后，再按原顺序写到新邻接。3 秒内未排空则放弃换路，暂存帧按序写回旧邻接。暂存量受发送端 stream 窗口约束，另有 8 MiB 上限。
+
+选路依据实测投递速率：stream 在途数据不少于 128 KiB 时，每 0.5 秒按累计 `Ack` 采样一次速率，记在所用邻接上，取 1–2 个 10 秒窗口的最大值；超过 90 秒无样本视为未测。Ping 的 RTT/jitter 不能可靠比较路径：承载流量的邻接 Ping 会排在自身数据后面，低延迟路径的拥塞丢包也只在有负载时出现。规则如下：
+
+- 当前邻接与候选都有实测值时，候选需高出 30% 才切换；当前邻接已有实测值时，仅有 RTT/jitter 的候选不会触发切换。
+- 都没有实测值时（冷启动、低流量），按 RTT+jitter 成本选路，候选需优于当前 max(25ms, 20%)，且只在静止时切换。
+- 繁忙且当前邻接已实测的 stream 会试探未实测的候选（按 RTT+jitter 取最优），每个目标节点每 5 分钟最多一次；每次换路后至少停留 5 秒以完成测量，之后按实测值决定留下或切回。
+- `Open`、`Resume` 优先选择实测速率最高的邻接，没有实测值时按 RTT+jitter。规划器指定直连传输时只在该传输内选择，否则 TCP 邻接优先。
+
+固定邻接失效或发送失败时错误直接返回，由 TUN 发起 `Resume` 切换 epoch；当前 epoch 不回退到其他邻接。`Close`、runtime 关闭会清理 affinity（排空中的 `Close` 在暂存帧写出后清理），运行时同时设置固定容量上限，避免缺失 `Close` 时状态无界增长。未携带 `stream_id` 的兼容帧保持原有路由行为。
 
 ## TUN
 

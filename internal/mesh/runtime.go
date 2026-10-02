@@ -334,12 +334,6 @@ type Runtime struct {
 	// cheaper adjacency only while every ordered frame it carried has been
 	// acknowledged by the remote endpoint, so no frame can overtake another.
 	directStreamAffinity map[directStreamAffinityKey]directStreamAffinityEntry
-	// streamIngress is the adjacency on which each inbound stream's Open,
-	// Resume or Data last arrived; this node's Acks for it return there.
-	streamIngress map[directStreamAffinityKey]*Adjacency
-	// pairIngress is the adjacency on which a node's stream Data last
-	// arrived; the higher node ID of a pair aligns its own streams with it.
-	pairIngress map[int64]pairIngressEntry
 
 	// ---- 生成号与拓扑 ----
 	generation        uint64                         // 本地当前生成号（每次拓扑变更递增）
@@ -646,8 +640,6 @@ func NewRuntime(opts RuntimeOptions) (*Runtime, error) {
 		adjByKey:               make(map[adjacencyKey]map[TransportConn]*Adjacency),
 		adjByRoute:             make(map[routeAdjacencyKey][]*Adjacency),
 		directStreamAffinity:   make(map[directStreamAffinityKey]directStreamAffinityEntry),
-		streamIngress:          make(map[directStreamAffinityKey]*Adjacency),
-		pairIngress:            make(map[int64]pairIngressEntry),
 		knownGeneration:        make(map[int64]uint64),
 		knownRuntimeEpoch:      make(map[int64]uint64),
 		seenFlood:              make(map[floodKey]struct{}),
@@ -1117,9 +1109,7 @@ func (r *Runtime) directStreamAdjacency(key directStreamAffinityKey, frame *Stre
 				return nil, fmt.Errorf("mesh: direct stream affinity is no longer established: %w", ErrNoRoute)
 			}
 		}
-		if ingress := r.streamAckIngressLocked(key, frame); ingress != nil {
-			entry.adj = ingress
-		} else if r.directStreamMayReselect(frame.Kind) && entry.quiescent() {
+		if r.directStreamMayReselect(frame.Kind) && entry.quiescent() {
 			if better := r.cheaperDirectStreamAdjacencyLocked(entry.adj, key.targetNodeID, decision, directRoute); better != nil {
 				entry.adj = better
 			}
@@ -1132,10 +1122,7 @@ func (r *Runtime) directStreamAdjacency(key directStreamAffinityKey, frame *Stre
 	if len(r.directStreamAffinity) >= directStreamAffinityLimit {
 		return nil, fmt.Errorf("mesh: direct stream affinity capacity reached: %w", ErrNoRoute)
 	}
-	entry = directStreamAffinityEntry{epoch: frame.Epoch, adj: r.streamAckIngressLocked(key, frame)}
-	if entry.adj == nil {
-		entry.adj = r.selectDirectStreamAdjacencyLocked(key.targetNodeID, decision, directRoute)
-	}
+	entry = directStreamAffinityEntry{epoch: frame.Epoch, adj: r.selectDirectStreamAdjacencyLocked(key.targetNodeID, decision, directRoute)}
 	if frame.Kind == streamFrameKindResume {
 		// Data after Resume restarts at the resumed offset; earlier bytes are
 		// either acknowledged or retransmitted in this epoch.
@@ -1149,21 +1136,15 @@ func (r *Runtime) directStreamAdjacency(key directStreamAffinityKey, frame *Stre
 // selectDirectStreamAdjacencyLocked requires r.mu. A nil result keeps the
 // stream on the forwarding path.
 func (r *Runtime) selectDirectStreamAdjacencyLocked(targetNodeID int64, decision RouteDecision, directRoute bool) *Adjacency {
-	var best *Adjacency
 	if directRoute {
 		if decision.OutboundTransport == TransportUnspecified {
 			return nil
 		}
-		best = r.bestDirectStreamAdjacencyLocked(targetNodeID, decision.OutboundTransport)
-	} else {
-		// A directly registered adjacency may precede its topology snapshot
-		// during startup. Preserve the established direct path in that window.
-		best = r.bestDirectStreamAdjacencyLocked(targetNodeID, TransportUnspecified)
+		return r.bestDirectStreamAdjacencyLocked(targetNodeID, decision.OutboundTransport)
 	}
-	if aligned := r.pairAlignedAdjacencyLocked(targetNodeID, best, decision, directRoute); aligned != nil {
-		return aligned
-	}
-	return best
+	// A directly registered adjacency may precede its topology snapshot
+	// during startup. Preserve the established direct path in that window.
+	return r.bestDirectStreamAdjacencyLocked(targetNodeID, TransportUnspecified)
 }
 
 // directStreamMayReselect reports whether a frame of this kind may start on a
@@ -1191,27 +1172,14 @@ func (r *Runtime) cheaperDirectStreamAdjacencyLocked(current *Adjacency, targetN
 	candidate.mu.Lock()
 	candidateScore := r.directStreamScoreLocked(candidate, now)
 	candidate.mu.Unlock()
-	margin := directStreamReselectMargin(currentScore)
-	if r.pairAlignedAdjacencyLocked(targetNodeID, current, decision, directRoute) == candidate {
-		// Joining the leader's adjacency puts both directions, and so data
-		// and acknowledgements, on one round trip; it only must not be worse.
-		if candidateScore > currentScore+margin {
-			return nil
-		}
-		return candidate
+	margin := int64(directStreamReselectMarginMillis)
+	if currentScore/5 > margin {
+		margin = currentScore / 5
 	}
 	if candidateScore+margin >= currentScore {
 		return nil
 	}
 	return candidate
-}
-
-func directStreamReselectMargin(score int64) int64 {
-	margin := int64(directStreamReselectMarginMillis)
-	if score/5 > margin {
-		margin = score / 5
-	}
-	return margin
 }
 
 func recordDirectStreamSend(entry *directStreamAffinityEntry, frame *StreamFrame) {
@@ -1228,18 +1196,12 @@ func recordDirectStreamSend(entry *directStreamAffinityEntry, frame *StreamFrame
 }
 
 // observeInboundStreamFrame records the remote endpoint's acknowledgements of
-// frames this node sent, which makes the stream eligible for reselection, and
-// the adjacency (nil when forwarded) on which the remote's stream frames
-// arrive, which this node's Acks and own streams follow.
-func (r *Runtime) observeInboundStreamFrame(sourceNodeID int64, adj *Adjacency, frame *StreamFrame) {
-	if frame == nil || len(frame.StreamId) != 16 {
+// frames this node sent, which makes the stream eligible for reselection.
+func (r *Runtime) observeInboundStreamFrame(sourceNodeID int64, frame *StreamFrame) {
+	if frame == nil || len(frame.StreamId) != 16 || (frame.Kind != streamFrameKindOpenAck && frame.Kind != streamFrameKindAck) {
 		return
 	}
 	key := directStreamAffinityKey{targetNodeID: sourceNodeID, streamID: string(frame.StreamId)}
-	if frame.Kind != streamFrameKindOpenAck && frame.Kind != streamFrameKindAck {
-		r.observeStreamIngress(key, adj, frame)
-		return
-	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	entry, ok := r.directStreamAffinity[key]
@@ -1280,7 +1242,7 @@ func (r *Runtime) handleLocalForwardedPacket(ctx context.Context, packet *Forwar
 			return err
 		}
 		if frame := envelope.GetStreamFrame(); frame != nil {
-			r.observeInboundStreamFrame(packet.SourceNodeId, nil, frame)
+			r.observeInboundStreamFrame(packet.SourceNodeId, frame)
 		}
 		if r.envelopeHandler != nil {
 			return r.envelopeHandler(ctx, packet, envelope)
@@ -1413,8 +1375,6 @@ func (r *Runtime) Close() error {
 	r.closed = true
 	cancel := r.cancel
 	clear(r.directStreamAffinity)
-	clear(r.streamIngress)
-	clear(r.pairIngress)
 	conns := make([]TransportConn, 0, len(r.adjByConn))
 	for conn := range r.adjByConn {
 		conns = append(conns, conn)
@@ -1988,7 +1948,7 @@ func (r *Runtime) dispatchEnvelope(ctx context.Context, adj *Adjacency, envelope
 		if body.StreamFrame == nil || adj == nil || r.envelopeHandler == nil {
 			return
 		}
-		r.observeInboundStreamFrame(adj.RemoteNodeID, adj, body.StreamFrame)
+		r.observeInboundStreamFrame(adj.RemoteNodeID, body.StreamFrame)
 		_ = r.envelopeHandler(ctx, &ForwardedPacket{
 			SourceNodeId:     adj.RemoteNodeID,
 			TargetNodeId:     r.localNodeID,

@@ -64,16 +64,17 @@ type operationsStatus struct {
 }
 
 type meshStatus struct {
-	TCPMTLS               app.ClusterTCPMTLSStatus  `json:"tcp_mtls"`
-	Enabled               bool                      `json:"enabled"`
-	ForwardingEnabled     bool                      `json:"forwarding_enabled"`
-	BridgeEnabled         bool                      `json:"bridge_enabled"`
-	NodeFeeWeight         int64                     `json:"node_fee_weight"`
-	TopologyGeneration    uint64                    `json:"topology_generation"`
-	TransportCapabilities []meshTransportCapability `json:"transport_capabilities,omitempty"`
-	TrafficRules          []meshTrafficRule         `json:"traffic_rules,omitempty"`
-	Routes                []meshRoute               `json:"routes,omitempty"`
-	Metrics               meshMetrics               `json:"metrics,omitempty"`
+	TCPMTLS               app.ClusterTCPMTLSStatus        `json:"tcp_mtls"`
+	StreamPaths           app.ClusterMeshStreamPathStatus `json:"stream_paths"`
+	Enabled               bool                            `json:"enabled"`
+	ForwardingEnabled     bool                            `json:"forwarding_enabled"`
+	BridgeEnabled         bool                            `json:"bridge_enabled"`
+	NodeFeeWeight         int64                           `json:"node_fee_weight"`
+	TopologyGeneration    uint64                          `json:"topology_generation"`
+	TransportCapabilities []meshTransportCapability       `json:"transport_capabilities,omitempty"`
+	TrafficRules          []meshTrafficRule               `json:"traffic_rules,omitempty"`
+	Routes                []meshRoute                     `json:"routes,omitempty"`
+	Metrics               meshMetrics                     `json:"metrics,omitempty"`
 }
 
 type meshTransportCapability struct {
@@ -644,6 +645,7 @@ func mergePeerStatus(storePeers []store.PeerOperationsStats, clusterPeers []app.
 func meshStatusFromCluster(status app.ClusterMeshStatus) meshStatus {
 	out := meshStatus{
 		TCPMTLS:            status.TCPMTLS,
+		StreamPaths:        status.StreamPaths,
 		Enabled:            status.Enabled,
 		ForwardingEnabled:  status.ForwardingEnabled,
 		BridgeEnabled:      status.BridgeEnabled,

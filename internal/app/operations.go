@@ -83,6 +83,8 @@ type ClusterDiscoveryStatus struct {
 // Mesh 网络负责节点间的流量转发、路由决策和桥接通信等功能。
 type ClusterMeshStatus struct {
 	TCPMTLS ClusterTCPMTLSStatus
+	// StreamPaths 点对点 stream 的链路选择统计与各邻接实测吞吐
+	StreamPaths ClusterMeshStreamPathStatus
 	// Enabled Mesh 网络是否启用
 	Enabled bool
 	// ForwardingEnabled 跨节点流量转发是否启用
@@ -101,6 +103,28 @@ type ClusterMeshStatus struct {
 	Routes []ClusterMeshRoute
 	// Metrics Mesh 网络的各类统计指标
 	Metrics ClusterMeshMetrics
+}
+
+// ClusterMeshStreamPathStatus 统计 direct stream 换路（自运行时启动累计），并列出各直连邻接的 RTT 与实测投递速率。
+type ClusterMeshStreamPathStatus struct {
+	DrainsStarted   uint64                           `json:"drains_started"`
+	DrainsCompleted uint64                           `json:"drains_completed"`
+	DrainsAborted   uint64                           `json:"drains_aborted"`
+	Probes          uint64                           `json:"probes"`
+	QuiescentMoves  uint64                           `json:"quiescent_moves"`
+	Adjacencies     []ClusterMeshStreamPathAdjacency `json:"adjacencies,omitempty"`
+}
+
+// ClusterMeshStreamPathAdjacency 中 GoodputAgeMs 为最近实测样本距今毫秒数，无样本时为 -1。
+type ClusterMeshStreamPathAdjacency struct {
+	NodeID       int64   `json:"node_id"`
+	Transport    string  `json:"transport"`
+	Inbound      bool    `json:"inbound"`
+	RemoteHint   string  `json:"remote_hint,omitempty"`
+	RTTMs        int64   `json:"rtt_ms"`
+	JitterMs     int64   `json:"jitter_ms"`
+	GoodputBps   float64 `json:"goodput_bytes_per_second"`
+	GoodputAgeMs int64   `json:"goodput_age_ms"`
 }
 
 // ClusterMeshTransportCapability 描述一种传输协议的能力配置。

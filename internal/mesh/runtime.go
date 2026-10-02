@@ -319,6 +319,7 @@ type Runtime struct {
 	// pathClock and streamDrainTimeout are injectable for tests.
 	pathClock          func() time.Time
 	streamDrainTimeout time.Duration
+	streamPathStats    streamPathCounters
 
 	// ---- 生成号与拓扑 ----
 	generation        uint64                         // 本地当前生成号（每次拓扑变更递增）
@@ -1129,8 +1130,9 @@ func (r *Runtime) Adjacencies() []AdjacencySnapshot {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	out := make([]AdjacencySnapshot, 0, len(r.adjByConn))
+	now := r.pathClock()
 	for _, adj := range r.adjByConn {
-		out = append(out, adj.snapshot())
+		out = append(out, adj.snapshot(now))
 	}
 	return out
 }
@@ -1146,12 +1148,20 @@ type AdjacencySnapshot struct {
 	JitterMs     int64         // 当前抖动估计值（毫秒）
 	Samples      int           // 已采集的测量样本数
 	Established  bool          // 是否已建立
+	// GoodputBps 是 stream 实测投递速率（字节/秒）；GoodputAge 为最近样本距今，无样本时为负。
+	GoodputBps float64
+	GoodputAge time.Duration
 }
 
 // snapshot 创建 Adjacency 状态的一份快照副本（带锁保护）。
-func (a *Adjacency) snapshot() AdjacencySnapshot {
+func (a *Adjacency) snapshot(now time.Time) AdjacencySnapshot {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	goodput, age := a.goodputCur, time.Duration(-1)
+	if !a.goodputLast.IsZero() {
+		goodput, _ = a.goodputWithinLocked(now, time.Duration(1<<62))
+		age = now.Sub(a.goodputLast)
+	}
 	return AdjacencySnapshot{
 		RemoteNodeID: a.RemoteNodeID,
 		Transport:    a.Transport,
@@ -1161,6 +1171,8 @@ func (a *Adjacency) snapshot() AdjacencySnapshot {
 		JitterMs:     int64(a.jitterEWMA),
 		Samples:      a.samples,
 		Established:  a.established,
+		GoodputBps:   goodput,
+		GoodputAge:   age,
 	}
 }
 

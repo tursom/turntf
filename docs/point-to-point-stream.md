@@ -29,6 +29,15 @@ core 将帧编码为 `MeshStreamFrame`，分类为 `TRAFFIC_POINT_TO_POINT_STREA
 
 固定邻接失效或发送失败时错误直接返回，由 TUN 发起 `Resume` 切换 epoch；当前 epoch 不回退到其他邻接。`Close`、runtime 关闭会清理 affinity（排空中的 `Close` 在暂存帧写出后清理），运行时同时设置固定容量上限，避免缺失 `Close` 时状态无界增长。未携带 `stream_id` 的兼容帧保持原有路由行为。
 
+## 换路观测
+
+`/ops/status` 的 `mesh.stream_paths` 输出本节点作为发送端的换路统计（进程重启后归零）与各直连邻接的实测值：
+
+- `drains_started`、`drains_completed`、`drains_aborted`：带在途数据的换路发起、完成、放弃次数。放弃后同一 stream 的冷却时间从 10 秒起翻倍，最长 5 分钟；长期放弃比例高说明旧路径排空慢，可结合 TUN 吞吐判断。
+- `probes`：试探未实测邻接的次数，每个目标节点每 5 分钟最多一次。
+- `quiescent_moves`：静止时直接换路的次数。
+- `adjacencies[]`：`node_id`、`transport`、`inbound`、`remote_hint`、`rtt_ms`、`jitter_ms`、`goodput_bytes_per_second`（窗口最大投递速率）、`goodput_age_ms`（最近样本距今，无样本为 -1）。
+
 ## TUN
 
 `turntf-tun` 的 `stream` 模式在发送 IP packet 前等待 `OpenAck`，发送窗口由累计 ACK 和 credit 控制。握手、发送或目标会话不可用时回到原有 Relay 模式；Relay 仍保持原有兼容行为。

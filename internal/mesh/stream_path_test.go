@@ -261,3 +261,83 @@ func TestDirectStreamOpenPrefersMeasuredPath(t *testing.T) {
 	h.route(streamA, streamFrameKindOpen, 0, 0)
 	h.expectFrames(h.alternateRemote, [2]uint64{uint64(streamFrameKindOpen), 0})
 }
+
+func TestDirectStreamFailedDrainBacksOff(t *testing.T) {
+	h := newPathHarness(t)
+	h.runtime.streamDrainTimeout = 20 * time.Millisecond
+	h.route(streamA, streamFrameKindOpen, 0, 0)
+	h.ack(streamA, streamFrameKindOpenAck, 0)
+	h.route(streamA, streamFrameKindData, 0, 64*kib)
+	h.expectFrames(h.primaryRemote, [2]uint64{uint64(streamFrameKindOpen), 0}, [2]uint64{uint64(streamFrameKindData), 0})
+	h.goodput(h.primary, 1<<20)
+	h.goodput(h.alternate, 4<<20)
+	h.clock.Advance(streamSwitchHold)
+	h.route(streamA, streamFrameKindData, 64*kib, 64*kib) // starts a drain that times out
+	h.expectFrames(h.primaryRemote, [2]uint64{uint64(streamFrameKindData), 64 * kib})
+
+	// Retrying right after a failed drain would pause the stream again.
+	h.clock.Advance(streamSwitchHold)
+	h.goodput(h.primary, 1<<20)
+	h.goodput(h.alternate, 4<<20)
+	h.route(streamA, streamFrameKindData, 128*kib, 64*kib)
+	h.expectFrames(h.primaryRemote, [2]uint64{uint64(streamFrameKindData), 128 * kib})
+
+	h.clock.Advance(streamSwitchHold)
+	h.goodput(h.primary, 1<<20)
+	h.goodput(h.alternate, 4<<20)
+	h.runtime.mu.Lock()
+	h.runtime.streamDrainTimeout = time.Hour // let this drain complete
+	h.runtime.mu.Unlock()
+	h.route(streamA, streamFrameKindData, 192*kib, 64*kib) // doubled hold has passed
+	h.expectQuiet(h.primaryRemote)
+	h.ack(streamA, streamFrameKindAck, 192*kib)
+	h.expectFrames(h.alternateRemote, [2]uint64{uint64(streamFrameKindData), 192 * kib})
+
+	stats := h.runtime.StreamPathStats()
+	if stats.DrainsStarted != 2 || stats.DrainsAborted != 1 || stats.DrainsCompleted != 1 {
+		t.Fatalf("stream path stats = %+v, want 2 started, 1 aborted, 1 completed", stats)
+	}
+}
+
+func TestDirectStreamIgnoresOldPeakOfLeftPath(t *testing.T) {
+	h := newPathHarness(t)
+	h.route(streamA, streamFrameKindOpen, 0, 0)
+	h.ack(streamA, streamFrameKindOpenAck, 0)
+	h.route(streamA, streamFrameKindData, 0, 64*kib)
+	h.expectFrames(h.primaryRemote, [2]uint64{uint64(streamFrameKindOpen), 0}, [2]uint64{uint64(streamFrameKindData), 0})
+	// alternate was fast a while ago; primary is measured now.
+	h.goodput(h.alternate, 8<<20)
+	h.clock.Advance(streamGoodputFreshFor + time.Second)
+	h.goodput(h.primary, 1<<20)
+	h.streamProbeRecently()
+	h.route(streamA, streamFrameKindData, 64*kib, 64*kib)
+	h.expectFrames(h.primaryRemote, [2]uint64{uint64(streamFrameKindData), 64 * kib})
+	if stats := h.runtime.StreamPathStats(); stats.DrainsStarted != 0 {
+		t.Fatalf("old peak started a drain: %+v", stats)
+	}
+}
+
+// streamProbeRecently spends the probe budget so a test sees only measured moves.
+func (h *pathHarness) streamProbeRecently() {
+	h.runtime.mu.Lock()
+	h.runtime.streamProbeAt[2] = h.clock.Now()
+	h.runtime.mu.Unlock()
+}
+
+func TestAdjacencySnapshotReportsGoodput(t *testing.T) {
+	h := newPathHarness(t)
+	h.goodput(h.alternate, 3<<20)
+	h.clock.Advance(2 * time.Second)
+	for _, snapshot := range h.runtime.Adjacencies() {
+		switch snapshot.RemoteHint {
+		case h.alternate.RemoteHint:
+			if snapshot.GoodputBps != 3<<20 || snapshot.GoodputAge != 2*time.Second {
+				t.Fatalf("alternate snapshot goodput = %v age %v", snapshot.GoodputBps, snapshot.GoodputAge)
+			}
+		case h.primary.RemoteHint:
+			if snapshot.GoodputAge >= 0 {
+				t.Fatalf("unmeasured snapshot age = %v, want negative", snapshot.GoodputAge)
+			}
+		}
+	}
+}

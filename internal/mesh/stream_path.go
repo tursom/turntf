@@ -3,6 +3,7 @@ package mesh
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 	"time"
 )
 
@@ -34,15 +35,22 @@ const (
 	streamBusyBytes             = 128 << 10
 	streamGoodputSampleInterval = 500 * time.Millisecond
 	streamGoodputWindow         = 10 * time.Second
-	streamGoodputStaleAfter     = 90 * time.Second
+	// Open and Resume may use estimates up to this old.
+	streamGoodputStaleAfter = 90 * time.Second
+	// Moving a stream that has Data in flight needs fresher evidence: a path
+	// the stream left keeps its old peak, which must not pull it back.
+	streamGoodputFreshFor = 30 * time.Second
 	// A measured path replaces the current one only when it delivers this
 	// much more, so similar paths do not trade a stream back and forth.
 	streamSwitchGain       = 1.3
 	streamDecisionInterval = time.Second
-	// After a move the stream stays put long enough to measure the new path.
-	streamSwitchHold    = 5 * time.Second
-	streamProbeInterval = 5 * time.Minute
-	streamDrainTimeout  = 3 * time.Second
+	// After a move the stream stays put long enough to measure the new path;
+	// each failed drain doubles the wait up to streamSwitchBackoffMax.
+	streamSwitchHold       = 10 * time.Second
+	streamSwitchBackoffMax = 5 * time.Minute
+	streamProbeInterval    = 5 * time.Minute
+	// A slow old path needs time to deliver up to a full stream window.
+	streamDrainTimeout = 10 * time.Second
 	// Held Data is bounded by the sender's stream window in practice; this
 	// cap only guards against a misbehaving client.
 	streamQueueLimitBytes = 8 << 20
@@ -67,6 +75,8 @@ type directStreamAffinityEntry struct {
 
 	lastDecision time.Time
 	lastSwitch   time.Time
+	// holdFor is the minimum stay since lastSwitch; failed drains double it.
+	holdFor time.Duration
 	// draining holds new Data until the old path is acknowledged; flushing
 	// writes held frames in order. Either way later Data joins the queue.
 	draining   bool
@@ -107,7 +117,12 @@ func (adj *Adjacency) observeGoodputLocked(rate float64, now time.Time) {
 // goodputLocked returns the measured goodput, or false without a recent
 // sample. The caller holds adj.mu.
 func (adj *Adjacency) goodputLocked(now time.Time) (float64, bool) {
-	if adj.goodputLast.IsZero() || now.Sub(adj.goodputLast) > streamGoodputStaleAfter {
+	return adj.goodputWithinLocked(now, streamGoodputStaleAfter)
+}
+
+// goodputWithinLocked is goodputLocked with a caller-chosen maximum age.
+func (adj *Adjacency) goodputWithinLocked(now time.Time, maxAge time.Duration) (float64, bool) {
+	if adj.goodputLast.IsZero() || now.Sub(adj.goodputLast) > maxAge {
 		return 0, false
 	}
 	rate := adj.goodputCur
@@ -118,9 +133,13 @@ func (adj *Adjacency) goodputLocked(now time.Time) (float64, bool) {
 }
 
 func adjacencyGoodput(adj *Adjacency, now time.Time) (float64, bool) {
+	return adjacencyGoodputWithin(adj, now, streamGoodputStaleAfter)
+}
+
+func adjacencyGoodputWithin(adj *Adjacency, now time.Time, maxAge time.Duration) (float64, bool) {
 	adj.mu.Lock()
 	defer adj.mu.Unlock()
-	return adj.goodputLocked(now)
+	return adj.goodputWithinLocked(now, maxAge)
 }
 
 // directStreamAdjacency returns the adjacency for this stream frame. queued
@@ -171,9 +190,11 @@ func (r *Runtime) directStreamAdjacency(key directStreamAffinityKey, frame *Stre
 		if mayReselect && entry.quiescent() {
 			if better := r.betterDirectStreamAdjacencyLocked(entry.adj, key.targetNodeID, decision, directRoute, now); better != nil {
 				r.moveDirectStreamLocked(entry, better, now)
+				r.streamPathStats.quiescentMoves.Add(1)
 			}
 		} else if frame.Kind == streamFrameKindData && entry.adj != nil {
 			if target := r.directStreamSwitchTargetLocked(key.targetNodeID, entry, decision, directRoute, now); target != nil {
+				r.streamPathStats.drainsStarted.Add(1)
 				entry.draining = true
 				entry.switchTo = target
 				entry.switchSeq++
@@ -264,8 +285,8 @@ func (r *Runtime) initialDirectStreamAdjacencyLocked(targetNodeID int64, decisio
 // measuredBetterDirectStreamAdjacencyLocked requires r.mu. It returns the
 // candidate whose measured goodput beats the measured current path by
 // streamSwitchGain, or nil.
-func (r *Runtime) measuredBetterDirectStreamAdjacencyLocked(current *Adjacency, candidates []*Adjacency, now time.Time) *Adjacency {
-	currentRate, ok := adjacencyGoodput(current, now)
+func (r *Runtime) measuredBetterDirectStreamAdjacencyLocked(current *Adjacency, candidates []*Adjacency, now time.Time, maxAge time.Duration) *Adjacency {
+	currentRate, ok := adjacencyGoodputWithin(current, now, maxAge)
 	if !ok {
 		return nil
 	}
@@ -275,7 +296,7 @@ func (r *Runtime) measuredBetterDirectStreamAdjacencyLocked(current *Adjacency, 
 		if candidate == current {
 			continue
 		}
-		if rate, ok := adjacencyGoodput(candidate, now); ok && rate > bestRate {
+		if rate, ok := adjacencyGoodputWithin(candidate, now, maxAge); ok && rate > bestRate {
 			best, bestRate = candidate, rate
 		}
 	}
@@ -290,7 +311,7 @@ func (r *Runtime) betterDirectStreamAdjacencyLocked(current *Adjacency, targetNo
 		return r.initialDirectStreamAdjacencyLocked(targetNodeID, decision, directRoute, now)
 	}
 	if _, measured := adjacencyGoodput(current, now); measured {
-		return r.measuredBetterDirectStreamAdjacencyLocked(current, r.directStreamCandidatesLocked(targetNodeID, decision, directRoute), now)
+		return r.measuredBetterDirectStreamAdjacencyLocked(current, r.directStreamCandidatesLocked(targetNodeID, decision, directRoute), now, streamGoodputStaleAfter)
 	}
 	candidate := r.selectDirectStreamAdjacencyLocked(targetNodeID, decision, directRoute)
 	if candidate == nil || candidate == current {
@@ -317,19 +338,19 @@ func (r *Runtime) betterDirectStreamAdjacencyLocked(current *Adjacency, targetNo
 // moves only on measured goodput, or to probe an unmeasured alternative while
 // it is busy enough to measure it; RTT+jitter alone never forces a drain.
 func (r *Runtime) directStreamSwitchTargetLocked(targetNodeID int64, entry *directStreamAffinityEntry, decision RouteDecision, directRoute bool, now time.Time) *Adjacency {
-	if now.Sub(entry.lastDecision) < streamDecisionInterval || now.Sub(entry.lastSwitch) < streamSwitchHold {
+	if now.Sub(entry.lastDecision) < streamDecisionInterval || now.Sub(entry.lastSwitch) < entry.hold() {
 		return nil
 	}
 	entry.lastDecision = now
 	r.sampleDirectStreamLocked(entry, now)
 	candidates := r.directStreamCandidatesLocked(targetNodeID, decision, directRoute)
-	if target := r.measuredBetterDirectStreamAdjacencyLocked(entry.adj, candidates, now); target != nil {
+	if target := r.measuredBetterDirectStreamAdjacencyLocked(entry.adj, candidates, now, streamGoodputFreshFor); target != nil {
 		return target
 	}
 	if !entry.busy() {
 		return nil
 	}
-	if _, ok := adjacencyGoodput(entry.adj, now); !ok {
+	if _, ok := adjacencyGoodputWithin(entry.adj, now, streamGoodputFreshFor); !ok {
 		return nil
 	}
 	if last, ok := r.streamProbeAt[targetNodeID]; ok && now.Sub(last) < streamProbeInterval {
@@ -342,7 +363,7 @@ func (r *Runtime) directStreamSwitchTargetLocked(targetNodeID int64, entry *dire
 		if candidate == entry.adj {
 			continue
 		}
-		if _, measured := adjacencyGoodput(candidate, now); measured {
+		if _, measured := adjacencyGoodputWithin(candidate, now, streamGoodputFreshFor); measured {
 			continue
 		}
 		candidate.mu.Lock()
@@ -354,8 +375,16 @@ func (r *Runtime) directStreamSwitchTargetLocked(targetNodeID int64, entry *dire
 	}
 	if probe != nil {
 		r.streamProbeAt[targetNodeID] = now
+		r.streamPathStats.probes.Add(1)
 	}
 	return probe
+}
+
+func (e *directStreamAffinityEntry) hold() time.Duration {
+	if e.holdFor < streamSwitchHold {
+		return streamSwitchHold
+	}
+	return e.holdFor
 }
 
 // moveDirectStreamLocked requires r.mu.
@@ -403,13 +432,28 @@ func (r *Runtime) finishDirectStreamDrainLocked(key directStreamAffinityKey, ent
 	target := entry.switchTo
 	entry.draining = false
 	entry.switchTo = nil
+	now := r.pathClock()
+	moved := false
 	if switchPath && target != nil {
 		target.mu.Lock()
 		established := target.established
 		target.mu.Unlock()
 		if established {
-			r.moveDirectStreamLocked(entry, target, r.pathClock())
+			r.moveDirectStreamLocked(entry, target, now)
+			moved = true
 		}
+	}
+	if moved {
+		entry.holdFor = streamSwitchHold
+		r.streamPathStats.drainsCompleted.Add(1)
+	} else {
+		// A failed drain paused the stream for nothing; do not retry soon.
+		entry.lastSwitch = now
+		entry.holdFor = 2 * entry.hold()
+		if entry.holdFor > streamSwitchBackoffMax {
+			entry.holdFor = streamSwitchBackoffMax
+		}
+		r.streamPathStats.drainsAborted.Add(1)
 	}
 	if entry.flushing {
 		return
@@ -527,4 +571,32 @@ func (r *Runtime) clearDirectStreamAffinity(key directStreamAffinityKey, epoch u
 		return
 	}
 	delete(r.directStreamAffinity, key)
+}
+
+type streamPathCounters struct {
+	drainsStarted   atomic.Uint64
+	drainsCompleted atomic.Uint64
+	drainsAborted   atomic.Uint64
+	probes          atomic.Uint64
+	quiescentMoves  atomic.Uint64
+}
+
+// StreamPathStats counts direct stream path moves since the runtime started.
+type StreamPathStats struct {
+	DrainsStarted   uint64
+	DrainsCompleted uint64
+	DrainsAborted   uint64
+	Probes          uint64
+	QuiescentMoves  uint64
+}
+
+// StreamPathStats returns the direct stream path move counters.
+func (r *Runtime) StreamPathStats() StreamPathStats {
+	return StreamPathStats{
+		DrainsStarted:   r.streamPathStats.drainsStarted.Load(),
+		DrainsCompleted: r.streamPathStats.drainsCompleted.Load(),
+		DrainsAborted:   r.streamPathStats.drainsAborted.Load(),
+		Probes:          r.streamPathStats.probes.Load(),
+		QuiescentMoves:  r.streamPathStats.quiescentMoves.Load(),
+	}
 }

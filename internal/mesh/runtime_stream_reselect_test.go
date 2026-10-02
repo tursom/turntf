@@ -3,7 +3,6 @@ package mesh
 import (
 	"context"
 	"testing"
-	"time"
 )
 
 const testReselectStreamID = "0123456789abcdef"
@@ -171,65 +170,4 @@ func TestRuntimeDirectStreamCloseKeepsLastPath(t *testing.T) {
 	h.scores(100, 1)
 	h.send(testStreamFrame(streamFrameKindClose, 1, 0, ""))
 	h.wantLast(false, "close")
-}
-
-func setTestMinRTT(adj *Adjacency, minRTT float64) {
-	adj.mu.Lock()
-	adj.observeMinRTTLocked(minRTT, time.Now())
-	adj.mu.Unlock()
-}
-
-func TestAdjacencyMinRTTWindow(t *testing.T) {
-	adj := &Adjacency{}
-	start := time.Now()
-	if _, ok := adj.minRTTLocked(); ok {
-		t.Fatal("min RTT reported before any sample")
-	}
-	adj.observeMinRTTLocked(150, start)
-	adj.observeMinRTTLocked(400, start.Add(time.Second))
-	if got, _ := adj.minRTTLocked(); got != 150 {
-		t.Fatalf("min within window = %v, want 150", got)
-	}
-	// The previous window still bounds the estimate during the next window.
-	adj.observeMinRTTLocked(500, start.Add(adjacencyMinRTTWindow))
-	if got, _ := adj.minRTTLocked(); got != 150 {
-		t.Fatalf("min across adjacent windows = %v, want 150", got)
-	}
-	// Two windows later the old minimum expires.
-	adj.observeMinRTTLocked(450, start.Add(2*adjacencyMinRTTWindow))
-	if got, _ := adj.minRTTLocked(); got != 450 {
-		t.Fatalf("min after expiry = %v, want 450", got)
-	}
-	// A gap longer than a window does not resurrect a stale minimum.
-	adj.observeMinRTTLocked(600, start.Add(5*adjacencyMinRTTWindow))
-	if got, _ := adj.minRTTLocked(); got != 600 {
-		t.Fatalf("min after idle gap = %v, want 600", got)
-	}
-}
-
-func TestRuntimeDirectStreamPrefersBasePathOverLoadedRTT(t *testing.T) {
-	h := newReselectHarness(t)
-	// primary carries bulk traffic: its pings queue behind data (EWMA 400ms)
-	// but its path delay is 140ms; the idle alternate is a slower 200ms path.
-	h.scores(400, 210)
-	setTestMinRTT(h.primary, 140)
-	setTestMinRTT(h.alternate, 200)
-	h.send(testStreamFrame(streamFrameKindOpen, 1, 0, ""))
-	h.wantLast(false, "open")
-	h.inbound(testStreamFrame(streamFrameKindOpenAck, 1, 0, ""))
-	h.send(testStreamFrame(streamFrameKindData, 1, 0, "first"))
-	h.inbound(testStreamFrame(streamFrameKindAck, 1, 5, ""))
-	h.send(testStreamFrame(streamFrameKindData, 1, 5, "second"))
-	h.wantLast(false, "quiescent data on loaded but shorter path")
-}
-
-func TestRuntimeDirectStreamScoreKeepsFailurePenalty(t *testing.T) {
-	h := newReselectHarness(t)
-	setTestMinRTT(h.primary, 140)
-	setTestMinRTT(h.alternate, 200)
-	h.primary.mu.Lock()
-	h.primary.sendFailures = 4
-	h.primary.mu.Unlock()
-	h.send(testStreamFrame(streamFrameKindOpen, 1, 0, ""))
-	h.wantLast(true, "open avoids failing path despite lower min RTT")
 }

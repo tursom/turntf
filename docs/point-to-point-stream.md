@@ -15,7 +15,7 @@
 
 core 将帧编码为 `MeshStreamFrame`，分类为 `TRAFFIC_POINT_TO_POINT_STREAM`，沿 mesh envelope forwarding path 转发。该消息使用 `stream_id`、`epoch`、`offset` 和目标 `SessionRef` 标识逻辑流；不填充 `TransientPacket`。目标节点的 registry 先过滤旧 epoch，再注入指定客户端会话。
 
-目标节点存在多条已建立的物理邻接时，direct stream fast path 在 `Open` 首次选择邻接，并将 `(target, stream_id, epoch)` 固定到该连接。接收端会丢弃乱序 `Data`，因此只有当本节点在该 epoch 发出的有序帧全部被对端确认后（`Open` 已收到 `OpenAck`、`Resume` 已收到同 epoch 的 `Ack`、累计 `Ack` 覆盖已发 `Data` 末尾），下一帧 `Data`、`Ack` 或 `OpenAck` 才会按与 `Open` 相同的规则重新选择邻接；仍有未确认数据时不换路。stream 选路（`Open`、`Resume` 和静止后的重选）按邻接的窗口最小 RTT 加发送失败、探测超时惩罚排序：探测 Ping 与业务数据共用连接，承载流量的邻接 RTT EWMA 会被自身排队抬高，若按 EWMA 选路会把流推到空闲但更慢的路径（如经 CDN 的 WSS）。最小 RTT 取最近一到两个 2 分钟窗口的样本，尚无样本时沿用 RTT+jitter 成本；转发规划器的链路成本不变。新邻接的分数需比当前低至少 25ms 或当前分数的 1/5（取较大者）才会切换，避免在相近路径间抖动。本节点作为接收端只发送可乱序的累计 `Ack`，每帧都可按该规则选路。转发路径上的 affinity 在静止后也可切到规划器选中的直连邻接。`Close` 沿用当前邻接。`Resume` 进入新 epoch 时总是重新选择路径。固定邻接失效或发送失败时错误直接返回，由 TUN 发起 `Resume` 切换 epoch；当前 epoch 不回退到其他邻接。`Close`、runtime 关闭会清理 affinity，运行时同时设置固定容量上限，避免缺失 `Close` 时状态无界增长。未携带 `stream_id` 的兼容帧保持原有路由行为。
+目标节点存在多条已建立的物理邻接时，direct stream fast path 在 `Open` 首次选择邻接，并将 `(target, stream_id, epoch)` 固定到该连接。接收端会丢弃乱序 `Data`，因此只有当本节点在该 epoch 发出的有序帧全部被对端确认后（`Open` 已收到 `OpenAck`、`Resume` 已收到同 epoch 的 `Ack`、累计 `Ack` 覆盖已发 `Data` 末尾），下一帧 `Data`、`Ack` 或 `OpenAck` 才会按与 `Open` 相同的规则重新选择邻接；仍有未确认数据时不换路。新邻接的 RTT+jitter 成本需比当前低至少 25ms 或当前成本的 1/5（取较大者）才会切换，避免在相近路径间抖动。本节点作为接收端只发送可乱序的累计 `Ack`，每帧都可按该规则选路。转发路径上的 affinity 在静止后也可切到规划器选中的直连邻接。`Close` 沿用当前邻接。`Resume` 进入新 epoch 时总是重新选择路径。固定邻接失效或发送失败时错误直接返回，由 TUN 发起 `Resume` 切换 epoch；当前 epoch 不回退到其他邻接。`Close`、runtime 关闭会清理 affinity，运行时同时设置固定容量上限，避免缺失 `Close` 时状态无界增长。未携带 `stream_id` 的兼容帧保持原有路由行为。
 
 ## TUN
 

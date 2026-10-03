@@ -242,6 +242,20 @@ func (m *Manager) meshStatusSnapshot() app.ClusterMeshStatus {
 		NodeFeeWeight:      policy.GetNodeFeeWeight(),
 		TopologyGeneration: binding.TopologyStore().Snapshot().TopologyGeneration,
 	}
+	for _, adj := range runtime.Adjacencies() {
+		item := app.ClusterMeshAdjacency{RemoteNodeID: adj.RemoteNodeID, Transport: meshTransportLabel(adj.Transport), Inbound: adj.Inbound, Established: adj.Established, RTTMs: adj.RTTMs, JitterMs: adj.JitterMs}
+		if t := adj.TCP; t != nil {
+			item.TCP = &app.ClusterMeshTCPInfo{Congestion: t.Congestion, RTTUs: t.RTTMicros, RTTVarUs: t.RTTVarMicros, MinRTTUs: t.MinRTTMicros, SndCwnd: t.SndCwnd, SndMSS: t.SndMSS, Unacked: t.Unacked, NotSentBytes: t.NotSentBytes, BytesSent: t.BytesSent, BytesRetrans: t.BytesRetrans, SegsOut: t.SegsOut, TotalRetrans: t.TotalRetrans, DeliveryRateBps: t.DeliveryRateBps, PacingRateBps: t.PacingRateBps}
+		}
+		status.Adjacencies = append(status.Adjacencies, item)
+	}
+	sort.Slice(status.Adjacencies, func(i, j int) bool {
+		a, b := status.Adjacencies[i], status.Adjacencies[j]
+		if a.RemoteNodeID != b.RemoteNodeID {
+			return a.RemoteNodeID < b.RemoteNodeID
+		}
+		return a.Transport < b.Transport
+	})
 	if binding.tcp != nil {
 		stats := binding.tcp.Stats()
 		status.TCPMTLS = app.ClusterTCPMTLSStatus{Enabled: true, DialAttempts: stats.DialAttempts, HandshakeRejected: stats.HandshakeRejected, EstablishedTotal: stats.Established}

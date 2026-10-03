@@ -133,6 +133,8 @@ TCP 建链后的活性检测复用 mesh `TimeSyncRequest/Response`，不是 TCP 
 - `mesh.transport_capabilities` 增加 `tcp_mtls`，展示入站、出站和广告地址。
 - `mesh.routes[].outbound_transport` 显示当前每类流量的实际选择，可观察 `tcp_mtls -> websocket -> tcp_mtls`。
 - `mesh.tcp_mtls` 包含 enabled、dial_attempts、handshake_rejected、established_total、active_adjacencies。
+- `mesh.adjacencies` 列出每条物理邻接（对端、传输、方向、Ping RTT/抖动）；能取得底层 socket 时（TCP mTLS 拨号与接入、WSS 拨号）附带 `tcp`：实际拥塞控制算法、内核 RTT/最小 RTT、拥塞窗口、在途与未发送字节、累计发送/重传字节与报文段、送达与 pacing 速率。两次采样的 `total_retrans`/`segs_out` 增量即该方向的重传率。入站 WSS 通常经本机代理接入，socket 只反映本地一跳，不输出。
+- `[cluster] tcp_congestion_control` 为上述集群 socket 指定拥塞控制算法（如 `bbr`），为空沿用系统默认；名称只允许小写字母、数字和下划线。
 - Prometheus：`notifier_tcp_mtls_enabled`、`notifier_tcp_mtls_active_adjacencies`、`notifier_tcp_mtls_dial_attempts_total`、`notifier_tcp_mtls_handshake_rejected_total`、`notifier_tcp_mtls_established_total`。
 
 `established_total` 统计 TLS 建链，不代表 Hello 已通过；`active_adjacencies` 才是完成 mesh 身份验证的连接数。证书拒绝计数不包含 TCP connection-refused，后者可通过持续增长的 dial_attempts 与无邻接判断。计数器在进程重启后归零，不输出私钥或证书内容。

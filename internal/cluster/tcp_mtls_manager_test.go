@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tursom/turntf/internal/app"
 	"github.com/tursom/turntf/internal/mesh"
 	internalproto "github.com/tursom/turntf/internal/proto"
 )
@@ -200,5 +201,79 @@ func TestTCPMTLSEndpointValidation(t *testing.T) {
 				t.Fatal("invalid endpoint accepted")
 			}
 		})
+	}
+}
+
+func TestMeshTCPCongestionAndInfoExposed(t *testing.T) {
+	ca := newTCPTestCA(t)
+	cfgA := ca.config(t, testNodeID(1), nil)
+	cfgB := ca.config(t, testNodeID(2), nil)
+	ids := []int64{testNodeID(1), testNodeID(2)}
+	cfgA.TCPMTLS.AllowedNodeIDs = ids
+	cfgB.TCPMTLS.AllowedNodeIDs = ids
+	// reno 总是内置且对非特权进程开放，测试不依赖 bbr 模块。
+	cfgA.TCPCongestionControl = "reno"
+	cfgB.TCPCongestionControl = "reno"
+	reserve, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := reserve.Addr().String()
+	_ = reserve.Close()
+	endpoint := fmt.Sprintf("tcp+tls://%s/%d", addr, cfgB.NodeID)
+	cfgB.TCPMTLS.ListenAddr = addr
+	cfgB.TCPMTLS.AdvertisedEndpoints = []string{endpoint}
+	b, err := NewManager(cfgB, newReplicationTestStore(t, "tcp-info-b", 2))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = b.Close() })
+	if err := b.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewTLSServer(b.Handler())
+	defer server.Close()
+	cfgA.Peers = []Peer{{URL: "wss" + strings.TrimPrefix(server.URL, "https") + WebSocketPath}, {URL: endpoint}}
+	a, err := NewManager(cfgA, newReplicationTestStore(t, "tcp-info-a", 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = a.Close() })
+	roots := x509.NewCertPool()
+	roots.AddCert(server.Certificate())
+	a.websocket.dialer.TLSClientConfig = &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12}
+	if err := a.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	find := func(m *Manager, transport string, inbound bool) *app.ClusterMeshAdjacency {
+		for _, adj := range m.meshStatusSnapshot().Adjacencies {
+			if adj.Transport == transport && adj.Inbound == inbound && adj.Established {
+				return &adj
+			}
+		}
+		return nil
+	}
+	waitFor(t, 5*time.Second, func() bool {
+		return find(a, "tcp_mtls", false) != nil && find(a, "websocket", false) != nil && find(b, "tcp_mtls", true) != nil && find(b, "websocket", true) != nil
+	})
+	for _, c := range []struct {
+		name string
+		adj  *app.ClusterMeshAdjacency
+	}{{"dialed tcp", find(a, "tcp_mtls", false)}, {"accepted tcp", find(b, "tcp_mtls", true)}, {"dialed wss", find(a, "websocket", false)}} {
+		if c.adj.TCP == nil || c.adj.TCP.Congestion != "reno" || c.adj.TCP.SegsOut == 0 || c.adj.TCP.SndMSS == 0 {
+			t.Fatalf("%s TCP info: %+v", c.name, c.adj.TCP)
+		}
+	}
+	// 入站 WSS 可能经本机代理接入，socket 只反映本地一跳，不输出。
+	if adj := find(b, "websocket", true); adj.TCP != nil {
+		t.Fatalf("inbound WSS exposed TCP info: %+v", adj.TCP)
+	}
+}
+
+func TestValidTCPCongestionName(t *testing.T) {
+	for name, want := range map[string]bool{"": true, "bbr": true, "cubic": true, "bbr_2": true, "BBR": false, "bbr;rm": false, "a234567890123456": false} {
+		if got := validTCPCongestionName(name); got != want {
+			t.Fatalf("validTCPCongestionName(%q)=%v want %v", name, got, want)
+		}
 	}
 }

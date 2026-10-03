@@ -33,7 +33,7 @@ func NewWebSocketMeshTransportAdapter(cfg Config) *WebSocketMeshTransportAdapter
 		capability.AdvertisedEndpoints = []string{cfg.AdvertisePath}
 	}
 	return &WebSocketMeshTransportAdapter{
-		transport: newWebSocketTransport(),
+		transport: newWebSocketTransport().withTCPCongestion(cfg.TCPCongestionControl),
 		acceptCh:  make(chan mesh.TransportConn, meshTransportAcceptQueue),
 		caps:      capability,
 	}

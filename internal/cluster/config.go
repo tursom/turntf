@@ -84,6 +84,9 @@ type KVConsensusConfig struct {
 type Config struct {
 	// TCPMTLS 是默认关闭的原生集群 TCP 双向 TLS 配置。
 	TCPMTLS TCPMTLSConfig
+	// TCPCongestionControl 为集群 TCP socket（TCP mTLS 拨号与接入、WSS 拨号）指定拥塞控制算法，
+	// 如 "bbr"；为空沿用系统默认。内核不支持时连接照常建立，实际算法见 /ops/status。
+	TCPCongestionControl string
 	// NodeID 是当前节点的唯一标识符，必须大于0。
 	NodeID int64
 	// AdvertisePath 是对外通告的HTTP WebSocket路径（如 /internal/cluster/ws）。
@@ -209,6 +212,9 @@ func (c *Config) Validate() error {
 	*c = c.WithDefaults()
 	if err := c.TCPMTLS.validate(); err != nil {
 		return err
+	}
+	if !validTCPCongestionName(c.TCPCongestionControl) {
+		return fmt.Errorf("tcp congestion control must be empty or a kernel algorithm name such as bbr")
 	}
 	if c.NodeID <= 0 {
 		return fmt.Errorf("node id cannot be empty")
@@ -532,4 +538,17 @@ func validateZeroMQCurveKey(name, key string) error {
 		return fmt.Errorf("%s must be a 40-character z85 key", name)
 	}
 	return nil
+}
+
+// validTCPCongestionName 只接受内核拥塞控制模块名的字符集与长度（TCP_CA_NAME_MAX 含结尾 0 为 16）。
+func validTCPCongestionName(name string) bool {
+	if len(name) > 15 {
+		return false
+	}
+	for _, r := range name {
+		if !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '_') {
+			return false
+		}
+	}
+	return true
 }

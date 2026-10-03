@@ -64,16 +64,17 @@ type operationsStatus struct {
 }
 
 type meshStatus struct {
-	TCPMTLS               app.ClusterTCPMTLSStatus  `json:"tcp_mtls"`
-	Enabled               bool                      `json:"enabled"`
-	ForwardingEnabled     bool                      `json:"forwarding_enabled"`
-	BridgeEnabled         bool                      `json:"bridge_enabled"`
-	NodeFeeWeight         int64                     `json:"node_fee_weight"`
-	TopologyGeneration    uint64                    `json:"topology_generation"`
-	TransportCapabilities []meshTransportCapability `json:"transport_capabilities,omitempty"`
-	TrafficRules          []meshTrafficRule         `json:"traffic_rules,omitempty"`
-	Routes                []meshRoute               `json:"routes,omitempty"`
-	Metrics               meshMetrics               `json:"metrics,omitempty"`
+	TCPMTLS               app.ClusterTCPMTLSStatus   `json:"tcp_mtls"`
+	Enabled               bool                       `json:"enabled"`
+	ForwardingEnabled     bool                       `json:"forwarding_enabled"`
+	BridgeEnabled         bool                       `json:"bridge_enabled"`
+	NodeFeeWeight         int64                      `json:"node_fee_weight"`
+	TopologyGeneration    uint64                     `json:"topology_generation"`
+	TransportCapabilities []meshTransportCapability  `json:"transport_capabilities,omitempty"`
+	TrafficRules          []meshTrafficRule          `json:"traffic_rules,omitempty"`
+	Routes                []meshRoute                `json:"routes,omitempty"`
+	Adjacencies           []app.ClusterMeshAdjacency `json:"adjacencies,omitempty"`
+	Metrics               meshMetrics                `json:"metrics,omitempty"`
 }
 
 type meshTransportCapability struct {
@@ -649,6 +650,7 @@ func meshStatusFromCluster(status app.ClusterMeshStatus) meshStatus {
 		BridgeEnabled:      status.BridgeEnabled,
 		NodeFeeWeight:      status.NodeFeeWeight,
 		TopologyGeneration: status.TopologyGeneration,
+		Adjacencies:        status.Adjacencies,
 	}
 	for _, capability := range status.TransportCapabilities {
 		out.TransportCapabilities = append(out.TransportCapabilities, meshTransportCapability{

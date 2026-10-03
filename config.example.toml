@@ -129,6 +129,9 @@ secret = "secret"
 # 邻接全部断开后的怀疑期（毫秒）。窗口内若目标节点发来可信在线快照则不清理临时状态。
 # 不设置时默认 120000（2 分钟）。
 disconnect_suspicion_grace_ms = 120000
+# 集群 TCP socket（TCP mTLS 拨号与接入、WSS 拨号）的拥塞控制算法，如 "bbr"；为空沿用系统默认。
+# 跨境有随机丢包的链路上 bbr 远好于 cubic。内核不支持时照常建链，实际算法见 /ops/status 的 mesh.adjacencies。
+tcp_congestion_control = ""
 
 # forwarding 控制 mesh 路由的转发能力和费用策略。
 [cluster.forwarding]

@@ -122,6 +122,7 @@ func certificateNodeID(cert *x509.Certificate) (int64, error) {
 type TCPMTLSMeshTransportAdapter struct {
 	cfg               TCPMTLSConfig
 	nodeID            int64
+	congestion        string
 	acceptCh          chan mesh.TransportConn
 	mu                sync.Mutex
 	ctx               context.Context
@@ -149,7 +150,7 @@ func NewTCPMTLSMeshTransportAdapter(cfg Config) *TCPMTLSMeshTransportAdapter {
 	if !cfg.TCPMTLS.Enabled {
 		return nil
 	}
-	return &TCPMTLSMeshTransportAdapter{cfg: cfg.TCPMTLS.withDefaults(), nodeID: cfg.NodeID, acceptCh: make(chan mesh.TransportConn, meshTransportAcceptQueue), conns: make(map[net.Conn]struct{})}
+	return &TCPMTLSMeshTransportAdapter{cfg: cfg.TCPMTLS.withDefaults(), nodeID: cfg.NodeID, congestion: cfg.TCPCongestionControl, acceptCh: make(chan mesh.TransportConn, meshTransportAcceptQueue), conns: make(map[net.Conn]struct{})}
 }
 func (a *TCPMTLSMeshTransportAdapter) Kind() mesh.TransportKind          { return mesh.TransportTCPMTLS }
 func (a *TCPMTLSMeshTransportAdapter) Accept() <-chan mesh.TransportConn { return a.acceptCh }
@@ -291,6 +292,8 @@ func (a *TCPMTLSMeshTransportAdapter) acceptLoop() {
 			<-slots
 			return
 		}
+		// 不支持的算法不影响建链，实际算法经 TCP_INFO 观测。
+		_ = setMeshTCPCongestion(raw, a.congestion)
 		a.wg.Add(1)
 		go func() {
 			defer a.wg.Done()
@@ -356,6 +359,7 @@ func (a *TCPMTLSMeshTransportAdapter) Dial(ctx context.Context, endpoint string)
 	if err != nil {
 		return nil, err
 	}
+	_ = setMeshTCPCongestion(raw, a.congestion)
 	if !a.track(raw) {
 		return nil, context.Canceled
 	}
@@ -414,6 +418,7 @@ type tcpMTLSConn struct {
 }
 
 func (c *tcpMTLSConn) AuthenticatedNodeID() int64    { return c.nodeID }
+func (c *tcpMTLSConn) TCPInfo() (mesh.TCPInfo, bool) { return meshTCPInfo(c.Conn) }
 func (c *tcpMTLSConn) RemoteNodeHint() string        { return c.hint }
 func (c *tcpMTLSConn) Transport() mesh.TransportKind { return mesh.TransportTCPMTLS }
 func (c *tcpMTLSConn) Close() error {

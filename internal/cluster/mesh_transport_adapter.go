@@ -42,6 +42,14 @@ type meshTransportConn struct {
 	remoteHint string
 }
 
+// TCPInfo 透传底层连接的 TCP 统计。
+func (c *meshTransportConn) TCPInfo() (mesh.TCPInfo, bool) {
+	if provider, ok := c.conn.(mesh.TCPInfoProvider); ok {
+		return provider.TCPInfo()
+	}
+	return mesh.TCPInfo{}, false
+}
+
 // NewMeshTransportAdapters 为所有启用的传输创建适配器。
 func NewMeshTransportAdapters(cfg Config, zeroMQCurveServerKeyForPeer func(string) string) []mesh.TransportAdapter {
 	adapters := make([]mesh.TransportAdapter, 0, 4)

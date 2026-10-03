@@ -225,6 +225,31 @@ type TransportConn interface {
 	Transport() TransportKind
 }
 
+// TCPInfo 是邻接底层 TCP socket 的内核统计（Linux TCP_INFO）。时间单位为微秒，
+// 计数均为连接建立以来的累计值；只读观测，不参与选路。
+type TCPInfo struct {
+	Congestion      string // 实际生效的拥塞控制算法
+	RTTMicros       uint32 // 平滑 RTT
+	RTTVarMicros    uint32 // RTT 方差
+	MinRTTMicros    uint32 // 最小 RTT
+	SndCwnd         uint32 // 拥塞窗口（报文段）
+	SndMSS          uint32 // 发送 MSS（字节）
+	Unacked         uint32 // 在途未确认报文段
+	NotSentBytes    uint32 // 已写入 socket 但尚未发送的字节
+	BytesSent       uint64 // 累计发送字节（含重传）
+	BytesRetrans    uint64 // 累计重传字节
+	SegsOut         uint32 // 累计发送报文段
+	TotalRetrans    uint32 // 累计重传报文段
+	DeliveryRateBps uint64 // 最近送达速率（字节/秒）
+	PacingRateBps   uint64 // 当前 pacing 速率（字节/秒）
+}
+
+// TCPInfoProvider 由能取得底层 TCP socket 的连接实现；经代理入站的 WSS 等
+// 无法取得时返回 false。
+type TCPInfoProvider interface {
+	TCPInfo() (TCPInfo, bool)
+}
+
 // TopologyStore 是一个可变的拓扑存储，接受 Hello 和拓扑更新，
 // 并生成不可变的快照供路由规划器使用。
 // 默认实现是 MemoryTopologyStore。

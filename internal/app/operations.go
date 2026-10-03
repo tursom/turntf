@@ -99,8 +99,39 @@ type ClusterMeshStatus struct {
 	TrafficRules []ClusterMeshTrafficRule
 	// Routes 当前路由表，包含到各目标节点的可用路径信息
 	Routes []ClusterMeshRoute
+	// Adjacencies 当前物理邻接及其底层 TCP 统计
+	Adjacencies []ClusterMeshAdjacency
 	// Metrics Mesh 网络的各类统计指标
 	Metrics ClusterMeshMetrics
+}
+
+// ClusterMeshAdjacency 描述一条物理邻接；TCP 仅在能取得底层 socket 时出现（入站 WSS 经代理时没有）。
+type ClusterMeshAdjacency struct {
+	RemoteNodeID int64               `json:"remote_node_id"`
+	Transport    string              `json:"transport"`
+	Inbound      bool                `json:"inbound"`
+	Established  bool                `json:"established"`
+	RTTMs        int64               `json:"rtt_ms"`
+	JitterMs     int64               `json:"jitter_ms"`
+	TCP          *ClusterMeshTCPInfo `json:"tcp,omitempty"`
+}
+
+// ClusterMeshTCPInfo 是 Linux TCP_INFO 的子集：时间为微秒，计数为连接建立以来的累计值，速率为字节/秒。
+type ClusterMeshTCPInfo struct {
+	Congestion      string `json:"congestion"`
+	RTTUs           uint32 `json:"rtt_us"`
+	RTTVarUs        uint32 `json:"rttvar_us"`
+	MinRTTUs        uint32 `json:"min_rtt_us"`
+	SndCwnd         uint32 `json:"snd_cwnd"`
+	SndMSS          uint32 `json:"snd_mss"`
+	Unacked         uint32 `json:"unacked"`
+	NotSentBytes    uint32 `json:"notsent_bytes"`
+	BytesSent       uint64 `json:"bytes_sent"`
+	BytesRetrans    uint64 `json:"bytes_retrans"`
+	SegsOut         uint32 `json:"segs_out"`
+	TotalRetrans    uint32 `json:"total_retrans"`
+	DeliveryRateBps uint64 `json:"delivery_rate_bps"`
+	PacingRateBps   uint64 `json:"pacing_rate_bps"`
 }
 
 // ClusterMeshTransportCapability 描述一种传输协议的能力配置。

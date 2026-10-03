@@ -135,6 +135,8 @@ type clusterFileConfig struct {
 	Secret string `toml:"secret"`
 	// DisconnectSuspicionGraceMs 节点断开后的怀疑期（毫秒），超时后标记为离线
 	DisconnectSuspicionGraceMs *int64 `toml:"disconnect_suspicion_grace_ms"`
+	// TCPCongestionControl 集群 TCP socket 的拥塞控制算法（如 bbr），为空沿用系统默认
+	TCPCongestionControl string `toml:"tcp_congestion_control"`
 	// Forwarding 消息转发策略配置
 	Forwarding clusterForwardingFileConfig `toml:"forwarding"`
 	// Clock 时钟同步参数，用于分布式时钟一致性
@@ -535,6 +537,7 @@ func (c serveConfig) runtimeConfig(configPath string) (runtimeServeConfig, error
 	libP2PCfg := c.Services.LibP2P.runtimeConfig()
 	clusterCfg := cluster.Config{
 		TCPMTLS:                         c.Services.TCPMTLS,
+		TCPCongestionControl:            strings.TrimSpace(c.Cluster.TCPCongestionControl),
 		AdvertisePath:                   cluster.WebSocketPath,
 		ClusterSecret:                   strings.TrimSpace(c.Cluster.Secret),
 		DisconnectSuspicionGraceMs:      disconnectSuspicionGraceMs,

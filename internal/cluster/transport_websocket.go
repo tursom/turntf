@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/tursom/turntf/internal/mesh"
 )
 
 // WebSocket连接的I/O缓冲区大小（32KB）和读取限制（8MB）。
@@ -69,6 +70,25 @@ func newWebSocketTransport() *webSocketTransport {
 		writeWait:    writeWait,
 		pingInterval: pingInterval,
 	}
+}
+
+// withTCPCongestion 让出站 WSS 拨号的 TCP socket 使用指定拥塞控制算法；为空不改动。
+func (t *webSocketTransport) withTCPCongestion(algo string) *webSocketTransport {
+	if algo == "" {
+		return t
+	}
+	base := t.dialer.NetDialContext
+	if base == nil {
+		base = (&net.Dialer{}).DialContext
+	}
+	t.dialer.NetDialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		conn, err := base(ctx, network, addr)
+		if err == nil {
+			_ = setMeshTCPCongestion(conn, algo)
+		}
+		return conn, err
+	}
+	return t
 }
 
 // Dial 建立出站WebSocket连接到对等节点URL。
@@ -147,6 +167,14 @@ func (c *webSocketTransportConn) Close() error {
 }
 
 // CloseWithReason 发送关闭帧并关闭底层连接。
+// TCPInfo 只对出站连接返回统计：入站 WSS 通常经本机代理接入，socket 只反映本地一跳。
+func (c *webSocketTransportConn) TCPInfo() (mesh.TCPInfo, bool) {
+	if c.direction != "outbound" {
+		return mesh.TCPInfo{}, false
+	}
+	return meshTCPInfo(c.conn.NetConn())
+}
+
 func (c *webSocketTransportConn) CloseWithReason(reason string) error {
 	var err error
 	c.closeOnce.Do(func() {

@@ -1418,13 +1418,21 @@ type AdjacencySnapshot struct {
 	JitterMs     int64         // 当前抖动估计值（毫秒）
 	Samples      int           // 已采集的测量样本数
 	Established  bool          // 是否已建立
+	TCP          *TCPInfo      // 底层 TCP 内核统计；取不到时为 nil
 }
 
 // snapshot 创建 Adjacency 状态的一份快照副本（带锁保护）。
 func (a *Adjacency) snapshot() AdjacencySnapshot {
+	var tcp *TCPInfo
+	if provider, ok := a.Conn.(TCPInfoProvider); ok {
+		if info, ok := provider.TCPInfo(); ok {
+			tcp = &info
+		}
+	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return AdjacencySnapshot{
+		TCP:          tcp,
 		RemoteNodeID: a.RemoteNodeID,
 		Transport:    a.Transport,
 		RemoteHint:   a.RemoteHint,

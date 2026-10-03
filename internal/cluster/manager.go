@@ -466,7 +466,7 @@ func NewManager(cfg Config, st *store.Store) (*Manager, error) {
 		store:                      st,
 		clock:                      clockRef,
 		traceStore:                 trace.NewStore(),
-		websocket:                  newWebSocketTransport(),
+		websocket:                  newWebSocketTransport().withTCPCongestion(cfg.TCPCongestionControl),
 		dialers:                    make(map[string]Dialer, 2),
 		mux:                        http.NewServeMux(),
 		publishCh:                  make(chan store.Event, managerPublishQueue),

@@ -2,7 +2,6 @@ package mesh
 
 import (
 	"context"
-	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -114,95 +113,6 @@ func TestObserveTCPInfoEstimatesLossAndCapacity(t *testing.T) {
 	adj.observeTCPInfoLocked(TCPInfo{SegsOut: 5, BytesAcked: 100}, now.Add(26*time.Second))
 	if adj.tcpCapacityBps < 5.9e6 {
 		t.Fatalf("counter reset corrupted capacity: %.0f", adj.tcpCapacityBps)
-	}
-}
-
-// drainCounters 记录排空测试中两条邻接的发送；排队帧由后台协程发出，需原子计数。
-type drainCounters struct{ primary, alternate atomic.Int64 }
-
-func (h *reselectHarness) countDrainSends() *drainCounters {
-	c := &drainCounters{}
-	h.primary.Conn.(*fakeConn).mu.Lock()
-	h.primary.Conn.(*fakeConn).sendHook = func([]byte) error { c.primary.Add(1); return nil }
-	h.primary.Conn.(*fakeConn).mu.Unlock()
-	h.alternate.Conn.(*fakeConn).mu.Lock()
-	h.alternate.Conn.(*fakeConn).sendHook = func([]byte) error { c.alternate.Add(1); return nil }
-	h.alternate.Conn.(*fakeConn).mu.Unlock()
-	return c
-}
-
-func waitCount(t *testing.T, v *atomic.Int64, want int64, what string) {
-	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for v.Load() != want {
-		if time.Now().After(deadline) {
-			t.Fatalf("%s: got %d sends, want %d", what, v.Load(), want)
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-}
-
-func TestDirectStreamDrainSwitchesAfterAck(t *testing.T) {
-	h := newReselectHarness(t)
-	sends := h.countDrainSends()
-	h.send(testStreamFrame(streamFrameKindOpen, 1, 0, ""))
-	h.inbound(testStreamFrame(streamFrameKindOpenAck, 1, 0, ""))
-	h.send(testStreamFrame(streamFrameKindData, 1, 0, "first"))
-	waitCount(t, &sends.primary, 2, "initial frames on primary")
-
-	h.scores(100, 1)
-	h.allowDrainNow()
-	// 排空中的帧立即返回（不阻塞会话），在 core 内排队且不得越过未确认的数据。
-	h.send(testStreamFrame(streamFrameKindData, 1, 5, "second"))
-	h.send(testStreamFrame(streamFrameKindData, 1, 11, "third"))
-	time.Sleep(100 * time.Millisecond)
-	if sends.alternate.Load() != 0 || sends.primary.Load() != 2 {
-		t.Fatalf("queued data sent before drain: primary=%d alternate=%d", sends.primary.Load(), sends.alternate.Load())
-	}
-	h.inbound(testStreamFrame(streamFrameKindAck, 1, 5, ""))
-	waitCount(t, &sends.alternate, 2, "queued frames on new path")
-	h.send(testStreamFrame(streamFrameKindData, 1, 16, "fourth"))
-	waitCount(t, &sends.alternate, 3, "data after drain")
-	paths := h.runtime.StreamPaths()
-	if len(paths) != 1 || paths[0].Drains != 1 || paths[0].Switches != 1 || paths[0].Draining {
-		t.Fatalf("stream path stats: %+v", paths)
-	}
-}
-
-func TestDirectStreamDrainTimeoutKeepsPath(t *testing.T) {
-	old := streamPathDrainTimeout
-	streamPathDrainTimeout = 200 * time.Millisecond
-	t.Cleanup(func() { streamPathDrainTimeout = old })
-	h := newReselectHarness(t)
-	sends := h.countDrainSends()
-	h.send(testStreamFrame(streamFrameKindOpen, 1, 0, ""))
-	h.inbound(testStreamFrame(streamFrameKindOpenAck, 1, 0, ""))
-	h.send(testStreamFrame(streamFrameKindData, 1, 0, "first"))
-	h.scores(100, 1)
-	h.allowDrainNow()
-	h.send(testStreamFrame(streamFrameKindData, 1, 5, "second"))
-	time.Sleep(100 * time.Millisecond)
-	if sends.primary.Load() != 2 {
-		t.Fatalf("queued frame sent before drain timeout: %d", sends.primary.Load())
-	}
-	// 未确认导致超时：放弃换路，排队帧按序发回旧路径。
-	waitCount(t, &sends.primary, 3, "queued frame after drain timeout")
-	paths := h.runtime.StreamPaths()
-	if len(paths) != 1 || paths[0].DrainAborts != 1 || paths[0].Draining || sends.alternate.Load() != 0 {
-		t.Fatalf("stream path stats: %+v alternate=%d", paths, sends.alternate.Load())
-	}
-	// 放弃后退避：有在途数据时不再发起排空。
-	h.send(testStreamFrame(streamFrameKindData, 1, 11, "third"))
-	waitCount(t, &sends.primary, 4, "data during backoff")
-}
-
-// allowDrainNow 让下一帧立即参与排空评估（跳过评估间隔）。
-func (h *reselectHarness) allowDrainNow() {
-	h.runtime.mu.Lock()
-	defer h.runtime.mu.Unlock()
-	for key, entry := range h.runtime.directStreamAffinity {
-		entry.nextEval = time.Time{}
-		h.runtime.directStreamAffinity[key] = entry
 	}
 }
 

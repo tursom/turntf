@@ -384,15 +384,12 @@ type directStreamAffinityEntry struct {
 	sentEnd      uint64
 	ackedEnd     uint64
 
-	// 负载感知选路（stream_path.go）：发送速率、轻/重负载模式、换路排空。
-	rateBps      float64
-	rateBytes    uint64
-	rateStart    time.Time
-	heavy        bool
-	nextEval     time.Time
-	backoffUntil time.Time
-	drain        *streamDrain
-	stats        streamPathCounters
+	// 负载感知选路（stream_path.go）：发送速率与轻/重负载模式。
+	rateBps   float64
+	rateBytes uint64
+	rateStart time.Time
+	heavy     bool
+	stats     streamPathCounters
 }
 
 func (e directStreamAffinityEntry) quiescent() bool {
@@ -823,13 +820,9 @@ func (r *Runtime) RouteEnvelope(ctx context.Context, targetNodeID int64, envelop
 		frame := envelope.GetStreamFrame()
 		if frame != nil && len(frame.StreamId) == 16 && frame.Kind >= streamFrameKindOpen && frame.Kind <= streamFrameKindClose {
 			key := directStreamAffinityKey{targetNodeID: targetNodeID, streamID: string(frame.StreamId)}
-			adj, queued, err := r.directStreamAdjacency(key, frame, envelope)
+			adj, err := r.directStreamAdjacency(key, frame)
 			if err != nil {
 				return err
-			}
-			if queued {
-				// 换路排空期间按序排队，由 runStreamDrain 发送；排队的 Close 也由它清理。
-				return nil
 			}
 			if frame.Kind == streamFrameKindClose {
 				defer r.clearDirectStreamAffinity(key, frame.Epoch)
@@ -1107,7 +1100,7 @@ func (r *Runtime) bestDirectAdjacencyLocked(targetNodeID int64) *Adjacency {
 // directStreamAdjacency returns the adjacency pinned to this logical stream
 // epoch. Resume and its Ack response may advance an existing affinity; all
 // other frames must match the pinned epoch exactly.
-func (r *Runtime) directStreamAdjacency(key directStreamAffinityKey, frame *StreamFrame, envelope *ClusterEnvelope) (*Adjacency, bool, error) {
+func (r *Runtime) directStreamAdjacency(key directStreamAffinityKey, frame *StreamFrame) (*Adjacency, error) {
 	snapshot := r.store.Snapshot()
 	snapshot.ensureOutgoingLinks()
 	var decision RouteDecision
@@ -1119,7 +1112,7 @@ func (r *Runtime) directStreamAdjacency(key directStreamAffinityKey, frame *Stre
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.closed {
-		return nil, false, ErrRuntimeClosed
+		return nil, ErrRuntimeClosed
 	}
 
 	now := time.Now()
@@ -1131,61 +1124,40 @@ func (r *Runtime) directStreamAdjacency(key directStreamAffinityKey, frame *Stre
 	}
 	if exists {
 		if entry.epoch != frame.Epoch {
-			return nil, false, fmt.Errorf("mesh: direct stream path epoch %d does not match affinity epoch %d: %w", frame.Epoch, entry.epoch, ErrNoRoute)
-		}
-		if entry.drain != nil {
-			// 排空期间该流后续帧一律排在队尾，保持顺序。
-			if frame.Kind == streamFrameKindData {
-				entry.observeSend(len(frame.Payload), now)
-			}
-			entry.drain.enqueue(frame, envelope)
-			r.directStreamAffinity[key] = entry
-			return nil, true, nil
+			return nil, fmt.Errorf("mesh: direct stream path epoch %d does not match affinity epoch %d: %w", frame.Epoch, entry.epoch, ErrNoRoute)
 		}
 		ordered := frame.Kind != streamFrameKindAck && frame.Kind != streamFrameKindOpenAck
 		if entry.adj != nil && !streamHopUsableLocked(entry.adj, key.targetNodeID, snapshot) {
 			if ordered {
-				return nil, false, fmt.Errorf("mesh: direct stream affinity is no longer established: %w", ErrNoRoute)
+				return nil, fmt.Errorf("mesh: direct stream affinity is no longer established: %w", ErrNoRoute)
 			}
 			// 累计确认可以直接改走其他路径。
-			entry.adj, entry.nextEval = nil, time.Time{}
+			entry.adj = nil
 		}
 		if frame.Kind == streamFrameKindData {
 			entry.observeSend(len(frame.Payload), now)
 		}
 		entry.updateMode(now)
-		// 全部确认时可直接换路，每帧评估；有在途数据时只有 Data 能发起排空，限频且放弃后退避。
-		free := entry.quiescent()
-		drainable := frame.Kind == streamFrameKindData && !now.Before(entry.nextEval) && !now.Before(entry.backoffUntil)
-		if r.directStreamMayReselect(frame.Kind) && (free || drainable) {
-			if !free {
-				entry.nextEval = now.Add(streamPathEvalInterval)
-			}
+		// 只在本 epoch 已发出的有序帧全部被确认时换路：有在途数据时换路会让新路径的帧
+		// 越过旧路径未达的帧而被接收端丢弃。重负载期间很少出现这一时刻，沿用当前路径。
+		if r.directStreamMayReselect(frame.Kind) && entry.quiescent() {
 			direct := r.selectDirectStreamAdjacencyLocked(key.targetNodeID, decision, directRoute)
 			candidates := r.streamPathCandidatesLocked(key.targetNodeID, direct, entry.adj, snapshot, now)
 			if desired := preferredStreamPathLocked(candidates, entry.adj, entry.heavy); desired != nil && desired != entry.adj {
-				if free {
-					entry.adj = desired
-					entry.stats.switches++
-				} else {
-					entry.drain = &streamDrain{to: desired, done: make(chan struct{}), epoch: entry.epoch}
-					entry.drain.enqueue(frame, envelope)
-					r.directStreamAffinity[key] = entry
-					r.startStreamDrainLocked(key, entry.drain)
-					return nil, true, nil
-				}
+				entry.adj = desired
+				entry.stats.switches++
 			}
 		}
 		recordDirectStreamSend(&entry, frame)
 		r.directStreamAffinity[key] = entry
-		return entry.adj, false, nil
+		return entry.adj, nil
 	}
 
 	if len(r.directStreamAffinity) >= directStreamAffinityLimit {
-		return nil, false, fmt.Errorf("mesh: direct stream affinity capacity reached: %w", ErrNoRoute)
+		return nil, fmt.Errorf("mesh: direct stream affinity capacity reached: %w", ErrNoRoute)
 	}
 	direct := r.selectDirectStreamAdjacencyLocked(key.targetNodeID, decision, directRoute)
-	entry = directStreamAffinityEntry{epoch: frame.Epoch, adj: direct, nextEval: now.Add(streamPathEvalInterval)}
+	entry = directStreamAffinityEntry{epoch: frame.Epoch, adj: direct}
 	// 新 epoch 尚无负载，按轻负载选路；没有任何候选时保持转发路径。
 	if desired := preferredStreamPathLocked(r.streamPathCandidatesLocked(key.targetNodeID, direct, nil, snapshot, now), nil, false); desired != nil {
 		entry.adj = desired
@@ -1197,7 +1169,7 @@ func (r *Runtime) directStreamAdjacency(key directStreamAffinityKey, frame *Stre
 	}
 	recordDirectStreamSend(&entry, frame)
 	r.directStreamAffinity[key] = entry
-	return entry.adj, false, nil
+	return entry.adj, nil
 }
 
 // selectDirectStreamAdjacencyLocked requires r.mu. A nil result keeps the
@@ -1283,7 +1255,6 @@ func (r *Runtime) observeInboundStreamFrame(sourceNodeID int64, frame *StreamFra
 			entry.ackedEnd = frame.Offset
 		}
 	}
-	signalStreamDrainLocked(&entry)
 	r.directStreamAffinity[key] = entry
 }
 
@@ -1442,12 +1413,6 @@ func (r *Runtime) Close() error {
 	}
 	r.closed = true
 	cancel := r.cancel
-	for _, entry := range r.directStreamAffinity {
-		if entry.drain != nil && !entry.drain.signaled {
-			entry.drain.signaled = true
-			close(entry.drain.done)
-		}
-	}
 	clear(r.directStreamAffinity)
 	conns := make([]TransportConn, 0, len(r.adjByConn))
 	for conn := range r.adjByConn {

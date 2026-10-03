@@ -14,14 +14,11 @@ import (
 //   - 轻负载：选 RTT + 抖动 + 丢包惩罚最低的路径（入境丢包重时常是中转）。
 //   - 重负载：只在中转容量估计明显高于直连时才走中转，避免中转降低带宽。
 //
-// 已发送未确认的数据不能换路，否则接收端会因乱序丢帧；Data 换路先排空：
-// 该流的新帧在 core 内按序排队（不阻塞客户端会话，同会话的反向 Ack 照常发送），
-// 等旧路径数据全部确认后从新路径按序发出；超时或排队过多则放弃换路、发回旧路径。
-// 全部确认时、以及只发累计确认的接收方，可立即换路。
+// 换路只在本 epoch 已发出的有序帧全部被确认时进行（只发累计确认的接收方随时满足），
+// 否则新路径的帧会越过旧路径未达的帧而被接收端丢弃。曾尝试在有在途数据时"排空换路"
+// （暂停该流直到旧路径全部确认），但在途数据可达整个 stream 窗口，低速时排空需要数秒，
+// 期间隧道吞吐为零并触发端点停滞恢复，重负载 A/B 中零吞吐秒数翻数倍，已放弃。
 const (
-	streamPathEvalInterval   = time.Second
-	streamPathDrainMaxBytes  = 16 << 20 // 排队超过此量放弃换路，回到旧路径发送
-	streamPathSwitchBackoff  = 30 * time.Second
 	streamHeavyEnterBps      = 512 << 10 // 约 4 Mbps 进入重负载
 	streamHeavyExitBps       = 128 << 10 // 约 1 Mbps 退出重负载
 	streamRateWindow         = 500 * time.Millisecond
@@ -39,39 +36,8 @@ const (
 	tcpCapacityAdvertiseGain = 1.25
 )
 
-// streamPathDrainTimeout 是等待旧路径数据全部确认的上限；测试可缩短。
-var streamPathDrainTimeout = 5 * time.Second
-
-// streamDrain 是一次进行中的 Data 换路：旧路径数据全部确认后关闭 done，
-// 期间该流的帧按序排在 queue 中。字段由 Runtime.mu 保护。
-type streamDrain struct {
-	to          *Adjacency
-	done        chan struct{}
-	signaled    bool
-	epoch       uint64
-	queue       []streamQueuedFrame
-	queuedBytes int
-	overflow    bool
-}
-
-type streamQueuedFrame struct {
-	frame    *StreamFrame
-	envelope *ClusterEnvelope
-}
-
-func (d *streamDrain) enqueue(frame *StreamFrame, envelope *ClusterEnvelope) {
-	d.queue = append(d.queue, streamQueuedFrame{frame: frame, envelope: envelope})
-	d.queuedBytes += len(frame.Payload)
-	if d.queuedBytes > streamPathDrainMaxBytes && !d.signaled {
-		d.overflow, d.signaled = true, true
-		close(d.done)
-	}
-}
-
 type streamPathCounters struct {
-	switches    uint64
-	drains      uint64
-	drainAborts uint64
+	switches uint64
 }
 
 // StreamPathSnapshot 描述一条 stream 当前的选路状态，供运维观测。
@@ -85,9 +51,6 @@ type StreamPathSnapshot struct {
 	Heavy        bool
 	RateBps      float64
 	Switches     uint64
-	Drains       uint64
-	DrainAborts  uint64
-	Draining     bool
 }
 
 // sampleAdjacencyTransport 读取邻接底层 TCP 统计并更新质量估计；公告值变化时安排拓扑公告。
@@ -388,89 +351,6 @@ func streamHopUsableLocked(adj *Adjacency, targetNodeID int64, snapshot Topology
 	return ok
 }
 
-// startStreamDrainLocked requires r.mu. 启动排空协程。
-func (r *Runtime) startStreamDrainLocked(key directStreamAffinityKey, drain *streamDrain) {
-	ctx := r.ctx
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	r.wg.Add(1)
-	go r.runStreamDrain(ctx, key, drain)
-}
-
-// runStreamDrain 等待旧路径数据全部确认（或超时、溢出），决定换路或放弃，然后按序发出排队的帧。
-func (r *Runtime) runStreamDrain(ctx context.Context, key directStreamAffinityKey, drain *streamDrain) {
-	defer r.wg.Done()
-	timer := time.NewTimer(streamPathDrainTimeout)
-	select {
-	case <-drain.done:
-	case <-timer.C:
-	case <-ctx.Done():
-	}
-	timer.Stop()
-
-	snapshot := r.store.Snapshot()
-	snapshot.ensureOutgoingLinks()
-	r.mu.Lock()
-	entry, ok := r.directStreamAffinity[key]
-	if r.closed || !ok || entry.drain != drain {
-		// 流已关闭或被新 epoch 取代，排队的旧帧由端点的恢复流程重传。
-		r.mu.Unlock()
-		return
-	}
-	if entry.quiescent() && !drain.overflow && streamHopUsableLocked(drain.to, key.targetNodeID, snapshot) {
-		entry.adj = drain.to
-		entry.stats.switches++
-		entry.stats.drains++
-	} else {
-		entry.stats.drainAborts++
-		entry.backoffUntil = time.Now().Add(streamPathSwitchBackoff)
-	}
-	adj := entry.adj
-	r.directStreamAffinity[key] = entry
-	r.mu.Unlock()
-
-	for {
-		r.mu.Lock()
-		entry, ok := r.directStreamAffinity[key]
-		if r.closed || !ok || entry.drain != drain {
-			r.mu.Unlock()
-			return
-		}
-		if len(drain.queue) == 0 {
-			entry.drain = nil
-			r.directStreamAffinity[key] = entry
-			r.mu.Unlock()
-			return
-		}
-		item := drain.queue[0]
-		drain.queue[0] = streamQueuedFrame{}
-		drain.queue = drain.queue[1:]
-		drain.queuedBytes -= len(item.frame.Payload)
-		recordDirectStreamSend(&entry, item.frame)
-		r.directStreamAffinity[key] = entry
-		r.mu.Unlock()
-
-		sendCtx, cancel := context.WithTimeout(ctx, r.helloTimeout)
-		err := r.sendStreamFrameOn(sendCtx, adj, key.targetNodeID, item.envelope)
-		cancel()
-		if item.frame.Kind == streamFrameKindClose {
-			r.clearDirectStreamAffinity(key, item.frame.Epoch)
-			return
-		}
-		if err != nil {
-			// 发送失败时丢弃剩余排队帧，端点按停滞检测恢复。
-			r.mu.Lock()
-			if entry, ok := r.directStreamAffinity[key]; ok && entry.drain == drain {
-				entry.drain = nil
-				r.directStreamAffinity[key] = entry
-			}
-			r.mu.Unlock()
-			return
-		}
-	}
-}
-
 // sendStreamFrameOn 按首跳发送 stream 信封：直连邻接直接发送，中转邻居包装为转发包，
 // 没有固定邻接时交给转发引擎。
 func (r *Runtime) sendStreamFrameOn(ctx context.Context, adj *Adjacency, targetNodeID int64, envelope *ClusterEnvelope) error {
@@ -481,14 +361,6 @@ func (r *Runtime) sendStreamFrameOn(ctx context.Context, adj *Adjacency, targetN
 		return r.sendStreamViaTransit(ctx, adj, targetNodeID, envelope)
 	}
 	return r.sendEnvelopeCtx(ctx, adj.Conn, envelope, r.helloTimeout)
-}
-
-// signalStreamDrainLocked requires r.mu. 排空中的流全部确认后唤醒等待的发送方。
-func signalStreamDrainLocked(entry *directStreamAffinityEntry) {
-	if entry.drain != nil && !entry.drain.signaled && entry.quiescent() {
-		entry.drain.signaled = true
-		close(entry.drain.done)
-	}
 }
 
 // sendStreamViaTransit 把 stream 信封包装为 ForwardedPacket 交给中转邻居，由其转发到目标。
@@ -533,9 +405,6 @@ func (r *Runtime) StreamPaths() []StreamPathSnapshot {
 			Heavy:        entry.heavy,
 			RateBps:      entry.rateBps,
 			Switches:     entry.stats.switches,
-			Drains:       entry.stats.drains,
-			DrainAborts:  entry.stats.drainAborts,
-			Draining:     entry.drain != nil,
 		}
 		if !entry.rateStart.IsZero() && now.Sub(entry.rateStart) >= streamRateIdleReset {
 			item.RateBps = 0

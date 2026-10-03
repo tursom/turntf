@@ -261,7 +261,7 @@ func (m *Manager) meshStatusSnapshot() app.ClusterMeshStatus {
 	for _, path := range runtime.StreamPaths() {
 		item := app.ClusterMeshStreamPath{TargetNodeID: path.TargetNodeID, StreamID: path.StreamID, Epoch: path.Epoch, ViaNodeID: path.ViaNodeID,
 			Forwarding: path.Forwarding, Heavy: path.Heavy, RateKbps: int64(path.RateBps * 8 / 1000),
-			Switches: path.Switches, Drains: path.Drains, DrainAborts: path.DrainAborts, Draining: path.Draining}
+			Switches: path.Switches}
 		if !path.Forwarding {
 			item.Transport = meshTransportLabel(path.Transport)
 		}

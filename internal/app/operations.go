@@ -135,6 +135,10 @@ type ClusterMeshStreamPath struct {
 	Drains       uint64 `json:"drains"`
 	DrainAborts  uint64 `json:"drain_aborts"`
 	Draining     bool   `json:"draining,omitempty"`
+	Probing      bool   `json:"probing,omitempty"`
+	ProvenVia    int64  `json:"proven_via_node_id,omitempty"`
+	Probes       uint64 `json:"probes"`
+	ProbeWins    uint64 `json:"probe_wins"`
 }
 
 // ClusterMeshTCPInfo 是 Linux TCP_INFO 的子集：时间为微秒，计数为连接建立以来的累计值，速率为字节/秒。

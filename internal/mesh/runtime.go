@@ -393,6 +393,14 @@ type directStreamAffinityEntry struct {
 	backoffUntil time.Time
 	drain        *streamDrain
 	stats        streamPathCounters
+
+	// 重负载中转探测（stream_path.go）：当前路径上的确认吞吐测量窗口与探测状态。
+	windowStart time.Time
+	windowAcked uint64
+	probe       *streamProbe
+	provenVia   *Adjacency
+	provenUntil time.Time
+	nextProbe   time.Time
 }
 
 func (e directStreamAffinityEntry) quiescent() bool {
@@ -1153,7 +1161,11 @@ func (r *Runtime) directStreamAdjacency(key directStreamAffinityKey, frame *Stre
 		if frame.Kind == streamFrameKindData {
 			entry.observeSend(len(frame.Payload), now)
 		}
+		wasHeavy := entry.heavy
 		entry.updateMode(now)
+		if entry.heavy && !wasHeavy {
+			entry.resetWindow(now)
+		}
 		// 全部确认时可直接换路，每帧评估；有在途数据时只有 Data 能发起排空，限频且放弃后退避。
 		free := entry.quiescent()
 		drainable := frame.Kind == streamFrameKindData && !now.Before(entry.nextEval) && !now.Before(entry.backoffUntil)
@@ -1163,10 +1175,15 @@ func (r *Runtime) directStreamAdjacency(key directStreamAffinityKey, frame *Stre
 			}
 			direct := r.selectDirectStreamAdjacencyLocked(key.targetNodeID, decision, directRoute)
 			candidates := r.streamPathCandidatesLocked(key.targetNodeID, direct, entry.adj, snapshot, now)
-			if desired := preferredStreamPathLocked(candidates, entry.adj, entry.heavy); desired != nil && desired != entry.adj {
+			desired, handled := streamProbeDecisionLocked(&entry, candidates, key.targetNodeID, now)
+			if !handled {
+				desired = preferredStreamPathLocked(candidates, entry.adj, entry.heavy)
+			}
+			if desired != nil && desired != entry.adj {
 				if free {
 					entry.adj = desired
 					entry.stats.switches++
+					entry.resetWindow(now)
 				} else {
 					entry.drain = &streamDrain{to: desired, done: make(chan struct{}), epoch: entry.epoch}
 					entry.drain.enqueue(frame, envelope)
@@ -1186,6 +1203,7 @@ func (r *Runtime) directStreamAdjacency(key directStreamAffinityKey, frame *Stre
 	}
 	direct := r.selectDirectStreamAdjacencyLocked(key.targetNodeID, decision, directRoute)
 	entry = directStreamAffinityEntry{epoch: frame.Epoch, adj: direct, nextEval: now.Add(streamPathEvalInterval)}
+	entry.resetWindow(now)
 	// 新 epoch 尚无负载，按轻负载选路；没有任何候选时保持转发路径。
 	if desired := preferredStreamPathLocked(r.streamPathCandidatesLocked(key.targetNodeID, direct, nil, snapshot, now), nil, false); desired != nil {
 		entry.adj = desired

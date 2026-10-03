@@ -31,6 +31,14 @@ const (
 	streamHeavyTransitGain   = 1.5
 	streamHeavyTransitKeep   = 1.1
 
+	// 重负载中转探测：直连基线至少测 8 秒，探测 10 秒，中转需达到基线 1.2 倍才保留；
+	// 结论有效 10 分钟，失败后 10 分钟内不再探测。
+	streamProbeBaselineMin = 8 * time.Second
+	streamProbeDuration    = 10 * time.Second
+	streamProbeWinGain     = 1.2
+	streamProbeValidFor    = 10 * time.Minute
+	streamProbeRetryAfter  = 10 * time.Minute
+
 	tcpQualityMinSegs        = 50
 	tcpQualityEWMAWeight     = 0.3
 	tcpCapacityDecay         = 0.995 // 每个采样周期（约 2 秒）的衰减，半衰期约 4.6 分钟
@@ -72,6 +80,15 @@ type streamPathCounters struct {
 	switches    uint64
 	drains      uint64
 	drainAborts uint64
+	probes      uint64
+	probeWins   uint64
+}
+
+// streamProbe 是一次重负载中转探测：从直连 from 切到中转 to，与直连基线吞吐比较。
+type streamProbe struct {
+	from     *Adjacency
+	to       *Adjacency
+	baseline float64 // 直连上的确认吞吐（字节/秒）
 }
 
 // StreamPathSnapshot 描述一条 stream 当前的选路状态，供运维观测。
@@ -88,6 +105,10 @@ type StreamPathSnapshot struct {
 	Drains       uint64
 	DrainAborts  uint64
 	Draining     bool
+	Probing      bool
+	ProvenVia    int64 // 探测证实更快的中转节点（有效期内）
+	Probes       uint64
+	ProbeWins    uint64
 }
 
 // sampleAdjacencyTransport 读取邻接底层 TCP 统计并更新质量估计；公告值变化时安排拓扑公告。
@@ -373,6 +394,91 @@ func heavyStreamTransit(cur, direct, bestTransit *streamPathCandidate) *streamPa
 	return nil
 }
 
+// resetWindow 在换路或进入重负载时重新开始当前路径的确认吞吐测量。
+func (e *directStreamAffinityEntry) resetWindow(now time.Time) {
+	e.windowStart, e.windowAcked = now, e.ackedEnd
+}
+
+// windowRate 返回当前路径测量窗口内的确认吞吐与窗口时长。
+func (e *directStreamAffinityEntry) windowRate(now time.Time) (float64, time.Duration) {
+	if e.windowStart.IsZero() || e.ackedEnd < e.windowAcked {
+		return 0, 0
+	}
+	dt := now.Sub(e.windowStart)
+	if dt <= 0 {
+		return 0, 0
+	}
+	return float64(e.ackedEnd-e.windowAcked) / dt.Seconds(), dt
+}
+
+// streamProbeDecisionLocked requires r.mu. 重负载中转探测状态机：返回 handled=true 时
+// desired 即本次选路结果（可能为当前路径），否则交给常规规则。targetNodeID 用于区分直连与中转。
+func streamProbeDecisionLocked(e *directStreamAffinityEntry, candidates []streamPathCandidate, targetNodeID int64, now time.Time) (*Adjacency, bool) {
+	if !e.heavy {
+		e.probe = nil
+		return nil, false
+	}
+	cur := e.adj
+	onDirect := cur != nil && cur.RemoteNodeID == targetNodeID
+	if p := e.probe; p != nil {
+		if cur != p.to {
+			// 换路尚未完成（或被放弃），仍在直连上：放弃本次探测。
+			if onDirect {
+				e.probe = nil
+				e.nextProbe = now.Add(streamProbeRetryAfter)
+				return nil, false
+			}
+			return cur, true
+		}
+		rate, dt := e.windowRate(now)
+		if dt < streamProbeDuration {
+			return cur, true
+		}
+		e.probe = nil
+		if rate >= p.baseline*streamProbeWinGain {
+			e.stats.probeWins++
+			e.provenVia, e.provenUntil = p.to, now.Add(streamProbeValidFor)
+			return cur, true
+		}
+		e.nextProbe = now.Add(streamProbeRetryAfter)
+		return p.from, true
+	}
+	if e.provenVia != nil && now.Before(e.provenUntil) && cur == e.provenVia {
+		return cur, true
+	}
+	if !onDirect || now.Before(e.nextProbe) {
+		return nil, false
+	}
+	baseline, dt := e.windowRate(now)
+	if dt < streamProbeBaselineMin {
+		return nil, false
+	}
+	var direct, best *streamPathCandidate
+	for i := range candidates {
+		c := &candidates[i]
+		if c.adj == cur {
+			direct = c
+		}
+		if c.transit && (best == nil || c.stabilityMs < best.stabilityMs) {
+			best = c
+		}
+	}
+	if direct == nil || best == nil {
+		return nil, false
+	}
+	// 只在中转明显更稳定（直连丢包或抖动重）时探测，避免在相近路径间来回试。
+	margin := int64(directStreamReselectMarginMillis)
+	if direct.stabilityMs/5 > margin {
+		margin = direct.stabilityMs / 5
+	}
+	if best.stabilityMs+margin >= direct.stabilityMs {
+		return nil, false
+	}
+	e.probe = &streamProbe{from: cur, to: best.adj, baseline: baseline}
+	e.stats.probes++
+	return best.adj, true
+}
+
 // streamHopUsableLocked requires r.mu. 直连要求邻接已建立；中转还要求中转节点到目标的公告链路仍在。
 func streamHopUsableLocked(adj *Adjacency, targetNodeID int64, snapshot TopologySnapshot) bool {
 	adj.mu.Lock()
@@ -418,13 +524,19 @@ func (r *Runtime) runStreamDrain(ctx context.Context, key directStreamAffinityKe
 		r.mu.Unlock()
 		return
 	}
+	now := time.Now()
 	if entry.quiescent() && !drain.overflow && streamHopUsableLocked(drain.to, key.targetNodeID, snapshot) {
 		entry.adj = drain.to
 		entry.stats.switches++
 		entry.stats.drains++
+		entry.resetWindow(now)
 	} else {
 		entry.stats.drainAborts++
-		entry.backoffUntil = time.Now().Add(streamPathSwitchBackoff)
+		entry.backoffUntil = now.Add(streamPathSwitchBackoff)
+		if entry.probe != nil && entry.probe.to == drain.to {
+			entry.probe = nil
+			entry.nextProbe = now.Add(streamProbeRetryAfter)
+		}
 	}
 	adj := entry.adj
 	r.directStreamAffinity[key] = entry
@@ -536,6 +648,12 @@ func (r *Runtime) StreamPaths() []StreamPathSnapshot {
 			Drains:       entry.stats.drains,
 			DrainAborts:  entry.stats.drainAborts,
 			Draining:     entry.drain != nil,
+			Probing:      entry.probe != nil,
+			Probes:       entry.stats.probes,
+			ProbeWins:    entry.stats.probeWins,
+		}
+		if entry.provenVia != nil && now.Before(entry.provenUntil) {
+			item.ProvenVia = entry.provenVia.RemoteNodeID
 		}
 		if !entry.rateStart.IsZero() && now.Sub(entry.rateStart) >= streamRateIdleReset {
 			item.RateBps = 0

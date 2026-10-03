@@ -9,7 +9,7 @@ import (
 
 // 点对点流的负载感知选路。
 //
-// 每条邻接按 TCP_INFO 估计发送侧重传率与容量，量化后随链路公告传播；stream
+// 每条邻接按 TCP_INFO 估计发送侧重传率与容量（近期实际达成吞吐的衰减最大值），量化后随链路公告传播；stream
 // 在直连与"经一个邻居中转"的路径间选择：
 //   - 轻负载：选 RTT + 抖动 + 丢包惩罚最低的路径（入境丢包重时常是中转）。
 //   - 重负载：只在中转容量估计明显高于直连时才走中转，避免中转降低带宽。
@@ -33,7 +33,7 @@ const (
 
 	tcpQualityMinSegs        = 50
 	tcpQualityEWMAWeight     = 0.3
-	tcpCapacityDecay         = 0.97
+	tcpCapacityDecay         = 0.995 // 每个采样周期（约 2 秒）的衰减，半衰期约 4.6 分钟
 	tcpQualityPublishMin     = 10 * time.Second
 	tcpLossAdvertiseStep     = 5
 	tcpCapacityAdvertiseGain = 1.25
@@ -118,18 +118,15 @@ func (adj *Adjacency) observeTCPInfoLocked(info TCPInfo, now time.Time) bool {
 		adj.tcpLossPermille += tcpQualityEWMAWeight * (sample - adj.tcpLossPermille)
 		adj.tcpSegsOut, adj.tcpRetrans = info.SegsOut, info.TotalRetrans
 	}
-	if info.Congestion == "bbr" && info.PacingRateBps > 0 {
-		// BBR 的 pacing 速率在 ProbeBW 周期内围绕瓶颈带宽波动，平滑后即容量估计。
-		sample := float64(info.PacingRateBps)
-		if adj.tcpCapacityBps == 0 {
-			adj.tcpCapacityBps = sample
-		} else {
-			adj.tcpCapacityBps += tcpQualityEWMAWeight * (sample - adj.tcpCapacityBps)
+	// 容量取实际达成吞吐（确认字节增量/间隔）的衰减最大值：只反映链路近期真正跑出的速度，
+	// 空闲链路偏低而不会高估。BBR 在应用受限的连接上停留在启动阶段，pacing 速率会成倍高估，不能采用。
+	if !adj.tcpSampledAt.IsZero() && info.BytesAcked >= adj.tcpBytesAcked {
+		if dt := now.Sub(adj.tcpSampledAt).Seconds(); dt > 0.2 {
+			sample := float64(info.BytesAcked-adj.tcpBytesAcked) / dt
+			adj.tcpCapacityBps = math.Max(adj.tcpCapacityBps*tcpCapacityDecay, sample)
 		}
-	} else if info.DeliveryRateBps > 0 {
-		// 其他算法取近期送达速率的衰减最大值；空闲时的低样本不会立刻拉低估计。
-		adj.tcpCapacityBps = math.Max(adj.tcpCapacityBps*tcpCapacityDecay, float64(info.DeliveryRateBps))
 	}
+	adj.tcpBytesAcked, adj.tcpSampledAt = info.BytesAcked, now
 
 	loss := uint32(math.Round(adj.tcpLossPermille/tcpLossAdvertiseStep)) * tcpLossAdvertiseStep
 	capacity := uint32(math.Min(adj.tcpCapacityBps*8/1000, math.MaxUint32))

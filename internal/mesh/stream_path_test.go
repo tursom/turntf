@@ -81,35 +81,39 @@ func TestStreamModeHysteresis(t *testing.T) {
 func TestObserveTCPInfoEstimatesLossAndCapacity(t *testing.T) {
 	adj := &Adjacency{}
 	now := time.Now()
-	// 首个容量估计立即公告。
-	if !adj.observeTCPInfoLocked(TCPInfo{Congestion: "bbr", SegsOut: 1000, TotalRetrans: 100, PacingRateBps: 4e6}, now) || adj.advertisedCapacity != 32000 {
-		t.Fatalf("first capacity not advertised: %d", adj.advertisedCapacity)
+	// 首个样本只建立基线。
+	if adj.observeTCPInfoLocked(TCPInfo{SegsOut: 1000, TotalRetrans: 100, BytesAcked: 1e6}, now) {
+		t.Fatal("baseline sample advertised")
 	}
-	// 报文段不足时累积，不计入重传率。
-	adj.observeTCPInfoLocked(TCPInfo{Congestion: "bbr", SegsOut: 1010, TotalRetrans: 105, PacingRateBps: 4e6}, now.Add(2*time.Second))
+	// 2 秒确认 8 MB：4 MB/s，首个容量估计立即公告；报文段不足，不计重传率。
+	if !adj.observeTCPInfoLocked(TCPInfo{SegsOut: 1010, TotalRetrans: 105, BytesAcked: 9e6}, now.Add(2*time.Second)) || adj.advertisedCapacity != 32000 {
+		t.Fatalf("first capacity not advertised: cap=%.0f advertised=%d", adj.tcpCapacityBps, adj.advertisedCapacity)
+	}
 	if adj.tcpLossPermille != 0 {
 		t.Fatalf("loss updated from too few segments: %.1f", adj.tcpLossPermille)
 	}
-	// 1000 段中重传 80：80‰，EWMA 首次 0.3×80=24‰；公告在限频期内推迟。
-	if adj.observeTCPInfoLocked(TCPInfo{Congestion: "bbr", SegsOut: 2000, TotalRetrans: 180, PacingRateBps: 4e6}, now.Add(4*time.Second)) {
+	// 1000 段中重传 80：80‰，EWMA 首次 0.3×80=24‰；公告在限频期内推迟。空闲样本不拉低容量。
+	if adj.observeTCPInfoLocked(TCPInfo{SegsOut: 2000, TotalRetrans: 180, BytesAcked: 9.1e6}, now.Add(4*time.Second)) {
 		t.Fatal("quality republished within rate limit")
 	}
 	if adj.tcpLossPermille < 23 || adj.tcpLossPermille > 25 {
 		t.Fatalf("loss EWMA = %.1f, want about 24", adj.tcpLossPermille)
 	}
-	if !adj.observeTCPInfoLocked(TCPInfo{Congestion: "bbr", SegsOut: 2010, TotalRetrans: 180, PacingRateBps: 4e6}, now.Add(12*time.Second)) || adj.advertisedLoss != 25 || adj.advertisedCapacity != 32000 {
+	if adj.tcpCapacityBps < 3.9e6 {
+		t.Fatalf("idle sample collapsed capacity: %.0f", adj.tcpCapacityBps)
+	}
+	if !adj.observeTCPInfoLocked(TCPInfo{SegsOut: 2010, TotalRetrans: 180, BytesAcked: 9.2e6}, now.Add(12*time.Second)) || adj.advertisedLoss != 25 || adj.advertisedCapacity != 32000 {
 		t.Fatalf("advertised loss=%d cap=%d", adj.advertisedLoss, adj.advertisedCapacity)
 	}
-	// 容量变化不足 25% 时不重复公告。
-	if adj.observeTCPInfoLocked(TCPInfo{Congestion: "bbr", SegsOut: 2020, TotalRetrans: 180, PacingRateBps: 4.4e6}, now.Add(24*time.Second)) {
-		t.Fatal("small capacity change republished")
+	// 2 秒确认 12 MB：6 MB/s；限频期过后实际吞吐提升超过 25% 时重新公告。
+	adj.observeTCPInfoLocked(TCPInfo{SegsOut: 2020, TotalRetrans: 180, BytesAcked: 21.2e6}, now.Add(14*time.Second))
+	if !adj.observeTCPInfoLocked(TCPInfo{SegsOut: 2030, TotalRetrans: 180, BytesAcked: 21.3e6}, now.Add(24*time.Second)) || adj.advertisedCapacity < 47000 {
+		t.Fatalf("capacity increase not advertised: cap=%.0f advertised=%d", adj.tcpCapacityBps, adj.advertisedCapacity)
 	}
-	// 非 BBR 取送达速率的衰减最大值。
-	cubic := &Adjacency{}
-	cubic.observeTCPInfoLocked(TCPInfo{Congestion: "cubic", SegsOut: 10, DeliveryRateBps: 3e6}, now)
-	cubic.observeTCPInfoLocked(TCPInfo{Congestion: "cubic", SegsOut: 20, DeliveryRateBps: 1e5}, now.Add(2*time.Second))
-	if cubic.tcpCapacityBps < 2.9e6 {
-		t.Fatalf("idle delivery sample collapsed capacity: %.0f", cubic.tcpCapacityBps)
+	// 连接重建（计数回退）只重建基线。
+	adj.observeTCPInfoLocked(TCPInfo{SegsOut: 5, BytesAcked: 100}, now.Add(26*time.Second))
+	if adj.tcpCapacityBps < 5.9e6 {
+		t.Fatalf("counter reset corrupted capacity: %.0f", adj.tcpCapacityBps)
 	}
 }
 

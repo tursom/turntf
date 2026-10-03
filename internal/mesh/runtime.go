@@ -468,6 +468,8 @@ type Adjacency struct {
 	tcpSegsOut         uint32    // 上次计入重传率时的累计发送报文段
 	tcpRetrans         uint32    // 上次计入重传率时的累计重传报文段
 	tcpSampled         bool      // 是否已有基线样本
+	tcpBytesAcked      uint64    // 上次采样时的累计确认字节
+	tcpSampledAt       time.Time // 上次采样时间
 	advertisedLoss     uint32    // 已公告的重传率（千分比）
 	advertisedCapacity uint32    // 已公告的容量（kbps）
 	qualityAdvertised  time.Time // 上次因 TCP 质量变化触发公告的时间

@@ -115,6 +115,13 @@ message MeshLinkAdvertisement {
   uint32 cost_ms = 5;
   uint32 jitter_ms = 6;
   bool established = 7;
+  // loss_permille is the advertiser's recent send-side retransmission rate on
+  // this link (TCP_INFO), in permille; 0 when unknown or clean.
+  uint32 loss_permille = 8;
+  // capacity_kbps estimates the advertiser's send capacity on this link (BBR
+  // pacing or delivery rate); 0 when unknown. Only stream path selection uses
+  // these two fields.
+  uint32 capacity_kbps = 9;
 }
 
 message MeshForwardedPacket {

@@ -101,6 +101,8 @@ type ClusterMeshStatus struct {
 	Routes []ClusterMeshRoute
 	// Adjacencies 当前物理邻接及其底层 TCP 统计
 	Adjacencies []ClusterMeshAdjacency
+	// StreamPaths 点对点流当前的选路状态
+	StreamPaths []ClusterMeshStreamPath
 	// Metrics Mesh 网络的各类统计指标
 	Metrics ClusterMeshMetrics
 }
@@ -114,6 +116,25 @@ type ClusterMeshAdjacency struct {
 	RTTMs        int64               `json:"rtt_ms"`
 	JitterMs     int64               `json:"jitter_ms"`
 	TCP          *ClusterMeshTCPInfo `json:"tcp,omitempty"`
+	// LossPermille 与 CapacityKbps 是 stream 选路使用的发送侧重传率与容量估计。
+	LossPermille float64 `json:"loss_permille"`
+	CapacityKbps int64   `json:"capacity_kbps"`
+}
+
+// ClusterMeshStreamPath 描述一条点对点流的选路：直连、经 via_node_id 中转，或交给转发引擎。
+type ClusterMeshStreamPath struct {
+	TargetNodeID int64  `json:"target_node_id"`
+	StreamID     string `json:"stream_id"`
+	Epoch        uint64 `json:"epoch"`
+	ViaNodeID    int64  `json:"via_node_id,omitempty"`
+	Transport    string `json:"transport,omitempty"`
+	Forwarding   bool   `json:"forwarding,omitempty"`
+	Heavy        bool   `json:"heavy"`
+	RateKbps     int64  `json:"rate_kbps"`
+	Switches     uint64 `json:"switches"`
+	Drains       uint64 `json:"drains"`
+	DrainAborts  uint64 `json:"drain_aborts"`
+	Draining     bool   `json:"draining,omitempty"`
 }
 
 // ClusterMeshTCPInfo 是 Linux TCP_INFO 的子集：时间为微秒，计数为连接建立以来的累计值，速率为字节/秒。

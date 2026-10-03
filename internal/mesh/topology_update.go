@@ -146,13 +146,15 @@ func normalizeTopologyLinks(originNodeID int64, links []*LinkAdvertisement) []*L
 			keys = append(keys, key)
 		}
 		byKey[key] = &LinkAdvertisement{
-			FromNodeId:  link.FromNodeId,
-			ToNodeId:    link.ToNodeId,
-			Transport:   link.Transport,
-			PathClass:   link.PathClass,
-			CostMs:      link.CostMs,
-			JitterMs:    link.JitterMs,
-			Established: link.Established,
+			FromNodeId:   link.FromNodeId,
+			ToNodeId:     link.ToNodeId,
+			Transport:    link.Transport,
+			PathClass:    link.PathClass,
+			CostMs:       link.CostMs,
+			JitterMs:     link.JitterMs,
+			Established:  link.Established,
+			LossPermille: link.LossPermille,
+			CapacityKbps: link.CapacityKbps,
 		}
 	}
 	sort.Slice(keys, func(i, j int) bool {

@@ -237,7 +237,6 @@ type TCPInfo struct {
 	Unacked         uint32 // 在途未确认报文段
 	NotSentBytes    uint32 // 已写入 socket 但尚未发送的字节
 	BytesSent       uint64 // 累计发送字节（含重传）
-	BytesAcked      uint64 // 累计被确认字节
 	BytesRetrans    uint64 // 累计重传字节
 	SegsOut         uint32 // 累计发送报文段
 	TotalRetrans    uint32 // 累计重传报文段

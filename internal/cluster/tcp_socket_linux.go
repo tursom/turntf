@@ -73,7 +73,6 @@ func meshTCPInfo(c net.Conn) (mesh.TCPInfo, bool) {
 		Unacked:         info.Unacked,
 		NotSentBytes:    info.Notsent_bytes,
 		BytesSent:       info.Bytes_sent,
-		BytesAcked:      info.Bytes_acked,
 		BytesRetrans:    info.Bytes_retrans,
 		SegsOut:         info.Segs_out,
 		TotalRetrans:    info.Total_retrans,

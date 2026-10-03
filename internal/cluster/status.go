@@ -2,7 +2,6 @@ package cluster
 
 import (
 	"context"
-	"math"
 	"sort"
 	"time"
 
@@ -244,8 +243,7 @@ func (m *Manager) meshStatusSnapshot() app.ClusterMeshStatus {
 		TopologyGeneration: binding.TopologyStore().Snapshot().TopologyGeneration,
 	}
 	for _, adj := range runtime.Adjacencies() {
-		item := app.ClusterMeshAdjacency{RemoteNodeID: adj.RemoteNodeID, Transport: meshTransportLabel(adj.Transport), Inbound: adj.Inbound, Established: adj.Established, RTTMs: adj.RTTMs, JitterMs: adj.JitterMs,
-			LossPermille: math.Round(adj.LossPermille*10) / 10, CapacityKbps: int64(adj.CapacityBps * 8 / 1000)}
+		item := app.ClusterMeshAdjacency{RemoteNodeID: adj.RemoteNodeID, Transport: meshTransportLabel(adj.Transport), Inbound: adj.Inbound, Established: adj.Established, RTTMs: adj.RTTMs, JitterMs: adj.JitterMs}
 		if t := adj.TCP; t != nil {
 			item.TCP = &app.ClusterMeshTCPInfo{Congestion: t.Congestion, RTTUs: t.RTTMicros, RTTVarUs: t.RTTVarMicros, MinRTTUs: t.MinRTTMicros, SndCwnd: t.SndCwnd, SndMSS: t.SndMSS, Unacked: t.Unacked, NotSentBytes: t.NotSentBytes, BytesSent: t.BytesSent, BytesRetrans: t.BytesRetrans, SegsOut: t.SegsOut, TotalRetrans: t.TotalRetrans, DeliveryRateBps: t.DeliveryRateBps, PacingRateBps: t.PacingRateBps}
 		}
@@ -257,22 +255,6 @@ func (m *Manager) meshStatusSnapshot() app.ClusterMeshStatus {
 			return a.RemoteNodeID < b.RemoteNodeID
 		}
 		return a.Transport < b.Transport
-	})
-	for _, path := range runtime.StreamPaths() {
-		item := app.ClusterMeshStreamPath{TargetNodeID: path.TargetNodeID, StreamID: path.StreamID, Epoch: path.Epoch, ViaNodeID: path.ViaNodeID,
-			Forwarding: path.Forwarding, Heavy: path.Heavy, RateKbps: int64(path.RateBps * 8 / 1000),
-			Switches: path.Switches}
-		if !path.Forwarding {
-			item.Transport = meshTransportLabel(path.Transport)
-		}
-		status.StreamPaths = append(status.StreamPaths, item)
-	}
-	sort.Slice(status.StreamPaths, func(i, j int) bool {
-		a, b := status.StreamPaths[i], status.StreamPaths[j]
-		if a.TargetNodeID != b.TargetNodeID {
-			return a.TargetNodeID < b.TargetNodeID
-		}
-		return a.StreamID < b.StreamID
 	})
 	if binding.tcp != nil {
 		stats := binding.tcp.Stats()

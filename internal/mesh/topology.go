@@ -21,9 +21,6 @@ type LinkState struct {
 	CostMs       int64
 	JitterMs     int64
 	Established  bool
-	// LossPermille 与 CapacityKbps 为广告方发送侧的近期重传率与容量估计，0 表示未知；只用于 stream 选路。
-	LossPermille int64
-	CapacityKbps int64
 }
 
 // TopologySnapshot 是不可变的拓扑只读视图，包含节点、链路和世代号。
@@ -148,8 +145,6 @@ func (s *MemoryTopologyStore) ApplyTopologyUpdate(update *TopologyUpdate) {
 			CostMs:       int64(link.CostMs),
 			JitterMs:     int64(link.JitterMs),
 			Established:  link.Established,
-			LossPermille: int64(link.LossPermille),
-			CapacityKbps: int64(link.CapacityKbps),
 		}
 	}
 	s.rebuildSnapshotLocked()

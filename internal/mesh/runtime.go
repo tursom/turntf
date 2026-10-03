@@ -383,13 +383,6 @@ type directStreamAffinityEntry struct {
 	awaitResume  bool
 	sentEnd      uint64
 	ackedEnd     uint64
-
-	// 负载感知选路（stream_path.go）：发送速率与轻/重负载模式。
-	rateBps   float64
-	rateBytes uint64
-	rateStart time.Time
-	heavy     bool
-	stats     streamPathCounters
 }
 
 func (e directStreamAffinityEntry) quiescent() bool {
@@ -458,18 +451,6 @@ type Adjacency struct {
 	activity     atomic.Uint64 // 收发的 stream/转发与读取字节累计，用于判断探测期间是否空闲
 	pingActivity uint64        // 当前探测发出时的 activity 快照
 	spikeEWMA    float64       // 空闲探测中 RTT 尖峰（多为丢包重传）比例的 EWMA
-
-	// 发送侧 TCP 质量（TCP_INFO 采样，见 stream_path.go）；0 表示未知。
-	tcpLossPermille    float64   // 近期重传率 EWMA（千分比）
-	tcpCapacityBps     float64   // 发送容量估计（字节/秒）
-	tcpSegsOut         uint32    // 上次计入重传率时的累计发送报文段
-	tcpRetrans         uint32    // 上次计入重传率时的累计重传报文段
-	tcpSampled         bool      // 是否已有基线样本
-	tcpBytesAcked      uint64    // 上次采样时的累计确认字节
-	tcpSampledAt       time.Time // 上次采样时间
-	advertisedLoss     uint32    // 已公告的重传率（千分比）
-	advertisedCapacity uint32    // 已公告的容量（kbps）
-	qualityAdvertised  time.Time // 上次因 TCP 质量变化触发公告的时间
 }
 
 // observeIdleProbeLocked requires adj.mu and a minimum RTT that already
@@ -820,14 +801,16 @@ func (r *Runtime) RouteEnvelope(ctx context.Context, targetNodeID int64, envelop
 		frame := envelope.GetStreamFrame()
 		if frame != nil && len(frame.StreamId) == 16 && frame.Kind >= streamFrameKindOpen && frame.Kind <= streamFrameKindClose {
 			key := directStreamAffinityKey{targetNodeID: targetNodeID, streamID: string(frame.StreamId)}
+			if frame.Kind == streamFrameKindClose {
+				defer r.clearDirectStreamAffinity(key, frame.Epoch)
+			}
 			adj, err := r.directStreamAdjacency(key, frame)
 			if err != nil {
 				return err
 			}
-			if frame.Kind == streamFrameKindClose {
-				defer r.clearDirectStreamAffinity(key, frame.Epoch)
+			if adj != nil {
+				return r.sendEnvelopeCtx(ctx, adj.Conn, envelope, r.helloTimeout)
 			}
-			return r.sendStreamFrameOn(ctx, adj, targetNodeID, envelope)
 		} else if adj := r.bestDirectAdjacency(targetNodeID); adj != nil {
 			// Legacy stream envelopes have no affinity key; preserve compatibility.
 			return r.sendEnvelopeCtx(ctx, adj.Conn, envelope, r.helloTimeout)
@@ -848,11 +831,6 @@ func (r *Runtime) RouteEnvelope(ctx context.Context, targetNodeID int64, envelop
 			}
 		}
 	}
-	return r.forwardEnvelope(ctx, targetNodeID, trafficClass, envelope)
-}
-
-// forwardEnvelope 将信封包装为 ForwardedPacket 交给转发引擎按规划路由。
-func (r *Runtime) forwardEnvelope(ctx context.Context, targetNodeID int64, trafficClass TrafficClass, envelope *ClusterEnvelope) error {
 	payload, err := r.codec.Encode(envelope)
 	if err != nil {
 		return err
@@ -1101,12 +1079,10 @@ func (r *Runtime) bestDirectAdjacencyLocked(targetNodeID int64) *Adjacency {
 // epoch. Resume and its Ack response may advance an existing affinity; all
 // other frames must match the pinned epoch exactly.
 func (r *Runtime) directStreamAdjacency(key directStreamAffinityKey, frame *StreamFrame) (*Adjacency, error) {
-	snapshot := r.store.Snapshot()
-	snapshot.ensureOutgoingLinks()
 	var decision RouteDecision
 	var directRoute bool
 	if r.planner != nil {
-		decision, directRoute = r.planner.Compute(snapshot, key.targetNodeID, TrafficPointToPointStream, TransportUnspecified)
+		decision, directRoute = r.planner.Compute(r.store.Snapshot(), key.targetNodeID, TrafficPointToPointStream, TransportUnspecified)
 		directRoute = directRoute && decision.NextHopNodeID == key.targetNodeID
 	}
 	r.mu.Lock()
@@ -1115,7 +1091,6 @@ func (r *Runtime) directStreamAdjacency(key directStreamAffinityKey, frame *Stre
 		return nil, ErrRuntimeClosed
 	}
 
-	now := time.Now()
 	entry, exists := r.directStreamAffinity[key]
 	canAdvanceEpoch := frame.Kind == streamFrameKindResume || frame.Kind == streamFrameKindAck
 	if exists && canAdvanceEpoch && frame.Epoch > entry.epoch {
@@ -1126,26 +1101,17 @@ func (r *Runtime) directStreamAdjacency(key directStreamAffinityKey, frame *Stre
 		if entry.epoch != frame.Epoch {
 			return nil, fmt.Errorf("mesh: direct stream path epoch %d does not match affinity epoch %d: %w", frame.Epoch, entry.epoch, ErrNoRoute)
 		}
-		ordered := frame.Kind != streamFrameKindAck && frame.Kind != streamFrameKindOpenAck
-		if entry.adj != nil && !streamHopUsableLocked(entry.adj, key.targetNodeID, snapshot) {
-			if ordered {
+		if entry.adj != nil {
+			entry.adj.mu.Lock()
+			established := entry.adj.established
+			entry.adj.mu.Unlock()
+			if !established {
 				return nil, fmt.Errorf("mesh: direct stream affinity is no longer established: %w", ErrNoRoute)
 			}
-			// 累计确认可以直接改走其他路径。
-			entry.adj = nil
 		}
-		if frame.Kind == streamFrameKindData {
-			entry.observeSend(len(frame.Payload), now)
-		}
-		entry.updateMode(now)
-		// 只在本 epoch 已发出的有序帧全部被确认时换路：有在途数据时换路会让新路径的帧
-		// 越过旧路径未达的帧而被接收端丢弃。重负载期间很少出现这一时刻，沿用当前路径。
 		if r.directStreamMayReselect(frame.Kind) && entry.quiescent() {
-			direct := r.selectDirectStreamAdjacencyLocked(key.targetNodeID, decision, directRoute)
-			candidates := r.streamPathCandidatesLocked(key.targetNodeID, direct, entry.adj, snapshot, now)
-			if desired := preferredStreamPathLocked(candidates, entry.adj, entry.heavy); desired != nil && desired != entry.adj {
-				entry.adj = desired
-				entry.stats.switches++
+			if better := r.cheaperDirectStreamAdjacencyLocked(entry.adj, key.targetNodeID, decision, directRoute); better != nil {
+				entry.adj = better
 			}
 		}
 		recordDirectStreamSend(&entry, frame)
@@ -1156,12 +1122,7 @@ func (r *Runtime) directStreamAdjacency(key directStreamAffinityKey, frame *Stre
 	if len(r.directStreamAffinity) >= directStreamAffinityLimit {
 		return nil, fmt.Errorf("mesh: direct stream affinity capacity reached: %w", ErrNoRoute)
 	}
-	direct := r.selectDirectStreamAdjacencyLocked(key.targetNodeID, decision, directRoute)
-	entry = directStreamAffinityEntry{epoch: frame.Epoch, adj: direct}
-	// 新 epoch 尚无负载，按轻负载选路；没有任何候选时保持转发路径。
-	if desired := preferredStreamPathLocked(r.streamPathCandidatesLocked(key.targetNodeID, direct, nil, snapshot, now), nil, false); desired != nil {
-		entry.adj = desired
-	}
+	entry = directStreamAffinityEntry{epoch: frame.Epoch, adj: r.selectDirectStreamAdjacencyLocked(key.targetNodeID, decision, directRoute)}
 	if frame.Kind == streamFrameKindResume {
 		// Data after Resume restarts at the resumed offset; earlier bytes are
 		// either acknowledged or retransmitted in this epoch.
@@ -1458,8 +1419,6 @@ type AdjacencySnapshot struct {
 	Samples      int           // 已采集的测量样本数
 	Established  bool          // 是否已建立
 	TCP          *TCPInfo      // 底层 TCP 内核统计；取不到时为 nil
-	LossPermille float64       // 发送侧重传率估计（千分比）
-	CapacityBps  float64       // 发送容量估计（字节/秒），0 为未知
 }
 
 // snapshot 创建 Adjacency 状态的一份快照副本（带锁保护）。
@@ -1474,8 +1433,6 @@ func (a *Adjacency) snapshot() AdjacencySnapshot {
 	defer a.mu.Unlock()
 	return AdjacencySnapshot{
 		TCP:          tcp,
-		LossPermille: a.tcpLossPermille,
-		CapacityBps:  a.tcpCapacityBps,
 		RemoteNodeID: a.RemoteNodeID,
 		Transport:    a.Transport,
 		RemoteHint:   a.RemoteHint,
@@ -2181,18 +2138,15 @@ func (r *Runtime) buildLinkAdvertisementLocked(adj *Adjacency, established bool)
 	adj.mu.Lock()
 	cost := r.adjacencyCostLocked(adj, time.Now())
 	jitter := int64(adj.jitterEWMA)
-	loss, capacity := adj.advertisedLoss, adj.advertisedCapacity
 	adj.mu.Unlock()
 	return &LinkAdvertisement{
-		FromNodeId:   r.localNodeID,
-		ToNodeId:     adj.RemoteNodeID,
-		Transport:    adj.Transport,
-		PathClass:    classifyPathClass(adj),
-		CostMs:       uint32(clampNonNegative(cost)),
-		JitterMs:     uint32(clampNonNegative(jitter)),
-		Established:  established,
-		LossPermille: loss,
-		CapacityKbps: capacity,
+		FromNodeId:  r.localNodeID,
+		ToNodeId:    adj.RemoteNodeID,
+		Transport:   adj.Transport,
+		PathClass:   classifyPathClass(adj),
+		CostMs:      uint32(clampNonNegative(cost)),
+		JitterMs:    uint32(clampNonNegative(jitter)),
+		Established: established,
 	}
 }
 
@@ -2337,7 +2291,6 @@ func (r *Runtime) linkMeasurementLoop(ctx context.Context, adj *Adjacency) {
 			return
 		}
 		r.sendPing(ctx, adj)
-		r.sampleAdjacencyTransport(adj)
 	}
 }
 

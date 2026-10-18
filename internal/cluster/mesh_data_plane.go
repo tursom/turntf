@@ -453,6 +453,8 @@ func (m *Manager) handleMeshQueryRequest(ctx context.Context, packet *mesh.Forwa
 		return errors.New("mesh query request cannot be empty")
 	}
 	switch query.Kind {
+	case meshQueryOperationsRequestKind:
+		return m.handleOperationsRequest(packet, query)
 	case meshQueryResolveUserSessionsRequestKind:
 		return m.handleMeshResolveUserSessionsRequest(ctx, packet, query)
 	default:
@@ -466,6 +468,8 @@ func (m *Manager) handleMeshQueryResponse(ctx context.Context, packet *mesh.Forw
 		return errors.New("mesh query response cannot be empty")
 	}
 	switch query.Kind {
+	case meshQueryOperationsResponseKind:
+		return m.handleOperationsResponse(packet, query)
 	case meshQueryResolveUserSessionsResponseKind:
 		return m.handleMeshResolveUserSessionsResponse(ctx, packet, query)
 	default:

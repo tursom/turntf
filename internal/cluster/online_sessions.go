@@ -385,7 +385,7 @@ func (m *Manager) presenceCandidateNodeIDs(user store.UserKey) []int64 {
 // allKnownNodeIDs 返回所有已知节点ID的列表。
 func (m *Manager) allKnownNodeIDs() []int64 {
 	m.mu.Lock()
-	defer m.mu.Unlock()
+	binding := m.meshRuntime
 
 	seen := map[int64]struct{}{m.cfg.NodeID: {}}
 	for nodeID := range m.peers {
@@ -403,12 +403,29 @@ func (m *Manager) allKnownNodeIDs() []int64 {
 			seen[peer.nodeID] = struct{}{}
 		}
 	}
+	m.mu.Unlock()
+	// 仅有拓扑通告、没有直连会话或发现 URL 的间接节点同样属于已知成员。
+	if binding != nil {
+		for nodeID := range binding.TopologyStore().Snapshot().Nodes {
+			if nodeID > 0 {
+				seen[nodeID] = struct{}{}
+			}
+		}
+	}
 	out := make([]int64, 0, len(seen))
 	for nodeID := range seen {
 		out = append(out, nodeID)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
 	return out
+}
+
+// KnownNodeIDs 返回实时已知成员快照，包含本机和仅经拓扑获知的间接节点。
+func (m *Manager) KnownNodeIDs() []int64 {
+	if m == nil {
+		return nil
+	}
+	return m.allKnownNodeIDs()
 }
 
 // localUserSessions 返回本地指定用户的所有在线会话。

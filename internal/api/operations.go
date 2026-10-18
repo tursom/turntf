@@ -298,6 +298,17 @@ func (s *Service) ClusterNodes(ctx context.Context) (clusterNodesResponse, error
 			nodes[0].NodeID = status.NodeID
 		}
 		nodes = append(nodes, connectedClusterNodes(status.Peers)...)
+		seen := make(map[int64]bool, len(nodes))
+		for _, node := range nodes {
+			seen[node.NodeID] = true
+		}
+		// 复用实际路由状态补齐间接可达成员；无需为其登记 HTTP 或发现 URL。
+		for _, route := range status.Mesh.Routes {
+			if route.Reachable && route.DestinationNodeID > 0 && !seen[route.DestinationNodeID] {
+				seen[route.DestinationNodeID] = true
+				nodes = append(nodes, clusterNodeResponse{NodeID: route.DestinationNodeID, Source: "mesh"})
+			}
+		}
 	}
 
 	sort.Slice(nodes, func(i, j int) bool {

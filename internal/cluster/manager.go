@@ -230,6 +230,12 @@ type Manager struct {
 	// seenConnectivityRumors 是已见过的连接性传闻（用于去重）。
 	seenConnectivityRumors map[connectivityRumorKey]time.Time
 
+	// 运维处理器由 API 注入；请求和执行均有界，避免连接读取循环等待运维 I/O。
+	operationsHandler app.OperationsHandler
+	operationsSlots   chan struct{}
+	nextOperationsID  uint64
+	pendingOperations map[uint64]pendingOperation
+
 	// nextMeshPacketID 是网格数据包的ID自增计数器。
 	nextMeshPacketID uint64
 	// meshForwardedPackets 统计转发的网格数据包数。
@@ -478,6 +484,8 @@ func NewManager(cfg Config, st *store.Store) (*Manager, error) {
 		selfKnownURLs:              make(map[string]uint64),
 		supportsMembership:         !cfg.DiscoveryDisabled,
 		retryQueue:                 make(map[string]queuedPacket),
+		operationsSlots:            make(chan struct{}, 16),
+		pendingOperations:          make(map[uint64]pendingOperation),
 		pendingResolveSessions:     make(map[uint64]chan resolveUserSessionsQueryResult),
 		loggedInUsersByNode:        make(map[int64]map[store.UserKey]app.LoggedInUserSummary),
 		localLoggedInUsers:         make(map[store.UserKey]app.LoggedInUserSummary),

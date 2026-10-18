@@ -254,6 +254,7 @@ func (m *Manager) Close() error {
 		}
 
 		m.mu.Lock()
+		clear(m.pendingOperations)
 		sessions := make([]*session, 0, len(m.peers))
 		for _, peer := range m.peers {
 			if peer.active != nil {

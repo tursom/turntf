@@ -772,7 +772,7 @@ func (m *Manager) meshPeerSession(peerID int64) *session {
 		remoteOriginProgress:    make(map[int64]uint64),
 		pendingPulls:            make(map[int64]pendingPullState),
 		pendingTimeSync:         make(map[uint64]chan timeSyncResult),
-		pendingSnapshotParts:    make(map[string]struct{}),
+		pendingSnapshotParts:    make(map[string]*snapshotRequestState),
 		replicationReady:        true,
 		remoteSnapshotVersion:   internalproto.SnapshotVersion,
 		remoteMessageWindowSize: m.cfg.MessageWindowSize,

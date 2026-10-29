@@ -145,6 +145,7 @@ func (s *session) close() {
 		return
 	}
 	s.closed = true
+	clear(s.pendingSnapshotParts)
 	// 通知所有等待中的时间同步请求
 	pending := make([]chan timeSyncResult, 0, len(s.pendingTimeSync))
 	for requestID, ch := range s.pendingTimeSync {
@@ -417,16 +418,8 @@ func (s *session) observeRTT(rttMs int64) {
 
 // beginSnapshotRequest 标记快照分区请求已开始，返回是否重复请求。
 func (s *session) beginSnapshotRequest(partition string) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.pendingSnapshotParts == nil {
-		s.pendingSnapshotParts = make(map[string]struct{})
-	}
-	if _, ok := s.pendingSnapshotParts[partition]; ok {
-		return false
-	}
-	s.pendingSnapshotParts[partition] = struct{}{}
-	return true
+	_, ok := s.beginSnapshotRequestAt(partition, internalproto.SnapshotPartitionKind_SNAPSHOT_PARTITION_KIND_UNSPECIFIED, time.Now())
+	return ok
 }
 
 // completeSnapshotRequest 标记快照分区请求已完成。

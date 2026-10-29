@@ -380,10 +380,11 @@ type session struct {
 	// remoteMessageWindowSize 是对端的消息窗口大小。
 	remoteMessageWindowSize int
 	libP2PPeerID            string
-	// pendingSnapshotParts 是等待响应的快照分区请求。
-	pendingSnapshotParts map[string]struct{}
-	nextTimeSyncID       uint64
-	nextPullRequestID    uint64
+	// pendingSnapshotParts 包含在途及退避中的快照请求；session.mu 保护。
+	pendingSnapshotParts  map[string]*snapshotRequestState
+	nextSnapshotRequestID uint64
+	nextTimeSyncID        uint64
+	nextPullRequestID     uint64
 	// pendingTimeSync 是等待响应的时间同步请求。
 	pendingTimeSync map[uint64]chan timeSyncResult
 	// clockOffsetMs 是此会话计算出的时钟偏移。

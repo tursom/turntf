@@ -341,7 +341,7 @@ func (m *Manager) snapshotDigestLoop() {
 		case <-m.ctx.Done():
 			return
 		case <-ticker.C:
-			m.flushSnapshotDigestsDue(time.Now().UTC())
+			m.flushSnapshotDigestsDue(time.Now())
 		}
 	}
 }

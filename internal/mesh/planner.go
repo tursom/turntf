@@ -115,6 +115,10 @@ func (p *Planner) Compute(snapshot TopologySnapshot, destinationNodeID int64, tr
 		heap.Push(&pq, &queueItem{state: start, meta: meta})
 	}
 
+	// 每个状态的转移在入队时已按值复制，下一次扩展可以覆盖同一缓冲区。
+	// 缓冲区属于当前调用，不与并发规划共享；高邻接度时 append 仍可自动扩容。
+	var transitionBuffer [8]transition
+	transitions := transitionBuffer[:0]
 	for pq.Len() > 0 {
 		item := heap.Pop(&pq).(*queueItem)
 		// 跳过已过时的状态（代价或第一跳信息已变更）。
@@ -126,7 +130,8 @@ func (p *Planner) Compute(snapshot TopologySnapshot, destinationNodeID int64, tr
 		if item.state.nodeID == destinationNodeID && item.state.nodeID != p.localNodeID {
 			return buildRouteDecision(destinationNodeID, snapshot.TopologyGeneration, item.meta), true
 		}
-		for _, next := range p.expand(snapshot, destinationNodeID, trafficClass, ingressTransport, item.state, item.meta) {
+		transitions = p.expand(snapshot, destinationNodeID, trafficClass, ingressTransport, item.state, item.meta, transitions[:0])
+		for _, next := range transitions {
 			current, ok := best[next.state]
 			if !ok || betterMeta(next.meta, current) {
 				best[next.state] = next.meta
@@ -154,8 +159,7 @@ type transition struct {
 //
 // 转移前先通过 canTransit 检查当前节点是否允许为该流量类别中转。
 // 不允许中转时返回空列表。
-func (p *Planner) expand(snapshot TopologySnapshot, destinationNodeID int64, trafficClass TrafficClass, ingressTransport TransportKind, current plannerState, meta plannerMeta) []transition {
-	transitions := make([]transition, 0)
+func (p *Planner) expand(snapshot TopologySnapshot, destinationNodeID int64, trafficClass TrafficClass, ingressTransport TransportKind, current plannerState, meta plannerMeta, transitions []transition) []transition {
 	if !p.canTransit(snapshot, destinationNodeID, trafficClass, ingressTransport, current.nodeID) {
 		return transitions
 	}

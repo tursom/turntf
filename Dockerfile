@@ -58,12 +58,13 @@ COPY cmd ./cmd
 COPY internal ./internal
 COPY proto ./proto
 
+# CGO_CFLAGS 会覆盖 Go 默认的 -O2 -g，设置兼容性宏时仍须保留 C 优化级别。
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     set -eu; \
     BUILD_TAGS=""; \
     if [ "${ENABLE_ZEROMQ}" = "true" ]; then BUILD_TAGS="-tags zeromq"; fi; \
-    CGO_ENABLED=1 CGO_CFLAGS="-D_LARGEFILE64_SOURCE -D_GNU_SOURCE" GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+    CGO_ENABLED=1 CGO_CFLAGS="-O2 -D_LARGEFILE64_SOURCE -D_GNU_SOURCE" GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
     go build ${BUILD_TAGS} -trimpath -ldflags="-s -w" -o /out/turntf ./cmd/turntf
 
 FROM alpine:3.22

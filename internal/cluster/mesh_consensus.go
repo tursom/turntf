@@ -64,8 +64,14 @@ func (m *Manager) handleMeshConsensusMessage(ctx context.Context, packet *mesh.F
 		return errors.New("consensus handler is not configured")
 	}
 	source := message.GetSourceNodeId()
-	if source <= 0 && packet != nil {
+	if packet != nil && packet.GetSourceNodeId() > 0 {
+		if source > 0 && source != packet.GetSourceNodeId() {
+			return errors.New("consensus message source mismatch")
+		}
 		source = packet.GetSourceNodeId()
+	}
+	if source <= 0 {
+		return errors.New("consensus message source is required")
 	}
 	return handler(ctx, source, message)
 }

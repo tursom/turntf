@@ -285,14 +285,15 @@ type Runtime struct {
 	policy            *ForwardingPolicy // 本地转发策略
 
 	// ---- 组件依赖 ----
-	store       TopologyStore         // 拓扑数据存储
-	codec       EnvelopeCodec         // Envelope 编解码器
-	signer      EnvelopeSigner        // 出站 Envelope 签名器
-	verifier    EnvelopeVerifier      // 入站 Envelope 验证器
-	persistence GenerationPersistence // 生成号持久化
-	classifier  TrafficClassifier     // 流量分类器
-	engine      *Engine               // 转发引擎，处理数据包路由
-	planner     RoutePlanner          // 路线规划器，计算最优下一跳
+	store          TopologyStore                   // 拓扑数据存储
+	codec          EnvelopeCodec                   // Envelope 编解码器
+	signer         EnvelopeSigner                  // 出站 Envelope 签名器
+	verifier       EnvelopeVerifier                // 入站 Envelope 验证器
+	persistence    GenerationPersistence           // 生成号持久化
+	classifier     TrafficClassifier               // 流量分类器
+	engine         *Engine                         // 转发引擎，处理数据包路由
+	planner        RoutePlanner                    // 路线规划器，计算最优下一跳
+	queryFallbacks map[int64]*controlQueryFallback // mu: local measured query-only preferences.
 
 	// ---- 外部回调 ----
 	envelopeHandler        LocalEnvelopeHandler        // 业务消息处理回调
@@ -660,7 +661,7 @@ func NewRuntime(opts RuntimeOptions) (*Runtime, error) {
 			runtime.localRuntimeEpoch = 1
 		}
 	}
-	runtime.planner = NewPlanner(opts.LocalNodeID)
+	runtime.planner = &runtimeQueryPlanner{runtime: runtime, base: NewPlanner(opts.LocalNodeID)}
 	runtime.engine = NewEngine(opts.LocalNodeID, store.Snapshot, runtime.planner, runtime, runtime.handleLocalForwardedPacket, opts.ForwardingObserver)
 	return runtime, nil
 }
@@ -1721,13 +1722,14 @@ func (r *Runtime) localHello(kind TransportKind) *NodeHello {
 		ordered = append(ordered, capability)
 	}
 	return &NodeHello{
-		NodeId:                   r.localNodeID,
-		ProtocolVersion:          ProtocolVersion,
-		Transports:               ordered,
-		ForwardingPolicy:         ClonePolicy(r.policy),
-		RuntimeEpoch:             r.localRuntimeEpoch,
-		DirectConsensusSupported: true,
-		PresenceDigestSupported:  true,
+		NodeId:                     r.localNodeID,
+		ProtocolVersion:            ProtocolVersion,
+		Transports:                 ordered,
+		ForwardingPolicy:           ClonePolicy(r.policy),
+		RuntimeEpoch:               r.localRuntimeEpoch,
+		DirectConsensusSupported:   true,
+		PresenceDigestSupported:    true,
+		ConsensusBinaryV1Supported: true,
 	}
 }
 
@@ -1824,6 +1826,9 @@ func (r *Runtime) registerAdjacency(conn TransportConn, kind TransportKind, hell
 //     第一次发布携带墓碑记录，第二次发布彻底移除该链路。
 func (r *Runtime) onAdjacencyLost(adj *Adjacency) {
 	r.mu.Lock()
+	if state := r.queryFallbacks[adj.RemoteNodeID]; state != nil && (state.native == adj || state.backup == adj) {
+		delete(r.queryFallbacks, adj.RemoteNodeID)
+	}
 	if a, ok := r.adjByConn[adj.Conn]; ok && a == adj {
 		delete(r.adjByConn, adj.Conn)
 		key := adjacencyKey{nodeID: adj.RemoteNodeID, transport: adj.Transport, hint: adj.RemoteHint}
@@ -2485,6 +2490,7 @@ func (r *Runtime) handleTimeSyncResponse(adj *Adjacency, resp *TimeSyncResponse)
 	jitter := int64(adj.jitterEWMA)
 	adj.mu.Unlock()
 
+	r.refreshControlQueryFallback(adj.RemoteNodeID, time.Now())
 	if r.timeSyncObserver != nil {
 		r.timeSyncObserver(TimeSyncObservation{
 			RemoteNodeID:        adj.RemoteNodeID,

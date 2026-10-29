@@ -83,3 +83,13 @@ func TestMeshConsensusAcrossTransit(t *testing.T) {
 		t.Fatal("transit consensus message was not delivered")
 	}
 }
+
+func TestMeshConsensusRejectsMismatchedSource(t *testing.T) {
+	m := &Manager{}
+	called := false
+	m.SetConsensusMessageHandler(func(context.Context, int64, *mesh.ConsensusMessage) error { called = true; return nil })
+	err := m.handleMeshConsensusMessage(context.Background(), &mesh.ForwardedPacket{SourceNodeId: 1}, &mesh.ConsensusMessage{GroupId: "kv", SourceNodeId: 2, Payload: []byte("payload")})
+	if err == nil || called {
+		t.Fatal("accepted mismatched outer/inner source")
+	}
+}

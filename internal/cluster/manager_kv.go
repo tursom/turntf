@@ -32,21 +32,32 @@ func (m *Manager) startKVConsensus() error {
 	if !filepath.IsAbs(dataDir) {
 		dataDir = filepath.Join(".", dataDir)
 	}
-	transport := kv.NewTransport(raft.ServerAddress(strconv.FormatInt(m.cfg.NodeID, 10)), func(target raft.ServerAddress, payload []byte) error {
-		return m.SendConsensusMessage(m.ctx, parseConsensusTarget(target), cfg.GroupID, 0, payload)
-	})
+	transport := kv.NewTransport(raft.ServerAddress(strconv.FormatInt(m.cfg.NodeID, 10)), nil,
+		kv.WithTransportContext(m.ctx),
+		kv.WithConsensusSender(func(ctx context.Context, target raft.ServerAddress, payload []byte) error {
+			return m.SendConsensusMessage(ctx, parseConsensusTarget(target), cfg.GroupID, 0, payload)
+		}),
+		kv.WithBinaryConsensus(func(target raft.ServerAddress) bool {
+			binding := m.MeshRuntime()
+			return binding != nil && binding.Runtime() != nil && binding.Runtime().SupportsConsensusBinaryV1(parseConsensusTarget(target))
+		}))
 	node, err := kv.NewPersistentNode(kv.NodeOptions{ID: raft.ServerID(strconv.FormatInt(m.cfg.NodeID, 10)), Address: raft.ServerAddress(strconv.FormatInt(m.cfg.NodeID, 10)), Transport: transport}, dataDir)
 	if err != nil {
+		_ = transport.Close()
 		return err
 	}
 	m.kvNode = node
 	m.kvTransport = transport
-	m.SetConsensusMessageHandler(func(_ context.Context, _ int64, message *mesh.ConsensusMessage) error {
-		return transport.Deliver(message.GetPayload())
+	m.SetConsensusMessageHandler(func(_ context.Context, source int64, message *mesh.ConsensusMessage) error {
+		if message.GetGroupId() != cfg.GroupID {
+			return fmt.Errorf("kv consensus group mismatch: %q", message.GetGroupId())
+		}
+		return transport.DeliverFrom(raft.ServerAddress(strconv.FormatInt(source, 10)), message.GetPayload())
 	})
 	if cfg.Bootstrap && !node.HasExistingState() {
 		if err := node.Bootstrap(voters); err != nil {
 			_ = node.Close()
+			_ = transport.Close()
 			m.kvNode = nil
 			m.kvTransport = nil
 			return err
@@ -54,6 +65,7 @@ func (m *Manager) startKVConsensus() error {
 	}
 	if !cfg.Bootstrap && !node.HasExistingState() {
 		_ = node.Close()
+		_ = transport.Close()
 		m.kvNode = nil
 		m.kvTransport = nil
 		return fmt.Errorf("kv consensus node has no durable membership; configure bootstrap on exactly one voter")

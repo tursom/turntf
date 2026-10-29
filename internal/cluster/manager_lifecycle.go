@@ -273,6 +273,9 @@ func (m *Manager) Close() error {
 		m.wg.Wait()
 		if m.kvNode != nil {
 			_ = m.kvNode.Close()
+			if m.kvTransport != nil {
+				_ = m.kvTransport.Close()
+			}
 			m.kvNode = nil
 			m.kvTransport = nil
 		}

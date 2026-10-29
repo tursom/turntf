@@ -74,6 +74,7 @@ message MeshNodeHello {
   bool direct_consensus_supported = 6;
   // 在线状态摘要仅发给直接握手确认支持的节点，旧节点继续接收完整分片。
   bool presence_digest_supported = 7;
+  bool consensus_binary_v1_supported = 8;
 }
 
 message MeshTransportCapability {

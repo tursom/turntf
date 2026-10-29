@@ -242,8 +242,12 @@ func (m *Manager) meshStatusSnapshot() app.ClusterMeshStatus {
 		NodeFeeWeight:      policy.GetNodeFeeWeight(),
 		TopologyGeneration: binding.TopologyStore().Snapshot().TopologyGeneration,
 	}
+	m.mu.Lock()
+	status.PresenceSync = m.presenceSync
+	m.mu.Unlock()
 	for _, adj := range runtime.Adjacencies() {
 		item := app.ClusterMeshAdjacency{RemoteNodeID: adj.RemoteNodeID, Transport: meshTransportLabel(adj.Transport), Inbound: adj.Inbound, Established: adj.Established, RTTMs: adj.RTTMs, JitterMs: adj.JitterMs}
+		item.ProbeIntervalMs = adj.ProbeIntervalMs
 		if t := adj.TCP; t != nil {
 			item.TCP = &app.ClusterMeshTCPInfo{Congestion: t.Congestion, RTTUs: t.RTTMicros, RTTVarUs: t.RTTVarMicros, MinRTTUs: t.MinRTTMicros, SndCwnd: t.SndCwnd, SndMSS: t.SndMSS, Unacked: t.Unacked, NotSentBytes: t.NotSentBytes, BytesSent: t.BytesSent, BytesRetrans: t.BytesRetrans, SegsOut: t.SegsOut, TotalRetrans: t.TotalRetrans, DeliveryRateBps: t.DeliveryRateBps, PacingRateBps: t.PacingRateBps}
 		}

@@ -190,7 +190,12 @@ url = %q
 		}
 		n := &node{base: "http://" + addresses[i]}
 		nodes[i] = n
-		n.cmd = exec.Command(binary, "serve", "--config", configPath)
+		// 允许第二节点使用上一版二进制，真实验证滚动升级的协议兼容。
+		nodeBinary := binary
+		if peerBinary := os.Getenv("TURNTF_PREFLIGHT_PEER_BINARY"); i == 1 && peerBinary != "" {
+			nodeBinary = peerBinary
+		}
+		n.cmd = exec.Command(nodeBinary, "serve", "--config", configPath)
 		n.cmd.Stdout = log
 		n.cmd.Stderr = log
 		_ = listeners[i].Close()
@@ -386,7 +391,7 @@ url = %q
 	t.Log("write after peer-loss grace rejected with HTTP 503")
 
 	old := peer.cmd
-	peer.cmd = exec.Command(binary, old.Args[1:]...)
+	peer.cmd = exec.Command(old.Path, old.Args[1:]...)
 	peer.cmd.Stdout, peer.cmd.Stderr = old.Stdout, old.Stderr
 	if err := peer.cmd.Start(); err != nil {
 		t.Fatal("restart peer failed")

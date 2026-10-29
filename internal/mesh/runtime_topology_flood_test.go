@@ -62,7 +62,7 @@ func TestTopologyFloodCoalescesPendingVersions(t *testing.T) {
 	defer r.Close()
 	a, b := newFakeConnPair(TransportWebSocket, "a", "b")
 	slow := &stalledTopologyConn{TransportConn: a, entered: make(chan struct{}, 1), release: make(chan struct{})}
-	adj := r.registerAdjacency(slow, TransportWebSocket, &NodeHello{NodeId: 3}, false)
+	r.registerAdjacency(slow, TransportWebSocket, &NodeHello{NodeId: 3}, false)
 	r.queueTopologyFlood(slow, &TopologyUpdate{OriginNodeId: 2, Generation: 1})
 	select {
 	case <-slow.entered:
@@ -73,8 +73,8 @@ func TestTopologyFloodCoalescesPendingVersions(t *testing.T) {
 		r.queueTopologyFlood(slow, &TopologyUpdate{OriginNodeId: 2, Generation: gen})
 	}
 	r.mu.Lock()
-	pending := len(adj.pendingTopology)
-	latest := adj.pendingTopology[2].Generation
+	pending := len(r.topologyFloods[3].pending)
+	latest := r.topologyFloods[3].pending[2].Generation
 	r.mu.Unlock()
 	if pending != 1 || latest != 100 {
 		t.Errorf("unbounded/stale queue: %d, %d", pending, latest)
@@ -103,7 +103,7 @@ func TestTopologyFloodCoalescesByRuntimeEpochBeforeGeneration(t *testing.T) {
 	a, _ := newFakeConnPair(TransportWebSocket, "a", "b")
 	slow := &stalledTopologyConn{TransportConn: a, entered: make(chan struct{}, 1), release: make(chan struct{})}
 	defer close(slow.release)
-	adj := r.registerAdjacency(slow, TransportWebSocket, &NodeHello{NodeId: 3}, false)
+	r.registerAdjacency(slow, TransportWebSocket, &NodeHello{NodeId: 3}, false)
 	r.queueTopologyFlood(slow, &TopologyUpdate{OriginNodeId: 2, RuntimeEpoch: 100, Generation: 1})
 	select {
 	case <-slow.entered:
@@ -115,7 +115,7 @@ func TestTopologyFloodCoalescesByRuntimeEpochBeforeGeneration(t *testing.T) {
 	r.queueTopologyFlood(slow, &TopologyUpdate{OriginNodeId: 2, RuntimeEpoch: 200, Generation: 1})
 	r.queueTopologyFlood(slow, &TopologyUpdate{OriginNodeId: 2, RuntimeEpoch: 100, Generation: 900})
 	r.mu.Lock()
-	pending := adj.pendingTopology[2]
+	pending := r.topologyFloods[3].pending[2]
 	r.mu.Unlock()
 	if pending == nil || pending.RuntimeEpoch != 200 || pending.Generation != 1 {
 		t.Fatalf("pending flood regressed to old runtime: %+v", pending)

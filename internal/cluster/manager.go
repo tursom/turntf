@@ -197,6 +197,7 @@ type Manager struct {
 	nextResolveSessionsQueryID uint64
 	// pendingResolveSessions 是等待响应的解析会话查询。
 	pendingResolveSessions map[uint64]chan resolveUserSessionsQueryResult
+	sessionLookups         map[sessionLookupKey]*sessionLookupFlight
 	// loggedInUsersByNode 按节点ID和用户键缓存各节点的已登录用户。
 	loggedInUsersByNode map[int64]map[store.UserKey]app.LoggedInUserSummary
 	// localLoggedInUsers 缓存本节点会话注册时携带的用户摘要。
@@ -209,6 +210,9 @@ type Manager struct {
 	dirtyPresenceUsersByShard [onlinePresenceShardCount]map[store.UserKey]struct{}
 	// presenceWake 唤醒增量在线状态刷新循环。
 	presenceWake chan struct{}
+	// pendingPresenceRepairs 合并摘要修复控制任务，网络发送由 presenceLoop 执行。
+	pendingPresenceRepairs map[presenceRepairKey]struct{}
+	presenceSync           app.ClusterPresenceSyncStatus
 	// onlinePresenceByUser 按用户键聚合的在线节点存在信息。
 	onlinePresenceByUser map[store.UserKey]map[int64]store.OnlineNodePresence
 	// onlinePresenceUsersByShard 索引远端节点各分片中已应用的用户。

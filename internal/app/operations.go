@@ -82,7 +82,8 @@ type ClusterDiscoveryStatus struct {
 // ClusterMeshStatus 描述集群 Mesh 网络的运行时状态。
 // Mesh 网络负责节点间的流量转发、路由决策和桥接通信等功能。
 type ClusterMeshStatus struct {
-	TCPMTLS ClusterTCPMTLSStatus
+	TCPMTLS      ClusterTCPMTLSStatus
+	PresenceSync ClusterPresenceSyncStatus
 	// Enabled Mesh 网络是否启用
 	Enabled bool
 	// ForwardingEnabled 跨节点流量转发是否启用
@@ -107,13 +108,29 @@ type ClusterMeshStatus struct {
 
 // ClusterMeshAdjacency 描述一条物理邻接；TCP 仅在能取得底层 socket 时出现（入站 WSS 经代理时没有）。
 type ClusterMeshAdjacency struct {
-	RemoteNodeID int64               `json:"remote_node_id"`
-	Transport    string              `json:"transport"`
-	Inbound      bool                `json:"inbound"`
-	Established  bool                `json:"established"`
-	RTTMs        int64               `json:"rtt_ms"`
-	JitterMs     int64               `json:"jitter_ms"`
-	TCP          *ClusterMeshTCPInfo `json:"tcp,omitempty"`
+	RemoteNodeID    int64               `json:"remote_node_id"`
+	Transport       string              `json:"transport"`
+	Inbound         bool                `json:"inbound"`
+	Established     bool                `json:"established"`
+	RTTMs           int64               `json:"rtt_ms"`
+	JitterMs        int64               `json:"jitter_ms"`
+	ProbeIntervalMs int64               `json:"probe_interval_ms"`
+	TCP             *ClusterMeshTCPInfo `json:"tcp,omitempty"`
+}
+
+// ClusterPresenceSyncStatus 为本进程在线状态控制消息计数；字节只统计
+// OnlinePresenceUpdate protobuf 正文，不含转发、认证和 TCP/TLS 封装。
+type ClusterPresenceSyncStatus struct {
+	DeltaSent              uint64 `json:"delta_sent"`
+	FullSent               uint64 `json:"full_sent"`
+	DigestSent             uint64 `json:"digest_sent"`
+	RepairRequestsSent     uint64 `json:"repair_requests_sent"`
+	SentPayloadBytes       uint64 `json:"sent_payload_bytes"`
+	DeltaReceived          uint64 `json:"delta_received"`
+	FullReceived           uint64 `json:"full_received"`
+	DigestReceived         uint64 `json:"digest_received"`
+	RepairRequestsReceived uint64 `json:"repair_requests_received"`
+	ReceivedPayloadBytes   uint64 `json:"received_payload_bytes"`
 }
 
 // ClusterMeshTCPInfo 是 Linux TCP_INFO 的子集：时间为微秒，计数为连接建立以来的累计值，速率为字节/秒。

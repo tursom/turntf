@@ -594,6 +594,9 @@ func (m *Manager) handleMeshPresenceUpdateEnvelope(packet *mesh.ForwardedPacket,
 		return fmt.Errorf("mesh online presence update origin mismatch: got %d want %d", body.GetOriginNodeId(), sourceNodeID)
 	}
 	_, err := m.applyOnlinePresenceUpdate(body)
+	if err == nil {
+		m.recordPresenceSync(body, false)
+	}
 	return err
 }
 

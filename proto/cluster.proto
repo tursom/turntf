@@ -450,6 +450,9 @@ enum OnlinePresenceUpdateMode {
   ONLINE_PRESENCE_UPDATE_MODE_DELTA = 1;
   // AUTHORITATIVE_SHARD 完整替换 origin 对应分片，且不允许携带 removed_users。
   ONLINE_PRESENCE_UPDATE_MODE_AUTHORITATIVE_SHARD = 2;
+  // 以下控制模式仅用于已协商 presence_digest_supported 的节点。
+  ONLINE_PRESENCE_UPDATE_MODE_DIGEST = 3;
+  ONLINE_PRESENCE_UPDATE_MODE_REPAIR_REQUEST = 4;
 }
 
 // OnlinePresenceUpdate 是节点的增量在线状态或权威分片快照。
@@ -469,6 +472,9 @@ message OnlinePresenceUpdate {
   uint32 shard_count = 8;
   // removed_users 仅用于 DELTA，删除该 origin 下对应用户的临时在线状态。
   repeated ClusterUserRef removed_users = 9;
+  // DIGEST 为整个 origin 在线状态的 SHA-256；不包含 generation。
+  // DIGEST/REPAIR_REQUEST 不修改在线状态，不使用分片 generation 排序。
+  bytes state_digest = 10;
 }
 
 // NodeConnectivityRumor 传播节点可能已断开连接的传闻。

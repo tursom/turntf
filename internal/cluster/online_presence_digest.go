@@ -2,6 +2,7 @@ package cluster
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"errors"
 
@@ -162,12 +163,7 @@ func (m *Manager) flushPresenceRepairs() {
 	m.mu.Unlock()
 	for key := range pending {
 		if key.full {
-			for index := 0; index < onlinePresenceShardCount; index++ {
-				m.mu.Lock()
-				update := m.snapshotPresenceShardLocked(index)
-				m.mu.Unlock()
-				m.sendOnlinePresence(key.nodeID, update)
-			}
+			m.startFullPresenceRepair(key.nodeID)
 		} else {
 			m.mu.Lock()
 			update := m.presenceControlLocked(internalproto.OnlinePresenceUpdateMode_ONLINE_PRESENCE_UPDATE_MODE_REPAIR_REQUEST)
@@ -175,4 +171,40 @@ func (m *Manager) flushPresenceRepairs() {
 			m.sendOnlinePresence(key.nodeID, update)
 		}
 	}
+}
+
+// 完整修复独立于50ms增量循环；拥塞邻居不能让16次发送逐次耗尽超时，
+// 阻塞其他节点的在线变化。每目标最多一个任务，全部分片共用10秒预算，
+// 失败后等待下一次摘要再校验，不累积旧快照或额外重试队列。
+func (m *Manager) startFullPresenceRepair(nodeID int64) {
+	m.mu.Lock()
+	if m.ctx == nil || m.ctx.Err() != nil || m.presenceFullSending[nodeID] {
+		m.mu.Unlock()
+		return
+	}
+	if m.presenceFullSending == nil {
+		m.presenceFullSending = make(map[int64]bool)
+	}
+	m.presenceFullSending[nodeID] = true
+	ctx, cancel := context.WithTimeout(m.ctx, writeWait)
+	m.wg.Add(1)
+	m.mu.Unlock()
+	go func() {
+		defer m.wg.Done()
+		defer cancel()
+		defer func() {
+			m.mu.Lock()
+			delete(m.presenceFullSending, nodeID)
+			m.mu.Unlock()
+		}()
+		for index := 0; index < onlinePresenceShardCount && ctx.Err() == nil; index++ {
+			m.mu.Lock()
+			update := m.snapshotPresenceShardLocked(index)
+			m.mu.Unlock()
+			if err := m.routeMeshPresenceUpdate(ctx, nodeID, update); err != nil {
+				return
+			}
+			m.recordPresenceSync(update, true)
+		}
+	}()
 }

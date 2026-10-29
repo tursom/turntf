@@ -212,6 +212,7 @@ type Manager struct {
 	presenceWake chan struct{}
 	// pendingPresenceRepairs 合并摘要修复控制任务，网络发送由 presenceLoop 执行。
 	pendingPresenceRepairs map[presenceRepairKey]struct{}
+	presenceFullSending    map[int64]bool // 每个目标最多一个完整修复发送任务。
 	presenceSync           app.ClusterPresenceSyncStatus
 	// onlinePresenceByUser 按用户键聚合的在线节点存在信息。
 	onlinePresenceByUser map[store.UserKey]map[int64]store.OnlineNodePresence

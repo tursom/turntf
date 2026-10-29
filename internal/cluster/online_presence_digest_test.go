@@ -98,8 +98,13 @@ func TestPresenceDigestRepairAcrossRealDirectNodes(t *testing.T) {
 		p, _ := source.QueryOnlineUserPresence(context.Background(), user)
 		return len(p) == 1 && p[0].ServingNodeID == target.cfg.NodeID
 	})
+	waitFor(t, 2*time.Second, func() bool {
+		target.mu.Lock()
+		defer target.mu.Unlock()
+		return !target.presenceFullSending[source.cfg.NodeID]
+	})
 	stats := target.meshStatusSnapshot().PresenceSync
-	if stats.DigestSent == 0 || stats.RepairRequestsReceived == 0 {
+	if stats.DigestSent == 0 || stats.RepairRequestsReceived == 0 || stats.FullSent < onlinePresenceShardCount {
 		t.Fatalf("actual repair did not use negotiated digest/request: %+v", stats)
 	}
 }

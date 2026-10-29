@@ -32,7 +32,7 @@ type tcpTestCA struct {
 	file string
 }
 
-func newTCPTestCA(t *testing.T) tcpTestCA {
+func newTCPTestCA(t testing.TB) tcpTestCA {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -53,7 +53,7 @@ func newTCPTestCA(t *testing.T) tcpTestCA {
 	}
 	return tcpTestCA{cert, key, file}
 }
-func (ca tcpTestCA) config(t *testing.T, id int64, mutate func(*x509.Certificate)) Config {
+func (ca tcpTestCA) config(t testing.TB, id int64, mutate func(*x509.Certificate)) Config {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {

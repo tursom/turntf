@@ -309,6 +309,7 @@ type Runtime struct {
 	pingInterval          time.Duration    // 心跳探测间隔
 	livenessTimeout       time.Duration    // 探测响应超时，超过后关闭半开邻接
 	topologyPublishPeriod time.Duration    // 拓扑公告定期发布周期
+	qualityPublishPeriod  time.Duration    // 普通 RTT/jitter 变化的合并周期
 	now                   func() time.Time // 时间获取函数（可注入）
 
 	// ---- 传输适配器 ----
@@ -633,6 +634,7 @@ func NewRuntime(opts RuntimeOptions) (*Runtime, error) {
 		pingInterval:           pingInterval,
 		livenessTimeout:        livenessTimeout,
 		topologyPublishPeriod:  publishPeriod,
+		qualityPublishPeriod:   5 * time.Second,
 		now:                    now,
 		adapters:               opts.Adapters,
 		adapterByKnd:           adapterByKnd,
@@ -1658,7 +1660,7 @@ func (r *Runtime) scheduleQualityPublish() {
 
 func (r *Runtime) publishQualityIfChanged(ctx context.Context) {
 	if r.qualityDirty.Swap(false) {
-		r.publishLocalTopology(ctx)
+		r.publishTopology(ctx, false, true)
 	}
 }
 
@@ -1991,20 +1993,24 @@ func (r *Runtime) dispatchEnvelope(ctx context.Context, adj *Adjacency, envelope
 //
 // 如果配置了 GenerationPersistence，会将新生成号持久化。
 func (r *Runtime) bumpGenerationAndPublish(ctx context.Context) {
-	r.publishTopology(ctx, true)
+	r.publishTopology(ctx, true, false)
 }
 
-// topologyPublishLoop 按 topologyPublishPeriod 周期定期发布本地拓扑更新。
-// 这确保了即使没有拓扑变化事件，对等节点也能定期收到本节点仍在线的信号。
+// topologyPublishLoop 合并普通质量采样，及时处理故障质量信号，并按
+// topologyPublishPeriod 刷新完整公告，保证没有变化时也能修复拓扑视图。
 func (r *Runtime) topologyPublishLoop(ctx context.Context) {
 	defer r.wg.Done()
 	ticker := time.NewTicker(r.topologyPublishPeriod)
 	defer ticker.Stop()
+	qualityTicker := time.NewTicker(r.qualityPublishPeriod)
+	defer qualityTicker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-r.qualitySignal:
+			r.publishQualityIfChanged(ctx)
+		case <-qualityTicker.C:
 			r.publishQualityIfChanged(ctx)
 		case <-ticker.C:
 			r.publishLocalTopology(ctx)
@@ -2021,10 +2027,10 @@ func (r *Runtime) topologyPublishLoop(ctx context.Context) {
 //     更新进行循环处理。
 //  4. 向所有当前已建立的邻接连接发送该拓扑更新 Envelope。
 func (r *Runtime) publishLocalTopology(ctx context.Context) {
-	r.publishTopology(ctx, false)
+	r.publishTopology(ctx, false, false)
 }
 
-func (r *Runtime) publishTopology(ctx context.Context, force bool) {
+func (r *Runtime) publishTopology(ctx context.Context, force, qualityOnly bool) {
 	// A generation identifies one immutable advertisement. Periodic refreshes
 	// also need a new generation when metrics changed below the RTT threshold.
 	// Serialize preparation/persistence only; a slow peer must not hold this
@@ -2037,6 +2043,14 @@ func (r *Runtime) publishTopology(ctx context.Context, force bool) {
 	}
 	r.mu.Lock()
 	previous := r.lastUpdate[r.localNodeID]
+	// Measurement changes may affect only a worse parallel adjacency. Compare
+	// the aggregate against the last advertisement before allocating a version
+	// or flooding. Periodic refresh and structural events bypass this filter.
+	if qualityOnly && !topologyQualityChanged(previous, update) {
+		r.mu.Unlock()
+		r.topologyPublishMu.Unlock()
+		return
+	}
 	changed := force || previous == nil
 	if previous != nil {
 		update.Generation = previous.Generation
@@ -2199,7 +2213,7 @@ func remoteHintSuggestsRelay(hint string) bool {
 //  4. 先比较运行时纪元，再比较同一纪元内生成号，防止旧进程覆盖新进程。
 //  5. 记录处理过的更新，防止循环。
 //  6. 将更新应用到本地拓扑存储。
-//  7. 将更新广播给除入站连接之外的所有其他邻接节点（洪水扩散）。
+//  7. 将更新广播给其他 peer，排除来源 peer 的全部连接及公告 origin。
 func (r *Runtime) handleTopologyUpdate(ctx context.Context, ingress *Adjacency, update *TopologyUpdate) {
 	update = NormalizeTopologyUpdate(update)
 	if update == nil {
@@ -2231,7 +2245,10 @@ func (r *Runtime) handleTopologyUpdate(ctx context.Context, ingress *Adjacency, 
 	r.lastUpdate[update.OriginNodeId] = update
 	targets := make([]TransportConn, 0, len(r.adjByConn))
 	for conn, adj := range r.adjByConn {
-		if adj == ingress {
+		// Every transport carries the same origin/version. Echoing it over
+		// another connection to the sender (or back to its origin) only burns
+		// bandwidth: those nodes already possess this immutable advertisement.
+		if adj.RemoteNodeID == update.OriginNodeId || (ingress != nil && adj.RemoteNodeID == ingress.RemoteNodeID) {
 			continue
 		}
 		targets = append(targets, conn)
@@ -2368,8 +2385,8 @@ func (r *Runtime) handleTimeSyncRequest(ctx context.Context, adj *Adjacency, req
 //   - RTT_EWMA = (1-alpha) * RTT_EWMA + alpha * RTT
 //   - Jitter_EWMA = (1-alpha) * Jitter_EWMA + alpha * |RTT - RTT_EWMA_prev|
 //
-// 当链路成本发生有意义的变更时（linkCostChangedMeaningfully 返回 true），
-// 触发 bumpGenerationAndPublish 以广播更新后的链路质量。
+// 普通采样由质量发布窗口对照上次公告判断是否广播；探测降级恢复立即
+// 唤醒发布循环。采样与本机邻接评分不等待拓扑发布或持久化。
 func (r *Runtime) handleTimeSyncResponse(adj *Adjacency, resp *TimeSyncResponse) {
 	if resp == nil || resp.RequestId == 0 {
 		return
@@ -2402,7 +2419,6 @@ func (r *Runtime) handleTimeSyncResponse(adj *Adjacency, resp *TimeSyncResponse)
 		adj.mu.Unlock()
 		return
 	}
-	prevCost := r.adjacencyCostLocked(adj, time.Now()) + int64(adj.jitterEWMA)
 	wasDegraded := adj.probeDegraded
 	delete(adj.inflightPings, resp.RequestId)
 	adj.probeDegraded = false
@@ -2424,7 +2440,6 @@ func (r *Runtime) handleTimeSyncResponse(adj *Adjacency, resp *TimeSyncResponse)
 	if adj.activity.Load()-adj.pingActivity <= adjacencyIdleProbeBytes {
 		adj.observeIdleProbeLocked(float64(rtt))
 	}
-	newCost := r.adjacencyCostLocked(adj, time.Now()) + int64(adj.jitterEWMA)
 	jitter := int64(adj.jitterEWMA)
 	adj.mu.Unlock()
 
@@ -2443,8 +2458,14 @@ func (r *Runtime) handleTimeSyncResponse(adj *Adjacency, resp *TimeSyncResponse)
 		})
 	}
 
-	if wasDegraded || linkCostChangedMeaningfully(prevCost, newCost) {
+	if wasDegraded {
 		r.scheduleQualityPublish()
+	} else {
+		// Keep local routing measurements current, but batch ordinary metric
+		// changes. Failure penalties and probe recovery still signal immediately.
+		// Mark every valid sample so gradual drift is compared with the last
+		// advertisement at the tick, rather than lost between adjacent samples.
+		r.qualityDirty.Store(true)
 	}
 }
 

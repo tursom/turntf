@@ -254,6 +254,7 @@ func (m *Manager) Close() error {
 		}
 
 		m.mu.Lock()
+		clear(m.pendingOperations)
 		sessions := make([]*session, 0, len(m.peers))
 		for _, peer := range m.peers {
 			if peer.active != nil {
@@ -272,6 +273,9 @@ func (m *Manager) Close() error {
 		m.wg.Wait()
 		if m.kvNode != nil {
 			_ = m.kvNode.Close()
+			if m.kvTransport != nil {
+				_ = m.kvTransport.Close()
+			}
 			m.kvNode = nil
 			m.kvTransport = nil
 		}
@@ -340,7 +344,7 @@ func (m *Manager) snapshotDigestLoop() {
 		case <-m.ctx.Done():
 			return
 		case <-ticker.C:
-			m.flushSnapshotDigestsDue(time.Now().UTC())
+			m.flushSnapshotDigestsDue(time.Now())
 		}
 	}
 }

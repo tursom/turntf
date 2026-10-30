@@ -9,6 +9,7 @@ import (
 
 func TestConsensusTransportUsesOpaqueSender(t *testing.T) {
 	var a, b *Transport
+	t.Cleanup(func() { _ = a.Close(); _ = b.Close() })
 	a = NewTransport("1", func(target raft.ServerAddress, payload []byte) error {
 		if target != "2" {
 			t.Fatalf("A target=%s", target)
@@ -40,6 +41,7 @@ func TestConsensusTransportUsesOpaqueSender(t *testing.T) {
 
 func TestConsensusPipeline(t *testing.T) {
 	var a, b *Transport
+	t.Cleanup(func() { _ = a.Close(); _ = b.Close() })
 	a = NewTransport("1", func(_ raft.ServerAddress, p []byte) error { return b.Deliver(p) })
 	b = NewTransport("2", func(_ raft.ServerAddress, p []byte) error { return a.Deliver(p) })
 	go func() {
@@ -51,6 +53,7 @@ func TestConsensusPipeline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer pipeline.Close()
 	future, err := pipeline.AppendEntries(&raft.AppendEntriesRequest{Term: 1}, &raft.AppendEntriesResponse{})
 	if err != nil {
 		t.Fatal(err)

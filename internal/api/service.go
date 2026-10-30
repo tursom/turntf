@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/tursom/turntf/internal/app"
 	"github.com/tursom/turntf/internal/clock"
@@ -130,6 +131,8 @@ type Service struct {
 	streamRecv      StreamFrameReceiver
 	nextTransientID atomic.Uint64 // 即时包 ID 自增计数器
 	blacklistHits   atomic.Uint64 // 黑名单命中次数统计
+	opsProbeMu      sync.Mutex
+	lastOpsProbe    time.Time
 }
 
 // New 创建 Service 实例。eventSink 同时作为可选接口的来源：
@@ -176,7 +179,7 @@ func New(st *store.Store, eventSink EventSink) *Service {
 	if provider, ok := eventSink.(interface{ TraceStore() *trace.Store }); ok && provider.TraceStore() != nil {
 		traceStore = provider.TraceStore()
 	}
-	return &Service{
+	service := &Service{
 		store:           st,
 		eventSink:       eventSink,
 		writeGate:       writeGate,
@@ -191,6 +194,10 @@ func New(st *store.Store, eventSink EventSink) *Service {
 		traceStore:      traceStore,
 		transientRecv:   nil,
 	}
+	if registrar, ok := eventSink.(interface{ SetLocalOperationsHandler(app.OperationsHandler) }); ok {
+		registrar.SetLocalOperationsHandler(service.handleLocalOperation)
+	}
+	return service
 }
 
 // ProbeRoute initiates one diagnostic attempt. The returned ID remains queryable on a routing error.

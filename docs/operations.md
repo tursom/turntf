@@ -24,13 +24,22 @@ peer 自动发现的协议、状态机和排查细节见 [peer 自动发现专�
 ## 运维接口
 
 - `GET /healthz`：公开存活检查，只返回服务进程是否可响应。
-- `GET /cluster/nodes`：已登录接口，返回当前节点视角下已连接的集群节点列表，包含 `node_id`、`is_local`、`configured_url` 和 peer 来源 `source`。发现 peer 会把发现到的 URL 放在兼容字段 `configured_url` 中。
+- `GET /cluster/nodes`：已登录接口，返回本机、已连接 peer 和经 mesh 间接可达的实际成员，包含 `node_id`、`is_local`、`configured_url` 和来源 `source`。发现 peer 会把发现到的 URL 放在兼容字段 `configured_url` 中；仅经拓扑获知的间接节点为 `source=mesh`、`configured_url=""`，无需登记地址。
 - `GET /cluster/nodes/{node_id}/logged-in-users`：已登录接口，查询某个节点当前客户端长连接已登录用户列表，返回 `target_node_id`、`count` 和 `items[]`；每项包含 `node_id`、`user_id`、`username`、`login_name`。
 - `GET /ops/status`：管理员接口，返回本节点 `write_gate_ready`、`clock_state/clock_reason/last_trusted_clock_sync`、事件/裁剪/待重放 projection 统计、自动发现状态、mesh 路由状态，以及每个 peer 的 transport、session_direction、remote message window、clock/snapshot/replication 细节。
-- `GET /ops/traces/{trace_id}`：管理员接口，返回**本节点**对一条显式追踪消息或探测包的短期观测事件；返回 `trace_id` 和 `events[]`，没有本地记录时返回空数组。它不会查询其他节点，必须按同一 ID 分别读取每个节点后才能合成跨节点视图。
+- `GET /ops/traces/{trace_id}`：管理员接口，返回**本节点**对一条显式追踪消息或探测包的短期观测事件；返回 `trace_id` 和 `events[]`，没有本地记录时返回空数组。跨节点读取使用下面的聚合入口。
 - `POST /ops/probes`：管理员接口，请求体仅包含 `{"target_node_id":123}`；按瞬时交互类流量向目标节点发送一条无正文、无收件人的诊断包，不产生业务消息。返回源/目标节点 ID、`trace_id` 与 `status=dispatched|failed`，`dispatched` 只表示已交给转发引擎；应查询目标节点的 `probe_reached` 才能确认抵达。本节点最多每秒发起一次。
+- `GET /ops/nodes/{node_id}/status`：管理员接口，返回目标节点本地 `/ops/status` 的相同 JSON 结构，直接保留 int64 数值精度；目标不可达时返回错误，不能用入口节点状态替代。
+- `POST /ops/nodes/{node_id}/probes`：管理员接口，请求体仅包含 `{"target_node_id":123}`，在路径指定的源节点调用 `ProbeRoute`。返回原 `ProbeResult`：`{trace_id,source_node_id,target_node_id,status}`；`source_node_id` 始终为指定节点。`dispatched` 返回 HTTP 202；已产生 trace ID 的路由失败返回 HTTP 200、`status=failed`，可继续查看部分轨迹。
+- `GET /ops/traces/{trace_id}/cluster`：管理员接口，返回 `{trace_id,nodes:[{node_id,events,error?}]}`。每次读取实时已知 mesh 成员（包含本机、间接节点和暂时断开但仍已知的节点），最多 16 个并发查询。单节点失败保留 `events:[]` 和明确 `error`，整体返回 HTTP 200；空记录不代表未经过该节点。
 - `GET /metrics`：管理员接口，返回 Prometheus text exposition 格式指标，包含写闸门、clock state、pending projection、自动发现、复制、snapshot 与 mesh 转发/路由/bridge 观测。
 - `GET /events?after=0&limit=100`：管理员接口，用于调试当前节点本地 `event_log`。
+
+这些跨节点入口沿用 ops 管理员权限：未登录返回 401，普通用户返回 403。节点 ID 使用正 int64，trace ID 使用 32 位十六进制；非法输入返回 400。探测请求体最多 256 字节，入口共享每秒一次限速，执行源节点另有每秒一次限速，超限返回 429。跨节点操作总超时为 4 秒，超时返回 504、取消返回 408；不可达或执行资源不足返回 503。聚合接口将节点级取消/超时记录在各项 `error` 中。
+
+私有集群中所有已加入节点均可信。入口只经已认证的 mesh 发送 `operations.request.v1` / `operations.response.v1` 查询信封及 JSON payload，操作限定为状态、从本地发起探测、本地 trace 读取。无需修改 proto，不新增 HTTP 代理、成员允许清单或 HTTP 地址配置，也不会向 peer 传递管理员 Bearer。扩容节点通过现有 mesh 加入即可被服务端看到；现有传输认证配置仍按对应传输要求使用。旧版本节点未实现该 RPC 时会超时并显示错误，升级节点前不能保证其跨节点运维查询可用。
+
+Manager 由 `api.New` 构建 Service 后注册本地运维处理器，避免 cluster 依赖 api。发起侧最多 128 个 pending，目标最多 16 个执行任务；响应沿用 mesh 有界 `RouteQueryResponse` 队列。执行和网络发送都不会占住连接读循环；响应按源节点和 request ID 匹配，取消、路由失败和 Close 都清理 pending。聚合成员和状态均为请求时快照，拓扑传播有短暂延迟；节点没有公开 HTTP 入口也能执行这些操作。
 
 示例：
 
@@ -46,6 +55,11 @@ curl -H "Authorization: Bearer ${TOKEN}" http://127.0.0.1:8080/ops/status
 curl -H "Authorization: Bearer ${TOKEN}" http://127.0.0.1:8080/metrics
 curl -H "Authorization: Bearer ${TOKEN}" http://127.0.0.1:8080/cluster/nodes
 curl -H "Authorization: Bearer ${TOKEN}" http://127.0.0.1:8080/cluster/nodes/${NODE_ID}/logged-in-users
+# SOURCE_ID/TARGET_ID 使用 /cluster/nodes 返回的真实节点 ID；HTTP 始终只访问入口。
+curl -H "Authorization: Bearer ${TOKEN}" http://127.0.0.1:8080/ops/nodes/${SOURCE_ID}/status
+curl -X POST -H "Authorization: Bearer ${TOKEN}" -H 'Content-Type: application/json' \
+  -d "{\"target_node_id\":${TARGET_ID}}" http://127.0.0.1:8080/ops/nodes/${SOURCE_ID}/probes
+curl -H "Authorization: Bearer ${TOKEN}" http://127.0.0.1:8080/ops/traces/${TRACE_ID}/cluster
 ```
 
 ## 预期延迟与异常判断

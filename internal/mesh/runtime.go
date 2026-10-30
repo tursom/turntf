@@ -285,14 +285,15 @@ type Runtime struct {
 	policy            *ForwardingPolicy // 本地转发策略
 
 	// ---- 组件依赖 ----
-	store       TopologyStore         // 拓扑数据存储
-	codec       EnvelopeCodec         // Envelope 编解码器
-	signer      EnvelopeSigner        // 出站 Envelope 签名器
-	verifier    EnvelopeVerifier      // 入站 Envelope 验证器
-	persistence GenerationPersistence // 生成号持久化
-	classifier  TrafficClassifier     // 流量分类器
-	engine      *Engine               // 转发引擎，处理数据包路由
-	planner     RoutePlanner          // 路线规划器，计算最优下一跳
+	store          TopologyStore                   // 拓扑数据存储
+	codec          EnvelopeCodec                   // Envelope 编解码器
+	signer         EnvelopeSigner                  // 出站 Envelope 签名器
+	verifier       EnvelopeVerifier                // 入站 Envelope 验证器
+	persistence    GenerationPersistence           // 生成号持久化
+	classifier     TrafficClassifier               // 流量分类器
+	engine         *Engine                         // 转发引擎，处理数据包路由
+	planner        RoutePlanner                    // 路线规划器，计算最优下一跳
+	queryFallbacks map[int64]*controlQueryFallback // mu: local measured query-only preferences.
 
 	// ---- 外部回调 ----
 	envelopeHandler        LocalEnvelopeHandler        // 业务消息处理回调
@@ -309,6 +310,7 @@ type Runtime struct {
 	pingInterval          time.Duration    // 心跳探测间隔
 	livenessTimeout       time.Duration    // 探测响应超时，超过后关闭半开邻接
 	topologyPublishPeriod time.Duration    // 拓扑公告定期发布周期
+	qualityPublishPeriod  time.Duration    // 普通 RTT/jitter 变化的合并周期
 	now                   func() time.Time // 时间获取函数（可注入）
 
 	// ---- 传输适配器 ----
@@ -341,6 +343,7 @@ type Runtime struct {
 	knownGeneration   map[int64]uint64               // 已知的远程节点生成号（用于去重和版本判断）
 	seenFlood         map[floodKey]struct{}          // 已处理的洪水更新记录（防止循环转发）
 	lastUpdate        map[int64]*TopologyUpdate      // 每个远程节点最后接收到的拓扑更新（用于对新邻接节点重放）
+	topologyFloods    map[int64]*topologyFloodQueue  // mu: 每个邻居一个有界拓扑发送任务。
 	pendingTombstones []*LinkAdvertisement           // 待发布的墓碑记录（断开链接通告）
 	dialSeeds         map[dialSeedKey]*dialSeedEntry // 主动拨号种子（按传输+端点索引）
 
@@ -428,20 +431,23 @@ type Adjacency struct {
 	// Inbound 是否为入站连接（true=对方主动连过来的，false=本节点主动拨号的）
 	Inbound bool
 
-	pendingTimeSyncReply *TimeSyncResponse         // Runtime.mu: newest pending probe response.
-	timeSyncReplying     bool                      // Runtime.mu: one response writer per adjacency.
-	pendingTopology      map[int64]*TopologyUpdate // Runtime.mu: latest queued advertisement per origin.
-	topologySending      bool                      // Runtime.mu: at most one flood writer.
+	pendingTimeSyncReply *TimeSyncResponse // Runtime.mu: newest pending probe response.
+	timeSyncReplying     bool              // Runtime.mu: one response writer per adjacency.
 
-	mu            sync.Mutex           // 保护链路测量状态的互斥锁
-	rttEWMA       float64              // RTT 的指数加权移动平均值（毫秒）
-	jitterEWMA    float64              // 抖动的指数加权移动平均值（毫秒）
-	samples       int                  // 已采集的测量样本数
-	established   bool                 // 连接是否已成功建立
-	sendFailures  uint8                // 连续发送失败数，惩罚有上限
-	inflightPings map[uint64]time.Time // 正在途中的 Ping 请求（最多一个）
-	pingStarted   time.Time            // 本地单调时钟，用于应答期限，不受 HLC/墙钟调整影响
-	probeDegraded bool                 // 未响应探测已触发一次拓扑降权公告
+	mu                   sync.Mutex           // 保护链路测量状态的互斥锁
+	rttEWMA              float64              // RTT 的指数加权移动平均值（毫秒）
+	jitterEWMA           float64              // 抖动的指数加权移动平均值（毫秒）
+	samples              int                  // 已采集的测量样本数
+	established          bool                 // 连接是否已成功建立
+	sendFailures         uint8                // 连续发送失败数，惩罚有上限
+	inflightPings        map[uint64]time.Time // 正在途中的 Ping 请求（最多一个）
+	pingStarted          time.Time            // 本地单调时钟，用于应答期限，不受 HLC/墙钟调整影响
+	probeDegraded        bool                 // 未响应探测已触发一次拓扑降权公告
+	lastProbeSent        time.Time
+	lastProbeInterval    time.Duration
+	lastProbeSuccess     time.Time
+	probeDeadline        time.Time    // 备用降频不延长从最近有效响应起算的失联上限。
+	lastBusinessActivity atomic.Int64 // UnixNano；不包括测量和拓扑公告。
 
 	minRTTCur      float64   // 当前窗口最小 RTT（毫秒）
 	minRTTPrev     float64   // 上一窗口最小 RTT（毫秒）
@@ -633,6 +639,7 @@ func NewRuntime(opts RuntimeOptions) (*Runtime, error) {
 		pingInterval:           pingInterval,
 		livenessTimeout:        livenessTimeout,
 		topologyPublishPeriod:  publishPeriod,
+		qualityPublishPeriod:   5 * time.Second,
 		now:                    now,
 		adapters:               opts.Adapters,
 		adapterByKnd:           adapterByKnd,
@@ -654,7 +661,7 @@ func NewRuntime(opts RuntimeOptions) (*Runtime, error) {
 			runtime.localRuntimeEpoch = 1
 		}
 	}
-	runtime.planner = NewPlanner(opts.LocalNodeID)
+	runtime.planner = &runtimeQueryPlanner{runtime: runtime, base: NewPlanner(opts.LocalNodeID)}
 	runtime.engine = NewEngine(opts.LocalNodeID, store.Snapshot, runtime.planner, runtime, runtime.handleLocalForwardedPacket, opts.ForwardingObserver)
 	return runtime, nil
 }
@@ -1410,15 +1417,16 @@ func (r *Runtime) Adjacencies() []AdjacencySnapshot {
 // AdjacencySnapshot 是 Adjacency 状态的一份只读副本，
 // 用于外部监控和调试，避免调用者直接访问运行时内部数据结构。
 type AdjacencySnapshot struct {
-	RemoteNodeID int64         // 远程节点 ID
-	Transport    TransportKind // 传输类型
-	RemoteHint   string        // 远程连接提示
-	Inbound      bool          // 是否为入站连接
-	RTTMs        int64         // 当前 RTT 估计值（毫秒）
-	JitterMs     int64         // 当前抖动估计值（毫秒）
-	Samples      int           // 已采集的测量样本数
-	Established  bool          // 是否已建立
-	TCP          *TCPInfo      // 底层 TCP 内核统计；取不到时为 nil
+	RemoteNodeID    int64         // 远程节点 ID
+	Transport       TransportKind // 传输类型
+	RemoteHint      string        // 远程连接提示
+	Inbound         bool          // 是否为入站连接
+	RTTMs           int64         // 当前 RTT 估计值（毫秒）
+	JitterMs        int64         // 当前抖动估计值（毫秒）
+	Samples         int           // 已采集的测量样本数
+	ProbeIntervalMs int64         // 最近一次探测使用的发送周期；响应期限不因此延长。
+	Established     bool          // 是否已建立
+	TCP             *TCPInfo      // 底层 TCP 内核统计；取不到时为 nil
 }
 
 // snapshot 创建 Adjacency 状态的一份快照副本（带锁保护）。
@@ -1432,15 +1440,16 @@ func (a *Adjacency) snapshot() AdjacencySnapshot {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return AdjacencySnapshot{
-		TCP:          tcp,
-		RemoteNodeID: a.RemoteNodeID,
-		Transport:    a.Transport,
-		RemoteHint:   a.RemoteHint,
-		Inbound:      a.Inbound,
-		RTTMs:        int64(a.rttEWMA),
-		JitterMs:     int64(a.jitterEWMA),
-		Samples:      a.samples,
-		Established:  a.established,
+		TCP:             tcp,
+		RemoteNodeID:    a.RemoteNodeID,
+		Transport:       a.Transport,
+		RemoteHint:      a.RemoteHint,
+		Inbound:         a.Inbound,
+		RTTMs:           int64(a.rttEWMA),
+		JitterMs:        int64(a.jitterEWMA),
+		Samples:         a.samples,
+		ProbeIntervalMs: a.lastProbeInterval.Milliseconds(),
+		Established:     a.established,
 	}
 }
 
@@ -1613,6 +1622,13 @@ func (r *Runtime) sendEnvelopeCtx(ctx context.Context, conn TransportConn, envel
 	} else {
 		sendErr = conn.Send(sendCtx, signed)
 	}
+	if sendErr == nil && !measurementEnvelope(envelope) {
+		r.mu.Lock()
+		if adj := r.adjByConn[conn]; adj != nil {
+			adj.lastBusinessActivity.Store(time.Now().UnixNano())
+		}
+		r.mu.Unlock()
+	}
 	if (envelope.GetStreamFrame() != nil || envelope.GetForwardedPacket() != nil) && ctx.Err() == nil && !errors.Is(sendErr, context.Canceled) {
 		r.recordAdjacencySendBytes(conn, len(signed), sendErr)
 	}
@@ -1658,7 +1674,7 @@ func (r *Runtime) scheduleQualityPublish() {
 
 func (r *Runtime) publishQualityIfChanged(ctx context.Context) {
 	if r.qualityDirty.Swap(false) {
-		r.publishLocalTopology(ctx)
+		r.publishTopology(ctx, false, true)
 	}
 }
 
@@ -1706,12 +1722,14 @@ func (r *Runtime) localHello(kind TransportKind) *NodeHello {
 		ordered = append(ordered, capability)
 	}
 	return &NodeHello{
-		NodeId:                   r.localNodeID,
-		ProtocolVersion:          ProtocolVersion,
-		Transports:               ordered,
-		ForwardingPolicy:         ClonePolicy(r.policy),
-		RuntimeEpoch:             r.localRuntimeEpoch,
-		DirectConsensusSupported: true,
+		NodeId:                     r.localNodeID,
+		ProtocolVersion:            ProtocolVersion,
+		Transports:                 ordered,
+		ForwardingPolicy:           ClonePolicy(r.policy),
+		RuntimeEpoch:               r.localRuntimeEpoch,
+		DirectConsensusSupported:   true,
+		PresenceDigestSupported:    true,
+		ConsensusBinaryV1Supported: true,
 	}
 }
 
@@ -1808,6 +1826,9 @@ func (r *Runtime) registerAdjacency(conn TransportConn, kind TransportKind, hell
 //     第一次发布携带墓碑记录，第二次发布彻底移除该链路。
 func (r *Runtime) onAdjacencyLost(adj *Adjacency) {
 	r.mu.Lock()
+	if state := r.queryFallbacks[adj.RemoteNodeID]; state != nil && (state.native == adj || state.backup == adj) {
+		delete(r.queryFallbacks, adj.RemoteNodeID)
+	}
 	if a, ok := r.adjByConn[adj.Conn]; ok && a == adj {
 		delete(r.adjByConn, adj.Conn)
 		key := adjacencyKey{nodeID: adj.RemoteNodeID, transport: adj.Transport, hint: adj.RemoteHint}
@@ -1892,6 +1913,9 @@ func (r *Runtime) readLoop(ctx context.Context, adj *Adjacency) {
 		}
 		if err := r.verifier.Verify(envelope, data); err != nil {
 			return
+		}
+		if !measurementEnvelope(envelope) {
+			adj.lastBusinessActivity.Store(time.Now().UnixNano())
 		}
 		r.dispatchEnvelope(ctx, adj, envelope)
 	}
@@ -1991,20 +2015,24 @@ func (r *Runtime) dispatchEnvelope(ctx context.Context, adj *Adjacency, envelope
 //
 // 如果配置了 GenerationPersistence，会将新生成号持久化。
 func (r *Runtime) bumpGenerationAndPublish(ctx context.Context) {
-	r.publishTopology(ctx, true)
+	r.publishTopology(ctx, true, false)
 }
 
-// topologyPublishLoop 按 topologyPublishPeriod 周期定期发布本地拓扑更新。
-// 这确保了即使没有拓扑变化事件，对等节点也能定期收到本节点仍在线的信号。
+// topologyPublishLoop 合并普通质量采样，及时处理故障质量信号，并按
+// topologyPublishPeriod 刷新完整公告，保证没有变化时也能修复拓扑视图。
 func (r *Runtime) topologyPublishLoop(ctx context.Context) {
 	defer r.wg.Done()
 	ticker := time.NewTicker(r.topologyPublishPeriod)
 	defer ticker.Stop()
+	qualityTicker := time.NewTicker(r.qualityPublishPeriod)
+	defer qualityTicker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-r.qualitySignal:
+			r.publishQualityIfChanged(ctx)
+		case <-qualityTicker.C:
 			r.publishQualityIfChanged(ctx)
 		case <-ticker.C:
 			r.publishLocalTopology(ctx)
@@ -2021,10 +2049,10 @@ func (r *Runtime) topologyPublishLoop(ctx context.Context) {
 //     更新进行循环处理。
 //  4. 向所有当前已建立的邻接连接发送该拓扑更新 Envelope。
 func (r *Runtime) publishLocalTopology(ctx context.Context) {
-	r.publishTopology(ctx, false)
+	r.publishTopology(ctx, false, false)
 }
 
-func (r *Runtime) publishTopology(ctx context.Context, force bool) {
+func (r *Runtime) publishTopology(ctx context.Context, force, qualityOnly bool) {
 	// A generation identifies one immutable advertisement. Periodic refreshes
 	// also need a new generation when metrics changed below the RTT threshold.
 	// Serialize preparation/persistence only; a slow peer must not hold this
@@ -2037,6 +2065,14 @@ func (r *Runtime) publishTopology(ctx context.Context, force bool) {
 	}
 	r.mu.Lock()
 	previous := r.lastUpdate[r.localNodeID]
+	// Measurement changes may affect only a worse parallel adjacency. Compare
+	// the aggregate against the last advertisement before allocating a version
+	// or flooding. Periodic refresh and structural events bypass this filter.
+	if qualityOnly && !topologyQualityChanged(previous, update) {
+		r.mu.Unlock()
+		r.topologyPublishMu.Unlock()
+		return
+	}
 	changed := force || previous == nil
 	if previous != nil {
 		update.Generation = previous.Generation
@@ -2067,15 +2103,20 @@ func (r *Runtime) publishTopology(ctx context.Context, force bool) {
 	r.knownGeneration[update.OriginNodeId] = update.Generation
 	r.seenFlood[floodKey{origin: update.OriginNodeId, runtimeEpoch: update.RuntimeEpoch, generation: update.Generation}] = struct{}{}
 	r.lastUpdate[update.OriginNodeId] = update
-	targets := make([]TransportConn, 0, len(r.adjByConn))
-	for conn := range r.adjByConn {
-		targets = append(targets, conn)
+	targets := make([]int64, 0, len(r.adjByConn))
+	seenPeers := make(map[int64]bool)
+	for _, adj := range r.adjByConn {
+		if seenPeers[adj.RemoteNodeID] {
+			continue
+		}
+		seenPeers[adj.RemoteNodeID] = true
+		targets = append(targets, adj.RemoteNodeID)
 	}
 	r.mu.Unlock()
 	r.topologyPublishMu.Unlock()
 
-	for _, conn := range targets {
-		r.queueTopologyFlood(conn, update)
+	for _, nodeID := range targets {
+		r.queueTopologyFloodNode(nodeID, update)
 	}
 }
 
@@ -2199,7 +2240,7 @@ func remoteHintSuggestsRelay(hint string) bool {
 //  4. 先比较运行时纪元，再比较同一纪元内生成号，防止旧进程覆盖新进程。
 //  5. 记录处理过的更新，防止循环。
 //  6. 将更新应用到本地拓扑存储。
-//  7. 将更新广播给除入站连接之外的所有其他邻接节点（洪水扩散）。
+//  7. 将更新广播给其他 peer，排除来源 peer 的全部连接及公告 origin。
 func (r *Runtime) handleTopologyUpdate(ctx context.Context, ingress *Adjacency, update *TopologyUpdate) {
 	update = NormalizeTopologyUpdate(update)
 	if update == nil {
@@ -2229,18 +2270,26 @@ func (r *Runtime) handleTopologyUpdate(ctx context.Context, ingress *Adjacency, 
 	r.knownGeneration[update.OriginNodeId] = update.Generation
 	r.seenFlood[key] = struct{}{}
 	r.lastUpdate[update.OriginNodeId] = update
-	targets := make([]TransportConn, 0, len(r.adjByConn))
-	for conn, adj := range r.adjByConn {
-		if adj == ingress {
+	targets := make([]int64, 0, len(r.adjByConn))
+	seenPeers := make(map[int64]bool)
+	for _, adj := range r.adjByConn {
+		// Every transport carries the same origin/version. Echoing it over
+		// another connection to the sender (or back to its origin) only burns
+		// bandwidth: those nodes already possess this immutable advertisement.
+		if adj.RemoteNodeID == update.OriginNodeId || (ingress != nil && adj.RemoteNodeID == ingress.RemoteNodeID) {
 			continue
 		}
-		targets = append(targets, conn)
+		if seenPeers[adj.RemoteNodeID] {
+			continue
+		}
+		seenPeers[adj.RemoteNodeID] = true
+		targets = append(targets, adj.RemoteNodeID)
 	}
 	r.mu.Unlock()
 	r.store.ApplyTopologyUpdate(update)
 
-	for _, conn := range targets {
-		r.queueTopologyFlood(conn, update)
+	for _, nodeID := range targets {
+		r.queueTopologyFloodNode(nodeID, update)
 	}
 }
 
@@ -2309,11 +2358,14 @@ func (r *Runtime) adjacencyActive(adj *Adjacency) bool {
 func (r *Runtime) sendPing(ctx context.Context, adj *Adjacency) {
 	id := r.pingID.Add(1)
 	now := r.now().UnixMilli()
+	monotonicNow := time.Now()
+	interval := r.standbyProbeInterval(adj, monotonicNow)
 	adj.mu.Lock()
 	// 一次只保留一个探测。其他业务帧不能替代匹配的 TimeSyncResponse。
 	if len(adj.inflightPings) > 0 {
 		elapsed := time.Since(adj.pingStarted)
-		if elapsed < r.livenessTimeout {
+		deadlineExceeded := !adj.probeDeadline.IsZero() && !monotonicNow.Before(adj.probeDeadline)
+		if elapsed < r.livenessTimeout && !deadlineExceeded {
 			degraded := elapsed >= 3*r.pingInterval && !adj.probeDegraded
 			if degraded {
 				adj.probeDegraded = true
@@ -2329,7 +2381,17 @@ func (r *Runtime) sendPing(ctx context.Context, adj *Adjacency) {
 		_ = adj.Conn.Close() // 唤醒阻塞 Receive，走统一邻接丢失与拓扑回退流程。
 		return
 	}
-	adj.pingStarted = time.Now()
+	if interval > r.pingInterval && !adj.lastProbeSent.IsZero() && monotonicNow.Sub(adj.lastProbeSent) < interval {
+		adj.mu.Unlock()
+		return
+	}
+	adj.pingStarted = monotonicNow
+	adj.lastProbeSent = monotonicNow
+	adj.lastProbeInterval = interval
+	adj.probeDeadline = monotonicNow.Add(r.livenessTimeout)
+	if interval > r.pingInterval && !adj.lastProbeSuccess.IsZero() {
+		adj.probeDeadline = adj.lastProbeSuccess.Add(r.livenessTimeout)
+	}
 	adj.probeDegraded = false
 	adj.pingActivity = adj.activity.Load()
 	adj.inflightPings[id] = time.Unix(0, now*int64(time.Millisecond))
@@ -2368,8 +2430,8 @@ func (r *Runtime) handleTimeSyncRequest(ctx context.Context, adj *Adjacency, req
 //   - RTT_EWMA = (1-alpha) * RTT_EWMA + alpha * RTT
 //   - Jitter_EWMA = (1-alpha) * Jitter_EWMA + alpha * |RTT - RTT_EWMA_prev|
 //
-// 当链路成本发生有意义的变更时（linkCostChangedMeaningfully 返回 true），
-// 触发 bumpGenerationAndPublish 以广播更新后的链路质量。
+// 普通采样由质量发布窗口对照上次公告判断是否广播；探测降级恢复立即
+// 唤醒发布循环。采样与本机邻接评分不等待拓扑发布或持久化。
 func (r *Runtime) handleTimeSyncResponse(adj *Adjacency, resp *TimeSyncResponse) {
 	if resp == nil || resp.RequestId == 0 {
 		return
@@ -2402,11 +2464,12 @@ func (r *Runtime) handleTimeSyncResponse(adj *Adjacency, resp *TimeSyncResponse)
 		adj.mu.Unlock()
 		return
 	}
-	prevCost := r.adjacencyCostLocked(adj, time.Now()) + int64(adj.jitterEWMA)
 	wasDegraded := adj.probeDegraded
 	delete(adj.inflightPings, resp.RequestId)
 	adj.probeDegraded = false
 	adj.pingStarted = time.Time{}
+	adj.lastProbeSuccess = time.Now()
+	adj.probeDeadline = time.Time{}
 	const alpha = 0.2
 	if adj.samples == 0 {
 		adj.rttEWMA = float64(rtt)
@@ -2424,10 +2487,10 @@ func (r *Runtime) handleTimeSyncResponse(adj *Adjacency, resp *TimeSyncResponse)
 	if adj.activity.Load()-adj.pingActivity <= adjacencyIdleProbeBytes {
 		adj.observeIdleProbeLocked(float64(rtt))
 	}
-	newCost := r.adjacencyCostLocked(adj, time.Now()) + int64(adj.jitterEWMA)
 	jitter := int64(adj.jitterEWMA)
 	adj.mu.Unlock()
 
+	r.refreshControlQueryFallback(adj.RemoteNodeID, time.Now())
 	if r.timeSyncObserver != nil {
 		r.timeSyncObserver(TimeSyncObservation{
 			RemoteNodeID:        adj.RemoteNodeID,
@@ -2443,8 +2506,14 @@ func (r *Runtime) handleTimeSyncResponse(adj *Adjacency, resp *TimeSyncResponse)
 		})
 	}
 
-	if wasDegraded || linkCostChangedMeaningfully(prevCost, newCost) {
+	if wasDegraded {
 		r.scheduleQualityPublish()
+	} else {
+		// Keep local routing measurements current, but batch ordinary metric
+		// changes. Failure penalties and probe recovery still signal immediately.
+		// Mark every valid sample so gradual drift is compared with the last
+		// advertisement at the tick, rather than lost between adjacent samples.
+		r.qualityDirty.Store(true)
 	}
 }
 

@@ -455,7 +455,9 @@ func (r *sqliteMessageProjectionRepository) applyMessageSnapshotRowTx(ctx contex
 	if _, err := parseRequiredTimestamp(messageRow.CreatedAtHlc, "snapshot message created_at"); err != nil {
 		return UserKey{}, err
 	}
-	if _, err := r.userRepository.GetUserTx(ctx, tx, key, false); err != nil {
+	// 快照构建端保留删除前的消息。收件人历史行存在时也须接收，
+	// 否则新节点永远无法得到相同摘要；公开读取仍要求用户有效。
+	if _, err := r.userRepository.GetUserTx(ctx, tx, key, true); err != nil {
 		if errors.Is(err, ErrNotFound) {
 			return UserKey{}, nil
 		}

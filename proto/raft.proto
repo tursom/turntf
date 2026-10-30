@@ -1,0 +1,64 @@
+syntax = "proto3";
+
+package turntf;
+option go_package = "github.com/tursom/turntf/internal/proto;proto";
+
+// RaftRPC is prefixed with TFR\x01. Persisted Raft log and FSM formats are unchanged.
+message RaftRPC {
+  uint64 id = 1;
+  string method = 2;
+  string source = 3;
+  string error = 4;
+  oneof body {
+    RaftRequest request = 5;
+    RaftResponse response = 6;
+  }
+}
+
+message RaftHeader {
+  int64 protocol_version = 1;
+  bytes id = 2;
+  bytes addr = 3;
+}
+
+message RaftLog {
+  uint64 index = 1;
+  uint64 term = 2;
+  uint32 type = 3;
+  bytes data = 4;
+  bytes extensions = 5;
+  // time.Time.MarshalBinary preserves nanoseconds and offset without float conversion.
+  bytes appended_at = 6;
+}
+
+// Fields shared across methods keep empty AppendEntries compact. Method selects
+// the corresponding native Raft request; unused fields retain their zero values.
+message RaftRequest {
+  RaftHeader header = 1;
+  uint64 term = 2;
+  bytes leader = 3;
+  uint64 prev_log_entry = 4;
+  uint64 prev_log_term = 5;
+  repeated RaftLog entries = 6;
+  uint64 leader_commit_index = 7;
+  bytes candidate = 8;
+  uint64 last_log_index = 9;
+  uint64 last_log_term = 10;
+  bool leadership_transfer = 11;
+  int64 snapshot_version = 12;
+  bytes peers = 13;
+  bytes configuration = 14;
+  uint64 configuration_index = 15;
+  int64 size = 16;
+  bytes snapshot_data = 17;
+}
+
+message RaftResponse {
+  RaftHeader header = 1;
+  uint64 term = 2;
+  uint64 last_log = 3;
+  bool success = 4;
+  bool no_retry_backoff = 5;
+  bytes peers = 6;
+  bool granted = 7;
+}

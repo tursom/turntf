@@ -22,6 +22,9 @@ import (
 const transportTCPMTLS = "tcp_mtls"
 const tcpMTLSScheme = "tcp+tls"
 
+// 单个 TLS 明文记录最多 16KiB；只合并能放入该大小的帧，避免复制大快照。
+const tcpMTLSCoalesceFrameBytes = 16 << 10
+
 // TCPMTLSConfig 仅用于集群；禁用时不监听、不加载证书、不允许发现拨号。
 // 证书 URI SAN 必须且只能包含一个 urn:turntf:node:<正整数> 身份。
 type TCPMTLSConfig struct {
@@ -408,10 +411,12 @@ func (a *TCPMTLSMeshTransportAdapter) Close() error {
 // 每个方向独立串行化；取消或部分帧失败必须关闭整个流，禁止继续解析错位数据。
 type tcpMTLSConn struct {
 	net.Conn
-	nodeID    int64
-	hint      string
-	maxFrame  int
-	sendMu    transportWriteMutex
+	nodeID   int64
+	hint     string
+	maxFrame int
+	sendMu   transportWriteMutex
+	// 仅发送锁持有者复用；容量最多 16KiB，不随最大允许帧大小增长。
+	sendBuf   []byte
 	recvMu    sync.Mutex
 	closeOnce sync.Once
 	onClose   func()
@@ -448,7 +453,20 @@ func (c *tcpMTLSConn) Send(ctx context.Context, p []byte) error {
 	defer stop()
 	var header [4]byte
 	binary.BigEndian.PutUint32(header[:], uint32(len(p)))
-	for _, part := range [][]byte{header[:], p} {
+	parts := [][]byte{header[:], p}
+	if len(p) <= tcpMTLSCoalesceFrameBytes-len(header) {
+		// TLS 每次 Write 都会封装记录。将长度头与小帧正文一并写入，
+		// 消除独立 4 字节 TLS 记录；不等待下一条消息，不改变线格式。
+		n := len(header) + len(p)
+		if cap(c.sendBuf) < n {
+			c.sendBuf = make([]byte, n)
+		}
+		frame := c.sendBuf[:n]
+		copy(frame, header[:])
+		copy(frame[len(header):], p)
+		parts = [][]byte{frame}
+	}
+	for _, part := range parts {
 		for len(part) > 0 {
 			n, err := c.Conn.Write(part)
 			if err != nil {

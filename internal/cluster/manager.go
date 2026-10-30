@@ -197,6 +197,7 @@ type Manager struct {
 	nextResolveSessionsQueryID uint64
 	// pendingResolveSessions 是等待响应的解析会话查询。
 	pendingResolveSessions map[uint64]chan resolveUserSessionsQueryResult
+	sessionLookups         map[sessionLookupKey]*sessionLookupFlight
 	// loggedInUsersByNode 按节点ID和用户键缓存各节点的已登录用户。
 	loggedInUsersByNode map[int64]map[store.UserKey]app.LoggedInUserSummary
 	// localLoggedInUsers 缓存本节点会话注册时携带的用户摘要。
@@ -209,6 +210,10 @@ type Manager struct {
 	dirtyPresenceUsersByShard [onlinePresenceShardCount]map[store.UserKey]struct{}
 	// presenceWake 唤醒增量在线状态刷新循环。
 	presenceWake chan struct{}
+	// pendingPresenceRepairs 合并摘要修复控制任务，网络发送由 presenceLoop 执行。
+	pendingPresenceRepairs map[presenceRepairKey]struct{}
+	presenceFullSending    map[int64]bool // 每个目标最多一个完整修复发送任务。
+	presenceSync           app.ClusterPresenceSyncStatus
 	// onlinePresenceByUser 按用户键聚合的在线节点存在信息。
 	onlinePresenceByUser map[store.UserKey]map[int64]store.OnlineNodePresence
 	// onlinePresenceUsersByShard 索引远端节点各分片中已应用的用户。
@@ -229,6 +234,12 @@ type Manager struct {
 	disconnectSuspicions map[disconnectSuspicionKey]disconnectSuspicionState
 	// seenConnectivityRumors 是已见过的连接性传闻（用于去重）。
 	seenConnectivityRumors map[connectivityRumorKey]time.Time
+
+	// 运维处理器由 API 注入；请求和执行均有界，避免连接读取循环等待运维 I/O。
+	operationsHandler app.OperationsHandler
+	operationsSlots   chan struct{}
+	nextOperationsID  uint64
+	pendingOperations map[uint64]pendingOperation
 
 	// nextMeshPacketID 是网格数据包的ID自增计数器。
 	nextMeshPacketID uint64
@@ -374,10 +385,11 @@ type session struct {
 	// remoteMessageWindowSize 是对端的消息窗口大小。
 	remoteMessageWindowSize int
 	libP2PPeerID            string
-	// pendingSnapshotParts 是等待响应的快照分区请求。
-	pendingSnapshotParts map[string]struct{}
-	nextTimeSyncID       uint64
-	nextPullRequestID    uint64
+	// pendingSnapshotParts 包含在途及退避中的快照请求；session.mu 保护。
+	pendingSnapshotParts  map[string]*snapshotRequestState
+	nextSnapshotRequestID uint64
+	nextTimeSyncID        uint64
+	nextPullRequestID     uint64
 	// pendingTimeSync 是等待响应的时间同步请求。
 	pendingTimeSync map[uint64]chan timeSyncResult
 	// clockOffsetMs 是此会话计算出的时钟偏移。
@@ -478,6 +490,8 @@ func NewManager(cfg Config, st *store.Store) (*Manager, error) {
 		selfKnownURLs:              make(map[string]uint64),
 		supportsMembership:         !cfg.DiscoveryDisabled,
 		retryQueue:                 make(map[string]queuedPacket),
+		operationsSlots:            make(chan struct{}, 16),
+		pendingOperations:          make(map[uint64]pendingOperation),
 		pendingResolveSessions:     make(map[uint64]chan resolveUserSessionsQueryResult),
 		loggedInUsersByNode:        make(map[int64]map[store.UserKey]app.LoggedInUserSummary),
 		localLoggedInUsers:         make(map[store.UserKey]app.LoggedInUserSummary),

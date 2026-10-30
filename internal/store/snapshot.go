@@ -220,7 +220,20 @@ func (s *Store) ApplySnapshotChunk(ctx context.Context, chunk *clusterproto.Snap
 		if chunk.Kind != snapshotPartitionKindUsers {
 			return fmt.Errorf("%w: users snapshot chunk has kind %s", ErrInvalidInput, chunk.Kind)
 		}
+		// The tombstone carries the deletion's origin, which may differ from
+		// the user row's origin. Install it first so equal deletion timestamps
+		// cannot replace that provenance with the original user's producer.
 		for _, row := range chunk.Rows {
+			if row.GetTombstone() != nil {
+				if err := s.applyUserSnapshotRowTx(ctx, tx, row); err != nil {
+					return err
+				}
+			}
+		}
+		for _, row := range chunk.Rows {
+			if row.GetTombstone() != nil {
+				continue
+			}
 			if err := s.applyUserSnapshotRowTx(ctx, tx, row); err != nil {
 				return err
 			}
@@ -599,14 +612,68 @@ func (s *Store) applyUserSnapshotRowTx(ctx context.Context, tx *sql.Tx, row *clu
 		return err
 	}
 	if user.DeletedAt != nil || user.VersionDeleted != nil {
-		deletedAt := user.DeletedAt
-		if deletedAt == nil {
-			deletedAt = user.VersionDeleted
-		}
-		return s.applyUserDeleteTx(ctx, tx, user.Key(), *deletedAt, user.OriginNodeID, false)
+		return s.applyDeletedUserSnapshotTx(ctx, tx, user)
 	}
 
 	return s.applyReplicatedUserUpsert(ctx, tx, userUpdatedProtoFromUser(user))
+}
+
+// applyDeletedUserSnapshotTx retains the historical user row as well as the
+// tombstone. A joining node may never have seen the original create: storing
+// only its tombstone makes the existing full-partition digest diverge forever.
+// Merge field versions without exposing an active row, and never lower a known
+// deletion version, including a tombstone received before this snapshot.
+func (s *Store) applyDeletedUserSnapshotTx(ctx context.Context, tx *sql.Tx, incoming User) error {
+	key := incoming.Key()
+	current, err := s.getUserByIDTx(ctx, tx, key, true)
+	if err != nil && !errors.Is(err, ErrNotFound) {
+		return err
+	}
+	incoming = s.applyReservedUserInvariants(incoming)
+	if incoming.isProtectedBootstrapAdmin() || incoming.isProtectedBroadcastUser() || incoming.isProtectedNodeIngressUser() ||
+		(err == nil && (current.isProtectedBootstrapAdmin() || current.isProtectedBroadcastUser() || current.isProtectedNodeIngressUser())) {
+		return nil
+	}
+	merged := incoming
+	if err == nil {
+		merged = s.applyReservedUserInvariants(mergeReplicatedUser(current, incoming))
+	}
+	deletedAt := clock.Timestamp{}
+	for _, version := range []*clock.Timestamp{incoming.DeletedAt, incoming.VersionDeleted, current.DeletedAt, current.VersionDeleted} {
+		if version != nil && version.Compare(deletedAt) > 0 {
+			deletedAt = *version
+		}
+	}
+	origin := incoming.OriginNodeID
+	tombstone, exists, err := s.getTombstoneTx(ctx, tx, "user", key)
+	if err != nil {
+		return err
+	}
+	if exists && tombstone.DeletedAt.Compare(deletedAt) >= 0 {
+		deletedAt, origin = tombstone.DeletedAt, tombstone.OriginNodeID
+	}
+	merged.DeletedAt, merged.VersionDeleted = &deletedAt, &deletedAt
+	merged.UpdatedAt = latestUserVersion(merged)
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO users(
+    node_id, user_id, username, password_hash, profile, role, system_reserved, created_at_hlc, updated_at_hlc,
+    deleted_at_hlc, version_username, version_password_hash, version_profile,
+    version_role, version_deleted, origin_node_id
+)
+VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(node_id, user_id) DO UPDATE SET
+    username=excluded.username, password_hash=excluded.password_hash, profile=excluded.profile,
+    role=excluded.role, system_reserved=excluded.system_reserved, updated_at_hlc=excluded.updated_at_hlc,
+    deleted_at_hlc=excluded.deleted_at_hlc, version_username=excluded.version_username,
+    version_password_hash=excluded.version_password_hash, version_profile=excluded.version_profile,
+    version_role=excluded.version_role, version_deleted=excluded.version_deleted
+`, merged.NodeID, merged.ID, merged.Username, merged.PasswordHash, defaultJSON(merged.Profile), merged.Role,
+		boolToInt(merged.SystemReserved), merged.CreatedAt.String(), merged.UpdatedAt.String(),
+		deletedAt.String(), merged.VersionUsername.String(), merged.VersionPasswordHash.String(),
+		merged.VersionProfile.String(), merged.VersionRole.String(), deletedAt.String(), merged.OriginNodeID); err != nil {
+		return fmt.Errorf("merge deleted snapshot user: %w", err)
+	}
+	return s.applyUserDeleteTx(ctx, tx, key, deletedAt, origin, false)
 }
 
 // applySnapshotTombstoneTx 在事务中应用墓碑行：构造 UserKey 并执行软删除。

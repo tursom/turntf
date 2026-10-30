@@ -294,6 +294,9 @@ func (h *HTTP) routes() {
 	h.mux.HandleFunc("GET /cluster/nodes", h.handleClusterNodes)
 	h.mux.HandleFunc("GET /cluster/nodes/{node_id}/logged-in-users", h.handleNodeLoggedInUsers)
 	h.mux.HandleFunc("GET /ops/status", h.handleOpsStatus)
+	h.mux.HandleFunc("GET /ops/nodes/{node_id}/status", h.handleOpsNodeStatus)
+	h.mux.HandleFunc("POST /ops/nodes/{node_id}/probes", h.handleOpsProbe)
+	h.mux.HandleFunc("GET /ops/traces/{trace_id}/cluster", h.handleOpsClusterTrace)
 	h.mux.HandleFunc("GET /ops/traces/{trace_id}", h.handleOpsTrace)
 	h.mux.HandleFunc("POST /ops/probes", h.handleOpsProbe)
 	h.mux.HandleFunc("GET /metrics", h.handleMetrics)
@@ -1292,6 +1295,14 @@ func (h *HTTP) handleOpsProbe(w http.ResponseWriter, r *http.Request) {
 		writeStoreError(w, err)
 		return
 	}
+	sourceNodeID := h.nodeID
+	if r.PathValue("node_id") != "" {
+		var valid bool
+		sourceNodeID, valid = parsePositivePathInt(w, r, "node_id")
+		if !valid {
+			return
+		}
+	}
 	r.Body = http.MaxBytesReader(w, r.Body, 256)
 	var req routeProbeRequest
 	if err := decodeJSON(r, &req); err != nil || req.TargetNodeID <= 0 {
@@ -1310,20 +1321,17 @@ func (h *HTTP) handleOpsProbe(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := context.WithTimeout(r.Context(), 4*time.Second)
 	defer cancel()
-	id, err := h.service.ProbeRoute(ctx, req.TargetNodeID)
-	if err != nil && !trace.ValidID(id) {
-		writeStoreError(w, err)
+	result, err := h.service.NodeProbe(ctx, sourceNodeID, req.TargetNodeID)
+	if err != nil {
+		writeOpsError(w, err)
 		return
 	}
-	status := "dispatched"
 	code := http.StatusAccepted
-	if err != nil {
-		status = "failed"
+	if result.Status == "failed" {
 		code = http.StatusOK
 	}
 	w.Header().Set("Cache-Control", "no-store")
-	writeJSON(w, code, map[string]any{"trace_id": id, "source_node_id": h.nodeID,
-		"target_node_id": req.TargetNodeID, "status": status})
+	writeJSON(w, code, result)
 }
 
 func (h *HTTP) handleClusterNodes(w http.ResponseWriter, r *http.Request) {

@@ -453,6 +453,8 @@ func (m *Manager) handleMeshQueryRequest(ctx context.Context, packet *mesh.Forwa
 		return errors.New("mesh query request cannot be empty")
 	}
 	switch query.Kind {
+	case meshQueryOperationsRequestKind:
+		return m.handleOperationsRequest(packet, query)
 	case meshQueryResolveUserSessionsRequestKind:
 		return m.handleMeshResolveUserSessionsRequest(ctx, packet, query)
 	default:
@@ -466,6 +468,8 @@ func (m *Manager) handleMeshQueryResponse(ctx context.Context, packet *mesh.Forw
 		return errors.New("mesh query response cannot be empty")
 	}
 	switch query.Kind {
+	case meshQueryOperationsResponseKind:
+		return m.handleOperationsResponse(packet, query)
 	case meshQueryResolveUserSessionsResponseKind:
 		return m.handleMeshResolveUserSessionsResponse(ctx, packet, query)
 	default:
@@ -590,6 +594,9 @@ func (m *Manager) handleMeshPresenceUpdateEnvelope(packet *mesh.ForwardedPacket,
 		return fmt.Errorf("mesh online presence update origin mismatch: got %d want %d", body.GetOriginNodeId(), sourceNodeID)
 	}
 	_, err := m.applyOnlinePresenceUpdate(body)
+	if err == nil {
+		m.recordPresenceSync(body, false)
+	}
 	return err
 }
 
@@ -768,7 +775,7 @@ func (m *Manager) meshPeerSession(peerID int64) *session {
 		remoteOriginProgress:    make(map[int64]uint64),
 		pendingPulls:            make(map[int64]pendingPullState),
 		pendingTimeSync:         make(map[uint64]chan timeSyncResult),
-		pendingSnapshotParts:    make(map[string]struct{}),
+		pendingSnapshotParts:    make(map[string]*snapshotRequestState),
 		replicationReady:        true,
 		remoteSnapshotVersion:   internalproto.SnapshotVersion,
 		remoteMessageWindowSize: m.cfg.MessageWindowSize,

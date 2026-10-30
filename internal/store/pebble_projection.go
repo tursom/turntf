@@ -815,7 +815,7 @@ func (r *pebbleMessageProjectionRepository) BuildMessageSnapshotRows(ctx context
 // ApplyMessageSnapshotRows 应用消息快照行，从其他节点恢复消息投影状态。
 //
 // 处理流程：
-//  1. 逐行应用快照数据（跳过已存在的消息和已删除用户的消息）
+//  1. 逐行应用快照数据（跳过已存在的消息及真正未知收件人的消息）
 //  2. 收集受影响的用户列表
 //  3. 对所有受影响用户执行消息裁剪
 func (r *pebbleMessageProjectionRepository) ApplyMessageSnapshotRows(ctx context.Context, producer int64, rows []*clusterproto.SnapshotRow) error {
@@ -838,7 +838,8 @@ func (r *pebbleMessageProjectionRepository) ApplyMessageSnapshotRows(ctx context
 }
 
 // applyMessageSnapshotRow 应用单行消息快照数据。
-// 跳过接收者用户已删除的消息和已存在的消息（幂等性保证）。
+// 保留已有软删除收件人的历史消息，使其与构建端的摘要一致；
+// 真正未知的收件人仍跳过，公共读取仍要求用户有效。
 // 返回受影响的用户 Key，如果消息被跳过则返回空 Key。
 func (r *pebbleMessageProjectionRepository) applyMessageSnapshotRow(ctx context.Context, producer int64, row *clusterproto.SnapshotRow) (UserKey, error) {
 	if row == nil {
@@ -862,7 +863,7 @@ func (r *pebbleMessageProjectionRepository) applyMessageSnapshotRow(ctx context.
 	if err != nil {
 		return UserKey{}, err
 	}
-	if _, err := r.userRepository.GetUser(ctx, key, false); err != nil {
+	if _, err := r.userRepository.GetUser(ctx, key, true); err != nil {
 		if errors.Is(err, ErrNotFound) {
 			return UserKey{}, nil
 		}
@@ -887,7 +888,7 @@ func (r *pebbleMessageProjectionRepository) applyMessageSnapshotRow(ctx context.
 	} else if ok {
 		return key, nil
 	}
-	recipient, err := r.userRepository.GetUser(ctx, key, false)
+	recipient, err := r.userRepository.GetUser(ctx, key, true)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
 			return UserKey{}, nil
@@ -934,9 +935,12 @@ func (r *pebbleMessageProjectionRepository) putMessage(ctx context.Context, mess
 		_ = batch.Close()
 		return pebbleMessageUserState{}, err
 	}
-	if err := r.prepareInboxWrites(ctx, batch, message, recipient, value); err != nil {
-		_ = batch.Close()
-		return pebbleMessageUserState{}, err
+	// 删除收件人的快照只恢复历史存储，不向活跃用户收件箱传播。
+	if recipient.DeletedAt == nil && recipient.VersionDeleted == nil {
+		if err := r.prepareInboxWrites(ctx, batch, message, recipient, value); err != nil {
+			_ = batch.Close()
+			return pebbleMessageUserState{}, err
+		}
 	}
 	if err := applyPebbleBatch(batch, r.writes, forceSync); err != nil {
 		return pebbleMessageUserState{}, fmt.Errorf("commit message projection: %w", err)

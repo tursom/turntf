@@ -64,17 +64,18 @@ type operationsStatus struct {
 }
 
 type meshStatus struct {
-	TCPMTLS               app.ClusterTCPMTLSStatus   `json:"tcp_mtls"`
-	Enabled               bool                       `json:"enabled"`
-	ForwardingEnabled     bool                       `json:"forwarding_enabled"`
-	BridgeEnabled         bool                       `json:"bridge_enabled"`
-	NodeFeeWeight         int64                      `json:"node_fee_weight"`
-	TopologyGeneration    uint64                     `json:"topology_generation"`
-	TransportCapabilities []meshTransportCapability  `json:"transport_capabilities,omitempty"`
-	TrafficRules          []meshTrafficRule          `json:"traffic_rules,omitempty"`
-	Routes                []meshRoute                `json:"routes,omitempty"`
-	Adjacencies           []app.ClusterMeshAdjacency `json:"adjacencies,omitempty"`
-	Metrics               meshMetrics                `json:"metrics,omitempty"`
+	PresenceSync          app.ClusterPresenceSyncStatus `json:"presence_sync"`
+	TCPMTLS               app.ClusterTCPMTLSStatus      `json:"tcp_mtls"`
+	Enabled               bool                          `json:"enabled"`
+	ForwardingEnabled     bool                          `json:"forwarding_enabled"`
+	BridgeEnabled         bool                          `json:"bridge_enabled"`
+	NodeFeeWeight         int64                         `json:"node_fee_weight"`
+	TopologyGeneration    uint64                        `json:"topology_generation"`
+	TransportCapabilities []meshTransportCapability     `json:"transport_capabilities,omitempty"`
+	TrafficRules          []meshTrafficRule             `json:"traffic_rules,omitempty"`
+	Routes                []meshRoute                   `json:"routes,omitempty"`
+	Adjacencies           []app.ClusterMeshAdjacency    `json:"adjacencies,omitempty"`
+	Metrics               meshMetrics                   `json:"metrics,omitempty"`
 }
 
 type meshTransportCapability struct {
@@ -298,6 +299,17 @@ func (s *Service) ClusterNodes(ctx context.Context) (clusterNodesResponse, error
 			nodes[0].NodeID = status.NodeID
 		}
 		nodes = append(nodes, connectedClusterNodes(status.Peers)...)
+		seen := make(map[int64]bool, len(nodes))
+		for _, node := range nodes {
+			seen[node.NodeID] = true
+		}
+		// 复用实际路由状态补齐间接可达成员；无需为其登记 HTTP 或发现 URL。
+		for _, route := range status.Mesh.Routes {
+			if route.Reachable && route.DestinationNodeID > 0 && !seen[route.DestinationNodeID] {
+				seen[route.DestinationNodeID] = true
+				nodes = append(nodes, clusterNodeResponse{NodeID: route.DestinationNodeID, Source: "mesh"})
+			}
+		}
 	}
 
 	sort.Slice(nodes, func(i, j int) bool {
@@ -644,6 +656,7 @@ func mergePeerStatus(storePeers []store.PeerOperationsStats, clusterPeers []app.
 // meshStatusFromCluster 将集群层的 mesh 状态转换为 API 响应格式。
 func meshStatusFromCluster(status app.ClusterMeshStatus) meshStatus {
 	out := meshStatus{
+		PresenceSync:       status.PresenceSync,
 		TCPMTLS:            status.TCPMTLS,
 		Enabled:            status.Enabled,
 		ForwardingEnabled:  status.ForwardingEnabled,

@@ -119,6 +119,7 @@ func TestBusinessSendQualityIgnoresSuccessfulControlFrames(t *testing.T) {
 	adj := r.registerAdjacency(conn, TransportTCPMTLS, &NodeHello{NodeId: 2}, false)
 	setTestAdjacencyScore(adj, 100, 0)
 	r.publishLocalTopology(context.Background())
+	conn.mu.Lock()
 	conn.sendHook = func(raw []byte) error {
 		envelope, err := r.codec.Decode(raw)
 		if err != nil {
@@ -129,6 +130,7 @@ func TestBusinessSendQualityIgnoresSuccessfulControlFrames(t *testing.T) {
 		}
 		return nil
 	}
+	conn.mu.Unlock()
 	business := &ClusterEnvelope{Body: &ClusterEnvelope_ForwardedPacket{ForwardedPacket: &ForwardedPacket{}}}
 	for i := 0; i < 2; i++ {
 		if err := r.sendEnvelopeCtx(context.Background(), conn, business, time.Second); err == nil {

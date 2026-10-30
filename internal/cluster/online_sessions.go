@@ -230,6 +230,16 @@ func (m *Manager) resolveUserSessionsAcrossNodes(ctx context.Context, user store
 // resolveUserSessionsAtNode 在指定节点上解析用户会话。
 // 本地节点直接返回本地会话；远程节点通过网格查询。
 func (m *Manager) resolveUserSessionsAtNode(ctx context.Context, nodeID int64, user store.UserKey) ([]store.OnlineSession, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, sessionLookupCallerError(err, nodeID)
+	}
+	if nodeID == m.cfg.NodeID {
+		return m.localUserSessions(user), nil
+	}
+	return m.sharedSessionLookup(ctx, nodeID, user)
+}
+
+func (m *Manager) resolveUserSessionsAtNodeUnshared(ctx context.Context, nodeID int64, user store.UserKey) ([]store.OnlineSession, error) {
 	if nodeID == m.cfg.NodeID {
 		return m.localUserSessions(user), nil
 	}
@@ -385,7 +395,7 @@ func (m *Manager) presenceCandidateNodeIDs(user store.UserKey) []int64 {
 // allKnownNodeIDs 返回所有已知节点ID的列表。
 func (m *Manager) allKnownNodeIDs() []int64 {
 	m.mu.Lock()
-	defer m.mu.Unlock()
+	binding := m.meshRuntime
 
 	seen := map[int64]struct{}{m.cfg.NodeID: {}}
 	for nodeID := range m.peers {
@@ -403,12 +413,29 @@ func (m *Manager) allKnownNodeIDs() []int64 {
 			seen[peer.nodeID] = struct{}{}
 		}
 	}
+	m.mu.Unlock()
+	// 仅有拓扑通告、没有直连会话或发现 URL 的间接节点同样属于已知成员。
+	if binding != nil {
+		for nodeID := range binding.TopologyStore().Snapshot().Nodes {
+			if nodeID > 0 {
+				seen[nodeID] = struct{}{}
+			}
+		}
+	}
 	out := make([]int64, 0, len(seen))
 	for nodeID := range seen {
 		out = append(out, nodeID)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
 	return out
+}
+
+// KnownNodeIDs 返回实时已知成员快照，包含本机和仅经拓扑获知的间接节点。
+func (m *Manager) KnownNodeIDs() []int64 {
+	if m == nil {
+		return nil
+	}
+	return m.allKnownNodeIDs()
 }
 
 // localUserSessions 返回本地指定用户的所有在线会话。
@@ -464,6 +491,7 @@ func (m *Manager) presenceLoop() {
 	var flushTimer *time.Timer
 	var flushTimerC <-chan time.Time
 	nextRepairShard := 0
+	repairRound := 0
 
 	for {
 		select {
@@ -481,9 +509,14 @@ func (m *Manager) presenceLoop() {
 			flushTimer = nil
 			flushTimerC = nil
 			m.flushOnlinePresenceDeltas()
+			m.flushPresenceRepairs()
 		case <-repairTicker.C:
-			m.broadcastAuthoritativePresenceShard(nextRepairShard)
+			// 新邻居仍每8秒校验一次内容，且每64秒保留一轮完整修复。
+			m.repairOnlinePresenceShard(nextRepairShard, repairRound%8 == 7)
 			nextRepairShard = (nextRepairShard + 1) % onlinePresenceShardCount
+			if nextRepairShard == 0 {
+				repairRound++
+			}
 		case <-suspicionTicker.C:
 			m.expireDisconnectSuspicions(time.Now().UTC())
 		}
@@ -630,7 +663,16 @@ func (m *Manager) sendOnlinePresence(targetNodeID int64, update *internalproto.O
 	if m.MeshRuntime() == nil {
 		return
 	}
-	if err := m.routeMeshPresenceUpdate(context.Background(), targetNodeID, update); err != nil {
+	m.mu.Lock()
+	ctx := m.ctx
+	m.mu.Unlock()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if ctx.Err() != nil {
+		return
+	}
+	if err := m.routeMeshPresenceUpdate(ctx, targetNodeID, update); err != nil {
 		m.logDebug("mesh_online_presence_forward_failed").
 			Int64("target_node_id", targetNodeID).
 			Err(err).
@@ -638,6 +680,8 @@ func (m *Manager) sendOnlinePresence(targetNodeID int64, update *internalproto.O
 		if errors.Is(err, mesh.ErrNoRoute) {
 			m.retryOnlinePresenceForward(targetNodeID, update)
 		}
+	} else {
+		m.recordPresenceSync(update, true)
 	}
 }
 
@@ -654,11 +698,13 @@ func (m *Manager) retryOnlinePresenceForward(targetNodeID int64, update *interna
 		if m == nil || m.ctx == nil || m.ctx.Err() != nil {
 			return
 		}
-		if err := m.routeMeshPresenceUpdate(context.Background(), targetNodeID, cloned); err != nil && !errors.Is(err, mesh.ErrNoRoute) {
+		if err := m.routeMeshPresenceUpdate(m.ctx, targetNodeID, cloned); err != nil && !errors.Is(err, mesh.ErrNoRoute) {
 			m.logDebug("mesh_online_presence_retry_failed").
 				Int64("target_node_id", targetNodeID).
 				Err(err).
 				Msg("delayed retry for online presence snapshot failed")
+		} else if err == nil {
+			m.recordPresenceSync(cloned, true)
 		}
 	})
 }
@@ -667,6 +713,10 @@ func (m *Manager) retryOnlinePresenceForward(targetNodeID int64, update *interna
 func (m *Manager) applyOnlinePresenceUpdate(update *internalproto.OnlinePresenceUpdate) (bool, error) {
 	if m == nil {
 		return false, nil
+	}
+	if update.GetMode() == internalproto.OnlinePresenceUpdateMode_ONLINE_PRESENCE_UPDATE_MODE_DIGEST ||
+		update.GetMode() == internalproto.OnlinePresenceUpdateMode_ONLINE_PRESENCE_UPDATE_MODE_REPAIR_REQUEST {
+		return false, m.handlePresenceControl(update)
 	}
 	loggedInUsers, err := validateOnlinePresenceUpdate(update)
 	if err != nil {

@@ -36,7 +36,10 @@ func TestRuntimePeriodicMetricsHaveFreshGeneration(t *testing.T) {
 	target.handleTopologyUpdate(context.Background(), nil, first)
 	// Jitter can change without triggering a meaningful RTT change. The periodic
 	// publication must not reuse the version already accepted by the peer.
+	// 发布后的后台发送任务也会读取质量，测试注入遵守生产更新的锁约束。
+	adj.mu.Lock()
 	adj.jitterEWMA = 7
+	adj.mu.Unlock()
 	source.publishLocalTopology(context.Background())
 	second := source.lastUpdate[1]
 	if second.Generation <= first.Generation {

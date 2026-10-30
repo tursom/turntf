@@ -39,7 +39,7 @@ func (m *Manager) sendSnapshotDigest(sess *session) bool {
 	if m.store == nil || sess == nil || sess.peerID == 0 {
 		return false
 	}
-	if !sess.isReplicationReady() || sess.hasPendingPulls() || sess.pendingSnapshotCount() > 0 || sess.isClosed() {
+	if !sess.isReplicationReady() || sess.hasPendingPulls() || sess.hasSnapshotRequests() || sess.isClosed() {
 		return false
 	}
 	if sess.remoteSnapshotVersion != internalproto.SnapshotVersion {
@@ -289,7 +289,15 @@ func (m *Manager) handleSnapshotChunk(sess *session, envelope *internalproto.Env
 	}
 
 	// 接收对端发送的快照分块数据
-	defer sess.completeSnapshotRequest(chunk.Partition)
+	token := sess.snapshotRequestToken(chunk.Partition)
+	applied := false
+	defer func() {
+		if applied {
+			sess.completeSnapshotRequest(chunk.Partition)
+		} else {
+			sess.failSnapshotRequest(chunk.Partition, token, time.Now())
+		}
+	}()
 	maxTimestamp, err := store.MaxSnapshotChunkTimestamp(chunk)
 	if err != nil {
 		return err
@@ -304,6 +312,7 @@ func (m *Manager) handleSnapshotChunk(sess *session, envelope *internalproto.Env
 	if err := m.store.ApplySnapshotChunk(context.Background(), chunk); err != nil {
 		return err
 	}
+	applied = true
 	m.logSessionEvent("snapshot_chunk_applied", sess).
 		Str("partition", chunk.Partition).
 		Stringer("kind", chunk.Kind).
@@ -330,23 +339,31 @@ func (m *Manager) requestSnapshotPartition(sess *session, partition *internalpro
 		return
 	}
 	m.mu.Unlock()
-	if !sess.beginSnapshotRequest(partition.Partition) {
+	token, ok := sess.beginSnapshotRequestAt(partition.Partition, partition.Kind, time.Now())
+	if !ok {
 		return
 	}
+	m.sendSnapshotPartitionRequest(sess, snapshotRequestAttempt{partition: partition.Partition, kind: partition.Kind, token: token})
+}
+
+// sendSnapshotPartitionRequest is shared by the initial request and retries.
+// Its failure only releases this attempt's in-flight marker; the partition's
+// deduplication and backoff survive until a valid response is applied.
+func (m *Manager) sendSnapshotPartitionRequest(sess *session, request snapshotRequestAttempt) {
 	m.markSnapshotChunkSent(sess.peerID)
 	m.logSessionEvent("snapshot_partition_requested", sess).
-		Str("partition", partition.Partition).
-		Stringer("kind", partition.Kind).
-		Uint64("row_count", partition.RowCount).
+		Str("partition", request.partition).
+		Stringer("kind", request.kind).
 		Msg("requested snapshot partition from peer")
 	chunk := &internalproto.SnapshotChunk{
-		Partition:       partition.Partition,
+		Partition:       request.partition,
 		SnapshotVersion: internalproto.SnapshotVersion,
-		Kind:            partition.Kind,
+		Kind:            request.kind,
 		Request:         true,
 	}
 	if sess.conn == nil && m.MeshRuntime() != nil {
 		if err := m.routeMeshSnapshotChunk(context.Background(), sess.peerID, chunk); err != nil {
+			sess.failSnapshotRequest(request.partition, request.token, time.Now())
 			m.logSessionWarn("mesh_snapshot_chunk_request_forward_failed", sess, err).
 				Msg("failed to forward snapshot chunk request over mesh")
 		}
@@ -358,6 +375,27 @@ func (m *Manager) requestSnapshotPartition(sess *session, partition *internalpro
 			SnapshotChunk: chunk,
 		},
 	})
+}
+
+func (m *Manager) retrySnapshotPartitions(sess *session, now time.Time) {
+	if !sess.hasSnapshotRequests() {
+		return
+	}
+	m.mu.Lock()
+	err := m.allowSnapshotTrafficForSessionLocked(sess)
+	m.mu.Unlock()
+	if err != nil {
+		return
+	}
+	due, expired := sess.takeSnapshotRetries(now)
+	if expired > 0 {
+		m.logSessionWarn("snapshot_partition_request_timeout", sess, nil).
+			Int("partition_count", expired).
+			Msg("snapshot response timed out; waiting for retry backoff")
+	}
+	for _, request := range due {
+		m.sendSnapshotPartitionRequest(sess, request)
+	}
 }
 
 // requestSnapshotRepairForOrigin 当追赶超出保留窗口时，请求所有分区的快照修复。
@@ -437,8 +475,8 @@ func (m *Manager) markSnapshotDigestQueued(peerID int64, queuedAt time.Time) {
 	})
 }
 
-// flushSnapshotDigestsDue 扫描所有有脏标记的对等节点，发送快照摘要。
-// 受最小间隔（snapshotDigestMinInterval=250ms）限制，防止频繁发送。
+// flushSnapshotDigestsDue 扫描所有活跃会话，处理快照请求超时及退避重试，
+// 并向有脏标记的对等节点发送快照摘要；摘要受 snapshotDigestMinInterval 限制。
 func (m *Manager) flushSnapshotDigestsDue(now time.Time) {
 	if m == nil || m.store == nil {
 		return
@@ -450,12 +488,13 @@ func (m *Manager) flushSnapshotDigestsDue(now time.Time) {
 		lastSentAt     time.Time
 		lastQueuedAt   time.Time
 		dirtyImmediate bool
+		dirty          bool
 	}
 
 	m.mu.Lock()
 	candidates := make([]candidate, 0, len(m.peers))
 	for peerID, peer := range m.peers {
-		if peerID <= 0 || peer == nil || !peer.snapshotDigestDirty || peer.active == nil {
+		if peerID <= 0 || peer == nil || peer.active == nil {
 			continue
 		}
 		candidates = append(candidates, candidate{
@@ -464,15 +503,20 @@ func (m *Manager) flushSnapshotDigestsDue(now time.Time) {
 			lastSentAt:     peer.lastSnapshotDigestAt,
 			lastQueuedAt:   peer.lastSnapshotDigestQueuedAt,
 			dirtyImmediate: peer.snapshotDigestImmediate,
+			dirty:          peer.snapshotDigestDirty,
 		})
 	}
 	m.mu.Unlock()
 
 	for _, item := range candidates {
-		if item.sess == nil || !item.sess.isReplicationReady() || item.sess.hasPendingPulls() || item.sess.pendingSnapshotCount() > 0 || item.sess.isClosed() {
+		if item.sess == nil || !item.sess.isReplicationReady() || item.sess.isClosed() {
 			continue
 		}
 		if item.sess.snapshotVersion() != internalproto.SnapshotVersion {
+			continue
+		}
+		m.retrySnapshotPartitions(item.sess, now)
+		if !item.dirty || item.sess.hasPendingPulls() || item.sess.hasSnapshotRequests() {
 			continue
 		}
 		if !item.dirtyImmediate && !item.lastSentAt.IsZero() && now.Sub(item.lastSentAt) < snapshotDigestMinInterval {

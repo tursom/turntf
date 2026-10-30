@@ -1,6 +1,6 @@
 syntax = "proto3";
 
-package turntf;
+package notifier.raft.v1;
 option go_package = "github.com/tursom/turntf/internal/proto;proto";
 
 // RaftRPC is prefixed with TFR\x01. Persisted Raft log and FSM formats are unchanged.

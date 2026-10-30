@@ -6,7 +6,7 @@
 
 `MeshNodeHello.consensus_binary_v1_supported`（字段 8）声明支持新编码。只采用直接握手确认的能力；同一节点存在多条连接时，必须全部声明支持。未知、多跳且没有直接握手、已断开及旧版本节点继续使用 JSON。
 
-新编码以 `TFR\x01` 开头，后接 `proto/raft.proto` 定义的 Protobuf 信封。信封显式区分 request / response，保留方法、请求 ID、来源及错误。原生 Raft 的五种请求及响应均有映射：AppendEntries、RequestVote、RequestPreVote、InstallSnapshot、TimeoutNow。日志保留索引、任期、类型、Data、Extensions 和 AppendedAt；二进制内容直接传输，时间使用 `time.Time.MarshalBinary`，保留纳秒和时区偏移。
+新编码以 `TFR\x01` 开头，后接 `proto/raft_v1.proto`（包名 `notifier.raft.v1`）定义的 Protobuf 信封。信封显式区分 request / response，保留方法、请求 ID、来源及错误。原生 Raft 的五种请求及响应均有映射：AppendEntries、RequestVote、RequestPreVote、InstallSnapshot、TimeoutNow。日志保留索引、任期、类型、Data、Extensions 和 AppendedAt；二进制内容直接传输，时间使用 `time.Time.MarshalBinary`，保留纳秒和时区偏移。
 
 接收端同时支持新编码与旧 JSON；响应跟随请求的编码，无需等待反向握手完成。旧 JSON 响应缺少 Source 时，以外层 mesh 来源完成匹配。新 JSON 响应附带 Source，旧接收端可以忽略此字段。未知的二进制版本明确拒绝。
 

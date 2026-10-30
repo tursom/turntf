@@ -226,6 +226,39 @@ func TestControlQueryFallbackBudgetBoundaryAndRecovery(t *testing.T) {
 	}
 }
 
+func TestControlQueryFallbackKeepsEvidenceAcrossQualifiedBackups(t *testing.T) {
+	h := newQueryFallbackHarness(t)
+	conn, _ := newFakeConnPair(TransportWebSocket, "other-ws", "other-ws-peer")
+	other := h.r.registerAdjacency(conn, TransportWebSocket, &NodeHello{NodeId: 2}, true)
+	now := time.Now()
+	for i := 0; i < 3; i++ {
+		at := now.Add(time.Duration(i) * 6 * time.Second)
+		primaryCost, otherCost := float64(100), float64(110)
+		if i%2 == 1 {
+			primaryCost, otherCost = otherCost, primaryCost
+		}
+		other.mu.Lock()
+		other.samples = 8 + i
+		other.lastProbeSuccess = at
+		other.rttEWMA = otherCost
+		other.mu.Unlock()
+		h.sampleDelays(at, 500, 0, primaryCost, 0, true)
+		if i < 2 && h.route(at).OutboundTransport != TransportTCPMTLS {
+			t.Fatal("switched without sustained native degradation")
+		}
+	}
+	if h.route(now.Add(12*time.Second)).OutboundTransport != TransportWebSocket {
+		t.Fatal("alternating qualified backups discarded sustained native evidence")
+	}
+	// A different, already qualified backup must not turn active failover off.
+	other.mu.Lock()
+	other.rttEWMA = 90
+	other.mu.Unlock()
+	if h.route(now.Add(12*time.Second)).OutboundTransport != TransportWebSocket {
+		t.Fatal("better qualified backup restarted failover observation")
+	}
+}
+
 func TestControlQueryFallbackSendRechecksNewAndDegradedConnections(t *testing.T) {
 	h := newQueryFallbackHarness(t)
 	now := time.Now()

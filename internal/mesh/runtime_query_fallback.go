@@ -135,10 +135,16 @@ func (r *Runtime) refreshControlQueryFallbackLocked(nodeID int64, now time.Time)
 		r.queryFallbacks = make(map[int64]*controlQueryFallback)
 	}
 	state := r.queryFallbacks[nodeID]
-	if state == nil || state.native != native || state.backup != backup {
+	if state == nil || state.native != native {
 		state = &controlQueryFallback{native: native, backup: backup, lastSample: -1}
 		r.queryFallbacks[nodeID] = state
 	}
+	// The evidence describes this native connection relative to an eligible
+	// alternative, not one physical backup. Parallel qualified WS connections
+	// can trade places at every probe; resetting here would prevent failover
+	// forever, or turn an active failover off despite unchanged native quality.
+	// Losing all eligible backups still deletes the state above.
+	state.backup = backup
 	// One unusually bad RTT and repeated route lookups cannot trigger a switch:
 	// both transitions require new native probe samples and ten elapsed seconds.
 	newSample := nq.samples != state.lastSample

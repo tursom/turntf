@@ -128,11 +128,16 @@ func (m *Manager) handleMembershipUpdateBody(sourcePeerNodeID int64, update *int
 		return errors.New("membership update body cannot be empty")
 	}
 	accepted := 0
+	// 逐项验证并立即更新运行态；同一轮同 URL 只持久化最终合并快照。
+	// 这里只保存本轮待写入数据，SQL 成功与否不影响下一轮的持久化判断。
+	pending := make([]discoveredPeerState, 0, len(update.Peers))
+	byURL := make(map[string]int, len(update.Peers))
 	for _, item := range update.Peers {
 		if item == nil {
 			continue
 		}
-		if err := m.observePeerAdvertisement(sourcePeerNodeID, item); err != nil {
+		peer, err := m.observePeerAdvertisementSnapshot(sourcePeerNodeID, item)
+		if err != nil {
 			m.recordDiscoveryReject()
 			m.logDebug("membership_advertisement_ignored").
 				Int64("source_peer_node_id", sourcePeerNodeID).
@@ -142,8 +147,17 @@ func (m *Manager) handleMembershipUpdateBody(sourcePeerNodeID int64, update *int
 				Msg("ignored membership advertisement")
 			continue
 		}
+		if peer.nodeID > 0 {
+			if index, ok := byURL[peer.url]; ok {
+				pending[index] = peer
+			} else {
+				byURL[peer.url] = len(pending)
+				pending = append(pending, peer)
+			}
+		}
 		accepted++
 	}
+	m.persistDiscoveredPeers(pending)
 
 	m.mu.Lock()
 	m.membershipUpdatesRecv++
@@ -160,46 +174,66 @@ func (m *Manager) handleMembershipUpdateBody(sourcePeerNodeID int64, update *int
 // observePeerAdvertisement 处理单个节点广告。
 // 验证URL、Curve密钥，并记录候选节点。
 func (m *Manager) observePeerAdvertisement(sourcePeerNodeID int64, item *internalproto.PeerAdvertisement) error {
+	peer, err := m.observePeerAdvertisementSnapshot(sourcePeerNodeID, item)
+	if err != nil {
+		return err
+	}
+	m.persistDiscoveredPeer(peer, false)
+	return nil
+}
+
+// observePeerAdvertisementSnapshot 返回本次观测的运行态快照，由调用方决定单条或批量写入。
+// 本节点广告只更新 selfKnownURLs，不生成持久化记录。
+func (m *Manager) observePeerAdvertisementSnapshot(sourcePeerNodeID int64, item *internalproto.PeerAdvertisement) (discoveredPeerState, error) {
 	if item == nil {
-		return errors.New("advertisement cannot be empty")
+		return discoveredPeerState{}, errors.New("advertisement cannot be empty")
 	}
 	if item.NodeId <= 0 {
-		return errors.New("advertisement node id cannot be empty")
+		return discoveredPeerState{}, errors.New("advertisement node id cannot be empty")
 	}
 	normalized, err := normalizePeerURL(item.Url)
 	if err != nil {
-		return err
+		return discoveredPeerState{}, err
 	}
 
 	if transportForPeerURL(normalized) == transportTCPMTLS {
 		_, id, err := parseTCPMTLSEndpoint(normalized)
 		if err != nil || id != item.NodeId {
-			return errors.New("tcp mTLS advertisement node ID mismatch")
+			return discoveredPeerState{}, errors.New("tcp mTLS advertisement node ID mismatch")
 		}
 	}
 	if item.NodeId == m.cfg.NodeID {
 		m.mu.Lock()
 		m.selfKnownURLs[normalized] = item.Generation
 		m.mu.Unlock()
-		return nil
+		return discoveredPeerState{}, nil
 	}
 	curveServerPublicKey := strings.TrimSpace(item.ZeromqCurveServerPublicKey)
 	if curveServerPublicKey != "" {
 		if err := validateZeroMQCurveKey("zeromq curve server public key", curveServerPublicKey); err != nil {
-			return err
+			return discoveredPeerState{}, err
 		}
 	}
-	return m.recordDiscoveredCandidate(item.NodeId, normalized, curveServerPublicKey, sourcePeerNodeID, item.Generation)
+	return m.discoveredCandidateSnapshot(item.NodeId, normalized, curveServerPublicKey, sourcePeerNodeID, item.Generation)
 }
 
 // recordDiscoveredCandidate 记录或更新一个发现候选节点。
 // 验证节点ID一致性：一个URL不能属于两个不同的节点。
 func (m *Manager) recordDiscoveredCandidate(nodeID int64, normalizedURL, zeroMQCurveServerPublicKey string, sourcePeerNodeID int64, generation uint64) error {
+	peer, err := m.discoveredCandidateSnapshot(nodeID, normalizedURL, zeroMQCurveServerPublicKey, sourcePeerNodeID, generation)
+	if err != nil {
+		return err
+	}
+	m.persistDiscoveredPeer(peer, false)
+	return nil
+}
+
+func (m *Manager) discoveredCandidateSnapshot(nodeID int64, normalizedURL, zeroMQCurveServerPublicKey string, sourcePeerNodeID int64, generation uint64) (discoveredPeerState, error) {
 	if nodeID <= 0 || nodeID == m.cfg.NodeID {
-		return nil
+		return discoveredPeerState{}, nil
 	}
 	if normalizedURL == "" {
-		return errors.New("discovered peer url cannot be empty")
+		return discoveredPeerState{}, errors.New("discovered peer url cannot be empty")
 	}
 
 	now := time.Now().UTC()
@@ -217,7 +251,7 @@ func (m *Manager) recordDiscoveredCandidate(nodeID int64, normalizedURL, zeroMQC
 		m.discoveredPeers[normalizedURL] = peer
 	} else if peer.nodeID > 0 && peer.nodeID != nodeID {
 		m.mu.Unlock()
-		return fmt.Errorf("discovered peer url %q already belongs to node %d", normalizedURL, peer.nodeID)
+		return discoveredPeerState{}, fmt.Errorf("discovered peer url %q already belongs to node %d", normalizedURL, peer.nodeID)
 	}
 	peer.nodeID = nodeID
 	peer.sourcePeerNodeID = sourcePeerNodeID
@@ -235,8 +269,7 @@ func (m *Manager) recordDiscoveredCandidate(nodeID int64, normalizedURL, zeroMQC
 	snapshot = *peer
 	m.mu.Unlock()
 
-	m.persistDiscoveredPeer(snapshot, false)
-	return nil
+	return snapshot, nil
 }
 
 // recordConfiguredPeerDialing 标记动态配置的节点正在拨号。
@@ -675,11 +708,35 @@ func (m *Manager) persistDiscoveredPeer(peer discoveredPeerState, connected bool
 	if m == nil || m.store == nil || peer.nodeID <= 0 || peer.url == "" {
 		return
 	}
+	err := m.store.UpsertDiscoveredPeer(context.Background(), m.discoveredPeerRecord(peer, connected))
+	if err != nil {
+		m.logDiscoveryPersistFailure(peer, err)
+	}
+}
+
+// persistDiscoveredPeers 在同一事务内持久化一轮广告。错误不向协议层传播，
+// 与单条入口一样保留运行态并记录失败，让下一轮广告重新尝试。
+func (m *Manager) persistDiscoveredPeers(peers []discoveredPeerState) {
+	if m == nil || m.store == nil || len(peers) == 0 {
+		return
+	}
+	records := make([]store.DiscoveredPeer, len(peers))
+	for i, peer := range peers {
+		records[i] = m.discoveredPeerRecord(peer, false)
+	}
+	if err := m.store.UpsertDiscoveredPeers(context.Background(), records); err != nil {
+		for _, peer := range peers {
+			m.logDiscoveryPersistFailure(peer, err)
+		}
+	}
+}
+
+func (m *Manager) discoveredPeerRecord(peer discoveredPeerState, connected bool) store.DiscoveredPeer {
 	var lastConnected *time.Time
 	if connected || !peer.lastConnectedAt.IsZero() {
 		lastConnected = &peer.lastConnectedAt
 	}
-	err := m.store.UpsertDiscoveredPeer(context.Background(), store.DiscoveredPeer{
+	return store.DiscoveredPeer{
 		NodeID:                     peer.nodeID,
 		URL:                        peer.url,
 		ZeroMQCurveServerPublicKey: peer.zeroMQCurveServerPublicKey,
@@ -688,15 +745,16 @@ func (m *Manager) persistDiscoveredPeer(peer discoveredPeerState, connected bool
 		LastError:                  peer.lastError,
 		Generation:                 peer.generation,
 		LastConnectedAt:            clockTimestampPointer(m.clock, lastConnected),
-	})
-	if err != nil {
-		m.recordDiscoveryPersistFailure()
-		m.logWarn("discovered_peer_persist_failed", err).
-			Int64("peer_node_id", peer.nodeID).
-			Str("peer_url", peer.url).
-			Str("state", peer.state).
-			Msg("failed to persist discovered peer")
 	}
+}
+
+func (m *Manager) logDiscoveryPersistFailure(peer discoveredPeerState, err error) {
+	m.recordDiscoveryPersistFailure()
+	m.logWarn("discovered_peer_persist_failed", err).
+		Int64("peer_node_id", peer.nodeID).
+		Str("peer_url", peer.url).
+		Str("state", peer.state).
+		Msg("failed to persist discovered peer")
 }
 
 // discoveryStateByURLLocked 通过URL查找发现状态。
@@ -758,6 +816,9 @@ func clockTimestampPointer(clockRef *clock.Clock, value *time.Time) *clock.Times
 	}
 	ts := clockRef.Now()
 	ts.WallTimeMs = value.UTC().UnixMilli()
+	// 运行态只保存真实连接的毫秒时间，没有 HLC logical 信息。同一连接必须
+	// 稳定投影，不能把每次持久化调用产生的 logical 当成新的连接事件。
+	ts.Logical = 0
 	return &ts
 }
 

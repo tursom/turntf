@@ -24,6 +24,7 @@ func (m *Manager) activateSession(sess *session) bool {
 	// 无活跃会话时直接接受
 	if peer.active == nil {
 		peer.active = sess
+		m.signalSnapshotWork()
 		if peer.sessions == nil {
 			peer.sessions = make(map[uint64]*session)
 		}
@@ -58,6 +59,7 @@ func (m *Manager) activateSession(sess *session) bool {
 
 	old := peer.active
 	peer.active = sess
+	m.signalSnapshotWork()
 	if peer.sessions == nil {
 		peer.sessions = make(map[uint64]*session)
 	}
@@ -108,6 +110,7 @@ func (m *Manager) deactivateSession(sess *session) {
 	}
 	m.recomputeClockOffsetLocked()
 	m.refreshNodeClockStateLocked()
+	m.signalSnapshotWork()
 	m.mu.Unlock()
 	m.logSessionEvent("peer_session_closed", sess).
 		Bool("was_active", wasActive).
@@ -146,6 +149,7 @@ func (s *session) close() {
 	}
 	s.closed = true
 	clear(s.pendingSnapshotParts)
+	s.signalSnapshotWork()
 	// 通知所有等待中的时间同步请求
 	pending := make([]chan timeSyncResult, 0, len(s.pendingTimeSync))
 	for requestID, ch := range s.pendingTimeSync {
@@ -268,6 +272,7 @@ func (s *session) cancelPendingPull(originNodeID int64, requestID uint64) {
 	state, ok := s.pendingPulls[originNodeID]
 	if ok && state.RequestID == requestID {
 		delete(s.pendingPulls, originNodeID)
+		s.signalSnapshotWork()
 	}
 }
 
@@ -280,6 +285,7 @@ func (s *session) completePendingPull(originNodeID int64, requestID uint64) bool
 		return false
 	}
 	delete(s.pendingPulls, originNodeID)
+	s.signalSnapshotWork()
 	return true
 }
 
@@ -427,6 +433,7 @@ func (s *session) completeSnapshotRequest(partition string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.pendingSnapshotParts, partition)
+	s.signalSnapshotWork()
 }
 
 // minInt 返回两个整数中的较小值。

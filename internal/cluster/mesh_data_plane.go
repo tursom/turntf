@@ -785,6 +785,7 @@ func (m *Manager) meshPeerSession(peerID int64) *session {
 	peer.clockState = clockStateProbing
 	peer.sessions[sess.connectionID] = sess
 	m.refreshNodeClockStateLocked()
+	m.signalSnapshotWork()
 	m.mu.Unlock()
 	return sess
 }

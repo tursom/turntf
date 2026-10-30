@@ -219,11 +219,9 @@ func (s *clientWSSession) pushMessage(message store.Message) error {
 }
 
 func encodePersistentMessage(message store.Message) (*encodedPersistentMessage, error) {
-	payload, err := gproto.Marshal(&internalproto.ServerEnvelope{
-		Body: &internalproto.ServerEnvelope_MessagePushed{
-			MessagePushed: &internalproto.MessagePushed{Message: clientProtoMessage(message)},
-		},
-	})
+	// 编码器只在同步 Marshal 期间借用 Body；返回的 payload 独立拥有内存，
+	// 可以与原消息脱离并由异步会话持有，无需先复制一次完整正文。
+	payload, err := newInitialPersistentMessageEncoder().marshal(message)
 	if err != nil {
 		return nil, err
 	}

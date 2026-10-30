@@ -78,7 +78,7 @@ func TestSnapshotLostResponseRetriesWithoutDirtyDigest(t *testing.T) {
 	})
 	assertSnapshotRequest(t, sess, store.SnapshotUsersPartition)
 	// Leave the digest clean. The production sweep must still find this request.
-	mgr.clearSnapshotDigestDirty(sess.peerID)
+	mgr.clearSnapshotDigestDirty(sess, mgr.peers[sess.peerID].snapshotDigestGeneration)
 	timeout := time.Now().Add(snapshotRequestTimeout)
 	mgr.flushSnapshotDigestsDue(timeout)
 	if snapshotRequestInFlightForTest(sess, store.SnapshotUsersPartition) || sess.pendingSnapshotCount() != 1 || len(sess.send) != 0 {

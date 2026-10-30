@@ -90,6 +90,7 @@ func newStoreBackend(engine string, db *sql.DB, pebbleDB *pebble.DB, pebbleProfi
 // 适合小规模部署或不需要高性能消息写入的场景。
 type sqliteStoreBackend struct {
 	db                *sql.DB                     // SQLite 数据库连接
+	statements        sqliteStatements            // Bind 初始化，Close 释放的固定 SQL
 	nodeID            int64                       // 本节点 ID
 	clock             *clock.Clock                // HLC 混合逻辑时钟
 	ids               *clock.IDGenerator          // 事件 ID 生成器
@@ -105,12 +106,23 @@ func (b *sqliteStoreBackend) Name() string {
 
 // Bind 注入运行时依赖并初始化事件日志和消息投影 Repository。
 func (b *sqliteStoreBackend) Bind(bindings storeBackendBindings) error {
+	statements, err := prepareSQLiteStatements(b.db)
+	if err != nil {
+		return err
+	}
+	// Init 可重复调用；新语句集成功后才替换旧集。
+	if err := b.statements.close(); err != nil {
+		_ = statements.close()
+		return err
+	}
+	b.statements = statements
 	b.nodeID = bindings.NodeID
 	b.clock = bindings.Clock
 	b.ids = bindings.IDs
 	b.messageWindowSize = bindings.MessageWindowSize
 	b.messageProjection = &sqliteMessageProjectionRepository{
 		db:                b.db,
+		statements:        b.statements,
 		clock:             b.clock,
 		messageWindowSize: b.messageWindowSize,
 		userRepository:    bindings.UserRepository,
@@ -118,10 +130,11 @@ func (b *sqliteStoreBackend) Bind(bindings storeBackendBindings) error {
 		blacklists:        bindings.Blacklists,
 	}
 	b.eventLog = &sqliteEventLogRepository{
-		db:     b.db,
-		ids:    b.ids,
-		nodeID: b.nodeID,
-		clock:  b.clock,
+		db:         b.db,
+		statements: b.statements,
+		ids:        b.ids,
+		nodeID:     b.nodeID,
+		clock:      b.clock,
 	}
 	return nil
 }
@@ -218,18 +231,18 @@ func (b *sqliteStoreBackend) createMessageLegacy(ctx context.Context, s *Store, 
 // createMessageEventTx 在事务中执行消息创建的核心逻辑：
 // 校验收件人和发件人是否存在、检查黑名单、分配消息序列号、构建 Message 并写入事件日志。
 func (b *sqliteStoreBackend) createMessageEventTx(ctx context.Context, s *Store, tx *sql.Tx, params CreateMessageParams) (Message, Event, error) {
-	recipient, err := s.getUserTx(ctx, tx, params.UserKey, false)
+	recipientRole, err := b.messageUserRoleTx(ctx, tx, params.UserKey)
 	if err != nil {
 		return Message{}, Event{}, err
 	}
 
-	sender := User{}
+	senderRole := ""
 	senderExists := false
 	if params.Sender == params.UserKey {
-		sender = recipient
+		senderRole = recipientRole
 		senderExists = true
 	} else {
-		sender, err = s.getUserTx(ctx, tx, params.Sender, false)
+		senderRole, err = b.messageUserRoleTx(ctx, tx, params.Sender)
 		switch {
 		case err == nil:
 			senderExists = true
@@ -239,8 +252,8 @@ func (b *sqliteStoreBackend) createMessageEventTx(ctx context.Context, s *Store,
 		}
 	}
 
-	if recipient.CanLogin() && senderExists && sender.Role == RoleUser && sender.Key() != recipient.Key() {
-		blocked, err := s.isBlockedByRecipientTx(ctx, tx, recipient.Key(), sender.Key(), nil)
+	if isLoginRole(recipientRole) && senderExists && senderRole == RoleUser && params.Sender != params.UserKey {
+		blocked, err := s.isBlockedByRecipientTx(ctx, tx, params.UserKey, params.Sender, nil)
 		if err != nil {
 			return Message{}, Event{}, err
 		}
@@ -280,7 +293,7 @@ func (b *sqliteStoreBackend) createMessageEventTx(ctx context.Context, s *Store,
 
 // NextMessageSeqTx 在事务中为指定用户+节点分配下一个消息序列号（SQLite 实现）。
 func (b *sqliteStoreBackend) NextMessageSeqTx(ctx context.Context, tx *sql.Tx, key UserKey, nodeID int64) (int64, error) {
-	return nextSQLiteMessageSeq(ctx, tx, key, nodeID)
+	return b.nextPreparedMessageSeqTx(ctx, tx, key, nodeID)
 }
 
 // InsertLocalEventTx 在事务中插入一条本地事件：生成 EventID 和 OriginNodeID，
@@ -301,10 +314,7 @@ func (b *sqliteStoreBackend) InsertLocalEventTx(ctx context.Context, tx *sql.Tx,
 		return Event{}, err
 	}
 
-	result, err := tx.ExecContext(ctx, `
-INSERT INTO event_log(event_id, origin_node_id, value)
-VALUES(?, ?, ?)
-`, event.EventID, event.OriginNodeID, value)
+	result, err := b.statements.execTx(ctx, tx, sqliteInsertEventSQL, event.EventID, event.OriginNodeID, value)
 	if err != nil {
 		return Event{}, fmt.Errorf("insert event: %w", err)
 	}
@@ -313,7 +323,7 @@ VALUES(?, ?, ?)
 	if err != nil {
 		return Event{}, fmt.Errorf("read event sequence: %w", err)
 	}
-	if err := upsertOriginCursorTx(ctx, tx, event.OriginNodeID, event.EventID, b.clock.Now().String()); err != nil {
+	if _, err := b.statements.execTx(ctx, tx, sqliteUpsertOriginSQL, event.OriginNodeID, event.EventID, b.clock.Now().String()); err != nil {
 		return Event{}, fmt.Errorf("record local origin cursor: %w", err)
 	}
 	return event, nil
@@ -330,10 +340,7 @@ func (b *sqliteStoreBackend) StoreReplicatedEventTx(ctx context.Context, tx *sql
 	if err != nil {
 		return Event{}, false, fmt.Errorf("marshal replicated event: %w", err)
 	}
-	result, err := tx.ExecContext(ctx, `
-INSERT INTO event_log(event_id, origin_node_id, value)
-VALUES(?, ?, ?)
-`, rawEvent.EventId, rawEvent.OriginNodeId, value)
+	result, err := b.statements.execTx(ctx, tx, sqliteInsertEventSQL, rawEvent.EventId, rawEvent.OriginNodeId, value)
 	if err != nil {
 		if isUniqueConstraint(err) {
 			return decoded, false, nil
@@ -487,9 +494,9 @@ WHERE origin_node_id = ? AND event_id <= ?
 	return trimmed, nil
 }
 
-// Close 关闭 SQLite 后端（无额外资源需要释放）。
+// Close 释放 Bind 创建的语句；Store 随后关闭 DB。Stmt.Close 本身幂等。
 func (b *sqliteStoreBackend) Close() error {
-	return nil
+	return b.statements.close()
 }
 
 // pebbleStoreBackend 是 Pebble+SQLite 混合后端实现。
@@ -498,6 +505,7 @@ func (b *sqliteStoreBackend) Close() error {
 type pebbleStoreBackend struct {
 	db                    *pebble.DB                          // Pebble KV 数据库实例
 	sqlDB                 *sql.DB                             // SQLite 数据库实例（用于关系型数据）
+	discoveryStatement    *sql.Stmt                           // Bind 创建、Close 释放的发现元数据语句
 	profile               PebbleProfile                       // Pebble 引擎配置
 	writes                *pebbleWriteCoordinator             // Pebble 批量写入协调器，合并小写入以减少写放大
 	eventLog              *pebbleEventLogRepository           // Pebble 事件日志仓库
@@ -522,6 +530,17 @@ func (b *pebbleStoreBackend) Name() string {
 
 // Bind 注入运行时依赖，初始化 Pebble 各 Repository 并启动异步消息写入循环。
 func (b *pebbleStoreBackend) Bind(bindings storeBackendBindings) error {
+	stmt, err := b.sqlDB.PrepareContext(context.Background(), upsertDiscoveredPeerSQL)
+	if err != nil {
+		return fmt.Errorf("prepare discovered peer metadata: %w", err)
+	}
+	if b.discoveryStatement != nil {
+		if err := b.discoveryStatement.Close(); err != nil {
+			_ = stmt.Close()
+			return err
+		}
+	}
+	b.discoveryStatement = stmt
 	b.messageProjectionRepo = &pebbleMessageProjectionRepository{
 		db:                b.db,
 		profile:           b.profile,
@@ -753,6 +772,9 @@ func (b *pebbleStoreBackend) PruneEventLogOrigin(ctx context.Context, db *sql.DB
 // Close 按顺序关闭 Pebble 后端：关闭本地消息循环、消息投影仓库、写入协调器和 Pebble 数据库。
 func (b *pebbleStoreBackend) Close() error {
 	var err error
+	if b.discoveryStatement != nil {
+		err = b.discoveryStatement.Close()
+	}
 	if closeErr := b.closeLocalMessageLoop(); err == nil {
 		err = closeErr
 	}

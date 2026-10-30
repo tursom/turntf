@@ -57,26 +57,30 @@ func (m *Manager) buildEventBatchEnvelope(sequence uint64, sentAtHLC string, ori
 // 在网格模式下，每个网格对等节点获得一个批次条目；
 // 在传统模式下，每个活跃会话获得一个条目。
 func (m *Manager) queuePublishedEvent(event store.Event) {
+	m.queuePublishedEventAt(event, time.Now().UTC())
+}
+
+func (m *Manager) queuePublishedEventAt(event store.Event, now time.Time) {
 	if m == nil || m.replicationBatches == nil {
 		return
 	}
-	now := time.Now().UTC()
+	prepared := prepareReplicationEvent(event)
 	flushes := make([]*flushedReplicationBatch, 0)
 
 	if m.MeshRuntime() != nil {
 		m.ensureMeshPeerSessions()
 		for _, sess := range m.meshPeerSessions() {
-			flushes = append(flushes, m.replicationBatches.enqueue(sess.peerID, event, now)...)
+			flushes = append(flushes, m.replicationBatches.enqueuePrepared(sess.peerID, prepared, now)...)
 		}
 	} else {
 		for _, sess := range m.activeSessions() {
-			flushes = append(flushes, m.replicationBatches.enqueue(sess.peerID, event, now)...)
+			flushes = append(flushes, m.replicationBatches.enqueuePrepared(sess.peerID, prepared, now)...)
 		}
 		m.publishLibP2PEvent(m.buildEventBatchEnvelope(
 			uint64(event.Sequence),
-			event.HLC.String(),
+			prepared.sentAtHLC,
 			event.OriginNodeID,
-			[]*internalproto.ReplicatedEvent{store.ToReplicatedEvent(event)},
+			[]*internalproto.ReplicatedEvent{prepared.replicated},
 		))
 	}
 
@@ -519,7 +523,56 @@ func (m *Manager) requestCatchupIfNeeded(sess *session) (bool, error) {
 	if m.store == nil || sess.peerID == 0 {
 		return false, nil
 	}
+	return m.requestCatchupWithCursor(sess, func(originNodeID int64) (uint64, error) {
+		cursor, err := m.store.GetOriginCursor(context.Background(), originNodeID)
+		return uint64(cursor.AppliedEventID), err
+	})
+}
 
+// requestPeriodicCatchup 为整轮 peer 复用一次本地游标快照。快照仅在本轮
+// 使用；响应和远端进度变化仍通过 requestCatchupIfNeeded 读取最新游标。
+// 单个 peer 的发送失败只取消其对应 pending pull，不阻止其他 peer 追赶。
+// 返回的错误仅表示快照读取失败，此时整轮均不发起新的 pull。
+func (m *Manager) requestPeriodicCatchup(sessions []*session) error {
+	if m.store == nil {
+		return nil
+	}
+	hasPeer := false
+	for _, sess := range sessions {
+		if sess != nil && sess.peerID != 0 {
+			hasPeer = true
+			break
+		}
+	}
+	if !hasPeer {
+		return nil
+	}
+	cursors, err := m.store.ListOriginCursors(context.Background())
+	if err != nil {
+		return err
+	}
+	applied := make(map[int64]uint64, len(cursors))
+	for _, cursor := range cursors {
+		applied[cursor.OriginNodeID] = uint64(cursor.AppliedEventID)
+	}
+	cursorForOrigin := func(originNodeID int64) (uint64, error) {
+		// 未出现过的 origin 与 GetOriginCursor 一样从零开始。
+		return applied[originNodeID], nil
+	}
+	for _, sess := range sessions {
+		if sess == nil || sess.peerID == 0 {
+			continue
+		}
+		if _, err := m.requestCatchupWithCursor(sess, cursorForOrigin); err != nil {
+			m.logSessionWarn("mesh_periodic_catchup_failed", sess, err).
+				Msg("mesh periodic catchup failed")
+		}
+	}
+	return nil
+}
+
+// requestCatchupWithCursor 共用即时和周期追赶的排序、pending pull 和发送语义。
+func (m *Manager) requestCatchupWithCursor(sess *session, cursorForOrigin func(int64) (uint64, error)) (bool, error) {
 	remoteProgress := sess.remoteOriginProgressSnapshot()
 	originNodeIDs := make([]int64, 0, len(remoteProgress))
 	for originNodeID := range remoteProgress {
@@ -532,11 +585,10 @@ func (m *Manager) requestCatchupIfNeeded(sess *session) (bool, error) {
 	requested := false
 	for _, originNodeID := range originNodeIDs {
 		remoteLastEventID := remoteProgress[originNodeID]
-		cursor, err := m.store.GetOriginCursor(context.Background(), originNodeID)
+		appliedEventID, err := cursorForOrigin(originNodeID)
 		if err != nil {
 			return false, err
 		}
-		appliedEventID := uint64(cursor.AppliedEventID)
 		if appliedEventID >= remoteLastEventID {
 			continue
 		}

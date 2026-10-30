@@ -2,6 +2,10 @@
 
 发布 Dockerfile 的 `CGO_CFLAGS` 曾覆盖掉默认的 `-O2`，该构建问题及修复后的独立测量见 [发布构建的 CPU 优化检查](build-cpu-optimization.md)。本文的路由基准使用本机默认 C 优化参数，不包含该构建问题的影响。
 
+后续 SQL、复制、持久化编码和 Pebble 收件箱等候选的独立试验、保留与撤回依据见 [持久化与复制路径 CPU 优化实验](cpu-optimization-trials.md)。
+
+空闲集群的高频定时器、发现持久化和周期追赶优化见 [后台空闲 CPU 与按需调度优化](idle-cpu-optimization.md)。
+
 ## 改动和适用范围
 
 `Planner.Compute` 使用 Dijkstra 算法搜索 `(node, transport)` 状态。此前每扩展一个状态，`expand` 都从空切片开始追加转移，产生短命的临时分配。现在一次 `Compute` 调用复用一个转移缓冲区，前 8 个转移使用栈空间，邻接度更高时仍由 `append` 自动扩容。

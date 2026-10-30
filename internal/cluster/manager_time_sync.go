@@ -312,6 +312,7 @@ func (m *Manager) clearPeerClockSync(sess *session) {
 	m.recomputeClockOffsetLocked()
 	m.refreshNodeClockStateLocked()
 	if cleared {
+		m.signalSnapshotWork()
 		m.logSessionEvent("peer_clock_untrusted", sess).
 			Msg("peer clock is no longer trusted")
 	}

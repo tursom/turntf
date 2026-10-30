@@ -71,14 +71,78 @@ ORDER BY node_id ASC, url ASC
 //   - zeromq_curve_server_public_key：仅当新值非空时覆盖，避免空字符串擦除已有密钥
 //   - source_peer_node_id：总是覆盖为新值（最新的信息来源优先）
 //   - state：总是覆盖为新值
-//   - last_seen_at_hlc：总是覆盖为新值（更新最后发现时间）
+//   - last_seen_at_hlc：实际写入时覆盖为新值
 //   - last_connected_at_hlc：仅当新值非空时覆盖（COALESCE），保留已有连接记录
 //   - last_error：总是覆盖为新值
 //   - generation：仅在新代际更大时更新（只增不减），防止 gossip 乱序导致的代际回退
 //
 // 参数验证：NodeID > 0、URL 和 State 不能为空、SourcePeerNodeID 不能为负。
 // 如果 FirstSeenAt/LastSeenAt 为零值，自动使用当前时钟时间填充。
+// 只有 generation/lastSeen 变化时，距上次持久化观测满一分钟才写入；
+// 其他合并字段变化立即写入。判断直接依据数据库，不缓存尚未提交的状态。
 func (s *Store) UpsertDiscoveredPeer(ctx context.Context, peer DiscoveredPeer) error {
+	if err := validateDiscoveredPeer(peer); err != nil {
+		return err
+	}
+	// 两种后端的发现元数据都在 SQLite；长条件语句复用执行计划，
+	// 避免省掉重复写入后反而把 CPU 花在每条广告重新 prepare 上。
+	var stmt *sql.Stmt
+	switch backend := s.backend.(type) {
+	case *sqliteStoreBackend:
+		stmt = backend.statements[upsertDiscoveredPeerSQL]
+	case *pebbleStoreBackend:
+		stmt = backend.discoveryStatement
+	}
+	args := s.discoveredPeerArgs(peer)
+	var err error
+	if stmt != nil {
+		_, err = stmt.ExecContext(ctx, args...)
+	} else {
+		_, err = s.db.ExecContext(ctx, upsertDiscoveredPeerSQL, args...)
+	}
+	if err != nil {
+		return fmt.Errorf("upsert discovered peer: %w", err)
+	}
+	return nil
+}
+
+// UpsertDiscoveredPeers 按输入顺序合并一批发现记录，所有参数先验证再写入。
+// 多条记录共用一个事务，执行或提交失败时整批回滚；不发布成功标记，后续调用
+// 仍根据数据库中的旧记录重试。空批次不访问数据库，单条批次复用原子 upsert。
+func (s *Store) UpsertDiscoveredPeers(ctx context.Context, peers []DiscoveredPeer) error {
+	if len(peers) == 1 {
+		return s.UpsertDiscoveredPeer(ctx, peers[0])
+	}
+	for i, peer := range peers {
+		if err := validateDiscoveredPeer(peer); err != nil {
+			return fmt.Errorf("discovered peer %d: %w", i, err)
+		}
+	}
+	if len(peers) == 0 {
+		return nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin discovered peers: %w", err)
+	}
+	defer tx.Rollback()
+	stmt, err := tx.PrepareContext(ctx, upsertDiscoveredPeerSQL)
+	if err != nil {
+		return fmt.Errorf("prepare discovered peers: %w", err)
+	}
+	defer stmt.Close()
+	for i, peer := range peers {
+		if _, err := stmt.ExecContext(ctx, s.discoveredPeerArgs(peer)...); err != nil {
+			return fmt.Errorf("upsert discovered peer %d: %w", i, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit discovered peers: %w", err)
+	}
+	return nil
+}
+
+func validateDiscoveredPeer(peer DiscoveredPeer) error {
 	if peer.NodeID <= 0 {
 		return fmt.Errorf("%w: discovered peer node id cannot be empty", ErrInvalidInput)
 	}
@@ -91,7 +155,10 @@ func (s *Store) UpsertDiscoveredPeer(ctx context.Context, peer DiscoveredPeer) e
 	if peer.SourcePeerNodeID < 0 {
 		return fmt.Errorf("%w: discovered peer source node id cannot be negative", ErrInvalidInput)
 	}
+	return nil
+}
 
+func (s *Store) discoveredPeerArgs(peer DiscoveredPeer) []any {
 	now := s.clock.Now()
 	firstSeenAt := peer.FirstSeenAt
 	if firstSeenAt == (clock.Timestamp{}) {
@@ -106,7 +173,13 @@ func (s *Store) UpsertDiscoveredPeer(ctx context.Context, peer DiscoveredPeer) e
 		connectedRaw = peer.LastConnectedAt.String()
 	}
 
-	if _, err := s.db.ExecContext(ctx, `
+	return []any{peer.NodeID, strings.TrimSpace(peer.URL), strings.TrimSpace(peer.ZeroMQCurveServerPublicKey), peer.SourcePeerNodeID, strings.TrimSpace(peer.State), firstSeenAt.String(), lastSeenAt.String(), connectedRaw, strings.TrimSpace(peer.LastError), peer.Generation}
+}
+
+// WHERE 比较的是合并后会改变的字段：空密钥和 nil 连接时间不构成变化。
+// HLC 的前 13 位是 wall milliseconds；logical 递增或 generation 递增不能绕过
+// 一分钟间隔。条件在 SQLite 写事务内执行，失败不会消耗下一次重试的额度。
+const upsertDiscoveredPeerSQL = `
 INSERT INTO discovered_peers(node_id, url, zeromq_curve_server_public_key, source_peer_node_id, state, first_seen_at_hlc, last_seen_at_hlc, last_connected_at_hlc, last_error, generation)
 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(node_id, url) DO UPDATE SET
@@ -123,11 +196,13 @@ ON CONFLICT(node_id, url) DO UPDATE SET
         WHEN excluded.generation > discovered_peers.generation THEN excluded.generation
         ELSE discovered_peers.generation
     END
-`, peer.NodeID, strings.TrimSpace(peer.URL), strings.TrimSpace(peer.ZeroMQCurveServerPublicKey), peer.SourcePeerNodeID, strings.TrimSpace(peer.State), firstSeenAt.String(), lastSeenAt.String(), connectedRaw, strings.TrimSpace(peer.LastError), peer.Generation); err != nil {
-		return fmt.Errorf("upsert discovered peer: %w", err)
-	}
-	return nil
-}
+WHERE (excluded.zeromq_curve_server_public_key != '' AND excluded.zeromq_curve_server_public_key != discovered_peers.zeromq_curve_server_public_key)
+   OR excluded.source_peer_node_id != discovered_peers.source_peer_node_id
+   OR excluded.state != discovered_peers.state
+   OR (excluded.last_connected_at_hlc IS NOT NULL AND excluded.last_connected_at_hlc IS NOT discovered_peers.last_connected_at_hlc)
+   OR excluded.last_error != discovered_peers.last_error
+   OR CAST(substr(excluded.last_seen_at_hlc, 1, 13) AS INTEGER) - CAST(substr(discovered_peers.last_seen_at_hlc, 1, 13) AS INTEGER) >= 60000
+`
 
 // RecordDiscoveredPeerState 更新已发现 peer 的运行时状态，不改变核心连接信息。
 // 参数说明：
@@ -160,7 +235,11 @@ SET state = ?,
     last_connected_at_hlc = COALESCE(?, last_connected_at_hlc),
     last_error = ?
 WHERE node_id = ? AND url = ?
-`, strings.TrimSpace(state), now.String(), connectedRaw, strings.TrimSpace(lastError), nodeID, strings.TrimSpace(rawURL)); err != nil {
+  AND (state != ? OR last_error != ?
+       OR (? IS NOT NULL AND ? IS NOT last_connected_at_hlc)
+       OR ? - CAST(substr(last_seen_at_hlc, 1, 13) AS INTEGER) >= 60000)
+`, strings.TrimSpace(state), now.String(), connectedRaw, strings.TrimSpace(lastError), nodeID, strings.TrimSpace(rawURL),
+		strings.TrimSpace(state), strings.TrimSpace(lastError), connectedRaw, connectedRaw, now.WallTimeMs); err != nil {
 		return fmt.Errorf("update discovered peer state: %w", err)
 	}
 	return nil

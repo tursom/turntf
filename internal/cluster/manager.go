@@ -56,9 +56,9 @@ const (
 	catchupRetryInterval = time.Second
 	// antiEntropyInterval 是反熵（快照摘要）的发送间隔。
 	antiEntropyInterval = 60 * time.Second
-	// snapshotDigestMinInterval 是两次快照摘要之间的最小间隔。
+	// snapshotDigestMinInterval 是最近摘要活动后普通摘要发送的最小间隔。
 	snapshotDigestMinInterval = 250 * time.Millisecond
-	// snapshotDigestSweepInterval 是快照摘要轮询间隔。
+	// snapshotDigestSweepInterval 是重复排队及失败重试的最小间隔。
 	snapshotDigestSweepInterval = 25 * time.Millisecond
 	// snapshotDigestImmediateAfterRepair 控制在修复后是否立即发送摘要。
 	snapshotDigestImmediateAfterRepair = true
@@ -117,6 +117,8 @@ type Manager struct {
 	publishCh chan store.Event
 	// replicationBatches 按(peerID, originNodeID)分组缓存待发送事件。
 	replicationBatches *replicationBatcher
+	// snapshotDigestWake 合并摘要脏标记与请求状态变化的通知，空闲时不启动定时器。
+	snapshotDigestWake chan struct{}
 	// ctx 是Manager的生命周期上下文。
 	ctx context.Context
 	// cancel 取消Manager的生命周期上下文。
@@ -351,6 +353,8 @@ type peerState struct {
 	snapshotDigestDirty bool
 	// snapshotDigestImmediate 标记是否需要立即发送快照摘要。
 	snapshotDigestImmediate bool
+	// snapshotDigestGeneration 防止发送期间的新脏标记被旧一轮发送清除。
+	snapshotDigestGeneration uint64
 }
 
 // session 表示与单个对等节点的传输层连接及其协议状态。
@@ -482,6 +486,7 @@ func NewManager(cfg Config, st *store.Store) (*Manager, error) {
 		dialers:                    make(map[string]Dialer, 2),
 		mux:                        http.NewServeMux(),
 		publishCh:                  make(chan store.Event, managerPublishQueue),
+		snapshotDigestWake:         make(chan struct{}, 1),
 		replicationBatches:         newReplicationBatcher(),
 		peers:                      make(map[int64]*peerState, len(cfg.Peers)),
 		configuredPeers:            configuredPeers,

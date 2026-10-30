@@ -146,6 +146,7 @@ func (m *Manager) refreshNodeClockStateLocked() {
 	}
 	m.clockState = nextState
 	m.clockReason = nextReason
+	m.signalSnapshotWork()
 }
 
 // peerClockStateLocked 返回指定对等节点的时钟状态及其原因。
@@ -212,6 +213,7 @@ func (m *Manager) setPeerClockStateLocked(sess *session, peer *peerState, nextSt
 	// 级联刷新：对等节点状态变化可能影响全局节点状态
 	m.recomputeClockOffsetLocked()
 	m.refreshNodeClockStateLocked()
+	m.signalSnapshotWork()
 }
 
 // recordTimeSyncSample 记录一次时钟同步样本并评估对等节点时钟状态。

@@ -591,11 +591,18 @@ func (r *pebbleMessageProjectionRepository) listLoginMessagesByUserViaInbox(ctx 
 	if scanLimit < windowSize {
 		scanLimit = windowSize
 	}
-	inboxMessages, err := r.listInboxMessagesByUser(ctx, key, scanLimit)
+	prefix := make([]byte, 0, 17)
+	prefix = append(prefix, messageInboxTag)
+	prefix = encodeUint64(prefix, uint64(key.NodeID))
+	prefix = encodeUint64(prefix, uint64(key.UserID))
+	iter, err := r.db.NewIter(&pebble.IterOptions{LowerBound: prefix, UpperBound: prefixUpperBound(prefix)})
 	if err != nil {
-		return nil, false, err
+		return nil, false, fmt.Errorf("open inbox iterator: %w", err)
 	}
+	defer iter.Close()
 
+	// 先固定收件箱 iterator 的消息视图，再读取权限，避免按旧权限
+	// 返回并发拉黑或退订后才写入的新消息；legacy 回退会独立重读权限。
 	blockedAtBySender, err := r.blockedAtBySender(ctx, key)
 	if err != nil {
 		return nil, false, err
@@ -610,18 +617,30 @@ func (r *pebbleMessageProjectionRepository) listLoginMessagesByUserViaInbox(ctx 
 	}
 	senderRoleCache := make(map[UserKey]string, len(blockedAtBySender))
 	candidates := make([]Message, 0, limit)
-	for _, message := range inboxMessages {
+	// 扫描上限按原始条目计数；过滤掉的条目也占窗口，不能为了凑足 limit 扩大扫描。
+	scanned := 0
+	for valid := iter.First(); valid; valid = iter.Next() {
+		if err := ctx.Err(); err != nil {
+			return nil, false, err
+		}
+		message, err := r.messageFromIndexValue(iter.Value())
+		if err != nil {
+			return nil, false, err
+		}
+		scanned++
 		visible, err := r.inboxMessageVisible(ctx, key, message, blockedAtBySender, subscriptionByChannel, senderRoleCache)
 		if err != nil {
 			return nil, false, err
 		}
-		if !visible {
-			continue
+		if visible {
+			candidates = append(candidates, message)
 		}
-		candidates = append(candidates, message)
-		if len(candidates) >= limit {
+		if len(candidates) >= limit || scanned >= scanLimit {
 			break
 		}
+	}
+	if err := iter.Error(); err != nil {
+		return nil, false, fmt.Errorf("iterate inbox messages: %w", err)
 	}
 	if len(candidates) < limit {
 		return nil, false, nil

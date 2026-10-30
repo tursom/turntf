@@ -447,21 +447,23 @@ func (m *Manager) markSnapshotDigestDirty(peerID int64, immediate bool) {
 		return
 	}
 	peer.snapshotDigestDirty = true
+	peer.snapshotDigestGeneration++
 	if immediate && snapshotDigestImmediateAfterRepair {
 		peer.snapshotDigestImmediate = true
 	}
+	m.signalSnapshotWork()
 }
 
 // clearSnapshotDigestDirty 清除快照摘要的脏标记。
-func (m *Manager) clearSnapshotDigestDirty(peerID int64) {
-	if m == nil || peerID <= 0 {
+func (m *Manager) clearSnapshotDigestDirty(sess *session, generation uint64) {
+	if m == nil || sess == nil || sess.peerID <= 0 {
 		return
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	peer := m.peers[peerID]
-	if peer == nil {
+	peer := m.peers[sess.peerID]
+	if peer == nil || peer.active != sess || peer.snapshotDigestGeneration != generation {
 		return
 	}
 	peer.snapshotDigestDirty = false
@@ -489,6 +491,7 @@ func (m *Manager) flushSnapshotDigestsDue(now time.Time) {
 		lastQueuedAt   time.Time
 		dirtyImmediate bool
 		dirty          bool
+		generation     uint64
 	}
 
 	m.mu.Lock()
@@ -504,6 +507,7 @@ func (m *Manager) flushSnapshotDigestsDue(now time.Time) {
 			lastQueuedAt:   peer.lastSnapshotDigestQueuedAt,
 			dirtyImmediate: peer.snapshotDigestImmediate,
 			dirty:          peer.snapshotDigestDirty,
+			generation:     peer.snapshotDigestGeneration,
 		})
 	}
 	m.mu.Unlock()
@@ -527,17 +531,17 @@ func (m *Manager) flushSnapshotDigestsDue(now time.Time) {
 		}
 		m.markSnapshotDigestQueued(item.peerID, now)
 		if m.sendSnapshotDigest(item.sess) {
-			m.clearSnapshotDigestDirty(item.peerID)
+			m.clearSnapshotDigestDirty(item.sess, item.generation)
 		}
 	}
 }
 
 // snapshotProducerNodeIDs 返回需要纳入快照的生产者节点ID列表。
 func (m *Manager) snapshotProducerNodeIDs() []int64 {
-	producers := make([]int64, 0, 1+len(m.peers))
-	producers = append(producers, m.cfg.NodeID)
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	producers := make([]int64, 0, 1+len(m.peers))
+	producers = append(producers, m.cfg.NodeID)
 	for peerNodeID := range m.peers {
 		producers = append(producers, peerNodeID)
 	}

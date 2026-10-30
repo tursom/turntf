@@ -330,6 +330,19 @@ func (r *pebbleMessageProjectionRepository) seedMessageUserStateLocked(ctx conte
 //   - []byte: 消息序列化值，用于后续写入收件箱索引
 //   - error: 错误信息
 func (r *pebbleMessageProjectionRepository) prepareMessageWrite(batch *pebble.Batch, message Message, state pebbleMessageUserState) (pebbleMessageUserState, []byte, error) {
+	state, value, err := r.prepareMessageIndexes(batch, message, state)
+	if err != nil {
+		return pebbleMessageUserState{}, nil, err
+	}
+	if err := batch.Set(pebbleMessageUserStateKey(message.UserKey()), encodePebbleMessageUserState(state), nil); err != nil {
+		return pebbleMessageUserState{}, nil, fmt.Errorf("write message user state: %w", err)
+	}
+	return state, value, nil
+}
+
+// prepareMessageIndexes 写入逐条索引并更新内存状态，不持久化用户状态。
+// 本地原子批次在循环末尾每用户写一次最终状态；单条复制仍通过 prepareMessageWrite 写状态。
+func (r *pebbleMessageProjectionRepository) prepareMessageIndexes(batch *pebble.Batch, message Message, state pebbleMessageUserState) (pebbleMessageUserState, []byte, error) {
 	if batch == nil {
 		return pebbleMessageUserState{}, nil, fmt.Errorf("%w: pebble batch cannot be nil", ErrInvalidInput)
 	}
@@ -356,9 +369,6 @@ func (r *pebbleMessageProjectionRepository) prepareMessageWrite(batch *pebble.Ba
 	}
 	if state.StoredCount > int64(normalizeMessageWindowSize(r.messageWindowSize)) {
 		state.TrimNeeded = true
-	}
-	if err := batch.Set(pebbleMessageUserStateKey(message.UserKey()), encodePebbleMessageUserState(state), nil); err != nil {
-		return pebbleMessageUserState{}, nil, fmt.Errorf("write message user state: %w", err)
 	}
 	return state, value, nil
 }

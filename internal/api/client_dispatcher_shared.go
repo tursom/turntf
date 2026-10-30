@@ -165,6 +165,11 @@ func (h *HTTP) dispatchPersistentMessage(ctx context.Context, eventSequence int6
 		return err
 	}
 	h.persistentCandidateCount.Add(int64(len(plan.candidates)))
+	// 候选快照已包含管理员会话。无人接收时，调用方仍会推进事件水位，
+	// 不必复制正文或生成随后无人使用的 protobuf 编码。
+	if len(plan.candidates) == 0 {
+		return nil
+	}
 	encoded, encodeErr := encodePersistentMessage(message)
 
 	for _, sess := range plan.candidates {

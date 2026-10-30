@@ -1073,8 +1073,12 @@ func hashSnapshotRows(rows []*clusterproto.SnapshotRow) ([]byte, error) {
 	hasher := sha256.New()
 	var length [8]byte
 	marshalOptions := gproto.MarshalOptions{Deterministic: true}
+	// 哈希 Write 在返回前已消费输入；同一分区内可覆盖前一行的编码缓冲。
+	// 缓冲仅属于当前调用，不缓存摘要，因此写入、裁剪和墓碑无需额外失效机制。
+	var data []byte
 	for _, row := range rows {
-		data, err := marshalOptions.Marshal(row)
+		var err error
+		data, err = marshalOptions.MarshalAppend(data[:0], row)
 		if err != nil {
 			return nil, fmt.Errorf("marshal snapshot row for hash: %w", err)
 		}

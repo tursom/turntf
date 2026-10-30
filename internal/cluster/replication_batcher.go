@@ -35,6 +35,7 @@ type queuedReplicationEvent struct {
 	event      store.Event
 	replicated *internalproto.ReplicatedEvent
 	size       int
+	sentAtHLC  string
 }
 
 // flushedReplicationBatch 是一个已刷新的批次，准备好发送到传输层。
@@ -60,7 +61,13 @@ func (b *replicationBatcher) enqueue(peerID int64, event store.Event, queuedAt t
 	if b == nil || peerID <= 0 || event.OriginNodeID <= 0 {
 		return nil
 	}
+	return b.enqueuePrepared(peerID, prepareReplicationEvent(event), queuedAt)
+}
 
+// prepareReplicationEvent 每个发布事件只转换、格式化和计费一次。
+// replicated 及其 body 在入队后必须保持只读，供不同 peer 并发编码；
+// 各桶只复制条目和独立维护批次，不复制或修改 protobuf。
+func prepareReplicationEvent(event store.Event) queuedReplicationEvent {
 	replicated := store.ToReplicatedEvent(event)
 	entry := queuedReplicationEvent{
 		event:      event,
@@ -68,14 +75,26 @@ func (b *replicationBatcher) enqueue(peerID int64, event store.Event, queuedAt t
 	}
 	if replicated != nil {
 		entry.size = proto.Size(replicated)
+		entry.sentAtHLC = replicated.Hlc
+	} else {
+		// 转换失败的条目仍占事件数，大小为零；批末元数据仍取该事件。
+		entry.sentAtHLC = event.HLC.String()
+	}
+	return entry
+}
+
+// enqueuePrepared 复用准备结果，保留每个 (peer, origin) 桶的原有刷新边界。
+func (b *replicationBatcher) enqueuePrepared(peerID int64, entry queuedReplicationEvent, queuedAt time.Time) []*flushedReplicationBatch {
+	if b == nil || peerID <= 0 || entry.event.OriginNodeID <= 0 {
+		return nil
 	}
 
-	key := replicationBatchKey{peerID: peerID, originNodeID: event.OriginNodeID}
+	key := replicationBatchKey{peerID: peerID, originNodeID: entry.event.OriginNodeID}
 	batch := b.buckets[key]
 	if batch == nil {
 		batch = &replicationBatch{
 			peerID:        peerID,
-			originNodeID:  event.OriginNodeID,
+			originNodeID:  entry.event.OriginNodeID,
 			firstQueuedAt: queuedAt,
 		}
 		b.buckets[key] = batch
@@ -90,8 +109,27 @@ func (b *replicationBatcher) enqueue(peerID int64, event store.Event, queuedAt t
 	return nil
 }
 
+// nextFlushDeadline 返回最早批次的截止时间；无待发送事件时不需要定时唤醒。
+// batcher 仍只由 publishLoop 访问，不引入锁或新的等待窗口。
+func (b *replicationBatcher) nextFlushDeadline() time.Time {
+	var next time.Time
+	if b == nil {
+		return next
+	}
+	for _, batch := range b.buckets {
+		if batch == nil || len(batch.entries) == 0 {
+			continue
+		}
+		deadline := batch.firstQueuedAt.Add(maxBatchDelay)
+		if next.IsZero() || deadline.Before(next) {
+			next = deadline
+		}
+	}
+	return next
+}
+
 // flushDue 刷新所有超过maxBatchDelay的批次。
-// 由定时器周期性调用，防止事件在批次中滞留过久。
+// 由最早批次的截止时间唤醒，后续批次仍保持各自的最初入队时间。
 func (b *replicationBatcher) flushDue(now time.Time) []*flushedReplicationBatch {
 	if b == nil {
 		return nil
@@ -131,7 +169,7 @@ func (b *replicationBatcher) flushKey(key replicationBatchKey) *flushedReplicati
 		return nil
 	}
 
-	last := batch.entries[len(batch.entries)-1].event
+	last := batch.entries[len(batch.entries)-1]
 	events := make([]*internalproto.ReplicatedEvent, 0, len(batch.entries))
 	for _, entry := range batch.entries {
 		if entry.replicated != nil {
@@ -141,8 +179,8 @@ func (b *replicationBatcher) flushKey(key replicationBatchKey) *flushedReplicati
 	return &flushedReplicationBatch{
 		peerID:       batch.peerID,
 		originNodeID: batch.originNodeID,
-		sequence:     uint64(last.Sequence),
-		sentAtHLC:    last.HLC.String(),
+		sequence:     uint64(last.event.Sequence),
+		sentAtHLC:    last.sentAtHLC,
 		events:       events,
 	}
 }

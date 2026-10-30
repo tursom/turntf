@@ -52,6 +52,7 @@ func (s *session) beginSnapshotRequestAt(partition string, kind internalproto.Sn
 	}
 	s.nextSnapshotRequestID++
 	s.pendingSnapshotParts[partition] = &snapshotRequestState{kind: kind, attempt: 1, token: s.nextSnapshotRequestID, inFlight: true, retryAt: now.Add(snapshotRequestTimeout)}
+	s.signalSnapshotWork()
 	return s.nextSnapshotRequestID, true
 }
 
@@ -70,6 +71,7 @@ func (s *session) failSnapshotRequest(partition string, token uint64, now time.T
 	if state := s.pendingSnapshotParts[partition]; state != nil && state.token == token && state.inFlight {
 		state.inFlight = false
 		state.retryAt = now.Add(snapshotRetryDelay(state.attempt))
+		s.signalSnapshotWork()
 	}
 }
 

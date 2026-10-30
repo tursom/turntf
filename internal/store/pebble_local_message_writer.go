@@ -214,9 +214,9 @@ func (b *pebbleStoreBackend) runLocalMessageLoop() {
 //  3. 调用 messageSequences.LoadNextSequence 为每个用户预留序列号
 //  4. 构造 Message 和 Event 对象，设置 HLC 时间戳
 //  5. 将事件写入事件日志（eventLog writeStoredEventToBatch）
-//  6. 调用 projection.prepareMessageWrite 写入消息的主键索引、用户索引、生产者索引
+//  6. 调用 projection.prepareMessageIndexes 写入消息索引，逐条更新内存状态
 //  7. 判断是否超过 trimming 阈值（普通 trim 或 hard trim）
-//  8. 批次提交前，将最后一条事件序列号和所有预留序列号写入 Pebble batch
+//  8. 批次提交前，将每用户最终状态、最后一条事件序列号和所有预留序列号写入 Pebble batch
 //  9. 调用 commitLocalMessageBatch 提交批处理
 //
 // 10. 提交成功后更新事件日志的内存缓存和序列号内存缓存
@@ -335,7 +335,7 @@ func (b *pebbleStoreBackend) processLocalMessageBatch(requests []pebbleLocalMess
 			return
 		}
 
-		state, _, err = projection.prepareMessageWrite(batch, message, state)
+		state, _, err = projection.prepareMessageIndexes(batch, message, state)
 		if err != nil {
 			respondLocalMessageBatchError(requests, err)
 			return
@@ -359,6 +359,14 @@ func (b *pebbleStoreBackend) processLocalMessageBatch(requests []pebbleLocalMess
 		nextEventSequence++
 	}
 
+	// 同一原子批次内的中间状态不可见，只持久化每个用户的最终状态。
+	// 上面的逐条计数及 trim 门槛判定仍保留，提交失败时也不会发布这些内存状态。
+	for key, state := range userStates {
+		if err := batch.Set(pebbleMessageUserStateKey(key), encodePebbleMessageUserState(state), nil); err != nil {
+			respondLocalMessageBatchError(requests, fmt.Errorf("write message user state: %w", err))
+			return
+		}
+	}
 	if len(results) > 0 {
 		if err := batch.Set(pebbleEventSequenceKey, encodeInt64(results[len(results)-1].event.Sequence), nil); err != nil {
 			respondLocalMessageBatchError(requests, fmt.Errorf("write event sequence meta: %w", err))

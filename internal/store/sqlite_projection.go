@@ -15,10 +15,11 @@ import (
 // 事件按全局序列号递增顺序存储，每条事件记录包含 event_id、origin_node_id 和 value。
 // 支持按序列号范围和按来源节点查询。
 type sqliteEventLogRepository struct {
-	db     *sql.DB
-	ids    *clock.IDGenerator
-	nodeID int64
-	clock  *clock.Clock
+	db         *sql.DB
+	statements sqliteStatements
+	ids        *clock.IDGenerator
+	nodeID     int64
+	clock      *clock.Clock
 }
 
 // sqliteMessageProjectionRepository 是消息投影的 SQLite 实现。
@@ -26,6 +27,7 @@ type sqliteEventLogRepository struct {
 // 并集成黑名单过滤和频道订阅机制。
 type sqliteMessageProjectionRepository struct {
 	db                *sql.DB
+	statements        sqliteStatements
 	clock             *clock.Clock
 	messageWindowSize int
 	userRepository    UserRepository
@@ -62,10 +64,7 @@ func (r *sqliteEventLogRepository) Append(ctx context.Context, event Event) (Eve
 		return Event{}, err
 	}
 
-	result, err := tx.ExecContext(ctx, `
-INSERT INTO event_log(event_id, origin_node_id, value)
-VALUES(?, ?, ?)
-`, event.EventID, event.OriginNodeID, value)
+	result, err := r.statements.execTx(ctx, tx, sqliteInsertEventSQL, event.EventID, event.OriginNodeID, value)
 	if err != nil {
 		return Event{}, fmt.Errorf("insert event: %w", err)
 	}
@@ -73,7 +72,7 @@ VALUES(?, ?, ?)
 	if err != nil {
 		return Event{}, fmt.Errorf("read event sequence: %w", err)
 	}
-	if err := upsertOriginCursorTx(ctx, tx, event.OriginNodeID, event.EventID, r.clock.Now().String()); err != nil {
+	if _, err := r.statements.execTx(ctx, tx, sqliteUpsertOriginSQL, event.OriginNodeID, event.EventID, r.clock.Now().String()); err != nil {
 		return Event{}, fmt.Errorf("record local origin cursor: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -414,10 +413,7 @@ func (r *sqliteMessageProjectionRepository) applyMessageCreatedTx(ctx context.Co
 	if err := validateMessageIdentity(key, message.NodeID, message.Seq); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `
-INSERT INTO messages(user_node_id, user_id, node_id, seq, sender_node_id, sender_user_id, body, created_at_hlc, session)
-VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
-`, message.Recipient.NodeID, message.Recipient.UserID, message.NodeID, message.Seq, message.Sender.NodeID, message.Sender.UserID, message.Body, message.CreatedAt.String(), MessageSession(message.Sender, message.Recipient)); err != nil {
+	if _, err := r.statements.execTx(ctx, tx, sqliteInsertMessageSQL, message.Recipient.NodeID, message.Recipient.UserID, message.NodeID, message.Seq, message.Sender.NodeID, message.Sender.UserID, message.Body, message.CreatedAt.String(), MessageSession(message.Sender, message.Recipient)); err != nil {
 		if !isUniqueConstraint(err) {
 			return fmt.Errorf("insert message projection: %w", err)
 		}
@@ -467,10 +463,7 @@ func (r *sqliteMessageProjectionRepository) applyMessageSnapshotRowTx(ctx contex
 	if messageRow.Sender == nil {
 		return UserKey{}, fmt.Errorf("%w: snapshot message sender cannot be empty", ErrInvalidInput)
 	}
-	if _, err := tx.ExecContext(ctx, `
-INSERT INTO messages(user_node_id, user_id, node_id, seq, sender_node_id, sender_user_id, body, created_at_hlc, session)
-VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
-`, messageRow.Recipient.NodeId, messageRow.Recipient.UserId, messageRow.NodeId, messageRow.Seq, messageRow.Sender.NodeId, messageRow.Sender.UserId, messageRow.Body, messageRow.CreatedAtHlc,
+	if _, err := r.statements.execTx(ctx, tx, sqliteInsertMessageSQL, messageRow.Recipient.NodeId, messageRow.Recipient.UserId, messageRow.NodeId, messageRow.Seq, messageRow.Sender.NodeId, messageRow.Sender.UserId, messageRow.Body, messageRow.CreatedAtHlc,
 		MessageSession(UserKey{NodeID: messageRow.Sender.NodeId, UserID: messageRow.Sender.UserId}, UserKey{NodeID: messageRow.Recipient.NodeId, UserID: messageRow.Recipient.UserId}),
 	); err != nil {
 		if isUniqueConstraint(err) {
@@ -811,13 +804,7 @@ func (r *sqliteMessageProjectionRepository) trimMessagesForUserTx(ctx context.Co
 	}
 	windowSize := normalizeMessageWindowSize(r.messageWindowSize)
 	var overflowMarker int
-	err := tx.QueryRowContext(ctx, `
-SELECT 1
-FROM messages
-WHERE user_node_id = ? AND user_id = ?
-ORDER BY created_at_hlc DESC, node_id ASC, seq DESC
-LIMIT 1 OFFSET ?
-`, key.NodeID, key.UserID, windowSize).Scan(&overflowMarker)
+	err := r.statements.queryRowTx(ctx, tx, sqliteMessageOverflowSQL, key.NodeID, key.UserID, windowSize).Scan(&overflowMarker)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		return nil
@@ -825,17 +812,7 @@ LIMIT 1 OFFSET ?
 		return fmt.Errorf("check message trim overflow for user %d:%d: %w", key.NodeID, key.UserID, err)
 	}
 
-	result, err := tx.ExecContext(ctx, `
-DELETE FROM messages
-WHERE user_node_id = ? AND user_id = ?
-  AND (node_id, seq) IN (
-    SELECT node_id, seq
-    FROM messages
-    WHERE user_node_id = ? AND user_id = ?
-    ORDER BY created_at_hlc DESC, node_id ASC, seq DESC
-    LIMIT -1 OFFSET ?
-  )
-`, key.NodeID, key.UserID, key.NodeID, key.UserID, windowSize)
+	result, err := r.statements.execTx(ctx, tx, sqliteTrimMessagesSQL, key.NodeID, key.UserID, key.NodeID, key.UserID, windowSize)
 	if err != nil {
 		return fmt.Errorf("trim messages for user %d:%d: %w", key.NodeID, key.UserID, err)
 	}
@@ -858,13 +835,7 @@ func (r *sqliteMessageProjectionRepository) recordMessageTrimTx(ctx context.Cont
 		return nil
 	}
 	now := r.clock.Now().String()
-	if _, err := tx.ExecContext(ctx, `
-INSERT INTO message_trim_stats(scope, trimmed_total, last_trimmed_at_hlc)
-VALUES('global', ?, ?)
-ON CONFLICT(scope) DO UPDATE SET
-    trimmed_total = message_trim_stats.trimmed_total + excluded.trimmed_total,
-    last_trimmed_at_hlc = excluded.last_trimmed_at_hlc
-`, trimmed, now); err != nil {
+	if _, err := r.statements.execTx(ctx, tx, sqliteRecordMessageTrimSQL, trimmed, now); err != nil {
 		return fmt.Errorf("record message trim stats: %w", err)
 	}
 	return nil

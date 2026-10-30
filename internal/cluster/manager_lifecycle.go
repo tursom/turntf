@@ -310,11 +310,13 @@ func (m *Manager) Publish(event store.Event) {
 }
 
 // publishLoop 是事件发布的主循环。
-// 从publishCh读取事件并放入批次，同时定期刷新到期的批次。
+// 从 publishCh 读取事件；只有存在待发送批次时才等待最早的 2ms 截止时间。
 func (m *Manager) publishLoop() {
 	defer m.wg.Done()
-	flushTicker := time.NewTicker(maxBatchDelay)
-	defer flushTicker.Stop()
+	timer := time.NewTimer(time.Hour)
+	timer.Stop()
+	defer timer.Stop()
+	var flushC <-chan time.Time
 
 	for {
 		select {
@@ -324,27 +326,56 @@ func (m *Manager) publishLoop() {
 			return
 		case event := <-m.publishCh:
 			m.queuePublishedEvent(event)
-		case <-flushTicker.C:
+			// 有连续输入且本轮还没有 timer 时，先消费当前队列里至多一满批。
+			// 满批往往会直接清空桶，无需先启动再取消一个永远用不到的 timer。
+			// 时间取值同时交给入队路径，每条仍只读一次时钟；到最早期限即停止合并。
+			if flushC == nil && len(m.publishCh) > 0 {
+				deadline := m.replicationBatches.nextFlushDeadline()
+				for queued := min(len(m.publishCh), maxBatchEvents-1); queued > 0; queued-- {
+					now := time.Now().UTC()
+					if !deadline.IsZero() && !now.Before(deadline) {
+						break
+					}
+					m.queuePublishedEventAt(<-m.publishCh, now)
+					if deadline.IsZero() {
+						deadline = m.replicationBatches.nextFlushDeadline()
+					}
+				}
+			}
+			// 后入队批次不会早于已设置的 deadline。保留已启动的 timer，
+			// 避免每条事件都重新扫描所有 peer；满批全部刷出时立即停表。
+			if m.replicationBatches == nil || len(m.replicationBatches.buckets) == 0 {
+				if flushC != nil {
+					flushC = armBackgroundTimer(timer, time.Time{})
+				}
+			} else if flushC == nil {
+				flushC = armBackgroundTimer(timer, m.replicationBatches.nextFlushDeadline())
+			}
+		case <-flushC:
 			m.flushReplicationBatchesDue(time.Now().UTC())
+			flushC = armBackgroundTimer(timer, m.replicationBatches.nextFlushDeadline())
 		}
 	}
 }
 
-// snapshotDigestLoop 定期扫描所有对等节点，发送脏的快照摘要。
+// snapshotDigestLoop 在脏标记或请求变化时唤醒，按最近的摘要/请求截止时间等待。
 func (m *Manager) snapshotDigestLoop() {
 	defer m.wg.Done()
 	if m == nil || m.ctx == nil {
 		return
 	}
-	ticker := time.NewTicker(snapshotDigestSweepInterval)
-	defer ticker.Stop()
+	timer := time.NewTimer(time.Hour)
+	timer.Stop()
+	defer timer.Stop()
 
 	for {
+		m.flushSnapshotDigestsDue(time.Now())
+		dueC := armBackgroundTimer(timer, m.nextSnapshotWorkDeadline(time.Now()))
 		select {
 		case <-m.ctx.Done():
 			return
-		case <-ticker.C:
-			m.flushSnapshotDigestsDue(time.Now())
+		case <-m.snapshotDigestWake:
+		case <-dueC:
 		}
 	}
 }
@@ -384,11 +415,9 @@ func (m *Manager) meshReplicationLoop() {
 			return
 		case <-catchupTicker.C:
 			m.ensureMeshPeerSessions()
-			for _, sess := range m.meshPeerSessions() {
-				if _, err := m.requestCatchupIfNeeded(sess); err != nil {
-					m.logSessionWarn("mesh_periodic_catchup_failed", sess, err).
-						Msg("mesh periodic catchup failed")
-				}
+			if err := m.requestPeriodicCatchup(m.meshPeerSessions()); err != nil {
+				m.logWarn("mesh_periodic_catchup_failed", err).
+					Msg("mesh periodic catchup cursor snapshot failed")
 			}
 		case <-antiEntropyTicker.C:
 			m.ensureMeshPeerSessions()

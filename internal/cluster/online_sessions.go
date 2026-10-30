@@ -254,7 +254,7 @@ func (m *Manager) resolveUserSessionsAtNodeUnshared(ctx context.Context, nodeID 
 	}
 	requestID, resultCh := m.beginResolveUserSessionsQuery()
 	// 仅记录失败，且不输出请求、会话引用或远端提供的自由文本。
-	logFailure := func(err error) {
+	logFailure := func(stage string, sendElapsed time.Duration, err error) {
 		kind := "query_failed"
 		var safeErr error
 		for _, known := range []struct {
@@ -278,6 +278,8 @@ func (m *Manager) resolveUserSessionsAtNodeUnshared(ctx context.Context, nodeID 
 		m.logWarn("session_lookup_failed", safeErr).
 			Uint64("query_request_id", requestID).
 			Int64("target_node_id", nodeID).
+			Str("stage", stage).
+			Dur("send_elapsed_ms", sendElapsed).
 			Dur("elapsed_ms", time.Since(started)).
 			Str("error_kind", kind).
 			Str("error_type", fmt.Sprintf("%T", err)).
@@ -290,13 +292,14 @@ func (m *Manager) resolveUserSessionsAtNodeUnshared(ctx context.Context, nodeID 
 		RemainingHops: defaultLoggedInUsersQueryMaxHops,
 		User:          &internalproto.ClusterUserRef{NodeId: user.NodeID, UserId: user.UserID},
 	}
+	sendStarted := time.Now()
 	if m.MeshRuntime() == nil {
-		logFailure(mesh.ErrNoRoute)
+		logFailure("send", time.Since(sendStarted), mesh.ErrNoRoute)
 		m.cancelResolveUserSessionsQuery(requestID, meshNoRouteError(nodeID))
 		return nil, meshNoRouteError(nodeID)
 	}
 	if err := m.routeMeshResolveUserSessionsRequest(ctx, req); err != nil {
-		logFailure(err)
+		logFailure("send", time.Since(sendStarted), err)
 		m.cancelResolveUserSessionsQuery(requestID, err)
 		if errors.Is(err, context.Canceled) {
 			return nil, err
@@ -306,16 +309,18 @@ func (m *Manager) resolveUserSessionsAtNodeUnshared(ctx context.Context, nodeID 
 		}
 		return nil, fmt.Errorf("%w: node %d is not reachable", app.ErrServiceUnavailable, nodeID)
 	}
+	sendElapsed := time.Since(sendStarted)
 	m.logDebug("session_lookup_request_routed").
 		Uint64("query_request_id", requestID).
 		Int64("target_node_id", nodeID).
+		Dur("send_elapsed_ms", sendElapsed).
 		Msg("routed resolve user sessions request")
 
 	timeoutCtx := ctx
 
 	select {
 	case <-timeoutCtx.Done():
-		logFailure(timeoutCtx.Err())
+		logFailure("response", sendElapsed, timeoutCtx.Err())
 		m.cancelResolveUserSessionsQuery(requestID, timeoutCtx.Err())
 		if errors.Is(timeoutCtx.Err(), context.DeadlineExceeded) {
 			return nil, fmt.Errorf("%w: timed out resolving user sessions on node %d", app.ErrServiceUnavailable, nodeID)
@@ -323,7 +328,7 @@ func (m *Manager) resolveUserSessionsAtNodeUnshared(ctx context.Context, nodeID 
 		return nil, timeoutCtx.Err()
 	case result := <-resultCh:
 		if result.err != nil {
-			logFailure(result.err)
+			logFailure("response", sendElapsed, result.err)
 			if errors.Is(result.err, context.DeadlineExceeded) {
 				return nil, fmt.Errorf("%w: timed out resolving user sessions on node %d", app.ErrServiceUnavailable, nodeID)
 			}
@@ -333,7 +338,7 @@ func (m *Manager) resolveUserSessionsAtNodeUnshared(ctx context.Context, nodeID 
 			return nil, result.err
 		}
 		if err := clusterQueryErrorCode(result.response.GetErrorCode(), result.response.GetErrorMessage()); err != nil {
-			logFailure(err)
+			logFailure("response", sendElapsed, err)
 			return nil, err
 		}
 		return storeOnlineSessionsFromCluster(result.response.GetUser(), result.response.GetItems()), nil

@@ -923,7 +923,7 @@ func (r *Runtime) SendPacket(ctx context.Context, nextHopNodeID int64, transport
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	adj := r.bestAdjacency(nextHopNodeID, transport)
+	adj := r.packetAdjacency(nextHopNodeID, transport, packet)
 	if adj == nil {
 		return ErrNoRoute
 	}

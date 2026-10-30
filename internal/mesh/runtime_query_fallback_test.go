@@ -36,6 +36,10 @@ func newQueryFallbackHarness(t *testing.T) *queryFallbackHarness {
 }
 
 func (h *queryFallbackHarness) sample(now time.Time, nativeCost float64, increment bool) {
+	h.sampleDelays(now, nativeCost, 0, 100, 0, increment)
+}
+
+func (h *queryFallbackHarness) sampleDelays(now time.Time, nativeRTT, nativeJitter, backupRTT, backupJitter float64, increment bool) {
 	for _, adj := range []*Adjacency{h.native, h.backup} {
 		adj.mu.Lock()
 		if adj.samples < 8 {
@@ -45,10 +49,11 @@ func (h *queryFallbackHarness) sample(now time.Time, nativeCost float64, increme
 			adj.samples++
 		}
 		adj.lastProbeSuccess = now
-		adj.rttEWMA = 100
-		adj.jitterEWMA = 0
+		adj.rttEWMA = backupRTT
+		adj.jitterEWMA = backupJitter
 		if adj == h.native {
-			adj.rttEWMA = nativeCost
+			adj.rttEWMA = nativeRTT
+			adj.jitterEWMA = nativeJitter
 		}
 		adj.mu.Unlock()
 	}
@@ -115,7 +120,7 @@ func TestControlQueryFallbackRejectsUnhealthyOrUnknownBackup(t *testing.T) {
 			case "stale":
 				h.backup.lastProbeSuccess = now.Add(-20 * time.Second)
 			case "jitter":
-				h.backup.jitterEWMA = 100
+				h.backup.jitterEWMA = 500
 			case "failures":
 				h.backup.sendFailures = 1
 			case "probe_degraded":
@@ -130,6 +135,138 @@ func TestControlQueryFallbackRejectsUnhealthyOrUnknownBackup(t *testing.T) {
 				t.Fatal("selected unhealthy backup")
 			}
 		})
+	}
+}
+
+func TestControlQueryFallbackAcceptsBoundedJitterOnBetterBackup(t *testing.T) {
+	for _, sample := range []struct {
+		name                    string
+		nativeRTT, nativeJitter float64
+		backupRTT, backupJitter float64
+	}{
+		{"cc_to_home", 1365, 1251, 193, 68},
+		{"home_to_cc", 1107, 1021, 221, 139},
+	} {
+		t.Run(sample.name, func(t *testing.T) {
+			h := newQueryFallbackHarness(t)
+			now := time.Now()
+			for i := 0; i < 3; i++ {
+				at := now.Add(time.Duration(i) * 6 * time.Second)
+				h.sampleDelays(at, sample.nativeRTT, sample.nativeJitter, sample.backupRTT, sample.backupJitter, true)
+				got := h.route(at)
+				if i < 2 && got.OutboundTransport != TransportTCPMTLS {
+					t.Fatal("switched before sustained degradation")
+				}
+			}
+			if got := h.route(now.Add(12 * time.Second)); got.OutboundTransport != TransportWebSocket {
+				t.Fatalf("bounded, substantially faster backup was rejected: %+v", got)
+			}
+		})
+	}
+}
+
+func TestControlQueryFallbackRequiresBudgetAndRelativeAdvantage(t *testing.T) {
+	for _, sample := range []struct {
+		name                    string
+		nativeRTT, nativeJitter float64
+		backupRTT, backupJitter float64
+	}{
+		// Lower latency alone is insufficient when both paths use too much of
+		// the query budget, or the improvement does not justify a path change.
+		{"slow_backup", 2800, 200, 1100, 0},
+		{"excessive_variation", 2800, 200, 100, 500},
+		{"small_relative_gain", 600, 0, 350, 50},
+	} {
+		t.Run(sample.name, func(t *testing.T) {
+			h := newQueryFallbackHarness(t)
+			now := time.Now()
+			for i := 0; i < 4; i++ {
+				at := now.Add(time.Duration(i) * 6 * time.Second)
+				h.sampleDelays(at, sample.nativeRTT, sample.nativeJitter, sample.backupRTT, sample.backupJitter, true)
+				if got := h.route(at); got.OutboundTransport != TransportTCPMTLS {
+					t.Fatalf("selected unsuitable backup: %+v", got)
+				}
+			}
+		})
+	}
+}
+
+func TestControlQueryFallbackBudgetBoundaryAndRecovery(t *testing.T) {
+	h := newQueryFallbackHarness(t)
+	now := time.Now()
+	for i := 0; i < 3; i++ {
+		h.sampleDelays(now.Add(time.Duration(i)*6*time.Second), 3000, 0, 900, 50, true)
+	}
+	if h.route(now.Add(12*time.Second)).OutboundTransport != TransportWebSocket {
+		t.Fatal("backup at the budget boundary was rejected")
+	}
+	h.backup.mu.Lock()
+	h.backup.rttEWMA = 901
+	h.backup.mu.Unlock()
+	if h.route(now.Add(12*time.Second)).OutboundTransport != TransportTCPMTLS {
+		t.Fatal("backup above the budget remained active")
+	}
+	for i := 0; i < 3; i++ {
+		h.sampleDelays(now.Add(time.Duration(13+i*6)*time.Second), 3000, 0, 900, 0, true)
+	}
+	// Native is within 25% of the backup, but still above the absolute budget.
+	for i := 0; i < 4; i++ {
+		at := now.Add(time.Duration(26+i*6) * time.Second)
+		h.sampleDelays(at, 1050, 0, 900, 0, true)
+		if h.route(at).OutboundTransport != TransportWebSocket {
+			t.Fatal("native recovered above the budget")
+		}
+	}
+	for i := 0; i < 3; i++ {
+		at := now.Add(time.Duration(45+i*6) * time.Second)
+		h.sampleDelays(at, 1000, 0, 900, 0, true)
+	}
+	if h.route(now.Add(57*time.Second)).OutboundTransport != TransportTCPMTLS {
+		t.Fatal("native did not recover at the budget boundary")
+	}
+}
+
+func TestControlQueryFallbackSendRechecksNewAndDegradedConnections(t *testing.T) {
+	h := newQueryFallbackHarness(t)
+	now := time.Now()
+	h.activate(now)
+	decision := h.route(now)
+	newConn, newPeer := newFakeConnPair(TransportWebSocket, "new-ws", "new-ws-peer")
+	h.r.registerAdjacency(newConn, TransportWebSocket, &NodeHello{NodeId: 2}, true)
+	if h.r.bestAdjacency(2, TransportWebSocket).Conn != newConn {
+		t.Fatal("fixture did not prefer the unmeasured connection for ordinary traffic")
+	}
+	packet := &ForwardedPacket{SourceNodeId: 1, TargetNodeId: 2, PacketId: 1, TtlHops: 8, TrafficClass: TrafficControlQuery}
+	if err := h.r.SendPacket(context.Background(), 2, decision.OutboundTransport, packet); err != nil {
+		t.Fatal(err)
+	}
+	if len(h.backupPeer.inbox) != 1 || len(newPeer.inbox) != 0 {
+		t.Fatal("unmeasured connection bypassed fallback qualification")
+	}
+	if h.route(now).OutboundTransport != TransportWebSocket {
+		t.Fatal("unmeasured sibling masked the qualified backup")
+	}
+	h.backup.mu.Lock()
+	h.backup.probeDegraded = true
+	h.backup.mu.Unlock()
+	if err := h.r.SendPacket(context.Background(), 2, decision.OutboundTransport, packet); err != ErrNoRoute {
+		t.Fatalf("degraded backup sent after planning: %v", err)
+	}
+	if len(h.backupPeer.inbox) != 1 || len(newPeer.inbox) != 0 {
+		t.Fatal("failed qualification still sent a packet")
+	}
+	// Qualification must not prevent transit or other classes from using a
+	// newly established connection under their existing routing rules.
+	packet.SourceNodeId = 3
+	if err := h.r.SendPacket(context.Background(), 2, TransportWebSocket, packet); err != nil {
+		t.Fatal(err)
+	}
+	packet.SourceNodeId, packet.TrafficClass = 1, TrafficControlCritical
+	if err := h.r.SendPacket(context.Background(), 2, TransportWebSocket, packet); err != nil {
+		t.Fatal(err)
+	}
+	if len(newPeer.inbox) != 2 {
+		t.Fatal("ordinary traffic selection changed")
 	}
 }
 

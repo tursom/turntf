@@ -131,7 +131,7 @@ func TestRealtimeTargetedBoundAndCancelAtCapacity(t *testing.T) {
 }
 
 func TestRealtimeTargetedRPCBarriers(t *testing.T) {
-	for _, kind := range []string{"ping", "login", "persistent", "get_user", "untargeted"} {
+	for _, kind := range []string{"login", "persistent", "get_user", "untargeted"} {
 		t.Run(kind, func(t *testing.T) {
 			s, c, r := realtimeFixture(t, true)
 			startRealtimeLoop(t, s, c)
@@ -141,8 +141,6 @@ func TestRealtimeTargetedRPCBarriers(t *testing.T) {
 			awaitRealtime(t, r.entered)
 			e := &internalproto.ClientEnvelope{}
 			switch kind {
-			case "ping":
-				e.Body = &internalproto.ClientEnvelope_Ping{Ping: &internalproto.Ping{RequestId: 3}}
 			case "login":
 				e.Body = &internalproto.ClientEnvelope_Login{Login: &internalproto.LoginRequest{}}
 			case "persistent":
@@ -171,20 +169,14 @@ func TestRealtimeTargetedRPCBarriers(t *testing.T) {
 				t.Fatalf("request correlation lost: %v", ids)
 			}
 			resp := nextRealtimeResponse(t, c)
-			if kind == "ping" {
-				if resp.GetPong().GetRequestId() != 3 {
-					t.Fatalf("bad pong: %v", resp)
-				}
-			} else {
-				code := "invalid_request"
-				id := uint64(3)
-				if kind == "login" {
-					code = "already_authenticated"
-					id = 0
-				}
-				if resp.GetError().GetCode() != code || resp.GetError().GetRequestId() != id {
-					t.Fatalf("bad RPC response: %v", resp)
-				}
+			code := "invalid_request"
+			id := uint64(3)
+			if kind == "login" {
+				code = "already_authenticated"
+				id = 0
+			}
+			if resp.GetError().GetCode() != code || resp.GetError().GetRequestId() != id {
+				t.Fatalf("bad RPC response: %v", resp)
 			}
 		})
 	}

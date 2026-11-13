@@ -2,6 +2,8 @@
 
 点对点字节流使用独立的 `StreamFrameRequest` / `StreamFramePushed`，不会调用 `SendMessage`、`TransientAccepted` 或 `TransientPacket`。客户端 realtime transport 只负责承载帧；服务端鉴权后将帧交给 core stream router。
 
+在 `/ws/realtime` 中，专用 Stream 帧和应用层 Ping 不等待此前尚未完成的会话解析或定向 Relay 请求。Stream 帧仍由读取循环同步按顺序处理，保持 Open/Data/Ack/Resume 的原有顺序约束。该调度隔离不绕过逐帧验证，也不消除接纳上限、慢 Stream 路由或共享写入背压；具体边界见 [客户端流程](client-flow.md#定向瞬时发送的并发边界)。普通 `/ws/client` 保留原串行处理。
+
 ## 帧语义
 
 - `Open` 建立 `(sender, recipient, stream_id)` 逻辑流，目标以 `OpenAck` 应答。

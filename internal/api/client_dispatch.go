@@ -52,9 +52,14 @@ func (s *clientWSSession) readLoop(ctx context.Context) (loopErr error) {
 		req := envelope.GetSendMessage()
 		concurrentSend := s.realtimeOnly && req.GetDeliveryKind() == internalproto.ClientDeliveryKind_CLIENT_DELIVERY_KIND_TRANSIENT && req.GetTargetSession() != nil
 		concurrentLookup := s.realtimeOnly && envelope.GetResolveUserSessions() != nil
-		// Read-only discovery may overlap DATA, but all other RPCs remain
-		// barriers that drain both kinds before observing or changing state.
-		if !concurrentSend && !concurrentLookup && sends != nil {
+		// Established streams already carry their target session and must not
+		// wait for unrelated discovery/Relay acceptance. Ping must also bypass
+		// that wait: otherwise a heartbeat would stall all later stream ACKs.
+		// Both still run synchronously below, preserving stream frame order.
+		independentRealtime := s.realtimeOnly && (envelope.GetStreamFrame() != nil || envelope.GetPing() != nil)
+		// State-observing/changing RPCs (including persistent AckMessage) still
+		// drain the group. This exception does not apply to /ws/client.
+		if !concurrentSend && !concurrentLookup && !independentRealtime && sends != nil {
 			sends.pending.Wait()
 			if err := ctx.Err(); err != nil {
 				return err

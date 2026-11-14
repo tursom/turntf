@@ -9,7 +9,7 @@ router 故障曾同时出现会话查询超时、Stream ACK 停滞和 WebSocket 
 ## 行为
 
 - 后台查询/定向 transient Relay 合计 64 个名额，非阻塞接纳；满额请求不执行，按原 request ID 返回既有 `service_unavailable`。
-- 专用 Stream 以目标用户、完整目标 session、stream ID 为身份，同身份 FIFO，epoch 不分 lane；不同身份并行。活动与排队合计不超过 64 帧、8MiB Protobuf 请求编码大小，超限关闭会话，不能静默丢零 request ID 的帧。
+- 专用 Stream 以目标用户、完整目标 session、stream ID 为身份，同身份 FIFO，epoch 不分 lane；不同身份并行。最多 64 个活动 lane，活动与排队合计不超过 8192 帧、8MiB Protobuf 请求编码大小。小帧缓冲数量与并行 worker 数分别限制；任一预算超限关闭会话，不能静默丢零 request ID 的帧。
 - reader 的 Pong、过载错误和无效帧错误由单个响应 worker 处理，活动与排队总计不超过 128 项、1MiB。reader 不等物理写入；排队成功不等于消息交付。
 - 所有实际写入仍由原 session 写锁串行化。实时写的锁等待和 Send 共用 10 秒期限，过期 Close 原 transport，函数返回前等待已启动的关闭回调。普通 session 保持原路径。
 - 状态请求、持久 AckMessage、重复 Login 等仍等待此前后台、stream 和 reader 响应完成；Pong 仍不是全连接排空屏障。

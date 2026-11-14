@@ -28,11 +28,13 @@ PARAMETERS = {
     "serial_client": "SerialClient", "reject_full": "RejectFull", "corrupt_replies": "CorruptReplies",
     "split_epoch_key": "SplitEpochKey", "break_fifo": "BreakFIFO", "skip_barrier": "SkipBarrier",
 }
+LANE_PARAMETERS = {**PARAMETERS, "lane_limit": "LaneLimit"}
 NUMBERS = {"capacity": {1, 2}, "stream_limit": {1, 2, 4}, "stream_bytes": {1, 2, 4, 8},
-           "response_limit": {1, 2, 4}, "response_bytes": {1, 2, 4, 8}}
+           "response_limit": {1, 2, 4}, "response_bytes": {1, 2, 4, 8}, "lane_limit": {1, 2, 4}}
 INPUTS = {"IsolationInput", "RelayInput", "CapacityInput", "NormalInput", "StateInput",
           "StreamBarrierInput", "ResponseBarrierInput", "MultiFrameInput", "KeyInput",
           "StreamOverflowInput", "StreamByteInput", "ResponseOverflowInput", "ResponseByteInput", "EmptyInput"}
+LANE_INPUTS = INPUTS | {"LaneOverflowInput", "LaneActiveInput", "LaneBurstInput", "LaneReuseInput", "LaneFourInput"}
 
 
 def digest(data):
@@ -41,8 +43,9 @@ def digest(data):
 
 def configuration(matrix, case):
     legacy = matrix["schema"] == 1
-    parameters = LEGACY_PARAMETERS if legacy else PARAMETERS
-    inputs = LEGACY_INPUTS if legacy else INPUTS
+    # schema 2 仅用于逐字节重建原 56 配置的历史证据；新模型必须 schema 3。
+    parameters = LEGACY_PARAMETERS if legacy else LANE_PARAMETERS if matrix["schema"] == 3 else PARAMETERS
+    inputs = LEGACY_INPUTS if legacy else LANE_INPUTS if matrix["schema"] == 3 else INPUTS
     params = {**matrix["defaults"], **case.get("parameters", {})}
     if set(params) != set(parameters) or params["input"] not in inputs:
         raise ValueError("unknown/missing model parameter")
@@ -134,7 +137,7 @@ def main():
     matrix_path = ROOT / ("legacy-cases.json" if args.legacy else "cases.json")
     matrix_bytes = matrix_path.read_bytes()
     matrix = json.loads(matrix_bytes)
-    if matrix["schema"] not in {1, 2}:
+    if matrix["schema"] != (1 if args.legacy else 3):
         parser.error("unsupported case matrix schema")
     model_name = matrix.get("model", "RealtimeDispatch")
     if model_name != ("LegacyDispatch" if args.legacy else "RealtimeDispatch"):

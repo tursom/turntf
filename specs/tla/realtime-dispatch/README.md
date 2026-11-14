@@ -9,11 +9,11 @@
 | 文件 | 职责 |
 | --- | --- |
 | `RealtimeDispatch.tla` | 新调度模型、安全性质、进展性质、错误注入和覆盖见证 |
-| `cases.json` | 新模型 56 个配置，schema 2 |
+| `cases.json` | 新模型 68 个配置，schema 3；保留原 56 配置，新增 12 个 lane 配置 |
 | `LegacyDispatch.tla` | 上一版模型，仅修改模块名 |
 | `legacy-cases.json` | 原 27 个配置，仅增加模型名；其中 `current-*` 是历史命名 |
 | `check.py` | 生成配置、执行 TLC、严格分类及保存证据 |
-| `audit.py` | 复核产物/hash/关键见证，实际执行解析与求值故障检查分类器 |
+| `audit.py` | 复核产物/hash/状态数/关键见证，兼容原 schema 2 证据，实际执行解析与求值故障检查分类器 |
 | `README.md` / `RESULTS.md` | 模型说明 / 实际结果 |
 
 需要 Python 3、Java 和 `tla2tools.jar`。默认 jar 路径是 `/usr/share/java/tla2tools.jar`，可用 `TLA2TOOLS_JAR` 或 `--jar` 指定。仓库不附带 jar，也不自动下载。
@@ -32,6 +32,8 @@ PYTHONDONTWRITEBYTECODE=1 python3 turntf/specs/tla/realtime-dispatch/audit.py \
 
 可以用重复的 `--case NAME` 缩小检查范围。`audit.py` 的关键见证复核需要完整两套矩阵。进入服务端仓库运行时，将脚本路径改为 `specs/tla/realtime-dispatch/...`。
 
+历史证据可以只读复用，将 `--legacy` 指向原始历史运行目录即可；这属于 audit，不是本次重跑历史 TLC。当前新模型的完整 68 配置必须实际运行。`check.py` 只运行新 schema 3 或历史 schema 1；schema 2 兼容仅用于 audit 逐字节重建原 56 配置。使用独立输出目录，保留 `/root/.local/state/turntf-realtime-per-stream-20261114` 的原 83 份证据。
+
 每个场景保存规约快照、`model.cfg`、原始 `tlc.log`、`result.json`；存在轨迹时保存 `counterexample.json`，保留原始 TLA 值和循环/停顿信息，不将集合或函数猜测为普通 JSON。顶层保存矩阵和运行器快照、`summary.json`，包括调用命令、工作目录、Java/TLC 版本、jar/规约/矩阵/运行器/配置/日志 SHA-256、退出码、超时标记和状态数。
 
 运行器整体退出 0 表示所有配置符合各自预期，包含有意失败的性质。不变量反例要求退出码 12、唯一匹配的具名不变量、至少两个轨迹状态；时序反例要求退出码 13、时序违例、轨迹，并且配置只检查一个与预期同名的时序性质。TLC 的时序违例正文没有单独打印性质名，因此由单性质配置确定名称。工具故障、OOM、超时、未知退出码、其他名称的违例不能算通过。`classification` 区分 `pass`、`expected_violation`、`tool_failure` 和 `unexpected_result`。
@@ -44,7 +46,9 @@ PYTHONDONTWRITEBYTECODE=1 python3 turntf/specs/tla/realtime-dispatch/audit.py \
 | `Admit`、`started` | Query/Relay 占后台名额，名额含远端调用、等待响应锁和活动 Send |
 | `EnqueueResponse`、`rejected` | 后台满额即拒绝，不启动 handler；原请求 ID 的 `service_unavailable` 与 Ping 共用独立响应队列 |
 | `EnqueueStream`、`StartStream`、`Route` | Stream 按完整三元 key 分组，同 key 前项整个 handler 结束后才运行后项；不同 key 独立执行 |
-| `StreamFits`、`ResponseFits`、`Overflow` | 条数和权重均统计活动项及排队项，超限明确关闭当前会话 |
+| `StreamFramesFit`、`StreamBytesFit`、`LaneFits` | 独立判定 Stream 帧数、编码权重、新 lane 接纳；`StreamFits` 合取三者 |
+| `Lanes`、`BoundedLanes` | 所有 `queued/route/wait/write` Stream 的 distinct `ScheduleKey`；同 key 多帧只占一个 lane，最后一帧到终态才释放 |
+| `ResponseFits`、`Overflow` | 响应条数和权重统计活动项及排队项；超限明确关闭，Stream 原因为 `streamItems/streamBytes/streamLanes` |
 | `StartResponse`、`responseActive` | 单响应 worker，按队列 FIFO 处理 Ping/拒绝响应，活动项继续占预算 |
 | `Acquire`、`writer`、`FinishWrite` | 后台、Stream 和响应 worker 共用一个 session 响应写锁 |
 | `armed`、`Expire` | 进入等锁时启动一次预算，获得锁不重置；预算到期关闭会话 |
@@ -52,7 +56,11 @@ PYTHONDONTWRITEBYTECODE=1 python3 turntf/specs/tla/realtime-dispatch/audit.py \
 | `SerialClient`、`SerialAdvance` | 普通 client 一项完成后才读取下一项，保留串行行为 |
 | `CancelHandler`、`CloseTransport`、`FinishClose` | backend/route 观察取消后仍走错误响应写锁路径；Close 中断原 transport 的写入后收敛 |
 
-生产目标是后台 64 项、Stream 64 项/8MiB、reader 响应 128 项/1MiB。本模型使用后台容量 1/2、Stream 容量 1/2/4、响应容量 1/2，以及 1/2 的有限权重和小字节预算。权重 2 的项可单独占满抽象字节预算，使字节超限与条数超限分别可达。这里的“字节”是权重单位，不是实际序列化长度，也没有建立对 64/128 或 8MiB/1MiB 的参数化 cutoff 证明。
+当前实现的预算是后台 64 项、**Stream 排队+活动共 8192 帧、独立 64 个 lane、8MiB 编码字节**，reader 响应 128 项/1MiB。lane key 为目标用户、目标 session、streamID，不含 epoch；只要该 key 还有排队或活动帧就占 lane。帧缓冲预算与 lane 并发预算分别限制资源。
+
+本模型使用后台容量 1/2、Stream 帧容量 1/2/4、独立 `LaneLimit=1/2/4`、响应容量 1/2，以及 1/2 的有限权重和小字节预算。原 56 场景默认 lane 容量 4，保留原有帧数/字节/慢流/拒绝/写/关闭性质；新增场景单独收紧 lane，帧数与字节仍允许接纳。权重 2 的项使字节超限与条数超限分别可达。这里的“字节”是权重单位，不是实际序列化长度；**提高容量不构成参数化证明**，没有建立到真实 4096/8192 帧、64 lane、128 响应或 MiB 预算的 cutoff/精化证明。
+
+首次发布的生产终验在 kiwi/home 各捕获一次 Stream budget 关闭，主会话已启动全部 6 节点回退到 d0ee 并保留数据（此处记录用户提供的事实，不是本任务执行或复核的部署）。实际 TUN 为 MTU 1400、`send_queue_size=4096`、`stream_window=8MiB`；用户提供的旧代码本地量化结果是在合法 4096 帧突发的第 65 帧、累计 94,690 编码字节即拒绝。旧 64 帧预算未覆盖这种小帧量化工作负载，属于工作负载与容量验证缺口；原模型发现的屏障、满额等待、同步慢路由和慢写反例仍然有效，原证据继续保留。Go 量化突发回归由主会话负责，本目录的有限 TLC 结果不证明真实突发已通过。
 
 每帧记录 `kind/user/session/stream/epoch/weight`，输入位置作为连接内唯一非零 request ID。`user/session` 分别抽象完整的目标 UserKey 和 SessionRef，不单独展开节点 ID 字段。`Key(i)` 为 `(目标用户, 目标 session, stream_id)`，不含 epoch。`MultiFrameInput` 包含 A 的两个不同 epoch 帧、B 的两帧和一个 Ping。`KeyInput` 额外使用相同 stream_id、不同用户或不同 session 的健康流，检查三元 key 的独立性。Stream 的 DATA/ACK 在此合并为同类调度帧，不展开其内容协议。
 
@@ -60,9 +68,10 @@ PYTHONDONTWRITEBYTECODE=1 python3 turntf/specs/tla/realtime-dispatch/audit.py \
 
 ## 安全、进展与非真空检查
 
-所有新场景默认检查类型、后台/Stream/响应预算、writer/reader/响应 worker 所有权、响应关联、至多一次、拒绝安全、同 key FIFO/前缀顺序、状态屏障、关闭后无工作以及不进入阻塞接纳。
+所有新场景默认检查类型、后台/Stream 帧数及字节/独立 lane/响应预算、writer/reader/响应 worker 所有权、响应关联、至多一次、拒绝安全、同 key FIFO/前缀顺序、状态屏障、关闭后无工作以及不进入阻塞接纳。
 
 - `RejectionSafety`：拒绝请求不在 `started` 中，不进入成功响应集合。`AllRequestsResolved` 允许 `done` 或 `rejected`；`AllRequestsSuccessful` 只允许 `done`。
+- `BoundedLanes`：`Cardinality({ScheduleKey(i) : i \in Streams}) <= LaneLimit`。`LaneFits` 检查与 incoming key 并集的大小，同 key 跨 epoch 不增加 lane。`Overflow` 先区分帧数、再字节、最后 lane；`streamLanes` 因而只在帧数和字节允许时记录，`stop.lanes` 保存触发时 lane 数。
 - `StreamFIFO`：同完整 key 的路由完成日志保持输入顺序。`StreamPrefix` 还要求每个后帧的前帧已路由，防止“首帧永久慢、仅后帧路由”绕过单纯日志排序断言。旧版全连接 `ReaderRouteOrder` 只保留在历史模型中。
 - `IOEventuallyReplies`：有限输入的 Stream/Ping 都成功完成响应。用于容量满额但响应队列仍有空间、物理可写、相关路由可返回的环境。
 - `HealthyIO`：只要求健康 stream 与 Ping 完成。永久慢 A 不必完成；慢路由正向配置额外检查 `SessionOpen`，整个执行都不能关闭。非关闭见证还同时要求 A 首帧保持 `route`、跨 epoch 后帧保持 `queued`，B 两帧和 Ping 均完成。
@@ -70,6 +79,8 @@ PYTHONDONTWRITEBYTECODE=1 python3 turntf/specs/tla/realtime-dispatch/audit.py \
 - `ClosingDrains`：进入 closing 后最终 closed；`EventuallyClosed` 用于确定触发预算超限的配置，防止仅检查条件性质而没有关闭。
 
 见证断言 `No*Witness` 有意失败，覆盖后台未完成时 IO 成功、原 ID 的拒绝响应、跨 key 超越、同 key 跨 epoch 多帧、各种预算关闭、活动响应占预算、持锁取消、带 Stream 工作取消、空闲取消、等锁者 deadline 及状态屏障完成。`NoCancelRouteWitness` 的快照条件为取消时存在 Stream 工作，不单独区分 queued/route；已进入慢路由的收尾由 `current-cancel-slow-route` 的全状态时序检查与 Go 受控路由回归覆盖。错误注入分别破坏响应 ID（含拒绝响应）、将 epoch 加入调度 key、去掉 FIFO、跳过三类状态屏障及恢复阻塞接纳，必须命中对应的指定断言。
+
+新增 lane 正向配置检查容量 1/2 下独立 lane 超限必关闭并排空，见证分别到达仅 lane 超限的 `closing` 和完全排空的 `closed`；其他正向/见证检查三帧同 key（跨 epoch）共用一个 lane 且 Ping 完成、`wait/write` 活动 handler 仍占 lane、旧 lane 完成后可接纳不同 key 再接纳原 key、容量 4 时四个 distinct key 同时可达。`audit.py` 从实际溢出轨迹复核 frame/byte 尚有余量和 incoming key 未出现，不只接受一个原因字符串。
 
 ## 公平性、取消及时间假设
 

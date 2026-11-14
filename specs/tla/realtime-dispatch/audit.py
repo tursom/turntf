@@ -37,23 +37,38 @@ def main():
         summaries.append(summary)
         matrix = json.loads((directory / summary["matrix"]).read_text())
         cases = {c["name"]: c for c in matrix["cases"]}
-        verify(f"{summary['model']}:complete", summary["all_matched"] and len(cases) == len(summary["cases"]))
+        verify(f"{summary['model']}:complete", summary["all_matched"]
+               and len(cases) == len(matrix["cases"]) == len(summary["cases"])
+               and set(cases) == {r["name"] for r in summary["cases"]})
         verify(f"{summary['model']}:runner hash", sha((directory / "check.py").read_bytes()) == summary["runner_sha256"])
         verify(f"{summary['model']}:matrix hash", sha((directory / summary["matrix"]).read_bytes()) == summary["matrix_sha256"])
+        verify(f"{summary['model']}:jar hash", sha(Path(summary["jar"]).read_bytes()) == summary["jar_sha256"])
+        if matrix["schema"] in {1, 3}:
+            verify(f"{summary['model']}:repository model hash",
+                   sha((runner.ROOT / f"{summary['model']}.tla").read_bytes()) == summary["spec_sha256"])
+            verify(f"{summary['model']}:repository matrix hash",
+                   sha((runner.ROOT / summary["matrix"]).read_bytes()) == summary["matrix_sha256"])
         for result in summary["cases"]:
             case_dir = directory / result["name"]
             text = (case_dir / "tlc.log").read_text()
             trace = runner.trace_from_output(text)
             label = f"{summary['model']}:{result['name']}"
-            config, _ = runner.configuration(matrix, cases[result["name"]])
+            config, params = runner.configuration(matrix, cases[result["name"]])
             verify(label + ":artifacts", all((
                 sha((case_dir / f"{summary['model']}.tla").read_bytes()) == summary["spec_sha256"],
                 sha((case_dir / "model.cfg").read_bytes()) == result["config_sha256"] == sha(config.encode()),
                 sha(text.encode()) == result["log_sha256"],
                 result == json.loads((case_dir / "result.json").read_text()),
+                params == result["parameters"], result["expected"] == cases[result["name"]]["expect"],
+                result["matched"],
                 not result["timed_out"],
                 runner.classify(cases[result["name"]], result["exit_code"], text, trace),
             )))
+            stats = re.search(r"([\d,]+) states generated, ([\d,]+) distinct states found", text)
+            verify(label + ":state counts", stats is not None
+                   and [int(s.replace(",", "")) for s in stats.groups()]
+                   == [result["generated_states"], result["distinct_states"]]
+                   and len(trace["states"]) == result["trace_states"] and trace["loops"] == result["trace_loops"])
             if result["expected"]["kind"] != "pass":
                 negatives.append((label, cases[result["name"]], result, text, trace))
                 verify(label + ":trace", trace == json.loads((case_dir / "counterexample.json").read_text()))
@@ -142,6 +157,48 @@ def main():
     verify("response limit includes active writer", scalar(overflow, "responseActive") != "0"
            and scalar(overflow, "responseQueue").startswith("<<")
            and "responses |-> 2" in values(overflow))
+
+    if json.loads((args.current / "cases.json").read_text())["schema"] == 3:
+        current_cases = {r["name"]: r for r in summaries[0]["cases"]}
+        for name in ("witness-lane-overflow-1", "witness-lane-closed", "witness-lane-active-write"):
+            history = states(name)
+            overflow = next(s for s in history if s["action"].startswith("<Overflow"))
+            params = current_cases[name]["parameters"]
+            # 这三种输入的 stream weight 均为 1，真实解码帧由 parameters.input 确定。
+            active = [i for i, p in enumerate(phases(overflow), 1) if p in {"queued", "route", "wait", "write"}]
+            keys = {1: ("u", "s", "A"), 2: ("u", "s", "A"), 3: ("u", "s", "B")}
+            if params["input"] == "KeyInput":
+                keys = {**keys, 3: ("v", "s", "A"), 4: ("u", "t", "A")}
+            elif params["input"] == "LaneActiveInput":
+                keys = {1: ("u", "s", "A"), 2: ("u", "s", "B"), 3: ("v", "s", "A")}
+            lanes = {keys[i] for i in active}
+            held = int(scalar(overflow, "held"))
+            verify(name + ":only distinct new lane exceeds budget",
+                   'cause |-> "streamLanes"' in values(overflow)
+                   and len(active) < params["stream_limit"] and len(active) + 1 <= params["stream_bytes"]
+                   and len(lanes) == params["lane_limit"] and keys[held] not in lanes
+                   and f'lanes |-> {len(lanes)}' in values(overflow))
+        final = states("witness-lane-overflow-1")[-1]
+        verify("lane budget counts queued frames once per key before worker starts",
+               phases(final) == ["queued", "queued", "held"] and 'lanes |-> 1' in values(final))
+        final = states("witness-lane-closed")[-1]
+        verify("lane overflow reaches fully drained closed",
+               scalar(final, "connection") == '"closed"' and scalar(final, "writer") == "0"
+               and all(p in {"done", "aborted", "fresh"} for p in phases(final)))
+        final = next(s for s in states("witness-lane-active-write") if s["action"].startswith("<Overflow"))
+        verify("lane budget includes waiting and writing handlers with no queued frames",
+               scalar(final, "writer") != "0" and sorted(phases(final)[:2]) == ["wait", "write"]
+               and scalar(final, "routed") in {"<<1, 2>>", "<<2, 1>>"})
+        final = states("witness-lane-shared-epochs")[-1]
+        verify("three same-key frames across epochs share one lane while ping completes",
+               scalar(final, "connection") == '"open"' and phases(final) == ["route", "queued", "queued", "done"])
+        final = states("witness-lane-reuse")[-1]
+        verify("completed lanes release slots for different key then original key",
+               scalar(final, "connection") == '"open"' and scalar(final, "routed") == "<<1, 3, 5>>"
+               and all(p == "done" for p in phases(final)))
+        final = states("witness-lane-capacity-4")[-1]
+        verify("four distinct lanes simultaneously reachable", sum(
+            p in {"queued", "route", "wait", "write"} for p in phases(final)) == 4)
 
     report = {"invocation": [sys.executable, *sys.argv], "audit_sha256": sha(Path(__file__).read_bytes()),
               "summaries": [str(args.current.resolve() / "summary.json"), str(args.legacy.resolve() / "summary.json")],

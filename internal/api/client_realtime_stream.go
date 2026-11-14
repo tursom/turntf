@@ -2,6 +2,7 @@ package api
 
 import (
 	"errors"
+	"fmt"
 
 	gproto "google.golang.org/protobuf/proto"
 
@@ -9,7 +10,10 @@ import (
 )
 
 const (
-	clientRealtimeStreamRequests = 64
+	// A TUN's 4096-packet queue can burst thousands of MTU-sized frames while
+	// staying below 8MiB. Frame buffering must not share the lane worker cap.
+	clientRealtimeStreamRequests = 8192
+	clientRealtimeStreamLanes    = 64
 	clientRealtimeStreamBytes    = 8 << 20
 )
 
@@ -34,14 +38,6 @@ func (g *realtimeSendGroup) submitStream(req *internalproto.StreamFrameRequest) 
 		g.streamMu.Unlock()
 		return err
 	}
-	// Count both queued and executing frames, including a worker waiting for
-	// its response write. A zero-ID stream cannot report an admission failure
-	// to a pending RPC: close on overflow instead of silently dropping data.
-	if g.streamCount >= clientRealtimeStreamRequests || size > clientRealtimeStreamBytes-g.streamBytes {
-		g.streamMu.Unlock()
-		g.fail(errRealtimeStreamFull)
-		return errRealtimeStreamFull
-	}
 	target, session := req.GetTarget(), req.GetTargetSession()
 	key := realtimeStreamKey{
 		nodeID: target.GetNodeId(), userID: target.GetUserId(),
@@ -49,6 +45,19 @@ func (g *realtimeSendGroup) submitStream(req *internalproto.StreamFrameRequest) 
 		streamID: string(req.GetStreamId()),
 	}
 	queue, exists := g.streams[key]
+	// Count queued and executing frames separately from active lanes. This
+	// bounds both retained payloads and concurrent handlers without treating
+	// an ordinary small-packet burst as thousands of concurrent workers.
+	if g.streamCount >= clientRealtimeStreamRequests || size > clientRealtimeStreamBytes-g.streamBytes || (!exists && len(g.streams) >= clientRealtimeStreamLanes) {
+		err := fmt.Errorf("%w: requests=%d/%d lanes=%d/%d bytes=%d/%d incoming_bytes=%d",
+			errRealtimeStreamFull, g.streamCount, clientRealtimeStreamRequests,
+			len(g.streams), clientRealtimeStreamLanes, g.streamBytes, clientRealtimeStreamBytes, size)
+		g.streamMu.Unlock()
+		// A zero-ID frame has no pending RPC that could recover an admission
+		// error. Close explicitly instead of silently dropping its payload.
+		g.fail(err)
+		return err
+	}
 	g.streams[key] = append(queue, realtimeStreamWork{request: req, bytes: size})
 	g.streamCount++
 	g.streamBytes += size

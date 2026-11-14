@@ -1,8 +1,8 @@
 {
-  "schema": 2,
+  "schema": 3,
   "model": "RealtimeDispatch",
   "defaults": {
-    "capacity": 1, "stream_limit": 2, "stream_bytes": 4,
+    "capacity": 1, "stream_limit": 2, "stream_bytes": 4, "lane_limit": 4,
     "response_limit": 2, "response_bytes": 4, "input": "IsolationInput",
     "remote_responds": false, "writer_responds": true, "slow_route": false,
     "allow_cancel": false, "deadlines": true, "serial_client": false,
@@ -10,7 +10,7 @@
     "break_fifo": false, "skip_barrier": false
   },
   "invariants": [
-    "TypeOK", "BoundedWork", "BoundedStreams", "BoundedResponses", "WriterOwnership",
+    "TypeOK", "BoundedWork", "BoundedStreams", "BoundedLanes", "BoundedResponses", "WriterOwnership",
     "ResponseOwnership", "ReaderOwnership", "ResponseCorrelation", "AtMostOnceReply",
     "RejectionSafety", "StreamFIFO", "StreamPrefix", "StateBarrier", "ClosedHasNoWork", "NoBlockingAdmission"
   ],
@@ -70,6 +70,18 @@
     {"name":"mutation-background-barrier", "parameters":{"input":"StateInput","skip_barrier":true}, "properties":[], "expect":{"kind":"invariant","name":"StateBarrier"}},
     {"name":"mutation-stream-barrier", "parameters":{"input":"StreamBarrierInput","slow_route":true,"skip_barrier":true}, "properties":[], "expect":{"kind":"invariant","name":"StateBarrier"}},
     {"name":"mutation-response-barrier", "parameters":{"input":"ResponseBarrierInput","skip_barrier":true}, "properties":[], "expect":{"kind":"invariant","name":"StateBarrier"}},
-    {"name":"mutation-blocking-admission", "parameters":{"input":"CapacityInput","reject_full":false}, "properties":[], "expect":{"kind":"invariant","name":"NoBlockingAdmission"}}
+    {"name":"mutation-blocking-admission", "parameters":{"input":"CapacityInput","reject_full":false}, "properties":[], "expect":{"kind":"invariant","name":"NoBlockingAdmission"}},
+    {"name":"current-lane-shared-epochs", "parameters":{"input":"LaneBurstInput","stream_limit":4,"lane_limit":1,"slow_route":true}, "extra_invariants":["SessionOpen"], "properties":["HealthyIO"], "expect":{"kind":"pass"}},
+    {"name":"witness-lane-shared-epochs", "parameters":{"input":"LaneBurstInput","stream_limit":4,"lane_limit":1,"slow_route":true}, "extra_invariants":["NoSharedLaneWitness"], "properties":[], "expect":{"kind":"invariant","name":"NoSharedLaneWitness"}},
+    {"name":"current-lane-overflow-1", "parameters":{"input":"LaneOverflowInput","stream_limit":4,"stream_bytes":8,"lane_limit":1,"slow_route":true}, "properties":["EventuallyClosed","ClosingDrains"], "expect":{"kind":"pass"}},
+    {"name":"witness-lane-overflow-1", "parameters":{"input":"LaneOverflowInput","stream_limit":4,"stream_bytes":8,"lane_limit":1,"slow_route":true}, "extra_invariants":["NoLaneOverflowWitness"], "properties":[], "expect":{"kind":"invariant","name":"NoLaneOverflowWitness"}},
+    {"name":"current-lane-overflow-2", "parameters":{"input":"KeyInput","stream_limit":4,"stream_bytes":8,"lane_limit":2,"slow_route":true,"writer_responds":false,"deadlines":false}, "properties":["EventuallyClosed","ClosingDrains"], "expect":{"kind":"pass"}},
+    {"name":"witness-lane-closed", "parameters":{"input":"KeyInput","stream_limit":4,"stream_bytes":8,"lane_limit":2,"slow_route":true,"writer_responds":false,"deadlines":false}, "extra_invariants":["NoLaneClosedWitness"], "properties":[], "expect":{"kind":"invariant","name":"NoLaneClosedWitness"}},
+    {"name":"current-lane-active-write", "parameters":{"input":"LaneActiveInput","stream_limit":4,"stream_bytes":8,"lane_limit":2,"writer_responds":false,"deadlines":false}, "properties":["EventuallyClosed","ClosingDrains"], "expect":{"kind":"pass"}},
+    {"name":"witness-lane-active-write", "parameters":{"input":"LaneActiveInput","stream_limit":4,"stream_bytes":8,"lane_limit":2,"writer_responds":false,"deadlines":false}, "extra_invariants":["NoActiveLaneWitness"], "properties":[], "expect":{"kind":"invariant","name":"NoActiveLaneWitness"}},
+    {"name":"current-lane-reuse", "parameters":{"input":"LaneReuseInput","stream_limit":4,"stream_bytes":8,"lane_limit":1}, "extra_invariants":["SessionOpen"], "properties":["AllRequestsSuccessful"], "expect":{"kind":"pass"}},
+    {"name":"witness-lane-reuse", "parameters":{"input":"LaneReuseInput","stream_limit":4,"stream_bytes":8,"lane_limit":1}, "extra_invariants":["NoLaneReuseWitness"], "properties":[], "expect":{"kind":"invariant","name":"NoLaneReuseWitness"}},
+    {"name":"current-lane-capacity-4", "parameters":{"input":"LaneFourInput","stream_limit":4,"stream_bytes":8,"lane_limit":4}, "extra_invariants":["SessionOpen"], "properties":["IOEventuallyReplies"], "expect":{"kind":"pass"}},
+    {"name":"witness-lane-capacity-4", "parameters":{"input":"LaneFourInput","stream_limit":4,"stream_bytes":8,"lane_limit":4}, "extra_invariants":["NoFourLanesWitness"], "properties":[], "expect":{"kind":"invariant","name":"NoFourLanesWitness"}}
   ]
 }

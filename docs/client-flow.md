@@ -300,7 +300,7 @@ ServerEnvelope {
 
 定向会话校验优先只向 `target_session.serving_node_id` 查询该 recipient 的实时会话，并匹配完整 `session_ref`，不再遍历同一用户的其他 presence 节点或执行全网 fallback。不属于已知集群的节点视为目标不存在；已知节点查询失败仍返回原错误。未实现节点定向查询接口的 provider 继续使用原查询路径。公开的 `resolve_user_sessions` RPC 和非定向投递仍保持全节点发现语义。
 
-这些请求以及不同 stream 的执行、投递和响应可能重排，客户端必须按 `request_id` 关联响应。专用 Stream 以目标用户、完整目标 session 和 stream ID 作为队列身份，同一身份的 Open/Data/Ack/Resume/Close 按入站顺序处理，epoch 不拆分队列；不同身份可并行，Ping 不等待路由 worker。同一连接的 Stream 活动与排队帧合计最多 64 项、8MiB（按请求的 Protobuf 编码大小计，含正在路由和等待响应的帧）。超限关闭连接，不能静默丢弃 `request_id=0` 的帧。逐帧鉴权、目标 session、epoch、offset 和错误映射不变。`Pong` 仅表示心跳请求得到处理，不表示先前查询或发送已排空。
+这些请求以及不同 stream 的执行、投递和响应可能重排，客户端必须按 `request_id` 关联响应。专用 Stream 以目标用户、完整目标 session 和 stream ID 作为队列身份，同一身份的 Open/Data/Ack/Resume/Close 按入站顺序处理，epoch 不拆分队列；不同身份可并行，Ping 不等待路由 worker。同一连接最多 64 个活动 lane，Stream 活动与排队帧合计最多 8192 项、8MiB（按请求的 Protobuf 编码大小计，含正在路由和等待响应的帧）。数量预算容纳 TUN 的 4096 个 MTU 1400 小包突发，lane 上限单独约束并行 worker；8MiB 不包含 Go 对象和队列开销，不是进程内存上限。任一预算超限均关闭连接，不能静默丢弃 `request_id=0` 的帧。逐帧鉴权、目标 session、epoch、offset 和错误映射不变。`Pong` 仅表示心跳请求得到处理，不表示先前查询或发送已排空。
 
 其他请求（包括持久消息的 `AckMessage`、重复 Login、未定向发送和状态变更 RPC）仍等待此前的后台请求、Stream 工作和 reader 响应全部完成，再检查取消并按原串行路径处理。首帧登录、普通 `/ws/client`（包括 `transient_only=true`）、持久消息、HTTP 和 ZeroMQ 不启用这项实时调度。
 

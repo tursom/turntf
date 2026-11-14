@@ -1,7 +1,7 @@
 ------------------------- MODULE RealtimeDispatch -------------------------
 EXTENDS Naturals, Sequences, FiniteSets
 
-CONSTANTS Capacity, StreamLimit, StreamBytes, ResponseLimit, ResponseBytes,
+CONSTANTS Capacity, StreamLimit, LaneLimit, StreamBytes, ResponseLimit, ResponseBytes,
           Input, RemoteResponds, WriterResponds, SlowRoute, AllowCancel,
           Deadlines, SerialClient, RejectFull, CorruptReplies, SplitEpochKey,
           BreakFIFO, SkipBarrier
@@ -31,6 +31,12 @@ KeyInput == <<A, A2, F("stream", "v", "s", "A", 1, 1),
              F("stream", "u", "t", "A", 1, 1), P>>
 StreamOverflowInput == <<A, A2, A>>
 StreamByteInput == <<F("stream", "u", "s", "A", 1, 2), A2>>
+LaneOverflowInput == <<A, A2, B>>
+LaneActiveInput == <<A, B, F("stream", "v", "s", "A", 1, 1)>>
+LaneBurstInput == <<A, A2, A, P>>
+LaneReuseInput == <<A, S, B, S, A2, P>>
+LaneFourInput == <<A, B, F("stream", "v", "s", "A", 1, 1),
+                  F("stream", "u", "t", "A", 1, 1), P>>
 ResponseOverflowInput == <<P, P, P>>
 ResponseByteInput == <<F("ping", "u", "s", "A", 1, 2), P>>
 EmptyInput == <<>>
@@ -49,6 +55,7 @@ Terminal == {"done", "rejected", "aborted"}
 Phases == {"fresh", "held", "responseQueued"} \cup Terminal \cup StreamPhases \cup WorkPhases
 
 ASSUME /\ Capacity \in {1, 2} /\ StreamLimit \in {1, 2, 4}
+       /\ LaneLimit \in {1, 2, 4}
        /\ StreamBytes \in {1, 2, 4, 8} /\ ResponseLimit \in {1, 2, 4}
        /\ ResponseBytes \in {1, 2, 4, 8}
        /\ Input \in Seq([kind : Kinds, user : {"u", "v"}, session : {"s", "t"},
@@ -65,14 +72,19 @@ vars == <<connection, transportClosed, pc, next, held, phase, writer,
           replies, routed, observations, stop>>
 Work == {i \in started : phase[i] \in WorkPhases}
 Streams == {i \in Ids : Kind(i) = "stream" /\ phase[i] \in StreamPhases}
+\* queued/route/wait/write 全部保留 lane；终态自动释放最后一帧的 key。
+\* 与 FIFO 共用 ScheduleKey，正常配置不按 epoch 拆分。
+Lanes == {ScheduleKey(i) : i \in Streams}
 Responses == {i \in Ids : phase[i] = "responseQueued" \/ i = responseActive}
 Outstanding == Work \cup Streams \cup Responses
 \* 权重只有 1/2，避免无界整数/递归求和；含活动项，非仅队列长度。
 Bytes(xs) == Cardinality(xs) + Cardinality({i \in xs : Weight(i) = 2})
 ResponseFits == Cardinality(Responses) < ResponseLimit /\
                 Bytes(Responses) + Weight(held) <= ResponseBytes
-StreamFits == Cardinality(Streams) < StreamLimit /\
-              Bytes(Streams) + Weight(held) <= StreamBytes
+StreamFramesFit == Cardinality(Streams) < StreamLimit
+StreamBytesFit == Bytes(Streams) + Weight(held) <= StreamBytes
+LaneFits == Cardinality(Lanes \cup {ScheduleKey(held)}) <= LaneLimit
+StreamFits == StreamFramesFit /\ StreamBytesFit /\ LaneFits
 SameKeyBefore(i) == {j \in Streams : j < i /\ ScheduleKey(j) = ScheduleKey(i)}
 CanStart(i) == BreakFIFO \/ SameKeyBefore(i) = {}
 Success == {replies[n].request : n \in {m \in 1..Len(replies) : replies[m].status = "ok"}}
@@ -84,7 +96,7 @@ Init == /\ connection = "open" /\ transportClosed = FALSE
         /\ started = {} /\ rejected = {} /\ replies = <<>> /\ routed = <<>>
         /\ observations = <<>>
         /\ stop = [cause |-> "none", reader |-> "none", writer |-> 0,
-                    work |-> 0, streams |-> 0, responses |-> 0, expired |-> 0]
+                    work |-> 0, streams |-> 0, lanes |-> 0, responses |-> 0, expired |-> 0]
 
 Read == /\ connection = "open" /\ pc = "read" /\ next \in Ids
         /\ held' = next /\ next' = next + 1 /\ pc' = "decoded"
@@ -182,7 +194,7 @@ SerialAdvance == /\ connection = "open" /\ pc = "serial" /\ phase[held] \in Term
                                 replies, routed, observations, stop>>
 
 Snapshot(cause, expired) == [cause |-> cause, reader |-> pc, writer |-> writer,
-    work |-> Cardinality(Work), streams |-> Cardinality(Streams),
+    work |-> Cardinality(Work), streams |-> Cardinality(Streams), lanes |-> Cardinality(Lanes),
     responses |-> Cardinality(Responses), expired |-> expired]
 Cancel == /\ connection = "open" /\ AllowCancel
           /\ connection' = "closing" /\ stop' = Snapshot("cancel", 0)
@@ -202,7 +214,8 @@ Overflow == /\ connection = "open" /\ pc = "decoded"
             /\ ((Kind(held) = "stream" /\ ~StreamFits) \/ (NeedsResponse /\ ~ResponseFits))
             /\ connection' = "closing"
             /\ stop' = Snapshot(IF Kind(held) = "stream"
-                 THEN IF Cardinality(Streams) = StreamLimit THEN "streamItems" ELSE "streamBytes"
+                 THEN IF ~StreamFramesFit THEN "streamItems"
+                      ELSE IF ~StreamBytesFit THEN "streamBytes" ELSE "streamLanes"
                  ELSE IF Cardinality(Responses) = ResponseLimit THEN "responseItems" ELSE "responseBytes", 0)
             /\ UNCHANGED <<transportClosed, pc, next, held, phase, writer, responseQueue,
                            responseActive, armed, started, rejected, replies, routed, observations>>
@@ -257,12 +270,14 @@ TypeOK == /\ connection \in {"open", "closing", "closed"} /\ transportClosed \in
           /\ routed \in Seq(Ids)
           /\ observations \in Seq([request : Ids, prior : 0..(Capacity + StreamLimit + ResponseLimit)])
           /\ stop \in [cause : {"none", "cancel", "writeFailure", "deadline", "streamItems",
-                                "streamBytes", "responseItems", "responseBytes"},
+                                "streamBytes", "streamLanes", "responseItems", "responseBytes"},
                        reader : {"none", "read", "decoded", "admit", "drain", "serial", "stopped"},
                        writer : Ids \cup {0}, work : 0..Capacity, streams : 0..StreamLimit,
+                       lanes : 0..LaneLimit,
                        responses : 0..ResponseLimit, expired : Ids \cup {0}]
 BoundedWork == Cardinality(Work) <= Capacity
 BoundedStreams == Cardinality(Streams) <= StreamLimit /\ Bytes(Streams) <= StreamBytes
+BoundedLanes == Cardinality(Lanes) <= LaneLimit
 BoundedResponses == Cardinality(Responses) <= ResponseLimit /\ Bytes(Responses) <= ResponseBytes
 WriterOwnership == /\ writer # 0 => (phase[writer] = "write" /\ writer \in armed)
                    /\ \A i \in Ids : (phase[i] = "write" => writer = i)
@@ -319,6 +334,23 @@ NoLockDeadlineWitness == ~(connection = "closed" /\ stop.cause = "deadline" /\
     stop.writer # 0 /\ stop.expired # stop.writer)
 NoStreamItemsWitness == ~(connection = "closed" /\ stop.cause = "streamItems")
 NoStreamBytesWitness == ~(connection = "closed" /\ stop.cause = "streamBytes")
+\* 仅 lane 超限：新 key 被拒绝时帧数、编码权重均仍有余量。
+NoLaneOverflowWitness == ~(connection = "closing" /\ stop.cause = "streamLanes" /\
+    pc = "decoded" /\ StreamFramesFit /\ StreamBytesFit /\ ~LaneFits /\
+    ScheduleKey(held) \notin Lanes /\ Cardinality(Lanes) = LaneLimit)
+NoLaneClosedWitness == ~(connection = "closed" /\ stop.cause = "streamLanes" /\
+    stop.lanes = LaneLimit /\ stop.streams < StreamLimit)
+NoActiveLaneWitness == ~(connection = "closing" /\ stop.cause = "streamLanes" /\
+    pc = "decoded" /\ StreamFramesFit /\ StreamBytesFit /\ Cardinality(Lanes) = LaneLimit /\
+    writer # 0 /\ stop.writer # 0 /\ \A i \in Streams :
+        phase[i] \in {"wait", "write"} /\ i \in {routed[n] : n \in 1..Len(routed)})
+NoSharedLaneWitness == ~(connection = "open" /\ Cardinality(Lanes) = 1 /\
+    Cardinality(Streams) = 3 /\ phase[1] = "route" /\ phase[2] = "queued" /\
+    phase[3] = "queued" /\ HealthyIds \subseteq Success)
+NoLaneReuseWitness == ~(connection = "open" /\ IOIds \subseteq Success /\
+    routed = <<1, 3, 5>> /\ Len(observations) = 2 /\ Lanes = {})
+NoFourLanesWitness == ~(connection = "open" /\ Cardinality(Lanes) = 4 /\
+    Cardinality(Streams) = 4)
 NoResponseItemsWitness == ~(connection = "closed" /\ stop.cause = "responseItems")
 NoResponseBytesWitness == ~(connection = "closed" /\ stop.cause = "responseBytes")
 NoActiveResponseWitness == ~(connection = "closed" /\ stop.cause = "responseItems" /\

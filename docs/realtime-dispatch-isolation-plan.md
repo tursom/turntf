@@ -20,7 +20,7 @@
 
 后台查询和定向 transient Relay 合计最多 64 项。满额时不运行 handler，不缓存鉴权或路由结果，而是排入带原 request ID 的 `service_unavailable`。若错误响应也无法接纳，则明确关闭过载连接。
 
-专用 Stream 的活动与排队帧合计最多 64 项、8MiB。字节数按 `proto.Size(StreamFrameRequest)` 计量，并包含正在路由或等待响应写入的帧；不是进程 RSS 上限。lane 的 key 包含目标用户、目标 session 和 stream ID，发送连接的 source session 是固定身份。epoch 不划分 lane，完整身份相同的跨 epoch 帧不能互相绕行。lane 清空后在提交锁内退役，后续同 key worker 只有在旧 handler 全部结束后才能运行。
+专用 Stream 的活动与排队帧合计最多 8192 项、8MiB，活动 lane 最多 64 个。初版的 64 帧限制在生产 TUN 小包突发中触发断连，因此将缓冲数量与并行度分开约束；4096 个 MTU 1400 包可在路由短暂阻塞时被接纳。字节数按 `proto.Size(StreamFrameRequest)` 计量，并包含正在路由或等待响应写入的帧；不是进程 RSS 上限。lane 的 key 包含目标用户、目标 session 和 stream ID，发送连接的 source session 是固定身份。epoch 不划分 lane，完整身份相同的跨 epoch 帧不能互相绕行。lane 清空后在提交锁内退役，后续同 key worker 只有在旧 handler 全部结束后才能运行。
 
 超过帧数或字节预算会失败并关闭会话，不静默丢弃 `request_id=0` 的帧，也不伪造接纳成功。每帧沿用原鉴权、session/epoch/offset 校验和错误映射。
 

@@ -341,9 +341,37 @@ func (s *clientWSSession) writeEnvelope(envelope *internalproto.ServerEnvelope) 
 
 // writeEncodedEnvelope 将只读的 protobuf 编码通过底层连接串行发送。
 func (s *clientWSSession) writeEncodedEnvelope(data []byte) error {
+	if s.realtimeOnly {
+		ctx, cancel := context.WithTimeout(context.Background(), clientWSWriteWait)
+		defer cancel()
+		return s.writeRealtimeEncodedEnvelope(ctx, data)
+	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	return s.conn.Send(context.Background(), data)
+}
+
+// A realtime write's budget includes waiting for the shared session lock.
+// Closing this receiving transport interrupts the current socket writer so
+// waiters can acquire the lock and leave; no goroutine is abandoned on timeout.
+// The callback is joined before returning, just like the group's Close hook.
+func (s *clientWSSession) writeRealtimeEncodedEnvelope(ctx context.Context, data []byte) error {
+	closed := make(chan struct{})
+	stop := context.AfterFunc(ctx, func() {
+		defer close(closed)
+		_ = s.conn.Close()
+	})
+	defer func() {
+		if !stop() {
+			<-closed
+		}
+	}()
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return s.conn.Send(ctx, data)
 }
 
 // writeTerminalEnvelope 在紧接着关闭连接的场景中等待传输层接收消息。

@@ -47,15 +47,22 @@ func TestRealtimeSlowRequestsDoNotBlockStreamAndPing(t *testing.T) {
 			ack.StreamId = []byte("fedcba9876543210")
 			queueRealtimeEnvelope(t, conn, &internalproto.ClientEnvelope{Body: &internalproto.ClientEnvelope_StreamFrame{StreamFrame: ack}})
 
-			for _, id := range []uint64{1001, 1002, 1003} {
+			seen := make(map[uint64]bool)
+			for range 3 {
 				response := nextRealtimeResponse(t, conn)
-				if id == 1002 {
-					if response.GetPong().GetRequestId() != id {
-						t.Fatalf("heartbeat blocked or response reordered: %v", response)
+				id := response.GetStreamFrameResult().GetRequestId()
+				if response.GetPong() != nil {
+					id = response.GetPong().GetRequestId()
+					if id != 1002 {
+						t.Fatalf("wrong heartbeat correlation: %v", response)
 					}
-				} else if response.GetStreamFrameResult().GetRequestId() != id {
-					t.Fatalf("stream blocked or response reordered: %v", response)
+				} else if id != 1001 && id != 1003 {
+					t.Fatalf("wrong stream correlation: %v", response)
 				}
+				if seen[id] {
+					t.Fatalf("duplicate response: %v", response)
+				}
+				seen[id] = true
 			}
 			// Cancellation must still stop the unfinished requests and join the
 			// group even though stream/Ping processing bypassed its barrier.
@@ -163,15 +170,22 @@ func TestRealtimeWebSocketSlowLookupAllowsStreamAndPing(t *testing.T) {
 		writeClientEnvelope(t, conn, &internalproto.ClientEnvelope{Body: &internalproto.ClientEnvelope_StreamFrame{StreamFrame: frame}})
 	}
 	writeClientEnvelope(t, conn, &internalproto.ClientEnvelope{Body: &internalproto.ClientEnvelope_Ping{Ping: &internalproto.Ping{RequestId: 4}}})
-	for _, id := range []uint64{2, 3, 4} {
+	seen := make(map[uint64]bool)
+	for range 3 {
 		response := readServerEnvelope(t, conn)
-		if id == 4 {
-			if response.GetPong().GetRequestId() != id {
+		id := response.GetStreamFrameResult().GetRequestId()
+		if response.GetPong() != nil {
+			id = response.GetPong().GetRequestId()
+			if id != 4 {
 				t.Fatalf("wrong heartbeat response: %v", response)
 			}
-		} else if response.GetStreamFrameResult().GetRequestId() != id {
+		} else if id != 2 && id != 3 {
 			t.Fatalf("wrong frame result: %v", response)
 		}
+		if seen[id] || (id == 3 && !seen[2]) {
+			t.Fatalf("duplicate or reordered same-stream response: %v", response)
+		}
+		seen[id] = true
 	}
 	for index, kind := range []uint32{4, 5} {
 		select {

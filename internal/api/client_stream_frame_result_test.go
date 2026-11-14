@@ -119,7 +119,7 @@ func (r *blockingStreamFrameRouter) RouteStreamFrame(ctx context.Context, frame 
 	}
 }
 
-func TestRealtimeStreamFramesPreserveConnectionOrder(t *testing.T) {
+func TestRealtimeStreamFramesPreserveStreamOrder(t *testing.T) {
 	const requestCount = 2
 	s, conn, _ := realtimeFixture(t, true)
 	router := &blockingStreamFrameRouter{

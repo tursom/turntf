@@ -1,0 +1,189 @@
+{
+  "schema": 1,
+  "model": "LegacyDispatch",
+  "defaults": {
+    "capacity": 1,
+    "input": "IsolationInput",
+    "bypass_barrier": true,
+    "remote_responds": false,
+    "writer_responds": true,
+    "router_responds": true,
+    "allow_cancel": false,
+    "corrupt_replies": false
+  },
+  "invariants": [
+    "TypeOK", "BoundedWork", "WriterOwnership", "ReaderOwnership", "ResponseCorrelation",
+    "AtMostOnceReply", "ReaderRouteOrder", "StateBarrier", "ClosedHasNoWork",
+    "NoQueryDrainForIO"
+  ],
+  "cases": [
+    {
+      "name": "current-isolation-1",
+      "properties": ["IOEventuallyReplies"],
+      "expect": {"kind": "pass"}
+    },
+    {
+      "name": "current-isolation-2",
+      "parameters": {"capacity": 2},
+      "properties": ["IOEventuallyReplies"],
+      "expect": {"kind": "pass"}
+    },
+    {
+      "name": "current-relay-isolation",
+      "parameters": {"input": "RelayInput"},
+      "properties": ["IOEventuallyReplies"],
+      "expect": {"kind": "pass"}
+    },
+    {
+      "name": "legacy-query-barrier",
+      "parameters": {"bypass_barrier": false},
+      "properties": [],
+      "expect": {"kind": "invariant", "name": "NoQueryDrainForIO"}
+    },
+    {
+      "name": "legacy-query-progress",
+      "parameters": {"bypass_barrier": false},
+      "omit_invariants": ["NoQueryDrainForIO"],
+      "properties": ["IOEventuallyReplies"],
+      "expect": {"kind": "temporal", "name": "IOEventuallyReplies"}
+    },
+    {
+      "name": "legacy-eventual-query-barrier",
+      "parameters": {"bypass_barrier": false, "remote_responds": true},
+      "properties": [],
+      "expect": {"kind": "invariant", "name": "NoQueryDrainForIO"}
+    },
+    {
+      "name": "current-capacity-1",
+      "parameters": {"input": "CapacityInput"},
+      "properties": ["IOEventuallyReplies"],
+      "expect": {"kind": "temporal", "name": "IOEventuallyReplies"}
+    },
+    {
+      "name": "current-capacity-2",
+      "parameters": {"capacity": 2, "input": "CapacityInput"},
+      "properties": ["IOEventuallyReplies"],
+      "expect": {"kind": "temporal", "name": "IOEventuallyReplies"}
+    },
+    {
+      "name": "current-slow-write",
+      "parameters": {"remote_responds": true, "writer_responds": false},
+      "properties": ["IOEventuallyReplies"],
+      "expect": {"kind": "temporal", "name": "IOEventuallyReplies"}
+    },
+    {
+      "name": "current-slow-route",
+      "parameters": {"router_responds": false},
+      "properties": ["IOEventuallyReplies"],
+      "expect": {"kind": "temporal", "name": "IOEventuallyReplies"}
+    },
+    {
+      "name": "current-state-barrier",
+      "parameters": {"input": "StateInput"},
+      "properties": ["IOEventuallyReplies"],
+      "expect": {"kind": "temporal", "name": "IOEventuallyReplies"}
+    },
+    {
+      "name": "current-normal-1",
+      "parameters": {"input": "MixedInput", "remote_responds": true},
+      "properties": ["AllRequestsComplete"],
+      "expect": {"kind": "pass"}
+    },
+    {
+      "name": "current-normal-2",
+      "parameters": {"capacity": 2, "input": "MixedInput", "remote_responds": true},
+      "properties": ["AllRequestsComplete"],
+      "expect": {"kind": "pass"}
+    },
+    {
+      "name": "current-multi-frame-order",
+      "parameters": {"input": "MultiFrameInput"},
+      "properties": ["IOEventuallyReplies"],
+      "expect": {"kind": "pass"}
+    },
+    {
+      "name": "current-cancel-2",
+      "parameters": {"capacity": 2, "input": "MixedInput", "allow_cancel": true},
+      "properties": ["ClosingDrains"],
+      "expect": {"kind": "pass"}
+    },
+    {
+      "name": "current-cancel-capacity-1",
+      "parameters": {"input": "CapacityInput", "allow_cancel": true},
+      "properties": ["ClosingDrains"],
+      "expect": {"kind": "pass"}
+    },
+    {
+      "name": "current-cancel-capacity-2",
+      "parameters": {"capacity": 2, "input": "CapacityInput", "allow_cancel": true},
+      "properties": ["ClosingDrains"],
+      "expect": {"kind": "pass"}
+    },
+    {
+      "name": "current-cancel-blocked-write",
+      "parameters": {"capacity": 2, "input": "MixedInput", "remote_responds": true, "writer_responds": false, "allow_cancel": true},
+      "properties": ["ClosingDrains"],
+      "expect": {"kind": "pass"}
+    },
+    {
+      "name": "witness-isolated-progress",
+      "extra_invariants": ["NoIsolationWitness"],
+      "properties": [],
+      "expect": {"kind": "invariant", "name": "NoIsolationWitness"}
+    },
+    {
+      "name": "witness-cancel-pending",
+      "parameters": {"capacity": 2, "input": "MixedInput", "allow_cancel": true},
+      "extra_invariants": ["NoCancelWitness"],
+      "properties": [],
+      "expect": {"kind": "invariant", "name": "NoCancelWitness"}
+    },
+    {
+      "name": "witness-cancel-writer",
+      "parameters": {"capacity": 2, "input": "MixedInput", "remote_responds": true, "writer_responds": false, "allow_cancel": true},
+      "extra_invariants": ["NoCancelWriterWitness"],
+      "properties": [],
+      "expect": {"kind": "invariant", "name": "NoCancelWriterWitness"}
+    },
+    {
+      "name": "witness-cancel-admission",
+      "parameters": {"input": "CapacityInput", "allow_cancel": true},
+      "extra_invariants": ["NoCancelAdmissionWitness"],
+      "properties": [],
+      "expect": {"kind": "invariant", "name": "NoCancelAdmissionWitness"}
+    },
+    {
+      "name": "witness-cancel-route",
+      "parameters": {"router_responds": false, "allow_cancel": true},
+      "extra_invariants": ["NoCancelRouteWitness"],
+      "properties": [],
+      "expect": {"kind": "invariant", "name": "NoCancelRouteWitness"}
+    },
+    {
+      "name": "witness-write-failure",
+      "parameters": {"remote_responds": true, "allow_cancel": true},
+      "extra_invariants": ["NoWriteFailureWitness"],
+      "properties": [],
+      "expect": {"kind": "invariant", "name": "NoWriteFailureWitness"}
+    },
+    {
+      "name": "current-idle-cancel",
+      "parameters": {"input": "EmptyInput", "allow_cancel": true},
+      "properties": ["ClosingDrains"],
+      "expect": {"kind": "pass"}
+    },
+    {
+      "name": "witness-idle-cancel",
+      "parameters": {"input": "EmptyInput", "allow_cancel": true},
+      "extra_invariants": ["NoIdleCancelWitness"],
+      "properties": [],
+      "expect": {"kind": "invariant", "name": "NoIdleCancelWitness"}
+    },
+    {
+      "name": "mutation-response-correlation",
+      "parameters": {"corrupt_replies": true},
+      "properties": [],
+      "expect": {"kind": "invariant", "name": "ResponseCorrelation"}
+    }
+  ]
+}

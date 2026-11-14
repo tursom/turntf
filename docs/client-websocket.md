@@ -550,7 +550,7 @@ ServerEnvelope {
 - `forbidden`：当前用户没有执行该操作的权限，或被黑名单拦截
 - `not_found`：目标用户、目标资源或目标会话不存在
 - `conflict`：资源状态冲突
-- `service_unavailable`：当前节点暂时不可写或相关集群查询能力暂不可用
+- `service_unavailable`：当前节点暂时不可写、相关集群查询能力暂不可用，或实时连接的后台接纳名额已满
 - `internal_error`：服务端内部错误
 
 `request_id` 规则：

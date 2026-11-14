@@ -294,19 +294,23 @@ ServerEnvelope {
 
 ### 定向瞬时发送的并发边界
 
-登录完成后，`/ws/realtime` 中同时指定 `delivery_kind = TRANSIENT` 和 `target_session` 的 `send_message`，以及只读 `resolve_user_sessions` 共用有界并发处理组。会话解析不再作为不同 relay 之间的顺序屏障，每个请求仍执行原有鉴权、校验和实时查询，不缓存结果。每连接两类请求合计最多 64 个在途请求；满额时读取循环保留当前一个已解码请求并等待名额，不增加 `busy` 错误，也不建立无界队列。WebSocket 原有 1MiB 帧上限不变。
+登录完成后，`/ws/realtime` 中同时指定 `delivery_kind = TRANSIENT` 和 `target_session` 的 `send_message`，以及只读 `resolve_user_sessions` 共用有界并发处理组。每个已接纳请求仍执行原有鉴权、校验和实时查询，不缓存结果。每连接两类请求合计最多 64 个在途请求；满额时不等待名额、不执行当前 handler，而按原 `request_id` 返回现有 `service_unavailable`。该响应由有界 reader 响应 worker 发送，后续 Stream/Ping 可以继续被读取；若响应本身也无法接纳，则关闭连接。WebSocket 原有 1MiB 帧上限不变。
 
 每个请求仍独立执行权限、黑名单、目标用户、目标会话和路由验证，不复用 session 查询结果。这里的登录 principal（含角色）是登录时的快照，不是每包重新认证或重新加载发送者身份；黑名单/权限提前拒绝时不进入 resolver，经过这些检查的定向请求才各自查询 session。失效会话或不属于 recipient 的会话仍返回 `not_found`；远端查询失败和超时仍使用原错误映射和预算。无上游 deadline 时，3 秒是单个远端节点查询覆盖排队、路由发送和响应等待的默认总预算，不是所有候选节点与 fallback 合计的 lookup 总预算；有上游 deadline 时沿用该 deadline。`transient_accepted` 仍仅代表原有的接受语义，不代表对端已消费。
 
 定向会话校验优先只向 `target_session.serving_node_id` 查询该 recipient 的实时会话，并匹配完整 `session_ref`，不再遍历同一用户的其他 presence 节点或执行全网 fallback。不属于已知集群的节点视为目标不存在；已知节点查询失败仍返回原错误。未实现节点定向查询接口的 provider 继续使用原查询路径。公开的 `resolve_user_sessions` RPC 和非定向投递仍保持全节点发现语义。
 
-这个范围内的请求执行、投递和响应可能重排，客户端必须按 `request_id` 关联响应；需要有序字节流的上层协议必须自行携带序号并重组。`/ws/realtime` 上的专用 `StreamFrame` 和 `Ping` 不等待此前两类在途请求：已经建立的 stream 不应被其他 peer 的慢会话解析或 Relay 接受过程阻塞，心跳也不应因此阻挡其后的 Stream ACK。它们仍在同一读取循环中同步处理，Stream 帧之间保持原连接顺序，逐帧鉴权、目标 session、epoch、offset 和错误映射不变；`Pong` 仅表示心跳请求得到处理，不再表示先前查询或发送已排空。
+这些请求以及不同 stream 的执行、投递和响应可能重排，客户端必须按 `request_id` 关联响应。专用 Stream 以目标用户、完整目标 session 和 stream ID 作为队列身份，同一身份的 Open/Data/Ack/Resume/Close 按入站顺序处理，epoch 不拆分队列；不同身份可并行，Ping 不等待路由 worker。同一连接的 Stream 活动与排队帧合计最多 64 项、8MiB（按请求的 Protobuf 编码大小计，含正在路由和等待响应的帧）。超限关闭连接，不能静默丢弃 `request_id=0` 的帧。逐帧鉴权、目标 session、epoch、offset 和错误映射不变。`Pong` 仅表示心跳请求得到处理，不表示先前查询或发送已排空。
 
-其他请求（包括持久消息的 `AckMessage`、重复 Login、未定向发送和状态变更 RPC）仍等待此前两类在途请求完成，再按原串行路径处理。首帧登录、普通 `/ws/client`（包括 `transient_only=true`）、持久消息、HTTP 和 ZeroMQ 不启用这项屏障豁免。
+其他请求（包括持久消息的 `AckMessage`、重复 Login、未定向发送和状态变更 RPC）仍等待此前的后台请求、Stream 工作和 reader 响应全部完成，再检查取消并按原串行路径处理。首帧登录、普通 `/ws/client`（包括 `transient_only=true`）、持久消息、HTTP 和 ZeroMQ 不启用这项实时调度。
 
-读取到断线、会话 context 取消或响应写失败时，会取消在途请求、关闭发送连接的传输，并等待关闭回调和处理任务退出。此取消不保证另一个本地 receiver 正在进行的写入立即停止：本地投递使用接收端原有写路径，`writeEncodedEnvelope` 向 transport 传入 `context.Background()`，不继承发送方取消信号。接收端的 session `writeMu`、transport 写锁以及原 WS 单次写 deadline（此路径为 10 秒）仍约束退出；锁等待本身不因发送方 context 取消而中断，不能把一次 write timeout 当成全部任务 join 的总预算。此处只保证并发任务最多 64 个，不新增全局 write context 或可取消写锁。
+实时并发组在 `readLoop` 入口即创建并安装取消关闭回调。即使连接尚未提交任何查询/Relay，或者只处理过 Ping，context 取消也会关闭 transport，中断已经进入的空闲读取；不依赖下一条请求触发并发组初始化。
 
-满额背压或等待其他 RPC 的顺序屏障期间，网络断开可能到下一次读写才能被观察；原服务查询超时仍生效，不承诺在尚未观察到断线时立即取消。专用 Stream/Ping 豁免的是排空等待，不绕过已在等待的接纳名额：若读取循环正等待第 65 个查询或定向发送的名额，尚未读取的 Stream/Ping 仍会背压；慢 Stream 路由、共享响应写锁和接收端写阻塞也仍可能拖慢同连接。并发上限按连接计算，不是整个节点的全局限流。
+reader 的 Pong、满额拒绝及无效帧错误由单个响应 worker 消费，活动与排队总计最多 128 项、1MiB；接纳只表示已排队，异步发送失败会关闭会话。后台及 stream handler 在各自 worker 中等待实际响应写入，所有物理发送仍由同一 session 写锁串行化。实时 session 的每次写入在尝试获得锁前即开始 10 秒预算，覆盖锁等待与 `Send`；过期关闭该接收连接的 transport，等待者获得锁后观察取消，函数返回前等待已启动的关闭回调。普通 session 的原写路径保持。
+
+读取到断线、会话 context 取消、资源超限或响应写失败时，会取消在途工作、关闭原连接，并等待关闭回调及所有 worker 退出，释放未执行队列的记账。该机制不保证另一个本地 receiver 的写入立即停止：本地投递不继承发送者的取消信号，接收端使用它自己的 session/transport 生命周期。实时接收端的写预算覆盖其锁等待，但普通接收端仍保留原路径；不能把一个写期限当作全部跨节点任务 join 的总预算。
+
+这些上限按连接计算，不是节点全局限流。全连接状态屏障仍会有意阻塞后续读取；单条慢 stream 及其排队帧仍占用预算，持续超量输入可能导致整个连接关闭。reader 不等待物理写入也不等于一个完全不可写的共享 socket 能继续交付 Pong：传输停滞时只能在写期限或资源超限后明确失败。断线观察、backend 对取消的响应、另一 receiver 及 mesh 的进展仍有各自边界，不能由一次健康请求推导所有流已排空或所有取消已完成。
 
 ZeroMQ 客户端连接流程：
 
@@ -642,7 +646,7 @@ ServerEnvelope {
 - `invalid_request`：目标缺失、body 为空、只填了半个 `UserRef`、非法枚举、在持久消息中带了 `delivery_mode`、在瞬时消息中带了 `sync_mode`、在持久消息中带了 `target_session` 等。
 - `forbidden`：当前用户没有权限。必要时刷新订阅/附件关系或联系管理员。
 - `not_found`：目标用户、channel、broadcast 地址或附件资源不存在。
-- `service_unavailable`：当前节点暂时不可写或不可达，例如某些集群状态未准备就绪。
+- `service_unavailable`：当前节点暂时不可写、不可达，或实时连接的后台接纳名额已满。
 - `internal_error`：服务端内部错误。可以保留连接并稍后重试；如果连接断开，则按断线重连流程处理。
 
 登录阶段的错误会导致服务端关闭连接。登录成功后的请求级错误通常不会关闭连接。

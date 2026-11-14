@@ -1,70 +1,61 @@
-# 慢会话查询阻塞实时 Stream 的复现与修复
+# 实时调度隔离、故障注入与边界
 
-## 复现范围
+## 目标
 
-router 故障曾同时出现会话查询响应超时、Stream ACK 停滞和 WebSocket 自动重连。本回归复现其中一个确定的服务端放大机制：先前的慢会话查询或定向 Relay 发送，会让同连接后续专用 StreamFrame 和 Ping 等待。
+router 故障曾同时出现会话查询超时、Stream ACK 停滞和 WebSocket 重连。受控 resolver 和真实本地 WebSocket 已复现一个确定的放大路径：先前慢查询/定向 Relay 的排空屏障阻止后续 Stream/Ping。该局部复现不证明它是线上唯一触发因素。
 
-这个局部复现不需要制造公网丢包、修改生产超时或重启节点，也不证明线上最初的超时一定来自该机制。外层网络退化、慢客户端写入和同步读回调仍可能是触发因素。
+首轮修复解除该排空依赖后，TLA 继续给出了满额接纳、同步路由和共享响应写入的阻塞反例。用户已明确选择同流有序、跨流并行及满额单请求拒绝，本次据此修复这些 reader 阻塞；同时保留资源预算、状态屏障和明确失败。
 
-## 可重复的故障注入
+## 行为
 
-`internal/api/client_realtime_stream_isolation_test.go` 使用通道控制 resolver 的进入和释放时机：
+- 后台查询/定向 transient Relay 合计 64 个名额，非阻塞接纳；满额请求不执行，按原 request ID 返回既有 `service_unavailable`。
+- 专用 Stream 以目标用户、完整目标 session、stream ID 为身份，同身份 FIFO，epoch 不分 lane；不同身份并行。活动与排队合计不超过 64 帧、8MiB Protobuf 请求编码大小，超限关闭会话，不能静默丢零 request ID 的帧。
+- reader 的 Pong、过载错误和无效帧错误由单个响应 worker 处理，活动与排队总计不超过 128 项、1MiB。reader 不等物理写入；排队成功不等于消息交付。
+- 所有实际写入仍由原 session 写锁串行化。实时写的锁等待和 Send 共用 10 秒期限，过期 Close 原 transport，函数返回前等待已启动的关闭回调。普通 session 保持原路径。
+- 状态请求、持久 AckMessage、重复 Login 等仍等待此前后台、stream 和 reader 响应完成；Pong 仍不是全连接排空屏障。
+- 实时 readLoop 入口安装取消关闭回调，覆盖尚无查询/Relay 的空闲连接；关闭时取消、清理未执行队列并等待 worker，保留首个失败。
 
-1. 在已登录的 `/ws/realtime` 连接发起 `ResolveUserSessions`，或发起会执行会话校验的定向 Relay 请求。
-2. 等待请求已进入 resolver，然后保持它不返回，模拟远端会话查询变慢。
-3. 在同一连接继续发送 Stream DATA、Ping、另一条 Stream 的 ACK。
-4. 要求在 resolver 释放前收到相应 Stream result 和 Pong；若它们必须等待先前查询，测试失败。
-5. 取消连接，确认尚未完成的查询能够停止并回收。另测释放后错误仍按原 `request_id` 对应，不被先完成的 Stream 结果覆盖。
+协议字段不变，逐帧鉴权、session/epoch/offset 验证和业务错误映射仍使用原 handler。响应与不同 stream 可以重排，调用方按 request ID 关联。
 
-同一回归还覆盖 64 个已接纳请求占满并发组的情形，并通过真实本地 WebSocket 重复慢查询→Stream DATA/ACK→Ping 的过程，校验帧的顺序及响应。真实 WebSocket 测试不依赖生产账号，也不修改网络规则。
+## Go 故障注入
 
-在服务端模块目录执行：
+| 测试 | 关键断言 |
+| --- | --- |
+| `TestRealtimeSlowRequestsDoNotBlockStreamAndPing` | 慢查询、Relay 及已接纳满额时，Stream/Ping 仍进展 |
+| `TestRealtimePipelineBackgroundSaturation` | 混合占满 64 项后查询和 Relay 均明确拒绝，handler 不多执行，后续 IO 继续 |
+| `TestRealtimePipelineLaneFIFOAcrossEpochs` | A1 卡住时 A2 不越序，B 和 Ping 完成；包括 stream、目标 session、目标用户的身份区分 |
+| `TestRealtimePipelineBlockedBackgroundWriteStillReads` | 响应 Send 卡住时 reader 仍收到 Ping 后的标记，不把不可写网络假定为能交付 Pong |
+| `TestRealtimePipelineStreamQuotaCloses` | 数量、编码字节及零 request ID 超限均关闭；活动项参与预算 |
+| `TestRealtimePipelineZeroIDFramesAreDelivered` | 无超限时零 ID 帧正常投递，不伪造响应 |
+| `TestRealtimePipelineReaderReplyQuotaCloses` | reader 响应队列数量/字节超限后关闭，清理预算并 join |
+| `TestRealtimePipelineStateBarriers` | 后台、stream 和 reader 响应未完成时，控制屏障不越过工作 |
+| `TestRealtimePipelineWebSocketSlowLane` | 真实本地 WebSocket 中慢 A、健康 B 与 Pong 并存，同流结果保持顺序 |
+| `TestRealtimeWrite*` | 实际传入有限 deadline；忽略 ctx 的 Send 被 Close 释放；锁等待过期不再发第二次 Send |
+| `TestRealtimeIdleCancellationClosesTransport` | 首次请求前、仅 Ping 后的读取期间不观察 ctx，只由 Close 中断；修改前两场景均失败 |
 
-```sh
-go test ./internal/api \
-  -run 'TestRealtime(SlowRequestsDoNotBlockStreamAndPing|LookupErrorAfterStreamKeepsRequestID|WebSocketSlowLookupAllowsStreamAndPing)$|TestOrdinarySlowLookupStillOrdersStreamAndPing$' \
-  -count=1 -timeout=90s
-```
+旧查询屏障的受控 resolver、真实 WS、错误 request ID、普通连接串行、业务错误/传输错误、关闭回调等待回归继续保留。原有同流顺序测试明确命名为 `TestRealtimeStreamFramesPreserveStreamOrder`，不再把跨流全序当作新承诺。
 
-将同一测试加入修复前的 `87849bc` 时，三个慢请求子场景和错误返回场景均因收不到 Stream 响应失败，真实 WebSocket 场景发生读取超时。普通 `/ws/client` 的串行对照通过。修复后以上用例全部应通过。
-
-## 最小修复
-
-原 `client_dispatch.go` 在处理不是并发 Relay/Lookup 的请求前调用 `sends.pending.Wait()`，专用 StreamFrame 和 Ping 也落在这个分支：
-
-```text
-慢 Resolve / Relay → pending.Wait → Stream DATA/ACK 等待
-                            └→ Ping 等待 → 后续帧继续排队
-```
-
-修复只对 `/ws/realtime` 的 StreamFrame 和 Ping 跳过这次排空等待。二者继续由同一读取循环同步处理，不增加 goroutine 或发送队列，因此保留 Stream 帧的连接内顺序。逐帧鉴权、session、epoch、offset 验证、路由错误及响应关联保持原路径。
-
-Ping 也必须豁免：只放行 StreamFrame 会让下一次 Ping 再次停在排空等待，阻挡其后的 DATA/ACK。相应地，实时连接上的 Pong 仅说明该心跳得到处理，不能作为“先前发送和查询已经全部完成”的屏障。
-
-持久消息的 AckMessage、重复 Login、未定向发送及状态 RPC 仍保留排空屏障，普通 `/ws/client` 仍串行执行。协议字段与 SDK API 均不需要修改。
-
-## 验证与剩余边界
-
-应继续运行已有的 Stream 连接内顺序、AckMessage 状态屏障、接纳上限、逐请求鉴权、响应写失败及断线取消测试，并完成：
+在服务端模块运行：
 
 ```sh
-go test ./... -count=1
-go test -race ./internal/api -count=1
+go test ./internal/api -run 'TestRealtime|TestOrdinarySlowLookupStillOrdersStreamAndPing' -count=1 -timeout=150s
+go test -race ./internal/api -count=1 -timeout=10m
+go test -p 1 ./... -count=1 -timeout=15m
 ./scripts/smoke.sh
 ```
 
-本次解除的是等待已有并发组全部结束的屏障，并非保证同连接上所有慢操作完全隔离：
+测试依靠 channel/Close 控制进入、阻塞和释放，清理时取消、关闭并有界等待；不通过固定生产延时、放大 timeout 或遗留测试 goroutine 获得通过。
 
-- 当读取循环正等待第 65 个查询或定向发送的接纳名额时，后面尚未读取的 Stream/Ping 仍受背压。测试中的 64 个已接纳请求与第 65 个正在等待名额的请求是不同边界。
-- 慢 Stream 路由自身仍同步执行，可能挡住其后的帧；普通状态屏障也会阻挡后续读取。
-- 共享响应写锁、慢接收端、SDK 同步回调与设备写入仍可能传播背压。
+## TLA 与范围
 
-这些边界需要分别故障注入，不能通过放大超时、建立无界队列或并发发送有序 DATA 来规避。线上验证应在隔离环境先模拟查询延迟，再按节点灰度并保留失败样本，观察业务请求、ACK 进度和重连，而不仅检查集群 connected。本次代码修复本身不包含生产发布。
+规约、配置矩阵、严格运行器和实际结果位于 [TLA 目录](../specs/tla/realtime-dispatch/README.md)。旧行为配置应继续出现原反例；新实现检查同流顺序、健康流进展、拒绝关联、预算、取消/关闭和可达覆盖。永久不可写时的目标是明确失败，而不是一定交付；永久慢 A 时也不能仅靠关闭整个连接冒充健康 B 已进展。
 
-## 本次验证记录
+这是一份手工抽象，不是 Go 精化证明。小容量、有限输入、弱公平和逻辑期限不证明真实 ACK/心跳毫秒上界、64 并发全规模或无限输入无饥饿。具体字节阈值由 Go 边界回归校验。
 
-- 将最终回归测试配合 `go test -overlay` 指向 `87849bc` 的旧 `client_dispatch.go`，上述五个阻塞子场景稳定失败；真实 WS 测试失败清理能够释放注入查询并等待 handler 退出。
-- 最终代码的故障注入回归通过，完整 API `-race` 检查通过；补充的传输失败及测试清理变更也单独通过 `-race` 回归。
-- 最终完整测试 `go test -p 1 ./... -count=1 -timeout=15m` 通过，`./scripts/smoke.sh` 通过。API、cluster、mesh、store 均完成实际测试，没有跳过存储或启动路径。
-- 首轮与竞态检查并行运行全量测试时，未改动的 `TestPebbleBackgroundTrimEventuallyUpdatesMessageUserState` 出现一次 1 秒条件等待失败；原始失败保留，单独复查及最终串行全量复跑通过，没有放宽该测试期限或修改存储代码。仅凭复跑通过不确定这次偶发失败的原因。
-- 独立只读审查的测试清理问题已修正，复查未发现剩余阻塞项。上述记录对应发布前本地验证；生产部署结果应以单独的发布记录为准。
+## 仍需保留的边界
+
+显式全连接状态屏障仍会阻止后续读取；单慢 lane 的大量排队仍可能耗尽全连接预算并导致断线。不可写的同一 socket 不能被另一条 Pong 抢占；期限只保证在 transport Close 能中断发送、本地动作继续被调度时的失败收尾。
+
+发送者取消不代表另一个 receiver 的所有写入立即结束；另一接收 session、普通 client 写路径、mesh 和 backend 各有生命周期。一个写期限不是全部路由/后台任务 join 的总预算。这里没有增加节点全局限流，也没有修改 SDK、设备写回调、拥塞算法或生产部署。
+
+最终 Go/TLC 检查、反向故障注入及独立复核的实际结果另存验证记录；不由一次短期成功请求推断长期网络稳定。

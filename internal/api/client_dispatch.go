@@ -15,6 +15,12 @@ import (
 // 类型为 ClientEnvelope_Login 的消息在认证后收到会返回错误。
 func (s *clientWSSession) readLoop(ctx context.Context) (loopErr error) {
 	var sends *realtimeSendGroup
+	if s.realtimeOnly {
+		// Install cancellation before the first Receive. An idle socket read
+		// ignores ctx until Close, even when no lookup/Relay has created work.
+		sends = newRealtimeSendGroup(ctx, s)
+		ctx = sends.ctx
+	}
 	defer func() {
 		if sends != nil {
 			if err := sends.finish(); err != nil {
@@ -33,7 +39,7 @@ func (s *clientWSSession) readLoop(ctx context.Context) (loopErr error) {
 			if errors.Is(err, errNonBinaryClientFrame) {
 				s.logWarn("client_invalid_frame", err).
 					Msg("client transport received invalid frame")
-				if writeErr := s.writeError("invalid_frame", "client transport only accepts protobuf binary frames", 0); writeErr != nil {
+				if writeErr := s.writeReaderError(sends, "invalid_frame", "client transport only accepts protobuf binary frames", 0); writeErr != nil {
 					return writeErr
 				}
 				continue
@@ -44,7 +50,7 @@ func (s *clientWSSession) readLoop(ctx context.Context) (loopErr error) {
 		if err := gproto.Unmarshal(data, &envelope); err != nil {
 			s.logWarn("client_invalid_protobuf", err).
 				Msg("client transport received invalid protobuf")
-			if writeErr := s.writeError("invalid_protobuf", "invalid protobuf frame", 0); writeErr != nil {
+			if writeErr := s.writeReaderError(sends, "invalid_protobuf", "invalid protobuf frame", 0); writeErr != nil {
 				return writeErr
 			}
 			continue
@@ -55,18 +61,25 @@ func (s *clientWSSession) readLoop(ctx context.Context) (loopErr error) {
 		// Established streams already carry their target session and must not
 		// wait for unrelated discovery/Relay acceptance. Ping must also bypass
 		// that wait: otherwise a heartbeat would stall all later stream ACKs.
-		// Both still run synchronously below, preserving stream frame order.
+		// Streams keep FIFO order per identity, including epoch changes, while
+		// unrelated lanes and reader-owned Pong responses can make progress.
 		independentRealtime := s.realtimeOnly && (envelope.GetStreamFrame() != nil || envelope.GetPing() != nil)
 		// State-observing/changing RPCs (including persistent AckMessage) still
 		// drain the group. This exception does not apply to /ws/client.
 		if !concurrentSend && !concurrentLookup && !independentRealtime && sends != nil {
-			sends.pending.Wait()
+			sends.drain()
 			if err := ctx.Err(); err != nil {
 				return err
 			}
 		}
 		switch body := envelope.Body.(type) {
 		case *internalproto.ClientEnvelope_StreamFrame:
+			if sends != nil {
+				if err := sends.submitStream(body.StreamFrame); err != nil {
+					return err
+				}
+				continue
+			}
 			if err := s.handleStreamFrame(ctx, body.StreamFrame); err != nil {
 				return err
 			}
@@ -83,10 +96,6 @@ func (s *clientWSSession) readLoop(ctx context.Context) (loopErr error) {
 				Str("delivery_kind", body.SendMessage.GetDeliveryKind().String()).
 				Msg("client transport request")
 			if concurrentSend {
-				if sends == nil {
-					sends = newRealtimeSendGroup(ctx, s)
-					ctx = sends.ctx
-				}
 				if err := sends.submit(body.SendMessage); err != nil {
 					return err
 				}
@@ -337,10 +346,6 @@ func (s *clientWSSession) readLoop(ctx context.Context) (loopErr error) {
 				Int64("target_user_id", body.ResolveUserSessions.GetUser().GetUserId()).
 				Msg("client transport request")
 			if concurrentLookup {
-				if sends == nil {
-					sends = newRealtimeSendGroup(ctx, s)
-					ctx = sends.ctx
-				}
 				if err := sends.submitLookup(body.ResolveUserSessions); err != nil {
 					return err
 				}
@@ -376,9 +381,16 @@ func (s *clientWSSession) readLoop(ctx context.Context) (loopErr error) {
 			}
 			s.logDebug("ping", requestID).
 				Msg("client transport ping")
-			if err := s.writeEnvelope(&internalproto.ServerEnvelope{
+			response := &internalproto.ServerEnvelope{
 				Body: &internalproto.ServerEnvelope_Pong{Pong: &internalproto.Pong{RequestId: requestID}},
-			}); err != nil {
+			}
+			if sends != nil {
+				if err := sends.reply(response); err != nil {
+					return err
+				}
+				continue
+			}
+			if err := s.writeEnvelope(response); err != nil {
 				return err
 			}
 		case *internalproto.ClientEnvelope_Login:
@@ -396,6 +408,13 @@ func (s *clientWSSession) readLoop(ctx context.Context) (loopErr error) {
 			}
 		}
 	}
+}
+
+func (s *clientWSSession) writeReaderError(sends *realtimeSendGroup, code, message string, requestID uint64) error {
+	if sends != nil {
+		return sends.replyError(code, message, requestID)
+	}
+	return s.writeError(code, message, requestID)
 }
 
 // requestIDForClientEnvelopeBody 从任意 ClientEnvelope body 类型中提取 request_id 字段。
